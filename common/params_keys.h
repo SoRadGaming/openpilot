@@ -161,6 +161,26 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"GithubRunnerSufficientVoltage", {CLEAR_ON_MANAGER_START , BOOL}},
     {"HasAcceptedTermsSP", {PERSISTENT, STRING, "0"}},
     {"HideVEgoUI", {PERSISTENT | BACKUP, BOOL, "0"}},
+    // Honda Nidec dynamic (self-learning) longitudinal tuning.
+    // Toggles are BACKUP (they are settings); the learned values are PERSISTENT
+    // only -- they are per-car state that changes every 60 s, so backing them up
+    // would keep a sunnylink backup permanently dirty and could restore a tune
+    // learned on different hardware.
+    {"HondaDynamicTuningEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"HondaDynamicPcmBlendEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"HondaDynPedalGain0", {PERSISTENT, FLOAT, "1.0"}},
+    {"HondaDynPedalGain1", {PERSISTENT, FLOAT, "1.0"}},
+    {"HondaDynPedalGain2", {PERSISTENT, FLOAT, "1.0"}},
+    {"HondaDynPedalGain3", {PERSISTENT, FLOAT, "1.0"}},
+    {"HondaDynPedalGain4", {PERSISTENT, FLOAT, "1.0"}},
+    {"HondaDynPedalGain5", {PERSISTENT, FLOAT, "1.0"}},
+    {"HondaDynGasFactor", {PERSISTENT, FLOAT, "1.0"}},
+    {"HondaDynGasAlpha", {PERSISTENT, FLOAT, "0.0"}},
+    {"HondaDynAverageFactor", {PERSISTENT, FLOAT, "0.95"}},
+    {"HondaDynSpeedFactor", {PERSISTENT, FLOAT, "4.0"}},
+    {"HondaDynSpeedAlpha", {PERSISTENT, FLOAT, "0.0"}},
+    {"HondaDynWindFactor", {PERSISTENT, FLOAT, "1.0"}},
+    {"HondaDynBrakeGain", {PERSISTENT, FLOAT, "0.0"}},
     {"IntelligentCruiseButtonManagement", {PERSISTENT | BACKUP , BOOL}},
     {"InteractivityTimeout", {PERSISTENT | BACKUP, INT, "0"}},
     {"IsDevelopmentBranch", {CLEAR_ON_MANAGER_START, BOOL}},

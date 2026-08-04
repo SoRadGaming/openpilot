@@ -30,6 +30,15 @@ ACC_NOLONG_DESCRIPTION = tr_noop("This feature can only be used with sunnypilot 
 ACC_PCMCRUISE_DISABLED_DESCRIPTION = tr_noop("This feature is not supported on this platform due to vehicle limitations.")
 ONROAD_ONLY_DESCRIPTION = tr_noop("Start the vehicle to check vehicle compatibility.")
 
+HONDA_DYN_DESC = tr_noop("Learn this car's throttle and brake response while you drive, and correct for it. " +
+                         "Also compensates the accel target for road grade. Honda Nidec with sunnypilot " +
+                         "longitudinal only; has no effect on other platforms. Learned values are saved " +
+                         "roughly once a minute and reloaded on the next drive.")
+HONDA_DYN_PCM_DESC = tr_noop("Additionally hand part of the throttle request back to the car's own cruise " +
+                             "computer above 30 km/h, where the gas pedal interceptor loses authority. " +
+                             "This changes which actuator drives the car and is not yet validated on a " +
+                             "drive - leave it off unless you are actively testing it.")
+
 
 class CruiseLayout(Widget):
   def __init__(self):
@@ -87,6 +96,21 @@ class CruiseLayout(Widget):
       description=tr("Enable toggle to allow the model to determine when to use sunnypilot ACC or sunnypilot End to End Longitudinal."),
       param="DynamicExperimentalControl")
 
+    self.honda_dyn_toggle = toggle_item_sp(
+      title=tr("Honda Nidec Dynamic Longitudinal Tuning (Alpha)"),
+      description=tr(HONDA_DYN_DESC),
+      param="HondaDynamicTuningEnabled",
+      callback=self._on_honda_dyn_toggle)
+
+    self.honda_dyn_pcm_toggle = toggle_item_sp(
+      title=tr("...also blend the PCM gas above 30 km/h (Experimental)"),
+      description=tr(HONDA_DYN_PCM_DESC),
+      param="HondaDynamicPcmBlendEnabled",
+      # the interlock has to hold on BOTH edges: clearing the child when the
+      # parent goes off is useless if the child can be armed while the parent
+      # is already off, which is the state the callback exists to prevent
+      enabled=lambda: ui_state.params.get_bool("HondaDynamicTuningEnabled"))
+
     items = [
       self.icbm_toggle,
       self.dec_toggle,
@@ -95,9 +119,20 @@ class CruiseLayout(Widget):
       self.custom_acc_toggle,
       self.custom_acc_short_increment,
       self.custom_acc_long_increment,
+      self.honda_dyn_toggle,
+      self.honda_dyn_pcm_toggle,
       self.sla_settings_button,
     ]
     return items
+
+  def _on_honda_dyn_toggle(self, state):
+    # the PCM blend is meaningless on its own; never leave it set while the
+    # parent is off, or flipping the parent back on would enable both at once.
+    # NB: `state` is the new value -- ToggleSP writes the param *after* the
+    # callback returns, so reading the param back here would see the old one.
+    if not state:
+      ui_state.params.put_bool("HondaDynamicPcmBlendEnabled", False)
+      self.honda_dyn_pcm_toggle.action_item.set_state(False)
 
   def _render(self, rect):
     if self._current_panel == PanelType.SLA:
@@ -110,6 +145,8 @@ class CruiseLayout(Widget):
     self._scroller.show_event()
     self.icbm_toggle.show_description(True)
     self.custom_acc_toggle.show_description(True)
+    self.honda_dyn_toggle.show_description(True)
+    self.honda_dyn_pcm_toggle.show_description(True)
 
   def _set_current_panel(self, panel: PanelType):
     self._current_panel = panel
