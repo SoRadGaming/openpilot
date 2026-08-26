@@ -34,18 +34,20 @@ drive, and only ever re-reads the notebook next time you start.
 ## The two toggles
 
 They are in **three places, and all three drive the same setting** — flip it wherever you find
-it first:
+it first.
 
-- **The sunnylink app**, under Vehicle → Honda Settings. The learned values are listed there
-  too, read-only. The app renders whatever settings list the *device* publishes, so if the
-  Honda section shows up in the app, that is proof the device is running this code.
-- **Settings → Vehicle** on the device (the Honda page, shown once the car is recognised as a
-  Honda). This is also where the learned values and the reset button live.
-- **Settings → Cruise** on the device, near the bottom of the list.
+**On a comma 4** (the small screen — this is the one you have): **Settings → vehicle**. That
+page is new. The comma 4 runs a different UI to the comma 3/3X, and that UI has no Cruise page
+and no Vehicle page at all — which is exactly why the toggle never showed up for you no matter
+what was in the Cruise panel. The page has both toggles, what the car has learned, and the
+reset.
 
-One caveat on the two on-device pages: they only exist in the **big** UI (comma 3 / 3X). The
-small "mici" UI has no Cruise or Vehicle page at all — on that hardware the app is the only
-way in, which is why it is now wired up.
+**On a comma 3 / 3X** (the big screen): **Settings → Vehicle**, on the Honda page, or
+**Settings → Cruise** near the bottom of the list.
+
+**In the sunnylink app**, on any device: under Vehicle → Honda Settings, with the learned
+values listed read-only. The app renders whatever settings list the *device* publishes, so if
+the Honda section shows up in the app, that is proof the device is running this code.
 
 Both toggles are **off** by default.
 
@@ -71,7 +73,10 @@ it automatically.
 
 ## Seeing what it has learned
 
-**Settings → Vehicle → Learned Values** shows what the car has worked out so far:
+On the comma 4 it is the card at the front of **Settings → vehicle**: the six pedal gains in
+speed order, then the brake and aero trims. On the big screen it is **Settings → Vehicle →
+Learned Values**, and in the app it is the read-only rows under Honda Settings. Same numbers
+either way:
 
 - **Pedal gain by speed** — one number per speed band (0, 11, 22, 36, 54, 72 km/h). `1.00`
   means "openpilot's original pedal request was right"; `1.30` means "this car needs 30% more
@@ -84,8 +89,9 @@ it automatically.
 The numbers refresh about once a second on screen, and the car itself saves them roughly once
 a minute while you drive, so open the page after a drive to see the day's learning.
 
-**RESET** puts all of it back to the factory numbers and starts the learning from scratch. It
-asks for confirmation first, and it is only available with the car off — the tuner keeps the
+**RESET** (slide to confirm on the comma 4) puts all of it back to the factory numbers and
+starts the learning from scratch. It asks for confirmation first, and it is only available
+with the car off — the tuner keeps the
 learned values in memory while driving and would just write them back over the top a minute
 later.
 

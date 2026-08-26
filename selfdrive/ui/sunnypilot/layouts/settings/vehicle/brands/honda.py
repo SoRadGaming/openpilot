@@ -67,6 +67,40 @@ RESET_CONFIRM = tr_noop("Reset everything this car has learned about its throttl
                         "defaults? It starts learning again from scratch on the next drive.")
 
 
+def learned_value(key: str) -> float:
+  """One learned param, coerced to a float, with the tuner's default as the floor.
+
+  Params.get() hands back whatever the value parses as; a param that was never
+  written comes back None, and a corrupt one could come back as anything at
+  all. UnknownKeyName means the params registry on this device predates the
+  tuner. None of those should take a settings page down.
+  """
+  try:
+    value = ui_state.params.get(key, return_default=True)
+    return float(value) if value is not None else LEARNED_DEFAULTS[key]
+  except (TypeError, ValueError, UnknownKeyName):
+    return LEARNED_DEFAULTS[key]
+
+
+def learned_pedal_gains() -> list[float]:
+  return [learned_value(f"HondaDynPedalGain{i}") for i in range(len(PEDAL_GAIN_BP))]
+
+
+def reset_learned_values() -> None:
+  """Put every learned param back to its default. Offroad only -- the tuner
+  holds the learned state in memory and rewrites it every 60 s, so a reset
+  while driving would be undone a minute later."""
+  if not ui_state.is_offroad():
+    return
+  try:
+    for key, default in LEARNED_DEFAULTS.items():
+      ui_state.params.put(key, float(default))
+  except UnknownKeyName:
+    # params registry predates the tuner: there is nothing learned to reset,
+    # and raising out of a button callback would take the UI down
+    pass
+
+
 class HondaSettings(BrandSettings):
   def __init__(self):
     super().__init__()
@@ -118,33 +152,12 @@ class HondaSettings(BrandSettings):
 
   @staticmethod
   def _on_reset_confirmed(result: int) -> None:
-    # re-check offroad: the dialog can sit open across an ignition
-    if result != DialogResult.CONFIRM or not ui_state.is_offroad():
-      return
-    try:
-      for key, default in LEARNED_DEFAULTS.items():
-        ui_state.params.put(key, float(default))
-    except UnknownKeyName:
-      # params registry predates the tuner: there is nothing learned to reset,
-      # and raising out of a button callback would take the UI down
-      pass
-
-  @staticmethod
-  def _get_float(key: str) -> float:
-    # Params.get() hands back whatever the value parses as; a param that was
-    # never written comes back None, and a corrupt one could come back as
-    # anything at all. Neither should take the settings screen down.
-    try:
-      value = ui_state.params.get(key, return_default=True)
-      return float(value) if value is not None else LEARNED_DEFAULTS[key]
-    except (TypeError, ValueError, UnknownKeyName):
-      # UnknownKeyName means the params registry on this device predates the
-      # tuner. Nothing can be learned either way, but a settings page that
-      # refuses to draw is a far worse way to say so.
-      return LEARNED_DEFAULTS[key]
+    # reset_learned_values re-checks offroad: the dialog can sit open across an ignition
+    if result == DialogResult.CONFIRM:
+      reset_learned_values()
 
   def _build_learned_text(self) -> str:
-    gains = [self._get_float(f"HondaDynPedalGain{i}") for i in range(len(PEDAL_GAIN_BP))]
+    gains = learned_pedal_gains()
     speed_factor = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
     unit = tr("km/h") if ui_state.is_metric else tr("mph")
 
@@ -153,9 +166,9 @@ class HondaSettings(BrandSettings):
     # block, so the separators here are load bearing
     bands = " | ".join(f"{round(bp * speed_factor):d}: {gain:.2f}" for bp, gain in zip(PEDAL_GAIN_BP, gains, strict=True))
     text = (f"<b>{tr('Pedal gain by speed')} ({unit})</b>" + bands + "<br>" +
-            f"{tr('Gas')} x{self._get_float('HondaDynGasFactor'):.2f} | " +
-            f"{tr('Aero')} x{self._get_float('HondaDynWindFactor'):.2f} | " +
-            f"{tr('Brake')} {self._get_float('HondaDynBrakeGain'):+.2f}")
+            f"{tr('Gas')} x{learned_value('HondaDynGasFactor'):.2f} | " +
+            f"{tr('Aero')} x{learned_value('HondaDynWindFactor'):.2f} | " +
+            f"{tr('Brake')} {learned_value('HondaDynBrakeGain'):+.2f}")
     if not ui_state.is_offroad():
       text += "<br>" + tr(LEARNED_ONROAD_NOTE)
     return text

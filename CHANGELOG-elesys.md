@@ -326,6 +326,37 @@ Worth knowing: the app renders the settings list the **device** publishes
 (`generate_settings_schema.py` reads this JSON off the device). So the Honda section appearing
 in the app is itself proof of which code the device is running.
 
+### 10c. The actual bug: the comma 4 has neither of those pages
+
+`selfdrive/ui/sunnypilot/mici/layouts/vehicle.py` (new), `mici/layouts/settings.py`
+
+The car is on a **comma 4**, which reports `mici` from the device tree, and
+`gui_app.big_ui()` is true only for `tici`/`tizi`. So the device runs the small UI, whose
+settings row is toggles / network / device / developer / firehose (+ sunnylink and models from
+sunnypilot) — **no Cruise panel and no Vehicle panel exist there at all**. Every earlier fix
+was editing pages that hardware never draws. That is why the toggle "wasn't there" on a build
+that unquestionably contained it.
+
+New `vehicle` page in the small UI, inserted after `models` in the settings row:
+
+- the learned values as an info card, same two-header layout as the sunnylink and models
+  cards: the six pedal gains in speed order, then brake and aero;
+- both toggles as `BigParamControl`s, the child `set_enabled` on the parent so the interlock
+  holds on both edges (a disabled `Widget` takes no clicks), and the parent's callback clears
+  the child;
+- reset behind the platform's slide-to-confirm dialog, offroad only.
+
+The page imports the param names and the learned-value helpers from the big UI's brand panel
+rather than re-spelling them — `learned_value()`, `learned_pedal_gains()` and
+`reset_learned_values()` were lifted out of `HondaSettings` for exactly that. Toggle state and
+the learned readout refresh on a 1 s tick, not per frame: params are files, and the same two
+params can now be written from three places.
+
+The settings row hides the button on a non-Honda, but shows it when the brand lookup comes
+back empty — a fingerprint that hasn't resolved yet must never be the reason a page
+disappears. That lookup is cached on the same 1 s tick because a visibility lambda runs every
+frame and `CarPlatformBundle` is JSON.
+
 ## 11. Tests
 
 - `opendbc/car/honda/tests/test_elesys.py` — 44 tests (was 36). Added pump deadband scaling,
@@ -339,11 +370,14 @@ in the app is itself proof of which code the device is running.
   `CarController`: toggle-off is stock, gas and brake never concurrent, standstill hold is
   gain-invariant, disengage unwinds, crossfade inert with the blend off.
 - `selfdrive/controls/tests/test_stopping_debounce.py` (new) — incl. disengage-is-not-debounced.
-- `selfdrive/ui/tests/test_honda_dynamic_settings.py` (new) — 9 tests. Parses (never imports,
+- `selfdrive/ui/tests/test_honda_dynamic_settings.py` (new) — 11 tests. Parses (never imports,
   so it runs without raylib) the two panels, `params_keys.h`, the tuner and the sunnylink
   schema, and asserts they agree on the key names, the defaults, the speed bands, the param
   types and flags, that the Honda brand page actually publishes its items, and that the
-  learned values stay read-only in the app.
+  learned values stay read-only in the app. Also that the small-screen page imports the params
+  instead of re-spelling them, that any learned key it does name literally is a real one, and
+  that the settings row actually inserts the button — an unreferenced page is the same as no
+  page, which is the bug this whole section exists to fix.
 - the sunnylink JSON also passes `tools/validate_settings_ui.py` (10 checks) and the existing
   `test_compile_settings_ui.py` roundtrip (17 tests).
 

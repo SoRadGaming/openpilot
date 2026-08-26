@@ -25,6 +25,8 @@ CRUISE_PANEL = ROOT / "selfdrive/ui/sunnypilot/layouts/settings/cruise.py"
 PARAMS_KEYS = ROOT / "common/params_keys.h"
 TUNER = ROOT / "opendbc_repo/opendbc/sunnypilot/car/honda/dynamic_tuning.py"
 SDUI = ROOT / "sunnypilot/sunnylink/settings_ui.json"
+MICI_PANEL = ROOT / "selfdrive/ui/sunnypilot/mici/layouts/vehicle.py"
+MICI_SETTINGS = ROOT / "selfdrive/ui/sunnypilot/mici/layouts/settings.py"
 
 TOGGLE_PARAMS = ("HondaDynamicTuningEnabled", "HondaDynamicPcmBlendEnabled")
 
@@ -100,6 +102,31 @@ def test_honda_panel_publishes_its_items():
   assert items, "HondaSettings.__init__ never assigns self.items"
   assert isinstance(items[-1].value, ast.List) and len(items[-1].value.elts) >= 3, \
     "HondaSettings.items should hold the two toggles and the learned values row"
+
+
+def test_mici_page_shares_the_panel_params():
+  # the small screen (mici, comma 4) has no Cruise or Vehicle panel of its own,
+  # so it carries its own page -- it must drive the same params, not re-spell them
+  tree = ast.parse(MICI_PANEL.read_text())
+  imported = {alias.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+              and (node.module or "").endswith("vehicle.brands.honda") for alias in node.names}
+  assert {"TUNING_PARAM", "PCM_BLEND_PARAM"} <= imported, \
+    "the small-screen page must import the toggle params from the brand panel"
+
+  # any learned key it does name literally has to be a real one: learned_value()
+  # falls back to LEARNED_DEFAULTS, so a typo would be a KeyError on render
+  learned = _panel_constant("LEARNED_DEFAULTS")
+  for literal in re.findall(r"'(HondaDyn\w+)'", MICI_PANEL.read_text()):
+    assert literal in learned, f"{literal} is not a learned param"
+
+
+def test_mici_settings_registers_the_vehicle_page():
+  # an unreferenced page is the same as no page at all, which is the bug this
+  # whole thing exists to fix
+  src = MICI_SETTINGS.read_text()
+  assert "VehicleLayoutMici" in src, "the small-screen settings never builds the vehicle page"
+  assert re.search(r"items\.insert\(\d+,\s*vehicle_btn\)", src), \
+    "the vehicle button is built but never added to the settings row"
 
 
 def _sdui_honda_items() -> list[dict]:
