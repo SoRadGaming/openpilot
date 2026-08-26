@@ -33,12 +33,19 @@ drive, and only ever re-reads the notebook next time you start.
 
 ## The two toggles
 
-They are in **two places, and both places drive the same setting** — flip it wherever you
-find it first:
+They are in **three places, and all three drive the same setting** — flip it wherever you find
+it first:
 
-- **Settings → Vehicle** (the Honda page, only shown once the car is recognised as a Honda).
-  This is also where the learned values and the reset button live.
-- **Settings → Cruise**, near the bottom of the list.
+- **The sunnylink app**, under Vehicle → Honda Settings. The learned values are listed there
+  too, read-only. The app renders whatever settings list the *device* publishes, so if the
+  Honda section shows up in the app, that is proof the device is running this code.
+- **Settings → Vehicle** on the device (the Honda page, shown once the car is recognised as a
+  Honda). This is also where the learned values and the reset button live.
+- **Settings → Cruise** on the device, near the bottom of the list.
+
+One caveat on the two on-device pages: they only exist in the **big** UI (comma 3 / 3X). The
+small "mici" UI has no Cruise or Vehicle page at all — on that hardware the app is the only
+way in, which is why it is now wired up.
 
 Both toggles are **off** by default.
 

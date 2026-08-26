@@ -304,6 +304,28 @@ would mean an opendbc import running while the settings screen is being built �
 mode being fixed here is an empty settings page, so the fix must not be able to cause one.
 `test_honda_dynamic_settings.py` is what keeps the copy honest.
 
+### 10b. sunnylink: a Honda section, so the app can set it
+
+`sunnypilot/sunnylink/settings_ui_src/pages/vehicle.yaml`, `settings_ui.json`
+
+`vehicle_settings` had no `honda` brand at all, so the remote settings UI showed nothing for
+this car. Added, compiled through `compile_settings_ui.py` (the checked-in JSON is generated —
+the roundtrip test diffs it):
+
+- both toggles, `needs_onroad_cycle: true` so the app tells the user it takes an ignition
+  cycle. The parent is offroad-gated; the child carries the same param interlock the device
+  UI has (`type: param, key: HondaDynamicTuningEnabled, equals: true`);
+- the six learned pedal gains, the brake gain and the aero factor as `widget: info` +
+  `blocked: true` — read-only rows, so learning can be watched from the phone without the
+  dashboard being able to write per-car state.
+
+Deliberately only in `vehicle_settings`, not also on the cruise page: keys may appear in at
+most one panel, and the brand section is the one place the app shows only to Hondas.
+
+Worth knowing: the app renders the settings list the **device** publishes
+(`generate_settings_schema.py` reads this JSON off the device). So the Honda section appearing
+in the app is itself proof of which code the device is running.
+
 ## 11. Tests
 
 - `opendbc/car/honda/tests/test_elesys.py` — 44 tests (was 36). Added pump deadband scaling,
@@ -317,10 +339,13 @@ mode being fixed here is an empty settings page, so the fix must not be able to 
   `CarController`: toggle-off is stock, gas and brake never concurrent, standstill hold is
   gain-invariant, disengage unwinds, crossfade inert with the blend off.
 - `selfdrive/controls/tests/test_stopping_debounce.py` (new) — incl. disengage-is-not-debounced.
-- `selfdrive/ui/tests/test_honda_dynamic_settings.py` (new) — parses (never imports, so it
-  runs without raylib) the two panels, `params_keys.h` and the tuner, and asserts they agree
-  on the key names, the defaults, the speed bands, the param types and flags, and that the
-  Honda brand page actually publishes its items.
+- `selfdrive/ui/tests/test_honda_dynamic_settings.py` (new) — 9 tests. Parses (never imports,
+  so it runs without raylib) the two panels, `params_keys.h`, the tuner and the sunnylink
+  schema, and asserts they agree on the key names, the defaults, the speed bands, the param
+  types and flags, that the Honda brand page actually publishes its items, and that the
+  learned values stay read-only in the app.
+- the sunnylink JSON also passes `tools/validate_settings_ui.py` (10 checks) and the existing
+  `test_compile_settings_ui.py` roundtrip (17 tests).
 
 ---
 

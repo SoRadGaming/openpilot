@@ -2070,6 +2070,92 @@
     }
   ],
   "vehicle_settings": {
+    "honda": {
+      "title": "Honda Settings",
+      "description": "",
+      "items": [
+        {
+          "key": "HondaDynamicTuningEnabled",
+          "widget": "toggle",
+          "needs_onroad_cycle": true,
+          "title": "Dynamic Longitudinal Learning (Alpha)",
+          "description": "Learn this car's throttle and brake response while you drive, and correct for it. Also compensates the accel target for road grade. Honda Nidec with sunnypilot longitudinal only; has no effect on other platforms. Learned values are saved roughly once a minute and reloaded on the next drive.",
+          "details": "The car reads this toggle once when it goes onroad, so a change only takes effect at the next ignition - set it, then key off and on. What it has learned so far is on the read-only rows below.",
+          "enablement": [
+            {
+              "type": "offroad_only"
+            }
+          ]
+        },
+        {
+          "key": "HondaDynamicPcmBlendEnabled",
+          "widget": "toggle",
+          "needs_onroad_cycle": true,
+          "title": "...also blend the PCM gas above 30 km/h (Experimental)",
+          "description": "Additionally hand part of the throttle request back to the car's own cruise computer above 30 km/h, where the gas pedal interceptor loses authority. This changes which actuator drives the car and is not yet validated on a drive - leave it off unless you are actively testing it.",
+          "enablement": [
+            {
+              "type": "offroad_only"
+            },
+            {
+              "type": "param",
+              "key": "HondaDynamicTuningEnabled",
+              "equals": true
+            }
+          ]
+        },
+        {
+          "key": "HondaDynPedalGain0",
+          "widget": "info",
+          "blocked": true,
+          "title": "Learned pedal gain at 0 km/h",
+          "description": "1.00 means the stock pedal request was right; 1.30 means this car needs 30% more pedal than stock asked for at that speed."
+        },
+        {
+          "key": "HondaDynPedalGain1",
+          "widget": "info",
+          "blocked": true,
+          "title": "Learned pedal gain at 11 km/h"
+        },
+        {
+          "key": "HondaDynPedalGain2",
+          "widget": "info",
+          "blocked": true,
+          "title": "Learned pedal gain at 22 km/h"
+        },
+        {
+          "key": "HondaDynPedalGain3",
+          "widget": "info",
+          "blocked": true,
+          "title": "Learned pedal gain at 36 km/h"
+        },
+        {
+          "key": "HondaDynPedalGain4",
+          "widget": "info",
+          "blocked": true,
+          "title": "Learned pedal gain at 54 km/h"
+        },
+        {
+          "key": "HondaDynPedalGain5",
+          "widget": "info",
+          "blocked": true,
+          "title": "Learned pedal gain at 72 km/h"
+        },
+        {
+          "key": "HondaDynBrakeGain",
+          "widget": "info",
+          "blocked": true,
+          "title": "Learned brake gain",
+          "description": "0.00 until it has learned anything. Positive adds brake, negative trims it."
+        },
+        {
+          "key": "HondaDynWindFactor",
+          "widget": "info",
+          "blocked": true,
+          "title": "Learned aero factor"
+        }
+      ]
+    },
     "hyundai": {
       "title": "Hyundai / Kia / Genesis Settings",
       "description": "",

@@ -15,6 +15,7 @@ Source is parsed, never imported: the panels pull in raylib, which is not
 available in every test environment.
 """
 import ast
+import json
 import re
 from pathlib import Path
 
@@ -23,6 +24,7 @@ HONDA_PANEL = ROOT / "selfdrive/ui/sunnypilot/layouts/settings/vehicle/brands/ho
 CRUISE_PANEL = ROOT / "selfdrive/ui/sunnypilot/layouts/settings/cruise.py"
 PARAMS_KEYS = ROOT / "common/params_keys.h"
 TUNER = ROOT / "opendbc_repo/opendbc/sunnypilot/car/honda/dynamic_tuning.py"
+SDUI = ROOT / "sunnypilot/sunnylink/settings_ui.json"
 
 TOGGLE_PARAMS = ("HondaDynamicTuningEnabled", "HondaDynamicPcmBlendEnabled")
 
@@ -98,6 +100,50 @@ def test_honda_panel_publishes_its_items():
   assert items, "HondaSettings.__init__ never assigns self.items"
   assert isinstance(items[-1].value, ast.List) and len(items[-1].value.elts) >= 3, \
     "HondaSettings.items should hold the two toggles and the learned values row"
+
+
+def _sdui_honda_items() -> list[dict]:
+  schema = json.loads(SDUI.read_text())
+  honda = schema["vehicle_settings"]["honda"]
+  return honda["items"]
+
+
+def test_sunnylink_exposes_the_same_toggles():
+  # the app reads settings_ui.json; if it drifts from the panels, a toggle set
+  # from the phone writes a key the car never reads
+  items = {i["key"]: i for i in _sdui_honda_items()}
+  for key in TOGGLE_PARAMS:
+    assert key in items, f"{key} is missing from the honda section of settings_ui.json"
+    assert items[key]["widget"] == "toggle"
+    # the tuner reads both toggles once when the car goes onroad
+    assert items[key].get("needs_onroad_cycle") is True, f"{key} must tell the app it needs an ignition cycle"
+    assert items[key].get("title") not in (None, key), f"{key} needs a real title"
+
+  child = items["HondaDynamicPcmBlendEnabled"]
+  assert {"type": "param", "key": "HondaDynamicTuningEnabled", "equals": True} in child.get("enablement", []), \
+    "the PCM blend must stay gated on its parent in the app, same as on the device"
+
+
+def test_sunnylink_learned_values_are_read_only():
+  learned = _panel_constant("LEARNED_DEFAULTS")
+  for item in _sdui_honda_items():
+    if item["key"] in learned:
+      assert item["widget"] == "info", f"{item['key']} is learned state, not a setting"
+      assert item.get("blocked") is True, f"{item['key']} must not be writable from the dashboard"
+
+
+def test_sunnylink_keys_are_registered_and_unique():
+  registered = _registered_params()
+  schema = json.loads(SDUI.read_text())
+  panel_keys = set()
+  for panel in schema["panels"]:
+    panel_keys.update(re.findall(r'"key":\s*"(\w+)"', json.dumps(panel)))
+
+  for item in _sdui_honda_items():
+    key = item["key"]
+    assert key in registered, f"{key} is in settings_ui.json but not in params_keys.h"
+    # keys may live in at most one panel; the brand section is separate
+    assert key not in panel_keys, f"{key} appears in both a panel and the honda vehicle section"
 
 
 def test_panel_defaults_match_the_tuner():
