@@ -33,11 +33,22 @@ drive, and only ever re-reads the notebook next time you start.
 
 ## The two toggles
 
-Both are in **Settings → Cruise**. Both are **off** by default.
+They are in **two places, and both places drive the same setting** — flip it wherever you
+find it first:
 
-### 1. "Honda Nidec Dynamic Longitudinal Tuning (Alpha)"
+- **Settings → Vehicle** (the Honda page, only shown once the car is recognised as a Honda).
+  This is also where the learned values and the reset button live.
+- **Settings → Cruise**, near the bottom of the list.
 
-The main one. Turns on the self-learning.
+Both toggles are **off** by default.
+
+### 1. "Dynamic Longitudinal Learning (Alpha)"
+
+The main one. Turns on the self-learning. It reads as "Honda Nidec Dynamic Longitudinal
+Learning (Alpha)" on the Cruise page, since that page is shared with every other car.
+
+Remember: **flipping it does nothing until the next ignition.** Turn it on while parked, key
+off, key on.
 
 ### 2. "...also blend the PCM gas above 30 km/h (Experimental)"
 
@@ -48,6 +59,28 @@ Until that's tested standing still, this stays off.
 
 It can't be switched on unless the first toggle is on, and turning the first one off clears
 it automatically.
+
+---
+
+## Seeing what it has learned
+
+**Settings → Vehicle → Learned Values** shows what the car has worked out so far:
+
+- **Pedal gain by speed** — one number per speed band (0, 11, 22, 36, 54, 72 km/h). `1.00`
+  means "openpilot's original pedal request was right"; `1.30` means "this car needs 30% more
+  pedal than stock asked for at that speed". This is the row to watch: it should drift away
+  from 1.00 over your first few drives and then settle.
+- **Gas** — the PCM gas factor, which only moves if the PCM blend toggle is on.
+- **Aero** — the wind/drag term.
+- **Brake** — the learned brake correction, `+0.00` when it has learned nothing yet.
+
+The numbers refresh about once a second on screen, and the car itself saves them roughly once
+a minute while you drive, so open the page after a drive to see the day's learning.
+
+**RESET** puts all of it back to the factory numbers and starts the learning from scratch. It
+asks for confirmation first, and it is only available with the car off — the tuner keeps the
+learned values in memory while driving and would just write them back over the top a minute
+later.
 
 ---
 
