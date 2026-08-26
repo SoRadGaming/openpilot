@@ -274,6 +274,89 @@ on the parent so the interlock holds on both edges.
 change every 60 s, so backing them up would keep a sunnylink backup permanently dirty and
 could restore a tune learned on different hardware.
 
+### 10a. A Honda page under Vehicle, so the toggle is findable
+
+`selfdrive/ui/sunnypilot/layouts/settings/vehicle/brands/honda.py`, `cruise.py`
+
+`HondaSettings` was one of the brand classes that never populated `items` (as most still
+don't), so **Settings → Vehicle showed nothing on a Honda** and the only way to the tuner was
+the bottom of the Cruise list, where a Honda-specific toggle is not where anyone looks for
+it. The brand page now carries:
+
+- the same two toggles (same params, so this is a second door onto one setting, not a second
+  setting), with the ignition note in the description — the tuner reads them once at onroad,
+  so a flip does nothing until the next key cycle;
+- **Learned Values** — the six pedal gains laid out against their speed bands, plus the gas,
+  aero and brake terms, refreshed once a second (13 params at 60 fps would be 13 file reads a
+  frame). Speeds follow `IsMetric`;
+- **RESET** — writes every learned param back to its `_PARAM_SPEC` default behind a
+  confirmation. Offroad only, re-checked when the dialog returns: the tuner holds the learned
+  state in memory and rewrites it every 60 s, so a reset while driving would be undone a
+  minute later.
+
+Both panels now re-sync their toggles from the param, **edge-triggered on the param, never
+level**: `ToggleSP` reads its param once at construction, so without this the two copies drift
+apart until the UI restarts, and with a level sync a tap would snap back for the frame or two
+before its non-blocking write lands.
+
+The panel hardcodes the key names and defaults rather than importing the tuner. Importing it
+would mean an opendbc import running while the settings screen is being built — the failure
+mode being fixed here is an empty settings page, so the fix must not be able to cause one.
+`test_honda_dynamic_settings.py` is what keeps the copy honest.
+
+### 10b. sunnylink: a Honda section, so the app can set it
+
+`sunnypilot/sunnylink/settings_ui_src/pages/vehicle.yaml`, `settings_ui.json`
+
+`vehicle_settings` had no `honda` brand at all, so the remote settings UI showed nothing for
+this car. Added, compiled through `compile_settings_ui.py` (the checked-in JSON is generated —
+the roundtrip test diffs it):
+
+- both toggles, `needs_onroad_cycle: true` so the app tells the user it takes an ignition
+  cycle. The parent is offroad-gated; the child carries the same param interlock the device
+  UI has (`type: param, key: HondaDynamicTuningEnabled, equals: true`);
+- the six learned pedal gains, the brake gain and the aero factor as `widget: info` +
+  `blocked: true` — read-only rows, so learning can be watched from the phone without the
+  dashboard being able to write per-car state.
+
+Deliberately only in `vehicle_settings`, not also on the cruise page: keys may appear in at
+most one panel, and the brand section is the one place the app shows only to Hondas.
+
+Worth knowing: the app renders the settings list the **device** publishes
+(`generate_settings_schema.py` reads this JSON off the device). So the Honda section appearing
+in the app is itself proof of which code the device is running.
+
+### 10c. The actual bug: the comma 4 has neither of those pages
+
+`selfdrive/ui/sunnypilot/mici/layouts/vehicle.py` (new), `mici/layouts/settings.py`
+
+The car is on a **comma 4**, which reports `mici` from the device tree, and
+`gui_app.big_ui()` is true only for `tici`/`tizi`. So the device runs the small UI, whose
+settings row is toggles / network / device / developer / firehose (+ sunnylink and models from
+sunnypilot) — **no Cruise panel and no Vehicle panel exist there at all**. Every earlier fix
+was editing pages that hardware never draws. That is why the toggle "wasn't there" on a build
+that unquestionably contained it.
+
+New `vehicle` page in the small UI, inserted after `models` in the settings row:
+
+- the learned values as an info card, same two-header layout as the sunnylink and models
+  cards: the six pedal gains in speed order, then brake and aero;
+- both toggles as `BigParamControl`s, the child `set_enabled` on the parent so the interlock
+  holds on both edges (a disabled `Widget` takes no clicks), and the parent's callback clears
+  the child;
+- reset behind the platform's slide-to-confirm dialog, offroad only.
+
+The page imports the param names and the learned-value helpers from the big UI's brand panel
+rather than re-spelling them — `learned_value()`, `learned_pedal_gains()` and
+`reset_learned_values()` were lifted out of `HondaSettings` for exactly that. Toggle state and
+the learned readout refresh on a 1 s tick, not per frame: params are files, and the same two
+params can now be written from three places.
+
+The settings row hides the button on a non-Honda, but shows it when the brand lookup comes
+back empty — a fingerprint that hasn't resolved yet must never be the reason a page
+disappears. That lookup is cached on the same 1 s tick because a visibility lambda runs every
+frame and `CarPlatformBundle` is JSON.
+
 ## 11. Tests
 
 - `opendbc/car/honda/tests/test_elesys.py` — 44 tests (was 36). Added pump deadband scaling,
@@ -287,6 +370,16 @@ could restore a tune learned on different hardware.
   `CarController`: toggle-off is stock, gas and brake never concurrent, standstill hold is
   gain-invariant, disengage unwinds, crossfade inert with the blend off.
 - `selfdrive/controls/tests/test_stopping_debounce.py` (new) — incl. disengage-is-not-debounced.
+- `selfdrive/ui/tests/test_honda_dynamic_settings.py` (new) — 11 tests. Parses (never imports,
+  so it runs without raylib) the two panels, `params_keys.h`, the tuner and the sunnylink
+  schema, and asserts they agree on the key names, the defaults, the speed bands, the param
+  types and flags, that the Honda brand page actually publishes its items, and that the
+  learned values stay read-only in the app. Also that the small-screen page imports the params
+  instead of re-spelling them, that any learned key it does name literally is a real one, and
+  that the settings row actually inserts the button — an unreferenced page is the same as no
+  page, which is the bug this whole section exists to fix.
+- the sunnylink JSON also passes `tools/validate_settings_ui.py` (10 checks) and the existing
+  `test_compile_settings_ui.py` roundtrip (17 tests).
 
 ---
 
@@ -298,6 +391,10 @@ shows no other Honda affected.
 **Untested on road: essentially all of it.** Every number above comes from unit tests, an
 offline controller harness, or replays over logged CAN. Nothing here has moved a car, and the
 dynamic tuner has never executed on the road in any form.
+
+The settings side is the exception to "untested": the panels are covered by the parse-level
+test above, but nothing rendered them — this container has no raylib and no display, so the
+first look at the actual page is on the device.
 
 Suggested first flash: **both toggles off**, which gives the gas curve, `stopAccel`, the
 quieter pump and the corrected gear/ECON/AEB decode. Then enable the tuner separately so the

@@ -11,6 +11,7 @@ from openpilot.selfdrive.ui.mici.widgets.button import BigCircleButton
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog, BigDialog
 from openpilot.selfdrive.ui.sunnypilot.mici.layouts.sunnylink import SunnylinkLayoutMici
 from openpilot.selfdrive.ui.sunnypilot.mici.layouts.models import ModelsLayoutMici
+from openpilot.selfdrive.ui.sunnypilot.mici.layouts.vehicle import VehicleLayoutMici, car_brand
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
@@ -40,6 +41,16 @@ class SettingsLayoutSP(OP.SettingsLayout):
     models_btn = SettingsBigButton(tr("models"), "", gui_app.texture("../../sunnypilot/selfdrive/assets/offroad/icon_models.png", ICON_SIZE, ICON_SIZE))
     models_btn.set_click_callback(lambda: gui_app.push_widget(models_panel))
 
+    # this UI has no Cruise or Vehicle panel, so without this page the car's own
+    # settings (today: the Honda dynamic longitudinal tuner) are unreachable here
+    vehicle_panel = VehicleLayoutMici(back_callback=gui_app.pop_widget)
+    vehicle_btn = SettingsBigButton(tr("vehicle"), "",
+                                    gui_app.texture("../../sunnypilot/selfdrive/assets/offroad/icon_vehicle.png", ICON_SIZE, ICON_SIZE))
+    vehicle_btn.set_click_callback(lambda: gui_app.push_widget(vehicle_panel))
+    # shown on a Honda, and on a car that has not been recognised yet; never
+    # hidden by a brand lookup that came back empty
+    vehicle_btn.set_visible(lambda: car_brand() in ("", "honda"))
+
     # onroad: enable button sits at the front (left of toggles)
     self._enable_offroad_btn_onroad = BigCircleButton(self.icon_offroad_enable, red=True)
     self._enable_offroad_btn_onroad.set_click_callback(lambda: self._handle_always_offroad(True))
@@ -58,6 +69,7 @@ class SettingsLayoutSP(OP.SettingsLayout):
 
     items.insert(1, sunnylink_btn)
     items.insert(2, models_btn)
+    items.insert(3, vehicle_btn)
 
     # front slots (only one ever visible at a time): exit-always-offroad, then enable-onroad
     items.insert(0, self._enable_offroad_btn_onroad)

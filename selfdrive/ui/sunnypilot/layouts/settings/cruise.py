@@ -38,6 +38,9 @@ HONDA_DYN_PCM_DESC = tr_noop("Additionally hand part of the throttle request bac
                              "computer above 30 km/h, where the gas pedal interceptor loses authority. " +
                              "This changes which actuator drives the car and is not yet validated on a " +
                              "drive - leave it off unless you are actively testing it.")
+HONDA_DYN_VEHICLE_NOTE = tr_noop("The same toggle, the values this car has learned so far, and a reset button " +
+                                 "are also under Settings > Vehicle.")
+HONDA_DYN_IGNITION_NOTE = tr_noop("Takes effect at the next ignition: the car reads this toggle once when it goes onroad.")
 
 
 class CruiseLayout(Widget):
@@ -97,8 +100,9 @@ class CruiseLayout(Widget):
       param="DynamicExperimentalControl")
 
     self.honda_dyn_toggle = toggle_item_sp(
-      title=tr("Honda Nidec Dynamic Longitudinal Tuning (Alpha)"),
-      description=tr(HONDA_DYN_DESC),
+      title=tr("Honda Nidec Dynamic Longitudinal Learning (Alpha)"),
+      # <br>, not "\n": the description renderer collapses runs of whitespace
+      description=tr(HONDA_DYN_DESC) + "<br>" + tr(HONDA_DYN_IGNITION_NOTE) + "<br>" + tr(HONDA_DYN_VEHICLE_NOTE),
       param="HondaDynamicTuningEnabled",
       callback=self._on_honda_dyn_toggle)
 
@@ -110,6 +114,11 @@ class CruiseLayout(Widget):
       # parent goes off is useless if the child can be armed while the parent
       # is already off, which is the state the callback exists to prevent
       enabled=lambda: ui_state.params.get_bool("HondaDynamicTuningEnabled"))
+
+    self._honda_dyn_params = {
+      "HondaDynamicTuningEnabled": self.honda_dyn_toggle.action_item.get_state(),
+      "HondaDynamicPcmBlendEnabled": self.honda_dyn_pcm_toggle.action_item.get_state(),
+    }
 
     items = [
       self.icbm_toggle,
@@ -222,6 +231,22 @@ class CruiseLayout(Widget):
         self.custom_acc_toggle.show_description(True)
 
     self._on_custom_acc_toggle(self.custom_acc_toggle.action_item.get_state())
+
+    self._sync_honda_dyn_toggles()
+
+  def _sync_honda_dyn_toggles(self):
+    # the same two params also have toggles under Settings > Vehicle > Honda, and
+    # ToggleSP only reads its param at construction -- without this, flipping one
+    # copy would leave the other showing the old state until the UI restarts.
+    # Edge triggered on the param, never level: a tap writes its param
+    # non-blocking, so a level sync would drag the toggle back to the old value
+    # for the frame or two before that write lands.
+    for param, item in (("HondaDynamicTuningEnabled", self.honda_dyn_toggle),
+                        ("HondaDynamicPcmBlendEnabled", self.honda_dyn_pcm_toggle)):
+      value = ui_state.params.get_bool(param)
+      if value != self._honda_dyn_params[param]:
+        self._honda_dyn_params[param] = value
+        item.action_item.set_state(value)
 
   def _on_custom_acc_toggle(self, state):
     self.custom_acc_short_increment.set_visible(state)

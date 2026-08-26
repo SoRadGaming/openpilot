@@ -33,11 +33,31 @@ drive, and only ever re-reads the notebook next time you start.
 
 ## The two toggles
 
-Both are in **Settings → Cruise**. Both are **off** by default.
+They are in **three places, and all three drive the same setting** — flip it wherever you find
+it first.
 
-### 1. "Honda Nidec Dynamic Longitudinal Tuning (Alpha)"
+**On a comma 4** (the small screen — this is the one you have): **Settings → vehicle**. That
+page is new. The comma 4 runs a different UI to the comma 3/3X, and that UI has no Cruise page
+and no Vehicle page at all — which is exactly why the toggle never showed up for you no matter
+what was in the Cruise panel. The page has both toggles, what the car has learned, and the
+reset.
 
-The main one. Turns on the self-learning.
+**On a comma 3 / 3X** (the big screen): **Settings → Vehicle**, on the Honda page, or
+**Settings → Cruise** near the bottom of the list.
+
+**In the sunnylink app**, on any device: under Vehicle → Honda Settings, with the learned
+values listed read-only. The app renders whatever settings list the *device* publishes, so if
+the Honda section shows up in the app, that is proof the device is running this code.
+
+Both toggles are **off** by default.
+
+### 1. "Dynamic Longitudinal Learning (Alpha)"
+
+The main one. Turns on the self-learning. It reads as "Honda Nidec Dynamic Longitudinal
+Learning (Alpha)" on the Cruise page, since that page is shared with every other car.
+
+Remember: **flipping it does nothing until the next ignition.** Turn it on while parked, key
+off, key on.
 
 ### 2. "...also blend the PCM gas above 30 km/h (Experimental)"
 
@@ -48,6 +68,32 @@ Until that's tested standing still, this stays off.
 
 It can't be switched on unless the first toggle is on, and turning the first one off clears
 it automatically.
+
+---
+
+## Seeing what it has learned
+
+On the comma 4 it is the card at the front of **Settings → vehicle**: the six pedal gains in
+speed order, then the brake and aero trims. On the big screen it is **Settings → Vehicle →
+Learned Values**, and in the app it is the read-only rows under Honda Settings. Same numbers
+either way:
+
+- **Pedal gain by speed** — one number per speed band (0, 11, 22, 36, 54, 72 km/h). `1.00`
+  means "openpilot's original pedal request was right"; `1.30` means "this car needs 30% more
+  pedal than stock asked for at that speed". This is the row to watch: it should drift away
+  from 1.00 over your first few drives and then settle.
+- **Gas** — the PCM gas factor, which only moves if the PCM blend toggle is on.
+- **Aero** — the wind/drag term.
+- **Brake** — the learned brake correction, `+0.00` when it has learned nothing yet.
+
+The numbers refresh about once a second on screen, and the car itself saves them roughly once
+a minute while you drive, so open the page after a drive to see the day's learning.
+
+**RESET** (slide to confirm on the comma 4) puts all of it back to the factory numbers and
+starts the learning from scratch. It asks for confirmation first, and it is only available
+with the car off — the tuner keeps the
+learned values in memory while driving and would just write them back over the top a minute
+later.
 
 ---
 
