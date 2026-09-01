@@ -20,7 +20,6 @@ from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigParamControl
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.vehicle.brands.honda import (
-  PCM_BLEND_PARAM,
   PEDAL_GAIN_BP,
   TUNING_PARAM,
   learned_pedal_gains,
@@ -120,13 +119,7 @@ class VehicleLayoutMici(NavScroller):
 
     self._learned_info = HondaLearnedInfo()
 
-    self._learning_toggle = BigParamControl(tr("dynamic longitudinal learning"), TUNING_PARAM,
-                                            toggle_callback=self._on_learning_toggled)
-    self._pcm_blend_toggle = BigParamControl(tr("blend pcm gas above 30 km/h"), PCM_BLEND_PARAM)
-    # the interlock has to hold on both edges: the child cannot be armed while
-    # the parent is off, and turning the parent off clears it below
-    self._learning_on = ui_state.params.get_bool(TUNING_PARAM)
-    self._pcm_blend_toggle.set_enabled(lambda: self._learning_on)
+    self._learning_toggle = BigParamControl(tr("dynamic longitudinal learning"), TUNING_PARAM)
 
     self._reset_btn = BigButton(tr("reset learned values"))
     self._reset_btn.set_click_callback(self._on_reset_clicked)
@@ -134,17 +127,9 @@ class VehicleLayoutMici(NavScroller):
     # onroad would just be undone
     self._reset_btn.set_enabled(ui_state.is_offroad)
 
-    self._scroller.add_widgets([self._learned_info, self._learning_toggle, self._pcm_blend_toggle, self._reset_btn])
+    self._scroller.add_widgets([self._learned_info, self._learning_toggle, self._reset_btn])
 
     self._refreshed = 0.0
-
-  def _on_learning_toggled(self, checked: bool) -> None:
-    # BigParamControl writes its own param after this returns, so track the new
-    # state here rather than reading it back; only the child needs clearing
-    self._learning_on = checked
-    if not checked:
-      ui_state.params.put_bool(PCM_BLEND_PARAM, False, block=True)
-      self._pcm_blend_toggle.set_checked(False)
 
   def _on_reset_clicked(self) -> None:
     icon = gui_app.texture("../../sunnypilot/selfdrive/assets/offroad/icon_vehicle.png", 110, 110)
@@ -164,9 +149,7 @@ class VehicleLayoutMici(NavScroller):
     # the same two params are also set from the big UI's panels and from the
     # sunnylink app, and each toggle only reads its param when it is built
     self._refreshed = time.monotonic()
-    self._learning_on = ui_state.params.get_bool(TUNING_PARAM)
     self._learning_toggle.refresh()
-    self._pcm_blend_toggle.refresh()
 
   def _update_state(self):
     super()._update_state()

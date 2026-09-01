@@ -35,17 +35,11 @@ LEARNED_DEFAULTS: dict[str, float] = {
   "HondaDynPedalGain3": 1.0,
   "HondaDynPedalGain4": 1.0,
   "HondaDynPedalGain5": 1.0,
-  "HondaDynGasFactor": 1.0,
-  "HondaDynGasAlpha": 0.0,
-  "HondaDynAverageFactor": 0.95,
-  "HondaDynSpeedFactor": 4.0,
-  "HondaDynSpeedAlpha": 0.0,
   "HondaDynWindFactor": 1.0,
   "HondaDynBrakeGain": 0.0,
 }
 
 TUNING_PARAM = "HondaDynamicTuningEnabled"
-PCM_BLEND_PARAM = "HondaDynamicPcmBlendEnabled"
 
 # reading 13 params at 60 fps would be 13 file reads a frame; once a second is
 # plenty for a readout that only changes once a minute anyway
@@ -57,10 +51,6 @@ DYN_DESC = tr_noop("Learn this car's throttle and brake response while you drive
                    "roughly once a minute and reloaded on the next drive.")
 DYN_IGNITION_NOTE = tr_noop("Takes effect at the next ignition: the car reads this toggle once when it goes onroad.")
 DYN_NO_LONG_DESC = tr_noop("This feature is unavailable because sunnypilot Longitudinal Control is not enabled on this car.")
-DYN_PCM_DESC = tr_noop("Additionally hand part of the throttle request back to the car's own cruise " +
-                       "computer above 30 km/h, where the gas pedal interceptor loses authority. " +
-                       "This changes which actuator drives the car and is not yet validated on a " +
-                       "drive - leave it off unless you are actively testing it.")
 LEARNED_TITLE = tr_noop("Learned Values")
 LEARNED_ONROAD_NOTE = tr_noop("Resetting is only available while the car is off.")
 RESET_CONFIRM = tr_noop("Reset everything this car has learned about its throttle and brakes back to the " +
@@ -110,17 +100,7 @@ class HondaSettings(BrandSettings):
     self.dynamic_tuning_toggle = toggle_item_sp(
       title=tr("Dynamic Longitudinal Learning (Alpha)"),
       description=tr(DYN_DESC),
-      param=TUNING_PARAM,
-      callback=self._on_dynamic_tuning_toggle)
-
-    self.pcm_blend_toggle = toggle_item_sp(
-      title=tr("...also blend the PCM gas above 30 km/h (Experimental)"),
-      description=tr(DYN_PCM_DESC),
-      param=PCM_BLEND_PARAM,
-      # the interlock has to hold on BOTH edges: clearing the child when the
-      # parent goes off is useless if the child can be armed while the parent
-      # is already off, which is the state the callback exists to prevent
-      enabled=lambda: ui_state.params.get_bool(TUNING_PARAM))
+      param=TUNING_PARAM)
 
     self.learned_values_item = button_item_sp(
       title=tr(LEARNED_TITLE),
@@ -131,21 +111,11 @@ class HondaSettings(BrandSettings):
       # onroad would just be overwritten by what is already in memory
       enabled=ui_state.is_offroad)
 
-    self.items = [self.dynamic_tuning_toggle, self.pcm_blend_toggle, self.learned_values_item]
+    self.items = [self.dynamic_tuning_toggle, self.learned_values_item]
 
     self._toggle_params = {
       TUNING_PARAM: self.dynamic_tuning_toggle.action_item.get_state(),
-      PCM_BLEND_PARAM: self.pcm_blend_toggle.action_item.get_state(),
     }
-
-  def _on_dynamic_tuning_toggle(self, state: bool) -> None:
-    # the PCM blend is meaningless on its own; never leave it set while the
-    # parent is off, or flipping the parent back on would enable both at once.
-    # NB: `state` is the new value -- ToggleSP writes the param *after* the
-    # callback returns, so reading the param back here would see the old one.
-    if not state:
-      ui_state.params.put_bool(PCM_BLEND_PARAM, False)
-      self.pcm_blend_toggle.action_item.set_state(False)
 
   def _on_reset_clicked(self) -> None:
     gui_app.push_widget(ConfirmDialog(text=tr(RESET_CONFIRM), confirm_text=tr("Reset"), callback=self._on_reset_confirmed))
@@ -166,7 +136,6 @@ class HondaSettings(BrandSettings):
     # block, so the separators here are load bearing
     bands = " | ".join(f"{round(bp * speed_factor):d}: {gain:.2f}" for bp, gain in zip(PEDAL_GAIN_BP, gains, strict=True))
     text = (f"<b>{tr('Pedal gain by speed')} ({unit})</b>" + bands + "<br>" +
-            f"{tr('Gas')} x{learned_value('HondaDynGasFactor'):.2f} | " +
             f"{tr('Aero')} x{learned_value('HondaDynWindFactor'):.2f} | " +
             f"{tr('Brake')} {learned_value('HondaDynBrakeGain'):+.2f}")
     if not ui_state.is_offroad():
@@ -179,7 +148,7 @@ class HondaSettings(BrandSettings):
     # Edge triggered on the param, never level: a tap writes its param
     # non-blocking, so a level sync would drag the toggle back to the old value
     # for the frame or two before that write lands.
-    for param, item in ((TUNING_PARAM, self.dynamic_tuning_toggle), (PCM_BLEND_PARAM, self.pcm_blend_toggle)):
+    for param, item in ((TUNING_PARAM, self.dynamic_tuning_toggle),):
       value = ui_state.params.get_bool(param)
       if value != self._toggle_params[param]:
         self._toggle_params[param] = value
@@ -196,7 +165,6 @@ class HondaSettings(BrandSettings):
     if self.dynamic_tuning_toggle.description != dyn_desc:
       self.dynamic_tuning_toggle.set_description(dyn_desc)
     self.dynamic_tuning_toggle.show_description(True)
-    self.pcm_blend_toggle.show_description(True)
 
     now = time.monotonic()
     if not self._learned_text or now - self._learned_updated > LEARNED_REFRESH_S:

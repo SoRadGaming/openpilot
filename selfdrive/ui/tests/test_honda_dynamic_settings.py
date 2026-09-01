@@ -28,7 +28,7 @@ SDUI = ROOT / "sunnypilot/sunnylink/settings_ui.json"
 MICI_PANEL = ROOT / "selfdrive/ui/sunnypilot/mici/layouts/vehicle.py"
 MICI_SETTINGS = ROOT / "selfdrive/ui/sunnypilot/mici/layouts/settings.py"
 
-TOGGLE_PARAMS = ("HondaDynamicTuningEnabled", "HondaDynamicPcmBlendEnabled")
+TOGGLE_PARAMS = ("HondaDynamicTuningEnabled",)
 
 # {"Key", {FLAGS, TYPE, "default"}},  -- the default is optional
 PARAM_ENTRY_RE = re.compile(r'\{"(?P<key>\w+)",\s*\{(?P<flags>[^,}]+),\s*(?P<type>\w+)(?:,\s*"(?P<default>[^"]*)")?\}\}')
@@ -142,13 +142,9 @@ def test_sunnylink_exposes_the_same_toggles():
   for key in TOGGLE_PARAMS:
     assert key in items, f"{key} is missing from the honda section of settings_ui.json"
     assert items[key]["widget"] == "toggle"
-    # the tuner reads both toggles once when the car goes onroad
+    # the tuner reads the toggle once when the car goes onroad
     assert items[key].get("needs_onroad_cycle") is True, f"{key} must tell the app it needs an ignition cycle"
     assert items[key].get("title") not in (None, key), f"{key} needs a real title"
-
-  child = items["HondaDynamicPcmBlendEnabled"]
-  assert {"type": "param", "key": "HondaDynamicTuningEnabled", "equals": True} in child.get("enablement", []), \
-    "the PCM blend must stay gated on its parent in the app, same as on the device"
 
 
 def test_sunnylink_learned_values_are_read_only():
@@ -156,7 +152,9 @@ def test_sunnylink_learned_values_are_read_only():
   for item in _sdui_honda_items():
     if item["key"] in learned:
       assert item["widget"] == "info", f"{item['key']} is learned state, not a setting"
-      assert item.get("blocked") is True, f"{item['key']} must not be writable from the dashboard"
+      # NOT `blocked`: that means DEVICE_ONLY, which the dashboard hides outright.
+      # `widget: info` is already read-only -- LanguageSetting is the precedent.
+      assert "blocked" not in item, f"{item['key']} must not be blocked, or the app hides it"
 
 
 def test_sunnylink_keys_are_registered_and_unique():

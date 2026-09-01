@@ -475,6 +475,46 @@ Only the device side is in this repo -- rendering is the sunnylink service's.
 
 ---
 
+## 14. PCM blend removed
+
+`opendbc/car/honda/carcontroller.py`, `opendbc/sunnypilot/car/honda/dynamic_tuning.py`,
+`opendbc/sunnypilot/car/honda/gas_interceptor.py`, both tuner test files,
+`common/params_keys.h`, the three settings panels, `settings_ui_src/pages/vehicle.yaml`,
+`sunnypilot/sunnylink/statsd.py`
+
+The pedal/PCM crossfade is gone. Two independent reasons, and they point the same way.
+
+**It was never once shown to work.** Across 17 engaged routes openpilot sent 289,625 `ACC_HUD`
+frames with `PCM_GAS = 0` and `PCM_SPEED = 0` in 100% of them, because the branch that built the
+request zeroed them unless `HondaDynamicPcmBlendEnabled` was set, which it never was. Both
+authority thresholds (30 km/h floor, 45 km/h full) were inherited belief carried over from MVL's
+MDX 3G, never a measurement on this car. The whole channel was a guess with a toggle on it.
+
+**It is the wrong actuator anyway.** From another fork developer working the same ground: the
+PCM has its own limits, lags and dual-servo behaviour, it differs per car, and reverse
+engineering it in real time is the hard problem — while the gas interceptor is easy to control
+directly. So there is no reason to ever hand the PCM authority on a car that has an interceptor.
+Anything learned about one car's PCM would not transfer to another anyway.
+
+Removed: `pcm_authority` / `pedal_authority` / `pcm_request` / `update_pcm` / `note_pcm_tx` /
+`reset_pcm_feedforward`, the decaying-average feedforward inversion and its ramp limiter, the
+five learned PCM params (`GasFactor`, `GasAlpha`, `AverageFactor`, `SpeedFactor`, `SpeedAlpha`),
+the `HondaDynamicPcmBlendEnabled` toggle and its parent/child interlock in all three panels, and
+the `pedal_share` multiplier in the interceptor path. The car controller is back to upstream's
+shape for an interceptor car: `if self.CP_SP.enableGasInterceptor or not CC.longActive: pcm_speed
+= 0.0`.
+
+Net **−565 lines** in `opendbc_repo` and **−135** in the parent. What is left learns the
+interceptor only: per-breakpoint pedal gain, brake gain, the aero factor, and the pitch
+feedforward.
+
+The integration test kept the coverage rather than dropping it, and got stronger in the process:
+it now decodes `PCM_GAS` out of the ACC_HUD frames the controller actually emits, instead of
+reading tuner internals that no longer exist. So "nothing puts gas in that byte at any speed" is
+asserted against the wire.
+
+---
+
 ## Status
 
 All four suites pass, ruff clean on both repos, all 39 DBCs regenerate, cross-platform sweep
@@ -488,8 +528,6 @@ The settings side is the exception to "untested": the panels are covered by the 
 test above, but nothing rendered them — this container has no raylib and no display, so the
 first look at the actual page is on the device.
 
-Suggested first flash: **both toggles off**, which gives the gas curve, `stopAccel`, the
-quieter pump and the corrected gear/ECON/AEB decode. Then enable the tuner separately so the
-two are attributable. Leave `HondaDynamicPcmBlendEnabled` off until the stationary PCM test —
-openpilot has sent 250,334 `ACC_HUD` frames with `PCM_GAS = 0`, so it has never once been
-established that the PCM responds to it at all.
+Suggested first flash: **the tuner off**, which gives the gas curve, `stopAccel`, the quieter
+pump and the corrected gear/ECON/AEB decode. Then enable the tuner separately so the two are
+attributable. (The PCM blend toggle no longer exists — see section 14.)

@@ -2088,23 +2088,6 @@
           ]
         },
         {
-          "key": "HondaDynamicPcmBlendEnabled",
-          "widget": "toggle",
-          "needs_onroad_cycle": true,
-          "title": "...also blend the PCM gas above 30 km/h (Experimental)",
-          "description": "Additionally hand part of the throttle request back to the car's own cruise computer above 30 km/h, where the gas pedal interceptor loses authority. This changes which actuator drives the car and is not yet validated on a drive - leave it off unless you are actively testing it.",
-          "enablement": [
-            {
-              "type": "offroad_only"
-            },
-            {
-              "type": "param",
-              "key": "HondaDynamicTuningEnabled",
-              "equals": true
-            }
-          ]
-        },
-        {
           "key": "HondaDynPedalGain0",
           "widget": "info",
           "title": "Learned pedal gain at 0 km/h",

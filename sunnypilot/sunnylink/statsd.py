@@ -78,11 +78,10 @@ def sp_stats(end_event):
     # drives -- the live values move within a drive and are not meaningful alone.
     # All are registered FLOAT/BOOL in params_keys.h, so Params.get() hands back a
     # real float/bool here and they land as numeric influx fields rather than
-    # strings. The two toggles come along because a gain of 1.000 means
+    # strings. The toggle comes along because a gain of 1.000 means either
     # "converged, no correction needed" or "the feature was never on", and the
     # graph cannot tell those apart on its own.
     'HondaDynamicTuningEnabled',
-    'HondaDynamicPcmBlendEnabled',
     'HondaDynPedalGain0',
     'HondaDynPedalGain1',
     'HondaDynPedalGain2',
@@ -91,13 +90,6 @@ def sp_stats(end_event):
     'HondaDynPedalGain5',
     'HondaDynBrakeGain',
     'HondaDynWindFactor',
-    'HondaDynGasFactor',
-    'HondaDynGasAlpha',
-    'HondaDynAverageFactor',
-    # HondaDynSpeedFactor / HondaDynSpeedAlpha are deliberately NOT here. persist()
-    # never writes them -- they only learn from a saturated gas request, so their
-    # adaptation is kept within-drive and relaxes back on release. Reporting them
-    # would plot the hand-set default forever and read as "learned nothing".
   ]
 
   while not end_event.is_set():

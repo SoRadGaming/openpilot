@@ -34,10 +34,6 @@ HONDA_DYN_DESC = tr_noop("Learn this car's throttle and brake response while you
                          "Also compensates the accel target for road grade. Honda Nidec with sunnypilot " +
                          "longitudinal only; has no effect on other platforms. Learned values are saved " +
                          "roughly once a minute and reloaded on the next drive.")
-HONDA_DYN_PCM_DESC = tr_noop("Additionally hand part of the throttle request back to the car's own cruise " +
-                             "computer above 30 km/h, where the gas pedal interceptor loses authority. " +
-                             "This changes which actuator drives the car and is not yet validated on a " +
-                             "drive - leave it off unless you are actively testing it.")
 HONDA_DYN_VEHICLE_NOTE = tr_noop("The same toggle, the values this car has learned so far, and a reset button " +
                                  "are also under Settings > Vehicle.")
 HONDA_DYN_IGNITION_NOTE = tr_noop("Takes effect at the next ignition: the car reads this toggle once when it goes onroad.")
@@ -103,21 +99,10 @@ class CruiseLayout(Widget):
       title=tr("Honda Nidec Dynamic Longitudinal Learning (Alpha)"),
       # <br>, not "\n": the description renderer collapses runs of whitespace
       description=tr(HONDA_DYN_DESC) + "<br>" + tr(HONDA_DYN_IGNITION_NOTE) + "<br>" + tr(HONDA_DYN_VEHICLE_NOTE),
-      param="HondaDynamicTuningEnabled",
-      callback=self._on_honda_dyn_toggle)
-
-    self.honda_dyn_pcm_toggle = toggle_item_sp(
-      title=tr("...also blend the PCM gas above 30 km/h (Experimental)"),
-      description=tr(HONDA_DYN_PCM_DESC),
-      param="HondaDynamicPcmBlendEnabled",
-      # the interlock has to hold on BOTH edges: clearing the child when the
-      # parent goes off is useless if the child can be armed while the parent
-      # is already off, which is the state the callback exists to prevent
-      enabled=lambda: ui_state.params.get_bool("HondaDynamicTuningEnabled"))
+      param="HondaDynamicTuningEnabled")
 
     self._honda_dyn_params = {
       "HondaDynamicTuningEnabled": self.honda_dyn_toggle.action_item.get_state(),
-      "HondaDynamicPcmBlendEnabled": self.honda_dyn_pcm_toggle.action_item.get_state(),
     }
 
     items = [
@@ -129,19 +114,9 @@ class CruiseLayout(Widget):
       self.custom_acc_short_increment,
       self.custom_acc_long_increment,
       self.honda_dyn_toggle,
-      self.honda_dyn_pcm_toggle,
       self.sla_settings_button,
     ]
     return items
-
-  def _on_honda_dyn_toggle(self, state):
-    # the PCM blend is meaningless on its own; never leave it set while the
-    # parent is off, or flipping the parent back on would enable both at once.
-    # NB: `state` is the new value -- ToggleSP writes the param *after* the
-    # callback returns, so reading the param back here would see the old one.
-    if not state:
-      ui_state.params.put_bool("HondaDynamicPcmBlendEnabled", False)
-      self.honda_dyn_pcm_toggle.action_item.set_state(False)
 
   def _render(self, rect):
     if self._current_panel == PanelType.SLA:
@@ -155,7 +130,6 @@ class CruiseLayout(Widget):
     self.icbm_toggle.show_description(True)
     self.custom_acc_toggle.show_description(True)
     self.honda_dyn_toggle.show_description(True)
-    self.honda_dyn_pcm_toggle.show_description(True)
 
   def _set_current_panel(self, panel: PanelType):
     self._current_panel = panel
@@ -241,8 +215,7 @@ class CruiseLayout(Widget):
     # Edge triggered on the param, never level: a tap writes its param
     # non-blocking, so a level sync would drag the toggle back to the old value
     # for the frame or two before that write lands.
-    for param, item in (("HondaDynamicTuningEnabled", self.honda_dyn_toggle),
-                        ("HondaDynamicPcmBlendEnabled", self.honda_dyn_pcm_toggle)):
+    for param, item in (("HondaDynamicTuningEnabled", self.honda_dyn_toggle),):
       value = ui_state.params.get_bool(param)
       if value != self._honda_dyn_params[param]:
         self._honda_dyn_params[param] = value
