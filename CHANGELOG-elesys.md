@@ -383,6 +383,98 @@ frame and `CarPlatformBundle` is JSON.
 
 ---
 
+## 12. Pedal learner was starved — the dwell and the command floor were mutually exclusive
+
+`opendbc/sunnypilot/car/honda/dynamic_tuning.py`,
+`opendbc/sunnypilot/car/honda/test_dynamic_tuning.py`
+
+First road data for the tuner: **two weeks of driving**, routes `99`/`9b`/`9c`/`9d`/`9e`.
+Result after all of it — the six persisted pedal breakpoints read
+`1.000 / 1.000 / 1.000 / 1.004 / 1.004 / 1.000`. The channel had learned essentially nothing.
+
+Not a bug in the learner; the admission gates could not both be open. `SETTLE_FRAMES` wanted
+the target steady within +-0.20 m/s^2 for 1.5 s, and `LEARN_MIN_CMD` wanted it >= 0.4 m/s^2.
+Real accel demands ramp: median demand episode 0.37-0.90 s, and of those lasting over 1.5 s the
+target swings a median 0.67-0.94 m/s^2 -- 3-5x the tolerance -- so the dwell reset repeatedly
+inside the very episodes it was meant to admit.
+
+| route | engaged+pid+clean | >= 0.4 m/s^2 | settled | **both** |
+|---|---|---|---|---|
+| 9927285994 | 195.3 s | 15.4 s | 91.6 s | **5.1 s** |
+| cb866d7303 | 361.9 s | -- | 206.0 s | **0.7 s** |
+| e0d590c25c | 584.2 s | 21.7 s | 415.4 s | **2.2 s** |
+| a2d078f21b | 811.1 s | 95.0 s | 480.3 s | **19.6 s** |
+
+The exclusion was **biased, not merely sparse**. On `a2d078f21b`, demand in 0.6-1.0 m/s^2 got
+28.2 s of which 1.7 s was settled; demand above 1.0 m/s^2 got 20.8 s of which **zero** was.
+The learner only ever saw a thin 0.4-0.6 m/s^2 sliver -- exactly where pedal gain is least
+identifiable against grade and wind.
+
+**Fix: model the lag instead of waiting it out.** `accel_ref` is the planner target through a
+first-order lag (`PLANT_TAU = 0.30 s`), and `accel_error` is measured against that. A plant
+that tracks perfectly but late now reads as ~0 error on a ramp exactly as on a plateau, which
+is what makes admitting ramps safe. The dwell watches the **filtered** ramp rate of the
+commanded value (`LEARN_MAX_JERK = 0.5 m/s^3`), not raw target jerk -- the raw signal is noisy
+enough that ~12% of frames exceed 0.5 m/s^3 on their own, and a raw-jerk dwell measured *worse*
+than the gate it replaced (2.3-5.8 s admitted vs 25.9 s). Admitted pedal-learn time went
+**25.9 s -> 66.3 s (2.6x)** across the four routes, no longer biased against the strong-demand
+bands.
+
+`PLANT_TAU` is a pooled fit of `aEgo` against `lowpass(target, tau)`; the basin is real but
+**shallow** (RMS 0.242 at 0.30 vs 0.256 at 0.0, per-route optimum 0.0-0.5 s), so treat it as
++-0.2 s. That uncertainty is what sets `LEARN_MAX_JERK`: dtau * rate <= 0.1 m/s^2, well under
+the 0.2-0.35 m/s^2 biases being learned. Loosening to 0.8-1.0 m/s^3 buys 3.3-3.6x instead of
+2.6x and was **not** taken -- it puts the residual at the same size as the signal.
+
+**The brake channel keeps the old dwell.** It is not an EMA -- it is a PID integrator at
+`BRAKE_KI = 0.5` whose error is weighted by brake command, so it ratchets. Replaying the real
+tuner over the same routes, time pinned at the 1.60x ceiling was 0.0/0.0/0.0/0.0 s on the old
+dwell and 0.0/0.0/3.3/**10.7** s on the ramp dwell (plus 71.5 s at the 0.85 floor). So
+`STEADY_SETTLE_FRAMES`/`STEADY_SETTLE_TOLERANCE` were kept for that channel alone and its
+replayed behaviour is at parity with what shipped.
+
+`accel_ref` is filtered from `target`, the dwell reference from `target + grade`, deliberately
+separately: folding grade into the error asks every learner to correct a hill the pitch
+feedforward already handles. An earlier revision that did fold it in **reversed the learned
+direction**, which is how the split was found.
+
+**Replay result** (open loop, so an upper bound -- on the road the error shrinks as the gain
+climbs). Persisted after the four routes:
+`1.000 / 1.000 / 0.985 / 1.007 / 1.047 / 1.003`. Down at 6 m/s, up at 15 m/s -- which matches
+the independently measured achieved-vs-commanded bias (over-delivering +0.15..+0.36 m/s^2 at
+0-10 m/s, under by -0.08..-0.32 at 15-20). Two separate methods, same answer.
+
+Telemetry gained `settles=`, `eng=`, `aref=`, `aerr=` so the next drive is diagnosable, and
+`settle(...)` in the test harness now waits on the real condition rather than a constant
+(the wait is step-dependent now: 135 frames for 0.5 m/s^2, 177 for 2.0).
+
+**Also fixed, in `S:/OP/sunny_logs/parse_hondadyn.py`** (analysis tooling, not shipped): the
+brake rail table still said `(1.0, 1.6)` after `BRAKE_NEG_LIMIT` made the gain two-sided
+`(0.85, 1.6)`, which is where the bogus *"brake sat on a clamp 57% of the drive"* warnings came
+from; and the dwell-open percentage was computed over **all** samples including disengaged,
+where the target pins at 0.0 and the gate opens trivially -- it read 88% while the learner was
+getting under a second of real samples per drive.
+
+---
+
+## 13. Learned values reported to sunnylink
+
+`sunnypilot/sunnylink/statsd.py`
+
+The persisted learned state now goes out with `sunnypilot.device_params`: the six pedal gains,
+brake gain, wind factor, and the PCM `gasf`/`gasa`/`avg` terms, plus both toggles -- a gain of
+1.000 means either "converged, no correction needed" or "the feature was never on", and a graph
+cannot tell those apart without the toggle. All are registered `FLOAT`/`BOOL` in
+`params_keys.h`, so they land as numeric influx fields rather than strings.
+
+`HondaDynSpeedFactor` / `HondaDynSpeedAlpha` are deliberately excluded: `persist()` never writes
+them (they only learn from a saturated gas request and relax back on release), so reporting them
+would plot the hand-set default forever and read as "learned nothing".
+
+Only the device side is in this repo -- rendering is the sunnylink service's.
+
+---
+
 ## Status
 
 All four suites pass, ruff clean on both repos, all 39 DBCs regenerate, cross-platform sweep
