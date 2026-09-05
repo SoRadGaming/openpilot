@@ -137,7 +137,9 @@ class HondaSettings(BrandSettings):
     bands = " | ".join(f"{round(bp * speed_factor):d}: {gain:.2f}" for bp, gain in zip(PEDAL_GAIN_BP, gains, strict=True))
     text = (f"<b>{tr('Pedal gain by speed')} ({unit})</b>" + bands + "<br>" +
             f"{tr('Aero')} x{learned_value('HondaDynWindFactor'):.2f} | " +
-            f"{tr('Brake')} {learned_value('HondaDynBrakeGain'):+.2f}")
+            # stored as an offset (0.0 = no correction), shown as a gain so it reads
+            # the same way as the pedal and aero numbers either side of it
+            f"{tr('Brake')} x{1.0 + learned_value('HondaDynBrakeGain'):.2f}")
     if not ui_state.is_offroad():
       text += "<br>" + tr(LEARNED_ONROAD_NOTE)
     return text
