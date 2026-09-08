@@ -610,6 +610,52 @@ values at all, and the values remain reachable via the statsd metrics channel (s
 
 ---
 
+## 17. card crash on 4131c8778d (fixed), and the after-every-update ACC/CMBS fault (fixed)
+
+`selfdrive/car/helpers.py`, `selfdrive/car/tests/test_car_control_sp_seam.py` (new),
+`selfdrive/car/card.py`, `opendbc/car/car_helpers.py`
+
+Routes `b5`-`b8` all on `4131c8778d`: openpilot dead, car throwing ACC and CMBS. Two separate
+mechanisms, found from the logs rather than guessed.
+
+**Mechanism 1 -- this update. `card` crashed on start, every route.** Traceback tail:
+`AttributeError: 'dict' object has no attribute 'integrator'`. `convert_carControlSP()` rebuilds
+each nested capnp struct into its dataclass BY HAND (`mads`, `leadOne`, `leadTwo`, `icbm`); the
+`lateralControl` struct added in section 15 was never added to it, so it reached the
+CarController as a plain dict and `create_sp_hud_status` died on `.integrator` every frame. With
+`card` down the car faults for a precise reason: in the stand-down safety mode the panda BLOCKS the
+stock `SCM_BUTTONS` (0x1A6) from reaching the Elesys radar (`honda_nidec_fwd_hook`), and only
+`card` re-sends it with `MAIN_ON=0` -- so a dead `card` means the radar stops hearing the buttons
+at all, and it latches ACC + CMBS. The integration
+test never saw it because it hands the controller a dataclass directly -- it never crosses the
+capnp -> dataclass seam. Fixed with the one missing rebuild, and `test_car_control_sp_seam.py`
+now drives every nested field through the real seam, including a schema-driven check that every
+nested struct in `custom.capnp`'s `CarControlSP` is rebuilt, so the next added struct cannot
+repeat this.
+
+**Mechanism 2 -- the one you have had after every update. Confirmed from `b5`:** first
+ignition after the update logged "Getting VIN & FW versions" then OBD multiplexing toggled
+True/False four times in 1.5 s; `b4` and `b8` logged "Using cached CarParams" and never
+multiplexed. `CarParamsCache` is `CLEAR_ON_MANAGER_START`, so it survives ignition cycles but not
+an update (manager restarts) -- hence "happens after an update, a restart fixes it". The query's
+OBD multiplexing reroutes panda bus 1 to the OBD port; on this car that is the Elesys radar's
+bus, it loses the car for the duration and latches ACC + CMBS until the next ignition.
+
+Fix: `get_car()`/`fingerprint()` take `skip_fw_query`, OR'd with the existing `SKIP_FW_QUERY`
+env, and `card` passes it when the platform comes from the user's `CarPlatformBundle`. With a
+fixed platform the query's answer is discarded anyway -- the fixed platform overrides it -- so
+the only thing it could still do on this car was take the radar offline. **This needs the car
+selected in Vehicle settings once** (the routes show `CarPlatformBundle = {}` today); auto
+fingerprinting alone still runs the query. The `FINGERPRINT` env path tests and replays rely on
+is unaffected.
+
+Local verification note: on this Windows checkout `openpilot/common` etc. are git symlinks
+checked out as 9-byte text files, and `cereal/__init__.py` aborts the interpreter loading
+`log.capnp`. That is why the pytest suites never ran here; the seam test was run with the two
+shimmed in a scratch runner. Both import normally on the device and in CI.
+
+---
+
 ## Status
 
 All four suites pass, ruff clean on both repos, all 39 DBCs regenerate, cross-platform sweep

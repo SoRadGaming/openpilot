@@ -63,5 +63,13 @@ def convert_carControlSP(struct: capnp.lib.capnp._DynamicStructReader) -> struct
   struct_dataclass.intelligentCruiseButtonManagement = structs.IntelligentCruiseButtonManagement(
     **remove_deprecated(struct_dict.get('intelligentCruiseButtonManagement', {}))
   )
+  # Every nested struct has to be rebuilt here by hand, or it reaches the CarController as
+  # a plain dict. lateralControl was missed when it was added and card crashed on
+  # CC_SP.lateralControl.integrator every frame (routes b5-b8), taking the whole car
+  # with it -- with card down nothing services the radar side of the split bus, and the
+  # car throws ACC/CMBS faults. test_car_control_sp_seam.py covers this seam now.
+  struct_dataclass.lateralControl = structs.CarControlSP.LateralControl(
+    **remove_deprecated(struct_dict.get('lateralControl', {}))
+  )
 
   return struct_dataclass

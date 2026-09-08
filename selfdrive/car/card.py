@@ -108,8 +108,11 @@ class Car:
       fixed_fingerprint = (self.params.get("CarPlatformBundle") or {}).get("platform", None)
       init_params_list_sp = sunnypilot_interfaces.initialize_params(self.params)
 
+      # With the platform fixed by the user's bundle the VIN/FW query is pure disturbance: its
+      # OBD multiplexing takes panda bus 1 away from the car, and on HONDA_ACCORD_9G_AU that
+      # is the Elesys radar's bus -- ACC + CMBS faults on every first ignition after an update.
       self.CI = get_car(*self.can_callbacks, obd_callback(self.params), alpha_long_allowed, is_release, cached_params,
-                        fixed_fingerprint, init_params_list_sp, is_release_sp)
+                        fixed_fingerprint, init_params_list_sp, is_release_sp, skip_fw_query=bool(fixed_fingerprint))
       sunnypilot_interfaces.setup_interfaces(self.CI, self.params)
       self.RI = interfaces[self.CI.CP.carFingerprint].RadarInterface(self.CI.CP, self.CI.CP_SP)
       self.CP = self.CI.CP

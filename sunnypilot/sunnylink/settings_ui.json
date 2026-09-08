@@ -1036,43 +1036,51 @@
               "key": "HondaDynPedalGain0",
               "widget": "info",
               "title": "Learned pedal gain at 0 km/h",
-              "description": "1.00 means the stock pedal request was right; 1.30 means this car needs 30% more pedal than stock asked for at that speed."
+              "description": "1.00 means the stock pedal request was right; 1.30 means this car needs 30% more pedal than stock asked for at that speed.",
+              "step": 0.001
             },
             {
               "key": "HondaDynPedalGain1",
               "widget": "info",
-              "title": "Learned pedal gain at 11 km/h"
+              "title": "Learned pedal gain at 11 km/h",
+              "step": 0.001
             },
             {
               "key": "HondaDynPedalGain2",
               "widget": "info",
-              "title": "Learned pedal gain at 22 km/h"
+              "title": "Learned pedal gain at 22 km/h",
+              "step": 0.001
             },
             {
               "key": "HondaDynPedalGain3",
               "widget": "info",
-              "title": "Learned pedal gain at 36 km/h"
+              "title": "Learned pedal gain at 36 km/h",
+              "step": 0.001
             },
             {
               "key": "HondaDynPedalGain4",
               "widget": "info",
-              "title": "Learned pedal gain at 54 km/h"
+              "title": "Learned pedal gain at 54 km/h",
+              "step": 0.001
             },
             {
               "key": "HondaDynPedalGain5",
               "widget": "info",
-              "title": "Learned pedal gain at 72 km/h"
+              "title": "Learned pedal gain at 72 km/h",
+              "step": 0.001
             },
             {
               "key": "HondaDynBrakeGain",
               "widget": "info",
               "title": "Learned brake gain",
-              "description": "0.00 until it has learned anything. Positive adds brake, negative trims it."
+              "description": "0.00 until it has learned anything. Positive adds brake, negative trims it.",
+              "step": 0.001
             },
             {
               "key": "HondaDynWindFactor",
               "widget": "info",
-              "title": "Learned aero factor"
+              "title": "Learned aero factor",
+              "step": 0.001
             }
           ]
         }
