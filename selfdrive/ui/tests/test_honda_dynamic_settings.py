@@ -100,8 +100,8 @@ def test_honda_panel_publishes_its_items():
   items = [n for n in ast.walk(init) if isinstance(n, ast.Assign)
            and any(isinstance(t, ast.Attribute) and t.attr == "items" for t in n.targets)]
   assert items, "HondaSettings.__init__ never assigns self.items"
-  assert isinstance(items[-1].value, ast.List) and len(items[-1].value.elts) >= 3, \
-    "HondaSettings.items should hold the two toggles and the learned values row"
+  assert isinstance(items[-1].value, ast.List) and len(items[-1].value.elts) >= 2, \
+    "HondaSettings.items should hold the tuning toggle and the learned values row"
 
 
 def test_mici_page_shares_the_panel_params():
@@ -110,8 +110,8 @@ def test_mici_page_shares_the_panel_params():
   tree = ast.parse(MICI_PANEL.read_text())
   imported = {alias.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
               and (node.module or "").endswith("vehicle.brands.honda") for alias in node.names}
-  assert {"TUNING_PARAM", "PCM_BLEND_PARAM"} <= imported, \
-    "the small-screen page must import the toggle params from the brand panel"
+  assert {"TUNING_PARAM"} <= imported, \
+    "the small-screen page must import the toggle param from the brand panel"
 
   # any learned key it does name literally has to be a real one: learned_value()
   # falls back to LEARNED_DEFAULTS, so a typo would be a KeyError on render
@@ -147,14 +147,51 @@ def test_sunnylink_exposes_the_same_toggles():
     assert items[key].get("title") not in (None, key), f"{key} needs a real title"
 
 
-def test_sunnylink_learned_values_are_read_only():
+def _walk_items(node, ancestors=()):
+  """Yield (item, ancestors) for every dict carrying a `key`, with the chain of enclosing dicts."""
+  if isinstance(node, dict):
+    if isinstance(node.get("key"), str) and "widget" in node:
+      yield node, ancestors
+    for v in node.values():
+      yield from _walk_items(v, ancestors + (node,))
+  elif isinstance(node, list):
+    for v in node:
+      yield from _walk_items(v, ancestors)
+
+
+def _gated_to_honda(item, ancestors) -> bool:
+  for node in (item, *ancestors):
+    for rule in node.get("visibility", []) or []:
+      if rule.get("type") == "capability" and rule.get("field") == "brand" and rule.get("equals") == "honda":
+        return True
+  return False
+
+
+def test_sunnylink_learned_values_are_read_only_and_on_a_page():
+  # The learned values live in a PAGE section (cruise), NOT in the honda vehicle section.
+  # The only info row the dashboard demonstrably renders is LanguageSetting, which is in a
+  # page; no brand's vehicle section has ever carried one, and these did not draw there.
   learned = _panel_constant("LEARNED_DEFAULTS")
-  for item in _sdui_honda_items():
+  schema = json.loads(SDUI.read_text())
+  found = {}
+  for item, ancestors in _walk_items(schema["panels"]):
     if item["key"] in learned:
-      assert item["widget"] == "info", f"{item['key']} is learned state, not a setting"
-      # NOT `blocked`: that means DEVICE_ONLY, which the dashboard hides outright.
-      # `widget: info` is already read-only -- LanguageSetting is the precedent.
-      assert "blocked" not in item, f"{item['key']} must not be blocked, or the app hides it"
+      assert item["key"] not in found, f"{item['key']} appears in more than one page"
+      found[item["key"]] = (item, ancestors)
+
+  missing = sorted(set(learned) - set(found))
+  assert not missing, f"learned values missing from every page of settings_ui.json: {missing}"
+
+  for key, (item, ancestors) in found.items():
+    assert item["widget"] == "info", f"{key} is learned state, not a setting"
+    # NOT `blocked`: that means DEVICE_ONLY, which the dashboard hides outright.
+    # `widget: info` is already read-only -- LanguageSetting is the precedent.
+    assert "blocked" not in item, f"{key} must not be blocked, or the app hides it"
+    # a Hyundai owner must not see Honda learned state
+    assert _gated_to_honda(item, ancestors), f"{key} must sit under a visibility rule gating brand == honda"
+
+  in_vehicle_section = [i["key"] for i in _sdui_honda_items() if i["key"] in learned]
+  assert not in_vehicle_section, f"learned values must not be in the honda vehicle section (they do not render there): {in_vehicle_section}"
 
 
 def test_sunnylink_keys_are_registered_and_unique():

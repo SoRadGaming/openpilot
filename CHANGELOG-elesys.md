@@ -574,6 +574,42 @@ on both sides.
 
 ---
 
+## 16. sunnylink learned values moved to a page section
+
+`sunnypilot/sunnylink/settings_ui_src/pages/{cruise,vehicle}.yaml` + recompiled `settings_ui.json`,
+`selfdrive/ui/tests/test_honda_dynamic_settings.py`
+
+The eight learned-value rows still did not render in the sunnylink app, on phone or desktop,
+after the `blocked` fix (section 13) -- and the device was provably running that build
+(`gitCommit` in the route's `initData` was `5fd415dc0a`). Every device-side link was checked and
+correct: params registered, `all_keys(ALL)` returns them, `getParams` serves any registered key
+with no flag filter, `generate_schema()` adds metadata and filters nothing, the JSON validates.
+
+What the schema census showed: **the only `info` widgets anywhere in `vehicle_settings` were
+these eight.** No brand has ever put one there. The single `info` row that demonstrably renders
+(`LanguageSetting`) is in a *page*. So the dashboard's vehicle-section renderer has plausibly
+never had an `info` row to draw, while the page renderer has. That cannot be fixed from this
+repo -- but the rows can be put where `info` is known to work.
+
+Moved into a `honda_dynamic_learning` section on the Cruise page, visibility-gated on the
+`brand == honda` capability so a Hyundai owner never sees Honda state. The toggle stays in the
+honda vehicle section, where it renders. `test_sunnylink_keys_are_registered_and_unique`
+forbids a key living in both a page and the brand section, which is why this is a move and not a
+copy.
+
+`test_sunnylink_learned_values_are_read_only` was rewritten as
+`..._and_on_a_page`: it now finds each learned key in exactly one page, asserts `info`, not
+`blocked`, and a `brand == honda` gate on it or an ancestor, and asserts none remain in the
+vehicle section. Two stale assertions left over from the PCM removal (section 14) were fixed in
+the same file -- the brand panel now has two items, not three, and the small-screen page no longer
+imports `PCM_BLEND_PARAM`. This module is pure file parsing with no openpilot imports, so it was
+run directly by path: all 11 tests pass.
+
+If the rows still do not draw on the Cruise page with this build, the app does not render `info`
+values at all, and the values remain reachable via the statsd metrics channel (section 13).
+
+---
+
 ## Status
 
 All four suites pass, ruff clean on both repos, all 39 DBCs regenerate, cross-platform sweep

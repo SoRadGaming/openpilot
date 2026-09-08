@@ -267,3 +267,42 @@ sections:
       - type: capability
         field: has_icbm
         equals: true
+- id: honda_dynamic_learning
+  title: Honda Nidec Dynamic Learning
+  description: What the dynamic longitudinal tuner has learned on this car. Read-only -- the toggle
+    itself is on the Vehicle page. 1.00 means the stock request was right at that speed.
+  # Lives on a PAGE rather than in the honda vehicle section on purpose. The only info
+  # row the dashboard demonstrably renders is LanguageSetting, which is in a page; no
+  # brand's vehicle section has ever carried one, and these did not draw there.
+  visibility:
+  - type: capability
+    field: brand
+    equals: honda
+  items:
+  - key: HondaDynPedalGain0
+    widget: info
+    title: Learned pedal gain at 0 km/h
+    description: 1.00 means the stock pedal request was right; 1.30 means this car needs 30% more
+      pedal than stock asked for at that speed.
+  - key: HondaDynPedalGain1
+    widget: info
+    title: Learned pedal gain at 11 km/h
+  - key: HondaDynPedalGain2
+    widget: info
+    title: Learned pedal gain at 22 km/h
+  - key: HondaDynPedalGain3
+    widget: info
+    title: Learned pedal gain at 36 km/h
+  - key: HondaDynPedalGain4
+    widget: info
+    title: Learned pedal gain at 54 km/h
+  - key: HondaDynPedalGain5
+    widget: info
+    title: Learned pedal gain at 72 km/h
+  - key: HondaDynBrakeGain
+    widget: info
+    title: Learned brake gain
+    description: 0.00 until it has learned anything. Positive adds brake, negative trims it.
+  - key: HondaDynWindFactor
+    widget: info
+    title: Learned aero factor
