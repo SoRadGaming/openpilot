@@ -61,6 +61,9 @@ class LatControlTorque(LatControl):
                         self.lateral_accel_from_torque(-self.steer_max, self.torque_params))
 
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, lat_delay):
+    # LIN-bus gateway: edge-tracked every frame, active or not, so the reset lands on the
+    # exact frame the board takes over. See LatControl._linbus_integrator_gate.
+    linbus_hold = self._linbus_integrator_gate()
     # Override torque params from extension
     if self.extension.update_override_torque_params(self.torque_params):
       self.update_limits()
@@ -97,7 +100,8 @@ class LatControlTorque(LatControl):
       # do error correction in lateral acceleration space, convert at end to handle non-linear torque responses correctly
       pid_log.error = float(error)
 
-      freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
+      # never integrate while the car is not following us (LIN-bus gateway not actuating)
+      freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5 or linbus_hold
       output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
 

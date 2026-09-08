@@ -371,6 +371,16 @@ struct CarControlSP @0xa5cd762cd951a455 {
   leadOne @2 :LeadData;
   leadTwo @3 :LeadData;
   intelligentCruiseButtonManagement @4 :IntelligentCruiseButtonManagement;
+  lateralControl @5 :LateralControl;
+
+  # Lateral controller state the car layer needs but cannot see: it lives in
+  # controlsState, which the CarController does not subscribe to. Carried here so the
+  # LIN-bus gateway can be told the integrator value over SP_HUD_STATUS v2.
+  struct LateralControl {
+    integrator @0 :Float32;        # torqueState.i
+    saturated @1 :Bool;            # torqueState.saturated
+    integratorFrozen @2 :Bool;     # the integrator is being held, e.g. gateway not actuating
+  }
 
   struct Param {
     key @0 :Text;
@@ -435,6 +445,22 @@ struct BackupManagerSP @0xf98d843bfd7004a3 {
 
 struct CarStateSP @0xb86e6369214c01c8 {
   speedLimit @0 :Float32;
+  linbusGateway @1 :LinbusGateway;
+
+  # State of the aftermarket LIN-bus gateway that translates openpilot's steering
+  # request to the EPS. Decoded from GW_ACTIVE (0x704). See docs/SP_HUD_STATUS.md.
+  struct LinbusGateway {
+    engaged @0 :Bool;          # the board is commanding non-zero torque on the LIN line
+    dryRun @1 :Bool;           # the board is NOT actuating -- logging only
+    valid @2 :Bool;            # a GW_ACTIVE frame arrived within the staleness window
+    # engaged AND NOT dryRun AND valid. The one flag every consumer should read: on a dry
+    # run the board still sets engaged (it reports what it *would* do), so engaged alone
+    # would tell openpilot it is in control when it is not.
+    actuating @3 :Bool;
+    # This platform has a gateway at all. False on every other car, which is what keeps
+    # the integrator hold from ever engaging where there is no board to wait for.
+    present @4 :Bool;
+  }
 }
 
 struct LiveMapDataSP @0xf416ec09499d9d19 {

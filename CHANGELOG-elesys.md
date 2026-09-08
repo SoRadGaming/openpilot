@@ -515,6 +515,65 @@ asserted against the wire.
 
 ---
 
+## 15. SP-PROTOCOL v2 -- the LIN-bus gateway integrator handshake
+
+`cereal/custom.capnp`, `opendbc/car/structs.py`, `opendbc/dbc/generator/honda/_sunnypilot_linbus_gw.dbc`
+(renamed from `_sunnypilot_hud.dbc`), `opendbc/car/honda/{carstate,hondacan,carcontroller}.py`,
+`opendbc/sunnypilot/car/honda/carstate_ext.py`, `selfdrive/controls/{controlsd.py,lib/latcontrol.py,
+lib/latcontrol_torque.py}`, `sunnypilot/selfdrive/controls/{controlsd_ext.py,lib/latcontrol_torque_v0.py}`,
+`docs/SP_HUD_STATUS.md`
+
+The aftermarket board that translates openpilot's steering request onto the EPS LIN line found
+the problem the moment it went in: until it engages, openpilot is **open-loop**. `latActive` is
+true, it commands, nothing follows, the error never closes, and the integrator winds without
+bound. Route `000000b3`, a 70 km/h left sweeper the stock camera held at -46.7 counts:
+feedforward -14.2 (left, correct), integrator **+26.0** (right, 65% of the board's whole budget),
+net +12.5 -- the wrong way, in a curve the feedforward already had right. The board cannot see
+`i` from `STEERING_CONTROL` and cannot infer it from saturation (openpilot was not saturated;
+output -0.31 while `i` sat at +0.65). Spec from the board side is in `SP-PROTOCOL.md`; this is
+the sunnypilot half.
+
+**Reads `0x704 GW_ACTIVE`** (ENGAGED b6.0, DRY_RUN b5.7) into a new `CarStateSP.linbusGateway`
+with `present / engaged / dryRun / valid / actuating`. `actuating = engaged and not dryRun and
+valid` is the one flag consumers use: in a dry run the board still sets ENGAGED (it reports what
+it *would* do), so ENGAGED alone would tell openpilot it is in control when it is not. Staleness
+is **500 ms** (the frame is low priority and has been observed dropping), counted in frames off
+`ts_nanos` because `CarState.update()` is not handed a clock.
+
+**Holds the integrator while the board is not actuating, and resets the PID the frame it takes
+over.** Both halves are needed: freeze alone hands over whatever `i` was; reset alone lets it wind
+in the dry run and dump it in on the first closed frame. Lives in the `LatControl` base as
+`_linbus_integrator_gate()`, called every frame -- active or not -- by BOTH torque controllers:
+upstream `latcontrol_torque.py` and the sunnypilot `latcontrol_torque_v0.py`, which is the one
+that actually runs by default. Gated on `present`, which only `HONDA_ELESYS` sets, so every other
+car is bit-identical to before. `latActive` is deliberately NOT gated: the board engages on
+`STEER_TORQUE_REQUEST`, so if sunnypilot waited for the board neither side would ever start.
+Direct unit test of the gate: 14 checks, including no-board inertness.
+
+**Sends `SP_HUD_STATUS` v2**: byte 3 `INTEGRATOR` = int8(clip(i x 100)), byte 4 `OP_SATURATED`
+and `INTEGRATOR_FROZEN`. The integrator reaches the car layer through a new
+`CarControlSP.lateralControl` (`controlsd` -> `controlsd_ext` -> `CarController`), because the
+CarController cannot see `controlsState`. `INTEGRATOR_FROZEN` echoes the *gateway* hold
+specifically -- it is the board's acknowledgement that this protocol is running. The board accepts
+v1 and v2, so either side can update first.
+
+**Two things the first road test would have found the hard way, caught in the harness instead:**
+
+- *A silent board would have stopped openpilot engaging.* `can_valid` iterates every registered
+  message, lazily registered ones included, and a message with no timestamps -- board unplugged,
+  or `0x704` dropping for a second -- reads as a CAN timeout. `GW_ACTIVE` is now registered in
+  `get_can_parsers()` with `freq = nan`, the parser's purpose-built liveness exemption, and the
+  integration test asserts a board that never speaks still reads as a valid message.
+- *The first `0x704` frame after boot was dropped.* `VLDict` registers a message on first access,
+  which for a message read from `CarStateExt` is after that frame's packets were parsed.
+  Registering up front fixes it; the same test now sees the first frame.
+
+Integration sections 7 (v2 bytes, sign, clipping, checksum) and 8 (`GW_ACTIVE` -> `CarStateSP`
+through the real `CarInterface`, dry-run semantics, 500 ms staleness and recovery) cover the wire
+on both sides.
+
+---
+
 ## Status
 
 All four suites pass, ruff clean on both repos, all 39 DBCs regenerate, cross-platform sweep

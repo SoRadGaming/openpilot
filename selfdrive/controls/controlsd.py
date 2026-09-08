@@ -42,7 +42,7 @@ class Controls(ControlsExt):
     self.CI = interfaces[self.CP.carFingerprint](self.CP, self.CP_SP)
 
     self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'modelV2', 'selfdriveState',
-                                   'liveCalibration', 'livePose', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
+                                   'liveCalibration', 'livePose', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carStateSP', 'carOutput',
                                    'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveDelay'] + self.sm_services_ext,
                                   poll='selfdriveState')
     self.pm = messaging.PubMaster(['carControl', 'controlsState'] + self.pm_services_ext)
@@ -143,6 +143,10 @@ class Controls(ControlsExt):
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
     actuators.curvature = self.desired_curvature
+    # LIN-bus gateway: tell the lateral controller whether anything is actually following it.
+    # present is False on every car without a board, which leaves the controller untouched.
+    gw = self.sm['carStateSP'].linbusGateway
+    self.LaC.set_linbus_gateway(bool(gw.present), bool(gw.actuating))
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
                                                        self.steer_limited_by_safety, self.desired_curvature,
                                                        self.calibrated_pose, curvature_limited, lat_delay)
@@ -238,7 +242,7 @@ class Controls(ControlsExt):
       CC, lac_log = self.state_control()
       self.publish(CC, lac_log)
       self.get_params_sp(self.sm)
-      self.run_ext(self.sm, self.pm)
+      self.run_ext(self.sm, self.pm, lac_log, self.LaC)
       rk.monitor_time()
 
 

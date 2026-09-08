@@ -85,7 +85,7 @@ class ControlsExt(ModelStateBase):
     _lead.radar = src.radar
     _lead.radarTrackId = src.radarTrackId
 
-  def state_control_ext(self, sm: messaging.SubMaster) -> custom.CarControlSP:
+  def state_control_ext(self, sm: messaging.SubMaster, lac_log=None, LaC=None) -> custom.CarControlSP:
     CC_SP = custom.CarControlSP.new_message()
 
     self.get_lead_data(CC_SP.leadOne, sm['radarState'].leadOne)
@@ -104,6 +104,17 @@ class ControlsExt(ModelStateBase):
     CC_SP.intelligentCruiseButtonManagement.sendButton = icbm_src.sendButton
     CC_SP.intelligentCruiseButtonManagement.vTarget = icbm_src.vTarget
 
+    # Lateral controller state for the car layer. The CarController cannot see
+    # controlsState, and the LIN-bus gateway needs the integrator over SP_HUD_STATUS v2
+    # to refuse its first engagement while |i| is large. Only torque/PID states carry an
+    # integrator; the angle controller's log has no such field and reports zero.
+    fields = lac_log.schema.fieldnames if (lac_log is not None and hasattr(lac_log, 'schema')) else ()
+    if 'i' in fields:
+      CC_SP.lateralControl.integrator = float(lac_log.i)
+      CC_SP.lateralControl.saturated = bool(lac_log.saturated)
+    if LaC is not None:
+      CC_SP.lateralControl.integratorFrozen = bool(getattr(LaC, 'integrator_frozen', False))
+
     return CC_SP
 
   @staticmethod
@@ -114,6 +125,6 @@ class ControlsExt(ModelStateBase):
 
     pm.send('carControlSP', cc_sp_send)
 
-  def run_ext(self, sm: messaging.SubMaster, pm: messaging.PubMaster) -> None:
-    CC_SP = self.state_control_ext(sm)
+  def run_ext(self, sm: messaging.SubMaster, pm: messaging.PubMaster, lac_log=None, LaC=None) -> None:
+    CC_SP = self.state_control_ext(sm, lac_log, LaC)
     self.publish_ext(CC_SP, sm, pm)
