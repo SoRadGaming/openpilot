@@ -654,9 +654,61 @@ checked out as 9-byte text files, and `cereal/__init__.py` aborts the interprete
 `log.capnp`. That is why the pytest suites never ran here; the seam test was run with the two
 shimmed in a scratch runner. Both import normally on the device and in CI.
 
+## 18. SP_HUD_STATUS was going out on the wrong bus (fixed)
+
+`opendbc/car/honda/carcontroller.py`, `opendbc/safety/modes/honda.h`,
+`docs/SP_HUD_STATUS.md`, `_sunnypilot_linbus_gw.dbc`
+
+Reported by the gateway's author from the board side, confirmed from `000000b9`: `0x500` only ever
+appears in the route log as `src 130` -- the panda's TX echo on bus 2 -- and never as `src 0`,
+while the board's `0x704` arrives as `src 0`. On most Hondas `CAN.camera` (bus 2) is the camera's
+bus, but this harness splits the **Elesys radar** off, so bus 2 is the radar branch and the board,
+in line with the LKAS camera, is on bus 0 with everything else. It had never received a single
+`SP_HUD_STATUS`; the lanes seen on the cluster were the camera's stock frame forwarded intact.
+
+Fix: `self.CAN.camera` -> `self.CAN.pt` at the one call site, bus `2` -> `0` in both ELESYS TX
+allowlists, the integration test now pins bus 0, and the doc's "bus 2" statements are corrected.
+The frame itself is unchanged. `0x704` was parsed off bus 0 all along, which is why the integrator
+hold worked while the HUD merge did not. Decoded straight from `b9`'s CAN as a cross-check of
+the hold: all 2419 `0x500` frames are v2, `INTEGRATOR` stayed within +-2 (i.e. +-0.02) for the
+whole drive, `INTEGRATOR_FROZEN` was 1 throughout, and the board reported `DRY_RUN=1` throughout
+with `ENGAGED` 19% of the time -- exactly the "verifying it worked" expectation in the doc.
+
+## 19. Fuel level and odometer decoded
+
+`_nidec_scm_group_a_elesys.dbc` (new), `honda_accord_au_2015_can.dbc`, `carstate_ext.py`,
+integration test section 9
+
+Asked for after a low-fuel lamp on `b9`. No bit on the car's bus flips once and stays set in
+the window before the bookmark, so the lamp itself is not broadcast here (the meter drives it
+directly). What is broadcast, found by comparing per-route statistics across all 38 routes
+since July:
+
+- **`SCM_BUTTONS` (0x1A6) byte 3 = `FUEL_LEVEL`.** The per-route median falls monotonically
+  between refuels (100 -> 56 in July, 105 -> 53 in August, 85 -> 19 this fortnight) and jumps
+  at each refuel. Against the odometer it is ~19 counts per 100 km; the best-fit unit is
+  0.5 L per count (9.5 L/100 km, lamp near 20 = ~10 L, brim-full ~120 = 60 L). The meter clamps
+  it at 105, so it is *not* a tank fraction; `CarState.fuelGauge` is `min(level / 105, 1)`.
+  In `b9` it sat at 19 and sloshed 6-37 -- that is the "barely any fuel".
+- **`SCM_BUTTONS` byte 4 = `FUEL_SENDER`.** The same quantity before the clamp, inverted:
+  `207 - 1.53 * FUEL_LEVEL` with 0.5 counts RMS error over every route, 22 at brim full. Bit 7
+  of this byte looked like a lamp at first (0 in July, 1 for every route this week) -- it is
+  just this value crossing 128, which is why it is documented and not named as a warning.
+- **`SCM_FEEDBACK` (0x294) bytes 3-5 = `ODOMETER_KM`.** A 42.05 km route (from integrated
+  `vEgo`) advanced it by exactly 42; 164,964 km on the car.
+
+The signals live in a copy of the Nidec group-A fragment scoped to this car, because they have
+only been verified on it; the shared fragment every other Nidec car uses is untouched, and no
+other generated DBC changes. Regenerating all 39 DBCs and the integration test (now 9 sections)
+both pass.
+
 ---
 
 ## Status
+
+*As of 2026-09-08: two weeks of real driving on the tuner (sections 12-13); the paragraph below
+predates that and is kept for the record.*
+
 
 All four suites pass, ruff clean on both repos, all 39 DBCs regenerate, cross-platform sweep
 shows no other Honda affected.

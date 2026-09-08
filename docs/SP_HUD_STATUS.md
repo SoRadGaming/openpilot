@@ -5,7 +5,7 @@ board that sits in line with the LKAS camera and translates openpilot's steering
 the EPS's LIN line. Nothing else in the car sends or reads either of them.
 
 ```
-sunnypilot  ──── 0x500 SP_HUD_STATUS v2 (10 Hz, bus 2) ────►  board
+sunnypilot  ──── 0x500 SP_HUD_STATUS v2 (10 Hz, bus 0) ────►  board
 sunnypilot  ◄─── 0x704 GW_ACTIVE         (10 Hz, bus 0) ────  board
 ```
 
@@ -110,7 +110,7 @@ side would ever start.
 | | |
 |---|---|
 | **Address** | `0x500` (1280), standard 11-bit — chosen because it is unused on every bus of this car (81 distinct addresses seen; the whole `0x500–0x5FF` range is empty) |
-| **Bus** | 2 (camera side of the comma relay) |
+| **Bus** | 0 — the camera's bus, where the board sits. On this harness bus 2 is the Elesys radar branch, and the board is not on it |
 | **DLC** | 8 |
 | **Rate** | 10 Hz |
 
@@ -216,7 +216,7 @@ ignores those bytes. Firmware should refuse to act on a version it does not reco
 
 ## Panda
 
-`0x500` is in both ELESYS TX allowlists in `opendbc/safety/modes/honda.h`, on bus 2, with
+`0x500` is in both ELESYS TX allowlists in `opendbc/safety/modes/honda.h`, on bus 0, with
 `check_relay = false`. Without that entry the panda silently blocks the frame — the first thing
 to check if nothing arrives. `0x704` is receive-only and needs no safety entry.
 
@@ -233,8 +233,17 @@ On the next drive with v2 deployed, in the comma log:
 `carStateSP.linbusGateway` is in the route log too, so `present`/`valid`/`actuating` can be
 checked straight from the parquet without decoding CAN.
 
-## If the board taps bus 0 instead of bus 2
+## Which bus, and how that was found out
 
-The TX bus is the one call site in `carcontroller.py` (`self.CAN.camera`). Change that to
-`self.CAN.pt` and the bus in **both** `CanMsg` entries in `honda.h` to `0`. The frame is
-identical either way. `0x704` is parsed off bus 0 (`Bus.pt`) already.
+Up to route `000000b9` the frame went out on `CAN.camera` (bus 2). On most Hondas that is the
+camera's bus, but on this car the comma harness splits the **Elesys radar** off, so bus 2 is
+the radar branch and the board — in line with the LKAS camera — is on bus 0 with everything
+else. The route log makes it unambiguous: `0x500` appears only as `src 130` (the panda's own
+TX echo on bus 2) and never as `src 0`, while the board's `0x704` arrives as `src 0`. The board
+had therefore never received a single `SP_HUD_STATUS`; the lanes seen on the cluster were the
+camera's stock frame forwarded intact, not a merge.
+
+The fix is one argument at the call site in `carcontroller.py` (`self.CAN.camera` →
+`self.CAN.pt`) plus the bus in **both** `CanMsg` entries in `honda.h`. The frame itself is
+identical. `0x704` was parsed off bus 0 (`Bus.pt`) all along, which is why the integrator
+hold worked while the HUD merge did not.
