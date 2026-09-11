@@ -5,15 +5,22 @@ board that sits in line with the LKAS camera and translates openpilot's steering
 the EPS's LIN line. Nothing else in the car sends or reads either of them.
 
 ```
-sunnypilot  ──── 0x500 SP_HUD_STATUS v2 (10 Hz, bus 0) ────►  board
+sunnypilot  ──── 0x0E4 STEERING_CONTROL (100 Hz, bus 0) ───►  board
+sunnypilot  ──── 0x500 SP_HUD_STATUS v3 (10 Hz, bus 0) ────►  board
 sunnypilot  ◄─── 0x704 GW_ACTIVE         (10 Hz, bus 0) ────  board
+sunnypilot  ◄─── 0x70B GW_STEER_GRANT    (10 Hz, bus 0) ────  board   ← v3
 ```
+
+`0x0E4` is a stock Honda frame and is documented here only where the board reads it
+differently from a car: byte 2 (below). The board-side contract for all of this is
+`S:\Software\EPS-LKAS\docs\SP-PROTOCOL-V3.md`; this document is the openpilot side.
 
 | | |
 |---|---|
 | **DBC (this side)** | `opendbc/dbc/generator/honda/_sunnypilot_linbus_gw.dbc` |
 | **DBC (board side)** | `dbc/eps-lkas-gw.dbc` in the gateway firmware repo |
 | **Platform** | `HONDA_ACCORD_9G_AU` (HONDA_ELESYS) only |
+| **Board firmware** | v3 needs `75aa91ee` or later. Older images reject a `0x500` above v2 **whole** |
 | **Byte order** | Big-endian (Motorola), same as every Honda frame |
 
 ## Why this exists: the integrator problem
@@ -105,7 +112,7 @@ is inactive, and the reset lands on the exact frame the board engages.
 `STEER_TORQUE_REQUEST`; if sunnypilot stopped requesting until the board was engaged, neither
 side would ever start.
 
-## What sunnypilot sends: `0x500 SP_HUD_STATUS` v2
+## What sunnypilot sends: `0x500 SP_HUD_STATUS` v3
 
 | | |
 |---|---|
@@ -124,14 +131,18 @@ byte 1   7        6        5    4      3      2     1 0
 byte 2   SET_SPEED (km/h, 0 = unavailable, saturates at 255)
 byte 3   INTEGRATOR         int8, torqueState.i × 100, clipped ±127        ← v2
 byte 4   bit 0 OP_SATURATED   bit 1 INTEGRATOR_FROZEN                        ← v2
-byte 5-6 reserved, always 0
+
+byte 5   7          6         5        4 3 2      1          0
+         LDW_ACT    REL_DRV   REL_BRK  OP_STATE   LAT_READY  WANT_CONTROL     ← v3
+byte 6   MAX_TORQUE (serial counts, 0 = "use your own authority")             ← v3
+
 byte 7   7 6      5 4        3 2 1 0
          unused   COUNTER    CHECKSUM
 ```
 
 | Signal | Bits | Meaning |
 |---|---|---|
-| `PROTOCOL_VERSION` | b0[7:4] | **`2`**. See versioning below. |
+| `PROTOCOL_VERSION` | b0[7:4] | **`3`**. See versioning below — this one is a hard gate on the board. |
 | `OP_ENABLED` | b0[3] | openpilot is engaged. |
 | `LAT_ACTIVE` | b0[2] | openpilot is steering. |
 | `LONG_ACTIVE` | b0[1] | openpilot is controlling speed. |
@@ -145,8 +156,28 @@ byte 7   7 6      5 4        3 2 1 0
 | `INTEGRATOR` | b3 | `int8(clip(round(torqueState.i × 100), −127, 127))`. Lets the board refuse its first engagement while `|i| > 0.15` (`GW_INTEG_MAX`). |
 | `OP_SATURATED` | b4[0] | `torqueState.saturated`. |
 | `INTEGRATOR_FROZEN` | b4[1] | `1` while the gateway hold in the section above is active. **The acknowledgement**: if the board sees this low while `0x704` says not-engaged, the sunnypilot side is not running this protocol. |
+| `WANT_CONTROL` | b5[0] | v3. openpilot intends to steer and is asking. The redundant statement of `0x0E4 STEER_TORQUE_REQUEST`, which remains the thing that actually asks. |
+| `LAT_READY` | b5[1] | v3. openpilot would steer if the board allowed it. |
+| `OP_STATE` | b5[4:2] | v3. `0` off, `1` ready, `2` requesting, `3` active, `4` withdrawing, `5` faulted. **openpilot's** state machine, not the board's — the board reports its own on `0x70B STATE`. |
+| `RELEASE_BRAKE` | b5[5] | v3. Withdrawing because the brake is pressed. Only ever set while `latActive`. |
+| `RELEASE_DRIVER` | b5[6] | v3. Withdrawing because the driver is steering. Only ever set while `latActive`. |
+| `LDW_ACTIVE` | b5[7] | v3. A lane-departure warning is being shown on either side. |
+| `MAX_TORQUE` | b6 | v3. The ceiling openpilot is willing to use, in **serial** counts. **Sent as 0**, which the board reads as "use your own authority". |
 | `COUNTER` | b7[5:4] | 0–3, increments each frame. |
 | `CHECKSUM` | b7[3:0] | Standard Honda 4-bit checksum. |
+
+### Why `MAX_TORQUE` is 0 and not the number
+
+The board scales `0x0E4` by `authority / 2560`, so openpilot's full scale ±1.0 maps exactly
+onto the board's authority **whatever that authority is**. openpilot's saturation flag and its
+anti-windup therefore stay truthful on their own as the authority ladder climbs
+40 → 80 → 120 → 160, with nothing to change on this side. Sending the number here as well
+would put the ladder in two places that could disagree. The negotiation is
+`min(MAX_TORQUE, the board's own authority)`, so 0 can never raise the ceiling.
+
+This is also why `lateralParams.torqueBP/torqueV` stays `[[0, 2560], [0, 2560]]` and why
+`0x0E4` byte 2 bit 2 (`SERIAL_DOMAIN`) stays **clear**. Changing the domain and raising the
+authority in the same drive would confound the one measurement the drive is for.
 
 `ALERT_LEVEL` is a severity hint for choosing a chime, derived from the flags — never a
 substitute for them.
@@ -171,6 +202,57 @@ So the camera keeps `0x33D` untouched and this frame rides alongside it; the boa
 > **Merge by OR, never by overwrite.** Replacing the camera's flag bits wholesale can mask a
 > genuine `LKAS_PROBLEM` or suppress a real road-departure warning — the same failure as
 > taking the message over, relocated into firmware where it is harder to spot.
+
+## What sunnypilot also sends: `0x0E4 STEERING_CONTROL` byte 2
+
+Nothing in this car reads `0x0E4` — the EPS has no CAN steering input and the board consumes
+the frame. The board reads byte 2 as a bit field, and openpilot fills exactly two of its bits.
+
+| Bit | Name | openpilot |
+|---|---|---|
+| 7 | `STEER_TORQUE_REQUEST` | `latActive`, as on every Honda |
+| 6 | `WIGGLE_DISABLE` | 0 — the board owns the command LSB alternation |
+| 5 | `LDW_RIGHT` | `hudControl.rightLaneDepart` → serial camera-to-EPS byte 2 bit 5 |
+| 4 | `LDW_LEFT` | `hudControl.leftLaneDepart` → serial byte 2 bit 4 |
+| 3 | `TX_RAW_SERIAL` | 0 — diagnostics only |
+| 2 | **`SERIAL_DOMAIN`** | **0**, and it must stay 0 while openpilot is in the 2560 domain |
+| 1 | reserved | 0 |
+| 0 | `BLEND_DISABLE` | 0 — the board still owns the driver-torque blend |
+
+> **`SERIAL_DOMAIN` is the dangerous one.** Set, it tells the board to take `STEER_TORQUE` as
+> serial counts at unity gain into its authority clamp. An openpilot that sets it without also
+> changing `lateralParams` to `[[0, 239], [0, 239]]` pins the board at full authority from the
+> first frame. The two must change together, in a commit of their own. In the DBC the bit is
+> held at zero by `SET_ME_X00_3`.
+
+The LDW bits are sent whether or not openpilot is steering: a lane-departure warning is a
+warning, not a request.
+
+## Releasing on the brake
+
+The stock camera drops `LKAS_ON` within about 20 frames (0.2 s) of a brake press — measured
+three times on route `000000c8`. `carcontroller.py` imitates that with a ceiling on |torque|
+that walks linearly to zero over `BRAKE_RELEASE_FRAMES = 20` and snaps back the frame the
+brake lifts.
+
+It is **imitation of stock, not fault avoidance**: the same logs show the EPS tolerating brake
+plus a non-zero torque request on 63 frames with error state 0 throughout, so the older
+"braking while requesting torque latches an EPS fault" claim is not reproduced.
+
+Two properties are deliberate and worth not breaking:
+
+* **It can only reduce the command.** It is `clip(x, -c, c)` with `c ∈ [0, 1]`, applied after
+  the ordinary rate limit and skipped entirely at `c == 1.0`, so a non-braking frame is
+  bit-identical to what it was before.
+* **It cannot latch.** The only state is a frame count, and the count is *cleared*, not
+  decayed, the first frame `brakePressed` is false. Recovery afterwards goes through
+  `STEER_DELTA_UP` like any other request.
+
+A ceiling rather than a gain because a gain compounds with the rate limiter — which keeps
+pulling back toward the full request — and makes the first steps of the withdrawal bigger than
+the last. The ceiling makes it exactly linear at 2560/20 = 128 CAN counts per frame, which the
+board scales to 4 serial counts at authority 80: under the stock camera's p99 of 5 and well
+under the 16 it has ever stepped.
 
 ## Validating `0x500`
 
@@ -207,12 +289,80 @@ openpilot has stopped updating; treat as stale.
 `STEERING_REQUIRED` is byte 1 bit 0; `CHECKSUM` is the low nibble of byte 3 and `COUNTER` is
 bits 5:4 of byte 3. Recompute both after any edit or the cluster rejects the frame.
 
+## What sunnypilot reads: `0x70B GW_STEER_GRANT` (v3)
+
+`0x704` says whether the board is actuating and has no room left to say **why** it is not.
+"openpilot is asking and the car is not turning" is the one failure the driver cannot diagnose
+from the seat, so v3 adds a second frame at 10 Hz on bus 0, DLC 8.
+
+| Signal | Byte | Meaning |
+|---|---|---|
+| `STATE` | 0 | `0` idle, `1` ready, `2` requested, `3` intro, `4` active, `5` limited, `6` refused, `7` board fault |
+| `REASON` | 1 | `0` none, `1` no request, `2` openpilot stale/malformed, `3` speed too low, `4` driver override, `5` blinker, `6` brake, `7` standstill, `8` EPS refused (latched), `9` EPS not acknowledging, `10` serial checksum errors, `11` integrator too large, `12` camera fault, `13` board fault, `14` dry run, `15` soft start in progress |
+| `AUTHORITY` | 2 | The board's ceiling in serial counts, after the `MAX_TORQUE` negotiation |
+| `EPS_ACK` / `EPS_LATCHED` / `EPS_ERROR_STATE` / `EPS_FRESH` / `CAM_LKAS_ON` | 3 | bits 0, 1, 5:2, 6, 7. `EPS_ERROR_STATE` `4` is this EPS's refusal code, and it latches for the key cycle |
+| `APPLIED` | 4 | int8, serial counts actually on the wire, scale 2 |
+| `MOTOR_TORQUE` | 5 | int8, the EPS's own motor torque, scale 4 |
+| `RETRY_IN` | 6 | Seconds until a new request is considered. `0` now, **`255` not this key cycle** |
+| `GRANT_COUNTER` | 7 | Free-running, +1 per frame. **Not named `COUNTER`** — see below |
+
+It reaches openpilot on `carStateSP.linbusGateway`, alongside the `0x704` fields:
+
+```
+grantValid  grantState  grantReason  granted  authority
+epsAck  epsLatched  epsErrorState  epsFresh  camLkasOn
+applied  motorTorque  retryIn  latchedUntilKeyOff
+```
+
+* **`granted`** is `grantValid and STATE ∈ {intro, active, limited}`. **Absence is never
+  permission**: the board only began sending `0x70B` in firmware `75aa91ee`, so an older image
+  simply has no grant, and `grantValid` false forces `granted` false.
+* **`latchedUntilKeyOff`** is `RETRY_IN == 255 or EPS_LATCHED`. The EPS has given up for this
+  key cycle and only an ignition cycle clears it, so the driver should be told rather than the
+  request retried into a dead EPS for the rest of the drive. It is deliberately **not sticky on
+  this side** — it is whatever the board's latest fresh frame says — so a one-frame glitch
+  cannot strand the driver, and the board clearing it clears this.
+* A change of `(valid, STATE, REASON)` is logged once through `carlog`, so the reason is in the
+  route log even where nothing renders it.
+
+Stale after 50 carstate frames (500 ms), counted in frames because `CarState.update()` is not
+handed a clock. A stale frame reports zeros, not the last thing it heard.
+
+### The CANParser trap — read this before adding another gateway message
+
+`0x704` and `0x70B` are registered **explicitly, with `float("nan")`**, in
+`carstate.py get_can_parsers()`. Both halves of that matter:
+
+* `nan` sets `ignore_alive` (`opendbc/can/parser.py:179`), and `MessageState.valid()` returns
+  `True` immediately for such a message (`:107-109`), so it can never be the state that makes
+  `can_valid` false (`:200-211`). A message reached **lazily** through `cp.vl["..."]` is
+  registered by `VLDict` on first access (`:117-125`) with `freq=None`, learns its own rate
+  after three frames and takes a **10× period timeout** (`:92-96`, `:181-186`). A gap longer
+  than that marks the parser invalid, which feeds `canValid` and makes openpilot **refuse to
+  engage**. These frames are allowed to be absent: the board can be unplugged, its low-priority
+  telemetry has been observed blacked out for **94.5 s**, and `0x70B` does not exist at all on
+  older firmware.
+* Registering before the first `update()` means the first frame is not dropped. `VLDict` only
+  registers on first access, which for a message read from `CarStateExt` is after that frame's
+  packets have already been parsed.
+
+And **neither frame may carry a signal named `COUNTER` or `CHECKSUM`**. In a `honda_` DBC those
+names make the parser enforce Honda counter continuity and a Honda checksum
+(`opendbc/can/dbc.py:218-227`, `parser.py:66-73`) that the board does not compute for these
+frames — every frame would be dropped. That is why the counter is `GRANT_COUNTER`.
+
 ## Versioning
 
-`PROTOCOL_VERSION` is `2`. The board accepts v1 and v2 and treats v1 as "no controller state",
-so either side can update first. Bump the version only when the meaning of an existing bit
-changes; adding a signal in a reserved byte does not need one, because an older receiver
-ignores those bytes. Firmware should refuse to act on a version it does not recognise.
+`PROTOCOL_VERSION` is `3`. The board accepts v1, v2 and v3; v1 means "no controller state" and
+v2 means "no control request", so either side can update first *downward*. Bump the version
+only when the meaning of an existing bit changes; adding a signal in a reserved byte does not
+need one, because an older receiver ignores those bytes.
+
+> **The version is a hard gate on the receiver, so it must never lead the flashed firmware.**
+> The board rejects a frame whose version is above the maximum it knows
+> (`sp_hud.c sp_hud_rx` / `SP_HUD_VERSION_MAX`) — and rejecting `0x500` silently takes the HUD
+> merge *and* the board's integrator guard down with it. Board firmware `75aa91ee` is the first
+> that accepts 3. Flash the board first, then raise `SP_HUD_PROTOCOL_VERSION`.
 
 ## Panda
 
@@ -222,13 +372,24 @@ to check if nothing arrives. `0x704` is receive-only and needs no safety entry.
 
 ## Verifying it worked
 
-On the next drive with v2 deployed, in the comma log:
+On the next drive with v3 deployed, in the comma log:
 
-1. `0x500 INTEGRATOR` should sit near **0 for the whole drive** in a dry run (frozen from the
+1. `0x500 PROTOCOL_VERSION` is **3**, checksum and counter 100%, and the board's `0x704` /
+   `0x70B` keep arriving — a version the board rejected would show up as the HUD merge going
+   dead, not as a missing frame.
+2. `0x500 INTEGRATOR` should sit near **0 for the whole drive** in a dry run (frozen from the
    start), instead of ramping to +0.85 as on `000000b3`.
-2. `INTEGRATOR_FROZEN` should be `1` whenever `0x704 ENGAGED && !DRY_RUN` is `0`.
-3. In the board's own `0x704`, `INH_ENGAGE_GUARD` should be **0** when openpilot first
+3. `INTEGRATOR_FROZEN` should be `1` whenever `0x704 ENGAGED && !DRY_RUN` is `0`.
+4. In the board's own `0x704`, `INH_ENGAGE_GUARD` should be **0** when openpilot first
    requests — if it stays `1`, look at `INTEGRATOR`.
+5. `0x70B` present at 10 Hz, `STATE` reaching `active`, and `REASON` explaining every second in
+   which it does not.
+6. `0x500 OP_STATE` walks `ready → requesting → active` and back, and `MAX_TORQUE` is 0 on
+   every frame.
+7. `0x0E4` byte 2 bit 2 (`SERIAL_DOMAIN`) is **0** on every frame, and bits 5:4 track the lane
+   departure warnings.
+8. Brake presses during an engagement: the command reaches 0 within 200 ms, and comes back
+   afterwards.
 
 `carStateSP.linbusGateway` is in the route log too, so `present`/`valid`/`actuating` can be
 checked straight from the parquet without decoding CAN.

@@ -460,6 +460,35 @@ struct CarStateSP @0xb86e6369214c01c8 {
     # This platform has a gateway at all. False on every other car, which is what keeps
     # the integrator hold from ever engaging where there is no board to wait for.
     present @4 :Bool;
+
+    # --- GW_STEER_GRANT (0x70B), SP-PROTOCOL v3 section 1.4 ------------------------------
+    # Why the board is or is not steering. 0x704 has no room left to say it, and "openpilot
+    # is asking and the car is not turning" is the one thing the driver cannot diagnose.
+    # The board only started sending this in firmware 75aa91ee, so it can be ABSENT --
+    # grantValid false. Absence is NOT permission: granted is false whenever grantValid is.
+    grantValid @5 :Bool;
+    # 0 idle, 1 ready, 2 requested, 3 intro, 4 active, 5 limited, 6 refused, 7 boardFault
+    grantState @6 :UInt8;
+    # 0 none, 1 no request, 2 openpilot stale/malformed, 3 speed too low, 4 driver override,
+    # 5 blinker, 6 brake, 7 standstill, 8 EPS refused (latched), 9 EPS not acknowledging,
+    # 10 serial checksum errors, 11 integrator too large, 12 camera fault, 13 board fault,
+    # 14 dry run, 15 soft start in progress (not a refusal).
+    grantReason @7 :UInt8;
+    # grantState is intro, active or limited, and the frame is fresh.
+    granted @8 :Bool;
+    authority @9 :UInt8;        # the board's ceiling in serial counts, after negotiation
+    epsAck @10 :Bool;           # the EPS is acknowledging LKAS on
+    epsLatched @11 :Bool;       # only a key cycle clears it
+    epsErrorState @12 :UInt8;   # 4 is this EPS's refusal code
+    epsFresh @13 :Bool;         # the board is hearing the EPS at all
+    camLkasOn @14 :Bool;        # the stock camera is asking for LKAS
+    applied @15 :Int16;         # serial counts actually put on the wire
+    motorTorque @16 :Int16;     # the EPS's own motor torque
+    retryIn @17 :UInt8;         # seconds until a new request is considered; 255 = key cycle
+    # retryIn == 255 or epsLatched: the EPS has given up for this key cycle. Say so rather
+    # than retrying into a dead EPS for the rest of the drive. Not sticky on this side -- it
+    # is whatever the board's latest fresh frame says, so the board clearing it clears this.
+    latchedUntilKeyOff @18 :Bool;
   }
 }
 
