@@ -23,6 +23,21 @@ differently from a car: byte 2 (below). The board-side contract for all of this 
 | **Board firmware** | v3 needs `75aa91ee` or later. Older images reject a `0x500` above v2 **whole** |
 | **Byte order** | Big-endian (Motorola), same as every Honda frame |
 
+> ## What to drive
+>
+> **`serial-steering-round1`, tip, in both this repo and `opendbc_repo`.** Everything on it is
+> telemetry, driver feedback and comment corrections: it does not touch `lateralParams`,
+> `steerActuatorDelay`, the lateral tuning or the controller, and it leaves `0x0E4` byte 2
+> bit 2 (`SERIAL_DOMAIN`) clear, so `actuators.torque` and every byte of `0x0E4`, `0x1FA`,
+> `0x30C` and `0x1A6` are identical to `master`. The next drive therefore moves exactly one
+> variable — the board's authority, 40 → 80 on firmware `875ba124`.
+>
+> **`serial-steering-round2-tuning` is NOT for that drive.** It is round 1 plus
+> `steerActuatorDelay` 0.15 → 0.3, which seeds `liveDelay.lateralDelay` at 0.5 s instead of
+> 0.35 s (`selfdrive/locationd/lagd.py`) and so changes `actuators.torque` from the first
+> engagement. Drive it *after* authority 80 has its own log, or the two changes cannot be told
+> apart. The delay is probably right; it just belongs to the drive after this one.
+
 ## Why this exists: the integrator problem
 
 On this car nothing listens to openpilot's `STEERING_CONTROL` (`0x0E4`) until the board
@@ -160,9 +175,9 @@ byte 7   7 6      5 4        3 2 1 0
 | `LAT_READY` | b5[1] | v3. openpilot would steer if the board allowed it. |
 | `OP_STATE` | b5[4:2] | v3. `0` off, `1` ready, `2` requesting, `3` active, `4` withdrawing, `5` faulted. **openpilot's** state machine, not the board's — the board reports its own on `0x70B STATE`. |
 | `RELEASE_BRAKE` | b5[5] | v3. Withdrawing because the brake is pressed. Only ever set while `latActive`. |
-| `RELEASE_DRIVER` | b5[6] | v3. Withdrawing because the driver is steering. Only ever set while `latActive`. |
-| `LDW_ACTIVE` | b5[7] | v3. A lane-departure warning is being shown on either side. |
-| `MAX_TORQUE` | b6 | v3. The ceiling openpilot is willing to use, in **serial** counts. **Sent as 0**, which the board reads as "use your own authority". |
+| `RELEASE_DRIVER` | b5[6] | v3. The driver is steering. Only ever set while `latActive`. **Advisory** — unlike `RELEASE_BRAKE` there is no matching ramp; see below. |
+| `LDW_ACTIVE` | b5[7] | v3. A lane-departure warning is being shown on either side. **Inert** — `sp_hud.c` decodes it and `sp_hud_merge_lkas()` never reads it, so no `RDM_HUD` and no chime come of it on firmware `875ba124`. |
+| `MAX_TORQUE` | b6 | v3. The ceiling openpilot is willing to use, in **serial** counts. **Sent as 0**, which the board reads as "use your own authority". **Reported, not enforced** — see below. |
 | `COUNTER` | b7[5:4] | 0–3, increments each frame. |
 | `CHECKSUM` | b7[3:0] | Standard Honda 4-bit checksum. |
 
@@ -172,8 +187,17 @@ The board scales `0x0E4` by `authority / 2560`, so openpilot's full scale ±1.0 
 onto the board's authority **whatever that authority is**. openpilot's saturation flag and its
 anti-windup therefore stay truthful on their own as the authority ladder climbs
 40 → 80 → 120 → 160, with nothing to change on this side. Sending the number here as well
-would put the ladder in two places that could disagree. The negotiation is
-`min(MAX_TORQUE, the board's own authority)`, so 0 can never raise the ceiling.
+would put the ladder in two places that could disagree.
+
+> **`MAX_TORQUE` is reported by the board, not applied by it.** On firmware `875ba124` the
+> field is read in exactly one place — `gw_active.c:1348` — and only to compute the
+> `AUTHORITY` byte the board puts in `0x70B`. The command path is unconditional:
+> `gw_active.c:1104,1108` clamp to the compile-time `GW_LIN_AUTHORITY`. So setting
+> `MAX_TORQUE = 40` today would make `0x70B` report a ceiling of 40 while the board went on
+> commanding up to 80 — actuation and telemetry wrong in opposite directions, with the log
+> looking like the cap worked. It costs nothing while the value is 0, which is the other
+> reason it is 0. **Do not use it as a probe-drive limiter** until the board clamps to the
+> negotiated value at `gw_active.c:1104,1108`.
 
 This is also why `lateralParams.torqueBP/torqueV` stays `[[0, 2560], [0, 2560]]` and why
 `0x0E4` byte 2 bit 2 (`SERIAL_DOMAIN`) stays **clear**. Changing the domain and raising the
@@ -212,8 +236,8 @@ the frame. The board reads byte 2 as a bit field, and openpilot fills exactly tw
 |---|---|---|
 | 7 | `STEER_TORQUE_REQUEST` | `latActive`, as on every Honda |
 | 6 | `WIGGLE_DISABLE` | 0 — the board owns the command LSB alternation |
-| 5 | `LDW_RIGHT` | `hudControl.rightLaneDepart` → serial camera-to-EPS byte 2 bit 5 |
-| 4 | `LDW_LEFT` | `hudControl.leftLaneDepart` → serial byte 2 bit 4 |
+| 5 | `LDW_RIGHT` | `hudControl.rightLaneDepart`. Specified to reach serial byte 2 bit 5; **inert today** |
+| 4 | `LDW_LEFT` | `hudControl.leftLaneDepart`. Specified to reach serial byte 2 bit 4; **inert today** |
 | 3 | `TX_RAW_SERIAL` | 0 — diagnostics only |
 | 2 | **`SERIAL_DOMAIN`** | **0**, and it must stay 0 while openpilot is in the 2560 domain |
 | 1 | reserved | 0 |
@@ -227,6 +251,17 @@ the frame. The board reads byte 2 as a bit field, and openpilot fills exactly tw
 
 The LDW bits are sent whether or not openpilot is steering: a lane-departure warning is a
 warning, not a request.
+
+> **The LDW bits currently reach nothing.** `SP-PROTOCOL-V3` section 4 specifies the board
+> copying byte 2 bits 5:4 into serial camera-to-EPS byte 2 bits 5:4, and firmware `875ba124`
+> does not implement it. `gw_active.c:759-773` is the whole of the board's `0x0E4` parse and
+> reads only bit 7 and bit 2; `lkas_uart.c:449` builds serial byte 2 as
+> `0x80 | (lkas_on ? 0 : 0x40)`, hard-zeroing bits 5:4 on every transmitted frame. The `0x500`
+> `LDW_ACTIVE` path is no better: `sp_hud.c` decodes it and `sp_hud_merge_lkas()` never reads
+> it, so `RDM_HUD` and `BEEP` are never raised from it either. openpilot sends the bits anyway
+> — they are harmless and let the firmware side land without another openpilot change — but a
+> lane departure produces **nothing the driver can see or hear** until the board decodes them.
+> Checking `0x0E4` in the comma log verifies openpilot's transmission and nothing further.
 
 ## Releasing on the brake
 
@@ -253,6 +288,18 @@ pulling back toward the full request — and makes the first steps of the withdr
 the last. The ceiling makes it exactly linear at 2560/20 = 128 CAN counts per frame, which the
 board scales to 4 serial counts at authority 80: under the stock camera's p99 of 5 and well
 under the 16 it has ever stepped.
+
+### `RELEASE_DRIVER` is advisory; there is no matching ramp
+
+`RELEASE_BRAKE` has an action. `RELEASE_DRIVER` does not: on `steeringPressed` openpilot sets
+`OP_STATE = WITHDRAWING` and `RELEASE_DRIVER = 1` while `apply_torque` and
+`STEER_TORQUE_REQUEST` stay exactly what they were the frame before. That is deliberate —
+openpilot keeps steering through `steeringPressed` as it does on every Honda, and the
+driver-torque blend and the override gate (`INH_DRIVER_OVERRIDE`) are the board's. So the bit
+means "the driver is on the wheel", not "I am ramping out". Firmware `875ba124` stores it and
+never reads it, so nothing disagrees today; **the moment the board acts on it, the ramp has to
+be added on this side in the same change**, or the two sides will each believe the other is
+holding the corner.
 
 ## Validating `0x500`
 
@@ -298,10 +345,10 @@ from the seat, so v3 adds a second frame at 10 Hz on bus 0, DLC 8.
 | Signal | Byte | Meaning |
 |---|---|---|
 | `STATE` | 0 | `0` idle, `1` ready, `2` requested, `3` intro, `4` active, `5` limited, `6` refused, `7` board fault |
-| `REASON` | 1 | `0` none, `1` no request, `2` openpilot stale/malformed, `3` speed too low, `4` driver override, `5` blinker, `6` brake, `7` standstill, `8` EPS refused (latched), `9` EPS not acknowledging, `10` serial checksum errors, `11` integrator too large, `12` camera fault, `13` board fault, `14` dry run, `15` soft start in progress |
-| `AUTHORITY` | 2 | The board's ceiling in serial counts, after the `MAX_TORQUE` negotiation |
-| `EPS_ACK` / `EPS_LATCHED` / `EPS_ERROR_STATE` / `EPS_FRESH` / `CAM_LKAS_ON` | 3 | bits 0, 1, 5:2, 6, 7. `EPS_ERROR_STATE` `4` is this EPS's refusal code, and it latches for the key cycle |
-| `APPLIED` | 4 | int8, serial counts actually on the wire, scale 2 |
+| `REASON` | 1 | `0` none, `1` no request, `2` openpilot stale/malformed, `3` speed too low, `4` driver override, `5` blinker, `6` brake (**defined, never emitted** — see below), `7` standstill, `8` EPS refused (latched), `9` EPS not acknowledging, `10` serial checksum errors, `11` integrator too large, `12` camera fault, `13` board fault, `14` dry run, `15` soft start in progress |
+| `AUTHORITY` | 2 | The board's ceiling in serial counts, **as the board reports it** — `MAX_TORQUE` is folded into this byte only, not into the command |
+| `EPS_ACK` / `EPS_LATCHED` / `EPS_ERROR_STATE` / `EPS_FRESH` / `CAM_LKAS_ON` | 3 | bits 0, 1, 5:2, 6, 7. `EPS_ERROR_STATE` `4` is this EPS's refusal code, and it latches for the key cycle. **`EPS_LATCHED` is not a latch** — see below |
+| `APPLIED` | 4 | int8, serial counts actually on the wire, scale 2 — so **quantised to 2 counts** |
 | `MOTOR_TORQUE` | 5 | int8, the EPS's own motor torque, scale 4 |
 | `RETRY_IN` | 6 | Seconds until a new request is considered. `0` now, **`255` not this key cycle** |
 | `GRANT_COUNTER` | 7 | Free-running, +1 per frame. **Not named `COUNTER`** — see below |
@@ -317,13 +364,42 @@ applied  motorTorque  retryIn  latchedUntilKeyOff
 * **`granted`** is `grantValid and STATE ∈ {intro, active, limited}`. **Absence is never
   permission**: the board only began sending `0x70B` in firmware `75aa91ee`, so an older image
   simply has no grant, and `grantValid` false forces `granted` false.
-* **`latchedUntilKeyOff`** is `RETRY_IN == 255 or EPS_LATCHED`. The EPS has given up for this
-  key cycle and only an ignition cycle clears it, so the driver should be told rather than the
-  request retried into a dead EPS for the rest of the drive. It is deliberately **not sticky on
-  this side** — it is whatever the board's latest fresh frame says — so a one-frame glitch
-  cannot strand the driver, and the board clearing it clears this.
+* **`latchedUntilKeyOff`** is `RETRY_IN == 255`, **and nothing else**. The EPS has given up for
+  this key cycle and only an ignition cycle clears it, so the driver should be told rather than
+  the request retried into a dead EPS for the rest of the drive. It is deliberately **not
+  sticky on this side** — it is whatever the board's latest fresh frame says — so a one-frame
+  glitch cannot strand the driver, and the board clearing it clears this.
+* **`EPS_LATCHED` is not a latch, and is deliberately not ORed into the above.** Byte 3 bit 1
+  is the board's `refusing` flag (`gw_active.c:1391`), a *timed* hold with two lengths
+  (`gw_active.c:1017-1022`): `GW_REFUSE_HOLD_MS` = 60 s when the EPS reports an error state,
+  but `GW_NOACK_HOLD_MS` = **3 s** when it merely fails to acknowledge within
+  `GW_ACK_TIMEOUT_MS` — which this EPS does routinely below about 60 km/h (`HANDOFF.md` 0e).
+  `RETRY_IN` is what separates them: the board emits 255 only while `refusing && eps_errst != 0`
+  (`gw_active.c:1401-1406`) and otherwise counts the remaining hold down in seconds. Telling
+  the driver to cycle the ignition over a three-second hold he cannot even reach the key for is
+  the failure this distinction prevents. `carStateSP.epsLatched` carries the bit through as
+  "the board is inside its refusal hold" and nothing stronger.
+* **`applied` is quantised to 2 counts.** The board packs `(int8)(cmd / 2)` with C truncation
+  toward zero (`gw_active.c:1394`), so the `±1` that `SP-PROTOCOL-V3` rule 3 requires of every
+  engage onset reads back as `0`. Any "openpilot is asking and nothing is on the wire" check
+  built on `applied` will misfire on the first frames of every ramp — use `grantState`, or
+  `0x704 CMD_APPLY_STEER`, which is a full int16.
+* **`REASON = 6` "brake" is defined in the protocol and never emitted.** `GW_RSN_BRAKE` exists
+  at `gw_active.c:234`; the reason ladder at `gw_active.c:1356-1375` has no brake branch and
+  the inhibit mask has no brake bit, so a brake-time withdrawal arrives as `1` "no request".
+  Do not build a UI that waits for 6, and do not read a `1` during braking as a missing `0x0E4`.
 * A change of `(valid, STATE, REASON)` is logged once through `carlog`, so the reason is in the
   route log even where nothing renders it.
+
+> **Round 1 is telemetry only — the car does not yet speak.** Everything above lands on
+> `carStateSP.linbusGateway` and in the route log, and the only consumer of that struct in the
+> tree is `selfdrive/controls/controlsd.py`, which reads `present` and `actuating` to hold the
+> integrator. `granted`, `grantReason`, `retryIn`, `authority`, `epsErrorState` and
+> `latchedUntilKeyOff` have **no reader**: the single `carlog.warning` is the whole
+> driver-facing surface. So when the board refuses on the next drive, the driver is still shown
+> nothing — the refusal is diagnosable afterwards, from the log, which is the point of this
+> round. Wiring `grantReason` / `latchedUntilKeyOff` into an alert is round 2, together with
+> the board-side work the three "not implemented" notes above call for.
 
 Stale after 50 carstate frames (500 ms), counted in frames because `CarState.update()` is not
 handed a clock. A stale frame reports zeros, not the last thing it heard.
@@ -387,7 +463,9 @@ On the next drive with v3 deployed, in the comma log:
 6. `0x500 OP_STATE` walks `ready → requesting → active` and back, and `MAX_TORQUE` is 0 on
    every frame.
 7. `0x0E4` byte 2 bit 2 (`SERIAL_DOMAIN`) is **0** on every frame, and bits 5:4 track the lane
-   departure warnings.
+   departure warnings **in openpilot's own transmitted frame**. That is all this check can
+   prove: the board does not decode those bits yet, so do not also expect a warning at the
+   cluster or on the serial line.
 8. Brake presses during an engagement: the command reaches 0 within 200 ms, and comes back
    afterwards.
 

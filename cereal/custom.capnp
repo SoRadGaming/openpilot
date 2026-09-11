@@ -473,21 +473,36 @@ struct CarStateSP @0xb86e6369214c01c8 {
     # 5 blinker, 6 brake, 7 standstill, 8 EPS refused (latched), 9 EPS not acknowledging,
     # 10 serial checksum errors, 11 integrator too large, 12 camera fault, 13 board fault,
     # 14 dry run, 15 soft start in progress (not a refusal).
+    # 6 "brake" is defined in the protocol and NOT emitted by firmware 875ba124: GW_RSN_BRAKE
+    # exists (gw_active.c:234) but the reason ladder has no brake branch, so a brake-time
+    # withdrawal arrives as 1 "no request". Do not build a UI that waits for 6.
     grantReason @7 :UInt8;
     # grantState is intro, active or limited, and the frame is fresh.
     granted @8 :Bool;
-    authority @9 :UInt8;        # the board's ceiling in serial counts, after negotiation
+    # The board's ceiling in serial counts. REPORTED ONLY: firmware 875ba124 reads
+    # SP_HUD_STATUS.MAX_TORQUE solely to compute this byte (gw_active.c:1348) and commands
+    # against its compile-time GW_LIN_AUTHORITY regardless (gw_active.c:1104,1108), so this
+    # number is what the board SAYS its ceiling is, not a ceiling openpilot can set.
+    authority @9 :UInt8;
     epsAck @10 :Bool;           # the EPS is acknowledging LKAS on
-    epsLatched @11 :Bool;       # only a key cycle clears it
+    # The board is inside its refusal hold -- RECOVERABLE, not a key-cycle latch. It is the
+    # board's `refusing` flag (gw_active.c:1391): 60 s for an EPS error state, but only 3 s
+    # for a missing acknowledgement. retryIn == 255 is the key-cycle latch; see below.
+    epsLatched @11 :Bool;
     epsErrorState @12 :UInt8;   # 4 is this EPS's refusal code
     epsFresh @13 :Bool;         # the board is hearing the EPS at all
     camLkasOn @14 :Bool;        # the stock camera is asking for LKAS
-    applied @15 :Int16;         # serial counts actually put on the wire
+    # Serial counts actually put on the wire, QUANTISED TO 2: the board packs (int8)(cmd / 2)
+    # with C truncation (gw_active.c:1394), so a commanded +/-1 -- which every engage onset is,
+    # by SP-PROTOCOL-V3 rule 3 -- reports as 0. Never use this as an "is anything on the wire"
+    # test; use grantState, or CMD_APPLY_STEER on 0x704, which is a full int16.
+    applied @15 :Int16;
     motorTorque @16 :Int16;     # the EPS's own motor torque
     retryIn @17 :UInt8;         # seconds until a new request is considered; 255 = key cycle
-    # retryIn == 255 or epsLatched: the EPS has given up for this key cycle. Say so rather
-    # than retrying into a dead EPS for the rest of the drive. Not sticky on this side -- it
-    # is whatever the board's latest fresh frame says, so the board clearing it clears this.
+    # retryIn == 255, and nothing else: the EPS has given up for this key cycle. Say so rather
+    # than retrying into a dead EPS for the rest of the drive. epsLatched is deliberately NOT
+    # ORed in -- it is a timed hold, see above. Not sticky on this side either -- it is
+    # whatever the board's latest fresh frame says, so the board clearing it clears this.
     latchedUntilKeyOff @18 :Bool;
   }
 }
