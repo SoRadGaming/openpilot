@@ -61,8 +61,8 @@ class LatControlTorque(LatControl):
                         self.lateral_accel_from_torque(-self.steer_max, self.torque_params))
 
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, lat_delay):
-    # LIN-bus gateway: edge-tracked every frame, active or not, so the reset lands on the
-    # exact frame the board takes over. See LatControl._linbus_integrator_gate.
+    # LIN-bus gateway: edge-tracked every frame, active or not, so the takeover is seen on
+    # the exact frame the board starts actuating. See LatControl._linbus_integrator_gate.
     linbus_hold = self._linbus_integrator_gate()
     # Override torque params from extension
     if self.extension.update_override_torque_params(self.torque_params):
