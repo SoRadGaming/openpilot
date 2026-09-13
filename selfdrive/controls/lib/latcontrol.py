@@ -2,6 +2,11 @@ import numpy as np
 from abc import abstractmethod, ABC
 from openpilot.selfdrive.locationd.helpers import Pose
 
+# LIN-bus gateway: how much learned steering trim may survive a hold, and how fast a hold
+# forgets it. Units are lateral acceleration, the space the torque controller's PID runs in.
+LINBUS_I_CARRY_MAX = 0.25   # m/s^2, ~2.5x the trim d3/d4 settled on, well under the b3 windup
+LINBUS_I_HOLD_TAU = 30.0    # s, so a minute of not actuating keeps about an eighth of it
+
 
 class LatControl(ABC):
   def __init__(self, CP, CP_SP, CI, dt):
@@ -39,20 +44,36 @@ class LatControl(ABC):
   def _linbus_integrator_gate(self) -> bool:
     """True while the integrator must be held for the gateway.
 
-    Both halves are needed. Freeze alone leaves whatever the integrator held when the board
-    engages; reset alone lets it wind during a dry run and dump it in on the first closed
-    frame. Together, i is zero until the loop is genuinely closed and only ever integrates
-    against a car that is responding.
+    The freeze is the load-bearing half: while the board is not actuating the loop is open,
+    so nothing is integrated against a car that is not listening. That alone makes the
+    open-loop windup this gate was written for (+0.65 on route 000000b3) unreachable.
+
+    The takeover used to zero the integrator outright, and that turned out to cost more than
+    it bought. This car has a real, one-signed steering trim -- routes 000000d3 and 000000d4
+    hold the integrator positive in all 14 lateral engagements, settling between +0.04 and
+    +0.20 m/s^2, roughly ten serial counts of right-hand torque against a persistent left
+    pull. Starting from zero every time means re-learning it, and the two engagements that
+    did start from zero took 14.1 s and 14.2 s to reach 63% of their settled value. The board
+    was actuating for only 48% (d3) and 65% (d4) of the time openpilot was laterally active,
+    so that re-learn was paid over and over. From the driver's seat it is the car drifting
+    left at every takeover and correcting itself half a minute later.
+
+    So the trim is carried across a hold instead, with two bounds on how much history can
+    survive: it is clipped to LINBUS_I_CARRY_MAX on the takeover frame, and it decays with
+    LINBUS_I_HOLD_TAU while held, so a trim learned on one road is forgotten rather than
+    applied to the next one after a long dark stretch.
     """
     if not self.linbus_gateway_present:
       self._linbus_was_actuating = False
       self.integrator_frozen = False
       return False
     actuating = self.linbus_gateway_actuating
-    if actuating and not self._linbus_was_actuating:
-      pid = getattr(self, "pid", None)
-      if pid is not None:
-        pid.reset()
+    pid = getattr(self, "pid", None)
+    if pid is not None:
+      if actuating and not self._linbus_was_actuating:
+        pid.i = float(np.clip(pid.i, -LINBUS_I_CARRY_MAX, LINBUS_I_CARRY_MAX))
+      elif not actuating:
+        pid.i = float(pid.i * np.exp(-self.dt / LINBUS_I_HOLD_TAU))
     self._linbus_was_actuating = actuating
     self.integrator_frozen = not actuating
     return self.integrator_frozen
