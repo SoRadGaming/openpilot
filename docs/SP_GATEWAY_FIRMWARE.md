@@ -17,9 +17,16 @@ Sources, in order of authority:
 
 ---
 
-## 0. Read this first: the torque domain is wrong today
+## 0. The torque domain — FIXED on the board, kept here for the record
 
-Everything else in this document is detail. This is the headline.
+**Status 2026-09-17: resolved, and not the way this section originally proposed.** The board now
+reads the full int16 and scales it itself (`gw_active.c`: `op_torque * GW_LIN_AUTHORITY /
+GW_OP_FULL_SCALE`), so openpilot stays in its 2560 domain and nothing aliases. openpilot can opt into
+the serial domain instead by setting `0x0E4` byte 2 bit 2, in which case the gain is unity and
+`GW_LIN_AUTHORITY` becomes a true clamp; it does not set that bit today and does not need to.
+
+The rest of this section is the original finding that prompted the fix. Read §11 for what authority
+means now.
 
 `0x0E4 STEER_TORQUE` is a 16-bit signed CAN signal, but **the board does not use 16 bits.** Both
 reference firmwares decode it identically:
@@ -80,6 +87,24 @@ elif candidate in (CAR.HONDA_ACCORD_9G, CAR.ACURA_TLX_1G):  # source mlocoteta
 
 **The board should not paper over this.** A firmware that clamps instead of wrapping would hide a
 control-loop bug behind a saturated actuator. See §4.4 for what to do instead: clamp *and* report it.
+
+---
+
+## 0.1 What that leaves openpilot to do
+
+Nothing, for the domain. `lateralParams` stays `[[0, 2560]]`, the declaration bit stays clear, and
+the board does the conversion. Two second-order consequences worth keeping in view:
+
+* **openpilot's rate limiter now lands in the right place by accident, and stays there.** Its limit
+  is 0.03 of full scale per frame, so the delivered step is `0.03 × AUTHORITY`: **2.4 counts/frame at
+  80**, 3.6 at 120, 4.8 at 160. The stock camera's p99 is 5 and its maximum is 16, so the whole
+  authority ladder stays inside the stock envelope without a per-car `STEER_DELTA_UP` override.
+* **`actuators.torque` is not clipped to `steer_max`.** `latcontrol_torque_v0` checks
+  `steer_max - abs(output_torque) < 1e-3` for the saturation flag but never clips, so route `de`
+  carries a peak of **1.433**. It is harmless — `np.interp` clips it against the ±2560 lookup and the
+  board clamps again at authority — but it means "1.0" is not the ceiling it looks like, and any
+  arithmetic on `actuators.torque` should clip first. This is stock openpilot behaviour, not a fork
+  change.
 
 ---
 
@@ -557,6 +582,70 @@ forwards, **only** while `0x500 LAT_ACTIVE` is 1, and recompute the Honda checks
 
 Doing nothing is also defensible. The beep is annoying, not dangerous, and it is honest feedback
 that openpilot is running closer to a lane edge than the stock camera likes.
+
+---
+
+## 7.5 Authority: why it is 80 and what raising it costs
+
+Asked directly: *why is it below the stock maximum?*
+
+**The ceiling is not below stock.** `GW_LIN_MAX_ABS` is **160**, which is exactly the most the stock
+camera asked for in 566,312 frames, and it is the EPS's own limit rather than a style choice. Route
+`000000d7` settled that in one event: the board had run 770 s at authority 200 and never put more
+than 159 counts on the wire, then one clean ramp put **six consecutive frames above 160** (166, 172,
+178, 184, 190, 196) and the very next frame came back with **EPS error state 3**, a code eight hours
+of previous logs had never produced, latched for the key cycle. That is LINInterfaceV2's documented
+"6 frames over threshold" rule reproduced exactly, with the threshold at 160-165 rather than the 241
+that author recorded. Routes `d5` and `d6` touched exactly 160 on 34 and 26 frames, never six in a
+row, and never drew an error. **Treat 160 as hardware.**
+
+**What is below stock is `GW_LIN_AUTHORITY`, currently 80**, and it is a rung on a deliberate ladder
+(40 → 80 → 120 → 160) rather than a cap. While openpilot is in the 2560 domain it is a **gain**:
+openpilot's full-scale ±1.0 maps to ±`AUTHORITY` counts, so the clamp itself never binds and raising
+the number multiplies every frame, including any bias openpilot is carrying, linearly. It started at
+40 = 25 % of the camera's maximum, at a time when the integrator-windup question was still open.
+
+### It is now the binding constraint
+
+Measured over the last three drives, the fraction of lateral-active frames where openpilot's own
+output is at full scale:
+
+| route | at ≥0.95 of full scale | delivered p50 at authority 80 |
+|---|---|---|
+| `dd` | 5.3 % | 17 counts |
+| `de` | 10.4 % | 18 counts |
+| `df` | **54.6 %** | 80 counts |
+
+The stock camera's ordinary demand is higher than what we deliver at the median: it runs 21-23 counts
+and spends a quarter of its steering frames above 40, sustaining 46.7 through a 364 m sweeper. So
+openpilot is asking for everything it is allowed and still under-steering relative to stock.
+
+### But do not raise it in the same image as the driver-torque fix
+
+The railing above is **partly an artefact of the bug §7.2 just fixed**. `freeze_integrator` includes
+`CS.steeringPressed`, and on route `de` `steeringPressed` was stuck true for 85 % of the drive
+because the latched value sat above the threshold. A controller with its integrator frozen for most
+of an hour leans entirely on P and feedforward, which is exactly what makes it rail. `_check_saturation`
+was disabled by the same flag, which is why the logged `saturated` rate is 0.00-0.58 % while the
+output was at full scale for up to half the drive — the saturation lamp has been lying too.
+
+So some unknown share of that 54.6 % should disappear on its own now that the integrator works. The
+firmware's own ladder discipline already says the right thing about this: *"the authority is the
+variable the ladder exists to measure and the one most easily confounded, so nothing else that moves
+|cmd| may ride with it."* Raising authority in the same build as the torque fix makes both
+unmeasurable.
+
+### The order
+
+1. **Next drive: the driver-torque fix alone, authority stays 80.** Re-measure the rail fraction and
+   the `saturated` rate. Those two numbers are the whole question.
+2. **Then 120 as an isolated image** — `-DGW_AUTHORITY=120`, already a build flag for exactly this
+   reason. The firmware's own projection is delivered p50 33-38, p90 75-78, peak 121, against the
+   stock camera's p99 of 112-119. Expect roughly 1.2×, not 1.5×: the measured per-count gain is flat
+   (−16.07 mdeg/count/s at 40 against −17.11 at 80), so 40→80 bought 1.19× [0.85, 1.70].
+3. **160 is not a rung.** At 160 the projection is p90 100-104 and peak 161, which puts a six-frame
+   run at the EPS's threshold within reach of one sweeper. The headroom between the ladder and the
+   cliff is the reason the cliff has only been hit once.
 
 ---
 
