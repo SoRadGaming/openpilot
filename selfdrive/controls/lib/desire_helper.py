@@ -56,7 +56,7 @@ class DesireHelper:
   def get_lane_change_direction(CS):
     return LaneChangeDirection.left if CS.leftBlinker else LaneChangeDirection.right
 
-  def update(self, carstate, lateral_active, lane_change_prob):
+  def update(self, carstate, lateral_active, lane_change_prob, driver_torque_stale=False):
     self.alc.update_params()
     self.lane_turn_controller.update_params()
     v_ego = carstate.vEgo
@@ -84,7 +84,14 @@ class DesireHelper:
         # Update lane change direction
         self.lane_change_direction = self.get_lane_change_direction(carstate)
 
-        torque_applied = carstate.steeringPressed and \
+        # A latched steeringTorque cannot confirm anything. On HONDA_ELESYS the EPS stops
+        # updating it while it is under LKAS control, so the reading is the driver's torque
+        # from the moment the gateway engaged and it never changes again. Honouring it makes
+        # every lane change in whichever direction that stale value happens to point fire on
+        # the first frame of preLaneChange, and every lane change the other way impossible.
+        # Measured on routes dd/de/df: 14 of 17 confirmations landed in a single 0.05 s
+        # sample, and all 10 failures were the direction the latched sign opposed.
+        torque_applied = carstate.steeringPressed and not driver_torque_stale and \
                          ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
                           (carstate.steeringTorque < 0 and self.lane_change_direction == LaneChangeDirection.right))
 

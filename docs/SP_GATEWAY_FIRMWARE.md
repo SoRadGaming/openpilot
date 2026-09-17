@@ -7,8 +7,9 @@ line as a result.
 
 Sources, in order of authority:
 
-1. **Our own 100 Hz CAN logs** (routes `000000c4`..`000000c9`). Where a reference and a log disagree,
-   the log wins.
+1. **Our own 100 Hz CAN logs** — routes `000000c4`..`000000c9` (board in dry run, stock driving) and
+   `000000dd`..`000000df` (board actuating for real). Where a reference and a log disagree, the log
+   wins.
 2. **`mvl-boston/openpilot@lkas-test` + `mvl-boston/opendbc`** — a working openpilot integration of
    this exact hardware on a 2013-2017 (9th gen) Accord. Cloned to `S:\OP\refs\mvl-lkas-test`.
 3. **`S:\LKAS\Software\`** — the three reference firmwares: `LKAS_EPS_V3-master` (V3),
@@ -103,15 +104,16 @@ Honda limits are written for CAN-domain torque" does not hold: there are no such
 
 | | mvl-boston 2017 Accord | ours (Accord 9G AU, ELESYS) |
 |---|---|---|
-| native `STEER_STATUS` on CAN | **absent** — board synthesizes it on `0x190` | **present and live** on `0x18F`, 24 982 frames/route |
-| driver torque source | board's 9-bit LIN value, ±255 | car's own sensor, ±7000, p50 2693 |
-| `STEER_THRESHOLD` | 30 (serial counts) | 1200 default (CAN counts) — **leave alone** |
+| native `STEER_STATUS` on CAN | board synthesizes it on `0x190` | present on `0x18F`, but **latches while LKAS is engaged** (§7.2) |
+| driver torque source | board's 9-bit LIN value, ±255 | car's own sensor, ±7000 — **dead whenever openpilot is steering** |
+| `STEER_THRESHOLD` | 30 (serial counts) | 1200 default (CAN counts), while the CAN value is live |
 | lateral controller | PID, `ki = 0` | torque control (`latAccelFactor` 1.69, `friction` 0.21) |
 | `steerActuatorDelay` | 0.3 | 0.15 |
 
-So we need their torque domain, and **not** their `STEER_STATUS` replacement or their
-`STEER_THRESHOLD`. Our board does not have to synthesize steering feedback at all; the car already
-provides it.
+So we need their torque domain **and** their driver-torque republishing. We do not need their
+`STEER_STATUS` replacement wholesale: our `0x18F` still carries a usable `STEER_STATUS` enum and
+`STEER_CONTROL_ACTIVE` even while its torque bytes are latched, so the board should add a frame
+(§7.2) rather than overwrite one.
 
 Two of their choices are worth copying on the first live drive:
 
@@ -439,26 +441,65 @@ consumer reads `ENGAGED && !DRY_RUN`.
 LIN line **after** the clamp, the wiggle and the intro. Reporting the commanded value there would
 hide exactly the bug this document exists to find.
 
-### 7.2 What we deliberately do **not** copy
+### 7.2 REQUIRED: the board must publish driver torque
 
-mvl-boston's board synthesizes a whole `STEER_STATUS` on `0x190` and openpilot reads its driver
-torque and fault state from there:
+**This section replaced an earlier version that was wrong.** It previously said we did not need
+mvl-boston's synthesized `STEER_STATUS` because our car reports driver torque natively on `0x18F`.
+It does — right up to the moment openpilot starts steering, and then it stops.
+
+Measured on routes `dd`, `de`, `df`, the first drives where the board actuated for real
+(`0x704 DRY_RUN` = 0):
+
+> **For as long as `0x18F STEER_CONTROL_ACTIVE` is 1, `STEER_TORQUE_SENSOR` and
+> `STEER_ANGLE_RATE` stop updating.** The frame keeps arriving at exactly 100 Hz with a rolling
+> counter and a valid checksum; `canValid` stays true; only the data is dead. The value held is
+> whatever the driver's torque was at the instant the gateway engaged.
+
+| | |
+|---|---|
+| correlation with `STEER_CONTROL_ACTIVE` | **1.000** (also 1.000 with `latActive` and with gateway `ENGAGED`) |
+| longest single freeze | **946 s**, at 28 m/s, steering angle moving −13.5° to +7.4° |
+| share of drive with torque frozen | 41 % (`dd`), 69 % (`de`), 14 % (`df`) |
+| value changes while engaged | 935 of 118 635 frames (0.8 %); while not engaged, 98 % |
+| `STEER_ANGLE_RATE` mean \|x\| | **2.33 °/s** frozen vs 30.0 °/s live |
+| distinct `0x18F` payloads, 800 s window | 165 while engaged vs 7 649 per 100 s while not |
+
+`STEER_MOTOR_TORQUE` (`0x1AB`) **does not exist on this car** — zero frames in any route — so
+`steeringTorqueEps` is not a fallback. While the board actuates there is **no driver-torque signal
+anywhere on CAN.**
+
+So mvl-boston's design is not a workaround for a missing message. It is the only way to have driver
+torque at all while LKAS is engaged, and we need the same thing. The board already decodes the value
+(§6.2); it must put it on CAN.
+
+**Requirement.** Publish the driver torque decoded from the EPS serial frame, at 100 Hz, on a
+sunnypilot-owned address — `0x70C GW_DRIVER_TORQUE` is free. Do **not** overwrite `0x18F`: openpilot
+also reads `STEER_STATUS` and `STEER_CONTROL_ACTIVE` off it, and a second writer on an address the
+car already transmits is a collision, not an upgrade.
 
 ```
-BO_ 400 STEER_STATUS: 5 EPS
- SG_ STEER_TORQUE_SENSOR : 0|9@1- ...      # driver torque, serial counts
- SG_ LIN_INTERFACE_FATAL_ERROR : 10|1@0+
- SG_ LATE_MESSAGE : 11|1@0+
- SG_ STEER_STATUS : 12|4@1+                # the EPS error state from §6.3
- SG_ LKAS_ALLOWED : 9|1@0+
- SG_ STEER_CONTROL_ACTIVE : 23|16@0-       # the board's applied torque
+BO_ 1804 GW_DRIVER_TORQUE: 8 STM
+ SG_ DRIVER_TORQUE   : 7|16@0-  (1,0)  [-256|256] "" ADAS   # §6.2, left positive
+ SG_ TORQUE_VALID    : 16|1@0+  (1,0)  [0|1]      "" ADAS   # a good EPS frame this cycle
+ SG_ EPS_LKAS_ON     : 17|1@0+  (1,0)  [0|1]      "" ADAS   # serial B1 bit 5
+ SG_ EPS_ERROR_STATE : 23|4@0+  (1,0)  [0|15]     "" ADAS   # §6.3
+ SG_ COUNTER         : 61|2@0+  (1,0)  [0|3]      "" ADAS
+ SG_ CHECKSUM        : 59|4@0+  (1,0)  [0|15]     "" ADAS
 ```
 
-They need it because their car has no EPS on CAN. **Ours does** — `0x18F` is live at 24 982
-frames/route with real driver torque and a real status enum. Overriding it with a board-synthesized
-copy would throw away the car's own sensor and put a second writer on an address openpilot already
-reads. Keep `0x18F`, keep `STEER_THRESHOLD` at the 1200 default, and carry the board's own state on
-`0x70B` where it does not collide with anything.
+Scale it in **serial counts** (±255), and openpilot will apply its own threshold: the equivalent of
+the 1200 CAN-domain default is about **43** serial counts, from the ±7000 / ±255 ratio. mvl-boston
+uses 30. Until this frame exists, openpilot cannot see the driver at all while it is steering, and
+`carStateSP.driverTorqueStale` is set to say so.
+
+### 7.3 Two bugs in the reference not to inherit
+
+For anyone reading `txSteerStatus()` in `LKAS_EPS_V3` as a model:
+
+* `msg.buf[1] |= (!lkasAllowed << 5) & 0x10;` is always 0. `!x` is 0 or 1, `<< 5` gives 0 or 0x20,
+  and `& 0x10` clears it. The intent was `<< 4`, to force a temporary steer fault when LKAS is not
+  allowed. As written the forced fault never fires.
+* The signal named `LKAS_ALLOWED` carries `!lkasAllowed`. The sense is inverted relative to the name.
 
 Two bugs in their `txSteerStatus()` worth not inheriting, for anyone reading that code as a model:
 
@@ -466,6 +507,35 @@ Two bugs in their `txSteerStatus()` worth not inheriting, for anyone reading tha
   and `& 0x10` clears it. The intent was `<< 4`, to force a temporary steer fault when LKAS is not
   allowed. As written the forced fault never fires.
 * The signal named `LKAS_ALLOWED` carries `!lkasAllowed`. The sense is inverted relative to the name.
+
+---
+
+### 7.4 The stock camera still runs its own lane-departure warning
+
+Reported as "beeps when near the edge of the lane". It is not openpilot: our `0x500` LDW bits were
+set on **0 frames of all three routes**. It is the camera's own Road Departure Mitigation, on
+`0x33D LKAS_HUD`, which we deliberately never take over:
+
+| route | BEEP events | RDM_HUD events |
+|---|---|---|
+| `dd` | 15 | 11 |
+| `de` | 16 | 9 |
+| `df` | 6 | 2 |
+
+**99 % of those beeps (167 of 169 frames on `dd`) landed while openpilot was steering.** The camera
+has no idea openpilot is in control, so it warns about a lane position openpilot chose on purpose.
+
+The board is the only thing in a position to fix it, because it is the only thing in line. If you
+want to suppress it, clear `RDM_HUD` (byte 1 bit 1) and `BEEP` (byte 2 bits 1:0) in the `0x33D` it
+forwards, **only** while `0x500 LAT_ACTIVE` is 1, and recompute the Honda checksum. Two hard rules:
+
+* **Never clear `LKAS_PROBLEM`** (byte 1 bit 4). openpilot reads it back off bus 0 on this platform;
+  suppressing it pins `carFaultedNonCritical` false and blinds openpilot to real camera faults.
+* **Never suppress while openpilot is not steering.** RDM is a real safety feature the rest of the
+  time, and it is the driver's only lane-departure warning when openpilot is off.
+
+Doing nothing is also defensible. The beep is annoying, not dangerous, and it is honest feedback
+that openpilot is running closer to a lane edge than the stock camera likes.
 
 ---
 
@@ -512,6 +582,11 @@ Not the board's job, but the board's behaviour is undefined until these land. In
    `0x500` frames were v2, `INTEGRATOR` stayed within ±0.02 for the whole drive and
    `INTEGRATOR_FROZEN` was 1 throughout while the board reported `DRY_RUN`.
 7. **No panda change.** §1.
+8. **`carStateSP.driverTorqueStale`** (shipped): set while `0x18F` is latched, forces
+   `steeringPressed` False so a 15-minute-old sample cannot freeze the integrator, fool driver
+   monitoring, starve torqued and lagd, or silence the take-over alert. The lane-change nudge
+   ignores a stale reading. This is a mitigation, not a fix — it replaces wrong information with
+   none. Only §7.2 restores the signal.
 
 ---
 
@@ -525,3 +600,6 @@ Not the board's job, but the board's behaviour is undefined until these land. In
   mirror must be enabled in the live image.
 * `0x70B STATE` reaches `ACTIVE`, with `REASON` explaining every second in which it does not.
 * `0x704`: `ENGAGED && !DRY_RUN` true while steering, and `INTEGRATOR_FROZEN` 1 whenever it is not.
+* `carStateSP.driverTorqueStale` is **false for the whole drive**. It is true today on 41-69 % of
+  every engaged drive, and it will stay true until `0x70C` (§7.2) exists. That flag going quiet is
+  the single check that says driver-override sensing works again.

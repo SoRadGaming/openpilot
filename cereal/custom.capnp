@@ -447,6 +447,14 @@ struct CarStateSP @0xb86e6369214c01c8 {
   speedLimit @0 :Float32;
   linbusGateway @1 :LinbusGateway;
 
+  # HONDA_ELESYS: the EPS stops updating STEER_TORQUE_SENSOR (0x18F) for as long as it is
+  # under LKAS control, so carState.steeringTorque is a LATCH of whatever the driver was
+  # doing at the instant the gateway engaged. Measured on routes dd/de/df: frozen for up to
+  # 946 s at a time while the wheel was actively moving, on 41-69 % of the drive, with the
+  # frame still arriving at 100 Hz and canValid true throughout. See docs/SP_GATEWAY_FIRMWARE.md.
+  # True means: nothing may infer driver intent from steeringTorque this frame.
+  driverTorqueStale @2 :Bool;
+
   # State of the aftermarket LIN-bus gateway that translates openpilot's steering
   # request to the EPS. Decoded from GW_ACTIVE (0x704). See docs/SP_HUD_STATUS.md.
   struct LinbusGateway {
