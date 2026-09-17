@@ -441,7 +441,7 @@ consumer reads `ENGAGED && !DRY_RUN`.
 LIN line **after** the clamp, the wiggle and the intro. Reporting the commanded value there would
 hide exactly the bug this document exists to find.
 
-### 7.2 REQUIRED: the board must publish driver torque
+### 7.2 The board already publishes driver torque — openpilot now reads it
 
 **This section replaced an earlier version that was wrong.** It previously said we did not need
 mvl-boston's synthesized `STEER_STATUS` because our car reports driver torque natively on `0x18F`.
@@ -468,29 +468,50 @@ Measured on routes `dd`, `de`, `df`, the first drives where the board actuated f
 `steeringTorqueEps` is not a fallback. While the board actuates there is **no driver-torque signal
 anywhere on CAN.**
 
+**This is the EPS's own behaviour and it predates the board.** Route `0000001f`, recorded in July
+before this board existed, contains a 7.7 s stock LKAS engagement with a 4.7 s frozen run inside it.
+The reason the frozen fraction looks so much worse now is simply that openpilot's engagements are
+long: 36 % of the engaged time on `1f`, 81 % on `c8` (board fitted but passive, stock driving), 99 %
+on `dd`. Nothing the board does causes it and nothing it does can avoid it.
+
 So mvl-boston's design is not a workaround for a missing message. It is the only way to have driver
-torque at all while LKAS is engaged, and we need the same thing. The board already decodes the value
-(§6.2); it must put it on CAN.
+torque at all while LKAS is engaged.
 
-**Requirement.** Publish the driver torque decoded from the EPS serial frame, at 100 Hz, on a
-sunnypilot-owned address — `0x70C GW_DRIVER_TORQUE` is free. Do **not** overwrite `0x18F`: openpilot
-also reads `STEER_STATUS` and `STEER_CONTROL_ACTIVE` off it, and a second writer on an address the
-car already transmits is a collision, not an upgrade.
+**No firmware change is needed.** The board already puts the value on the bus, at 100 Hz, in
+`0x700 EPS_LIN_RAW` — one CAN frame per EPS serial frame. Measured on route `dd`:
 
-```
-BO_ 1804 GW_DRIVER_TORQUE: 8 STM
- SG_ DRIVER_TORQUE   : 7|16@0-  (1,0)  [-256|256] "" ADAS   # §6.2, left positive
- SG_ TORQUE_VALID    : 16|1@0+  (1,0)  [0|1]      "" ADAS   # a good EPS frame this cycle
- SG_ EPS_LKAS_ON     : 17|1@0+  (1,0)  [0|1]      "" ADAS   # serial B1 bit 5
- SG_ EPS_ERROR_STATE : 23|4@0+  (1,0)  [0|15]     "" ADAS   # §6.3
- SG_ COUNTER         : 61|2@0+  (1,0)  [0|3]      "" ADAS
- SG_ CHECKSUM        : 59|4@0+  (1,0)  [0|15]     "" ADAS
-```
+| | |
+|---|---|
+| rate on bus 0 | 100.0 Hz, 286 046 frames |
+| still moving while `0x18F` is latched | **43.5 %** of samples change |
+| `CHECKSUM_OK` | 1.000 on every frame of `dd`, `de`, `df` |
+| fit against `0x18F` while both live | `0x18F = -64.52 × STEER_TORQUE`, **R² 0.9991**, residual RMS 134 CAN counts |
 
-Scale it in **serial counts** (±255), and openpilot will apply its own threshold: the equivalent of
-the 1200 CAN-domain default is about **43** serial counts, from the ±7000 / ±255 ratio. mvl-boston
-uses 30. Until this frame exists, openpilot cannot see the driver at all while it is steering, and
-`carStateSP.driverTorqueStale` is set to say so.
+openpilot now decodes four signals from it (`STEER_TORQUE`, `EPS_LKAS_ON`, `CHECKSUM_OK`,
+`GW_COUNTER`) and substitutes the torque whenever `0x18F` is latched, converting into the car's CAN
+domain with that −64.5 so every existing threshold, `torqued`, driver monitoring and the lane-change
+nudge keep working unchanged. The board's value is **left negative**, the opposite of
+`CarState.steeringTorque`; the conversion flips it.
+
+Replayed over the three routes, the nudge windows that were previously decided by a frozen constant:
+
+| route | windows with a detectable nudge |
+|---|---|
+| `dd` | 7 of 7 |
+| `de` | 12 of 14 |
+| `df` | 4 of 7 |
+
+The ones still not detected are windows where the driver did not push toward the blinker at all
+(peak toward the blinker 0, 387 and 516 counts), which is the correct answer. On `dd`'s 946 s
+engagement — the one that latched at −528 and so reported `steeringPressed` false for its entire
+length — the substituted signal crosses the 600 threshold on 24.7 % of frames, with peaks to 6321.
+
+Two things the board **must not** do: do not overwrite `0x18F` (openpilot still reads `STEER_STATUS`
+and `STEER_CONTROL_ACTIVE` off it, and a second writer on an address the car already transmits is a
+collision), and do not drop `0x700` from a future live image without saying so — it is now load
+bearing, not debug. If it ever has to move, a dedicated frame at 100 Hz carrying the same value at
+full 9-bit resolution would be strictly better than the current scale-2 int8, whose one LSB is
+129 CAN counts.
 
 ### 7.3 Two bugs in the reference not to inherit
 
@@ -582,11 +603,11 @@ Not the board's job, but the board's behaviour is undefined until these land. In
    `0x500` frames were v2, `INTEGRATOR` stayed within ±0.02 for the whole drive and
    `INTEGRATOR_FROZEN` was 1 throughout while the board reported `DRY_RUN`.
 7. **No panda change.** §1.
-8. **`carStateSP.driverTorqueStale`** (shipped): set while `0x18F` is latched, forces
-   `steeringPressed` False so a 15-minute-old sample cannot freeze the integrator, fool driver
-   monitoring, starve torqued and lagd, or silence the take-over alert. The lane-change nudge
-   ignores a stale reading. This is a mitigation, not a fix — it replaces wrong information with
-   none. Only §7.2 restores the signal.
+8. **Driver torque from `0x700`** (shipped): substituted whenever `0x18F` is latched, which
+   restores override detection and the lane-change nudge. `carStateSP.driverTorqueStale` is now only
+   set when there is no substitute either — a board that is silent or reporting a bad EPS checksum —
+   and in that case `steeringPressed` is forced False so a 15-minute-old sample cannot freeze the
+   integrator, fool driver monitoring, starve torqued and lagd, or silence the take-over alert.
 
 ---
 
@@ -600,6 +621,7 @@ Not the board's job, but the board's behaviour is undefined until these land. In
   mirror must be enabled in the live image.
 * `0x70B STATE` reaches `ACTIVE`, with `REASON` explaining every second in which it does not.
 * `0x704`: `ENGAGED && !DRY_RUN` true while steering, and `INTEGRATOR_FROZEN` 1 whenever it is not.
-* `carStateSP.driverTorqueStale` is **false for the whole drive**. It is true today on 41-69 % of
-  every engaged drive, and it will stay true until `0x70C` (§7.2) exists. That flag going quiet is
-  the single check that says driver-override sensing works again.
+* `carStateSP.driverTorqueStale` is **false for the whole drive**. It was true on 41-69 % of every
+  engaged drive before `0x700` was wired in; it should now only appear if the board goes quiet.
+* `carState.steeringTorque` keeps moving through an engagement instead of sitting on one value, and
+  a deliberate nudge toward the blinker confirms a lane change within a second or so.
