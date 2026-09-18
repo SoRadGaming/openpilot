@@ -23,6 +23,10 @@ SafetyModel = structs.CarParams.SafetyModel
 SET_SPEED_BUTTONS = (ButtonType.accelCruise, ButtonType.resumeCruise, ButtonType.decelCruise, ButtonType.setCruise)
 IGNORED_SAFETY_MODES = (SafetyModel.silent, SafetyModel.noOutput)
 
+# carStateSP.linbusGateway.grantReason, "driver override" -- the LIN-bus gateway has handed
+# the wheel back because the driver overpowered it. See cereal/custom.capnp LinbusGateway.
+LINBUS_REASON_DRIVER_OVERRIDE = 4
+
 
 class ModularAssistiveDrivingSystem:
   def __init__(self, selfdrive):
@@ -194,6 +198,31 @@ class ModularAssistiveDrivingSystem:
           if self.events_sp.contains(EventNameSP.lkasEnable):
             self.events_sp.remove(EventNameSP.lkasEnable)
             self.events_sp.add(EventNameSP.pedalPressedAlertOnly)
+
+    # THE GATEWAY HAS HANDED THE WHEEL BACK, SO GIVE IT BACK HERE TOO.
+    #
+    # On HONDA_ELESYS nothing openpilot can see says the car has stopped following it. The
+    # board releases on driver torque - it has to, because this EPS latches when it is
+    # overpowered while commanding: pooled over every route on disk, all four frames above
+    # 130 counts of driver torque drew a complaint, one of them the key-cycle latch that cost
+    # the last 436 s of route da. But latActive stays true, the command keeps going out, and
+    # the cluster keeps showing lateral engaged, so the driver is told the car is steering
+    # when the wheel is theirs. On routes dd and de the board was released and openpilot was
+    # still asking on 100% of the frames above 110 counts.
+    #
+    # So mirror it: MADS goes off, exactly as if the LKAS button had been pressed, and the
+    # driver turns it back on when they want it. That is what the stock system does.
+    #
+    # This is not a hair trigger. The board debounces before it releases - 80 ms above 90
+    # counts, or instantly above 110 - and the episodes it produces are real: 28 on dd and
+    # 21 on de, median 7.1 s and 8.7 s, and NOT ONE under a second on either drive.
+    #
+    # `granted` is false whenever `grantValid` is, so a board too old to send 0x70B, or one
+    # that has gone quiet, can never trigger this. `present` keeps it off every other car.
+    if self.enabled:
+      gw = self.selfdrive.sm['carStateSP'].linbusGateway
+      if gw.present and gw.grantValid and not gw.granted and gw.grantReason == LINBUS_REASON_DRIVER_OVERRIDE:
+        self.events_sp.add(EventNameSP.lkasDisable)
 
     if self.should_silent_lkas_enable(CS):
       if self.state_machine.state == State.paused:
