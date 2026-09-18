@@ -37,6 +37,7 @@ class ModularAssistiveDrivingSystem:
     self.enabled = False
     self.active = False
     self.available = False
+    self._gw_paused = False
     self.lateral_mismatch_counter = 0
     self.allow_always = False
     self.no_main_cruise = False
@@ -199,30 +200,47 @@ class ModularAssistiveDrivingSystem:
             self.events_sp.remove(EventNameSP.lkasEnable)
             self.events_sp.add(EventNameSP.pedalPressedAlertOnly)
 
-    # THE GATEWAY HAS HANDED THE WHEEL BACK, SO GIVE IT BACK HERE TOO.
+    # THE GATEWAY HAS THE WHEEL: PAUSE, DO NOT DISABLE.
     #
     # On HONDA_ELESYS nothing openpilot can see says the car has stopped following it. The
-    # board releases on driver torque - it has to, because this EPS latches when it is
-    # overpowered while commanding: pooled over every route on disk, all four frames above
-    # 130 counts of driver torque drew a complaint, one of them the key-cycle latch that cost
-    # the last 436 s of route da. But latActive stays true, the command keeps going out, and
-    # the cluster keeps showing lateral engaged, so the driver is told the car is steering
-    # when the wheel is theirs. On routes dd and de the board was released and openpilot was
-    # still asking on 100% of the frames above 110 counts.
+    # board releases on driver torque and latActive stayed true regardless, so the command
+    # kept going out and the cluster kept showing lateral engaged while the wheel was the
+    # driver's. On routes dd and de the board was released and openpilot was still asking on
+    # 100% of the frames above 110 counts.
     #
-    # So mirror it: MADS goes off, exactly as if the LKAS button had been pressed, and the
-    # driver turns it back on when they want it. That is what the stock system does.
+    # Route 000000e2 is the first drive with openpilot following the board, and the
+    # difference is large. Against 000000e1, the same road on the previous build:
     #
-    # This is not a hair trigger. The board debounces before it releases - 80 ms above 90
-    # counts, or instantly above 110 - and the episodes it produces are real: 28 on dd and
-    # 21 on de, median 7.1 s and 8.7 s, and NOT ONE under a second on either drive.
+    #             board engaged   peak |driver|   EPS latch
+    #     e1          42.7%           256          YES at t=945
+    #     e2          79.7%           173          none
+    #
+    # Stopping the command when the board stops is what keeps a disagreement short.
+    #
+    # PAUSED, NOT DISABLED. The first version raised lkasDisable, which turns MADS off and
+    # makes the driver press the button again. That is wrong for this: the board's release is
+    # a momentary thing - the episodes are seconds long and end by themselves - and the
+    # driver asked for the cluster to keep its dashed lanes throughout so the system is
+    # visibly still armed and comes back on its own. State.paused is in ENABLED_STATES but
+    # not ACTIVE_STATES, which is exactly that: MADS stays enabled, lateral goes inactive,
+    # and it resumes without a button.
+    #
+    # `_gw_paused` exists so we only ever resume a pause WE caused. A pause from the brake,
+    # the gear or a door is not ours to lift.
     #
     # `granted` is false whenever `grantValid` is, so a board too old to send 0x70B, or one
     # that has gone quiet, can never trigger this. `present` keeps it off every other car.
-    if self.enabled:
-      gw = self.selfdrive.sm['carStateSP'].linbusGateway
-      if gw.present and gw.grantValid and not gw.granted and gw.grantReason == LINBUS_REASON_DRIVER_OVERRIDE:
-        self.events_sp.add(EventNameSP.lkasDisable)
+    gw = self.selfdrive.sm['carStateSP'].linbusGateway
+    gw_override = bool(gw.present and gw.grantValid and not gw.granted and
+                       gw.grantReason == LINBUS_REASON_DRIVER_OVERRIDE)
+    if gw_override and self.enabled:
+      if self.state_machine.state != State.paused:
+        self._gw_paused = True
+      self.transition_paused_state()
+    elif self._gw_paused and not gw_override:
+      self._gw_paused = False
+      if self.state_machine.state == State.paused:
+        self.events_sp.add(EventNameSP.silentLkasEnable)
 
     if self.should_silent_lkas_enable(CS):
       if self.state_machine.state == State.paused:
