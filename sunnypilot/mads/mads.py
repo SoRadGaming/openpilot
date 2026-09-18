@@ -27,6 +27,27 @@ IGNORED_SAFETY_MODES = (SafetyModel.silent, SafetyModel.noOutput)
 # the wheel back because the driver overpowered it. See cereal/custom.capnp LinbusGateway.
 LINBUS_REASON_DRIVER_OVERRIDE = 4
 
+# EMERGENCY TAKEOVER: the driver moved the wheel FAST. This is the tier above the gateway's
+# ordinary driver-torque release - that one pauses and comes back by itself, this one turns
+# MADS off and waits to be asked again, which is what the driver wants out of a swerve.
+#
+# Steering rate separates the two cases far better than torque ever did. Pooled over 18
+# routes and 7,438 SECONDS of the gateway actually steering:
+#
+#     |steeringRateDeg|   p50 0   p95 3   p99 10   p99.9 51   MAX 151 deg/s
+#     frames at or above 200 deg/s while engaged: ZERO
+#
+# and over the same logs including manual driving, p99 is 243 and the maximum 840 - so a
+# real grab lives an order of magnitude above anything lane keeping has ever produced. 200
+# is 1.32x the highest single sample ever recorded under assist, and that sample was one
+# frame. Compare that with driver torque, where the engaged distribution and the takeover
+# distribution overlap so badly that nine EPS upsets on record range from 7 to 150 counts.
+#
+# Two frames because one sample at 200 deg/s with nothing either side of it is a decode
+# glitch, not a driver. 20 ms costs nothing against a manoeuvre that sustains hundreds.
+EMERGENCY_STEER_RATE = 200.0   # deg/s
+EMERGENCY_STEER_FRAMES = 2
+
 
 class ModularAssistiveDrivingSystem:
   def __init__(self, selfdrive):
@@ -38,6 +59,7 @@ class ModularAssistiveDrivingSystem:
     self.active = False
     self.available = False
     self._gw_paused = False
+    self._fast_steer = 0
     self.lateral_mismatch_counter = 0
     self.allow_always = False
     self.no_main_cruise = False
@@ -199,6 +221,17 @@ class ModularAssistiveDrivingSystem:
           if self.events_sp.contains(EventNameSP.lkasEnable):
             self.events_sp.remove(EventNameSP.lkasEnable)
             self.events_sp.add(EventNameSP.pedalPressedAlertOnly)
+
+    # EMERGENCY TAKEOVER FIRST: a fast wheel outranks everything below. See
+    # EMERGENCY_STEER_RATE. MADS goes OFF here, not paused - a swerve is not something to
+    # resume out of 300 ms later, and the driver asked for stock behaviour, which is off.
+    if abs(CS.steeringRateDeg) >= EMERGENCY_STEER_RATE:
+      self._fast_steer += 1
+    else:
+      self._fast_steer = 0
+    if self._fast_steer >= EMERGENCY_STEER_FRAMES and self.enabled:
+      self.events_sp.add(EventNameSP.lkasDisable)
+      self._gw_paused = False
 
     # THE GATEWAY HAS THE WHEEL: PAUSE, DO NOT DISABLE.
     #
