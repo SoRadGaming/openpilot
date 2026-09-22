@@ -15,6 +15,7 @@ The protocol itself is proven against real hardware -- a spare board on a bench
 candleLight, A to B to A with the slot CRC as the witness -- not here.
 """
 import ast
+import json
 import re
 import struct
 from pathlib import Path
@@ -301,3 +302,96 @@ def test_run_flash_saves_the_trace_on_the_failure_paths_too():
     any("save_trace" in ast.dump(stmt) for stmt in t.finalbody)
     for t in tries
   ), "save_trace is not in a finally block"
+
+
+def _replay(mod, frames):
+  """A Flasher with a trace already loaded, no transport activity."""
+  class T:
+    def describe(self): return "replay"
+    def send(self, *a): pass
+    def poll(self, timeout=0.0): return []
+    def close(self): pass
+  f = mod.Flasher(T(), log=lambda s: None)
+  for t, addr, data in frames:
+    f._trace.append((t, addr, data))
+  return f
+
+
+def test_the_steering_decoders_match_carstate():
+  """Both are 16-bit big-endian signed in the first four bytes. These exact
+  values were cross-checked against carState on route f1: the decode gives
+  2.4-2.5 deg where carState.steeringAngleDeg gives 2.5, and -74..0 counts
+  where carState.steeringTorque gives -74..0."""
+  mod = _module()
+  # STEER_ANGLE 7|16@0- scale -0.1  ->  raw -25 = 2.5 deg
+  ang, rate = mod.decode_steering_sensors(bytes([0xFF, 0xE7, 0x00, 0x00, 0, 0]))
+  assert abs(ang - 2.5) < 1e-9, ang
+  assert rate == 0.0
+  # STEER_TORQUE_SENSOR 7|16@0- scale -1  ->  raw 74 = -74 counts
+  assert mod.decode_steer_status(bytes([0x00, 0x4A, 0, 0, 0, 0, 0])) == -74
+  # sign both ways, and short frames refused rather than throwing
+  assert mod.decode_steer_status(bytes([0xFF, 0xB6, 0, 0, 0, 0, 0])) == 74
+  assert mod.decode_steering_sensors(b"") is None
+  assert mod.decode_steer_status(b"") is None
+
+
+def _synth(mod, span_deg, torque):
+  frames = []
+  for i in range(20):
+    raw = int(round((span_deg if i > 10 else 0.0) / -0.1))
+    frames.append((i * 0.01, 0x156,
+                   bytes([(raw >> 8) & 0xFF, raw & 0xFF, 0, 0, 0, 0])))
+    frames.append((i * 0.01, 0x18F,
+                   bytes([((-torque) >> 8) & 0xFF, (-torque) & 0xFF, 0, 0, 0, 0, 0])))
+  return _replay(mod, frames).summarise_trace()
+
+
+def test_the_verdict_separates_a_hand_from_something_driving_the_column():
+  """The whole reason the trace exists. A driver reported the wheel moving
+  during a flash with their hands off it; angle alone cannot tell the two
+  apart, angle against column torque can."""
+  mod = _module()
+  assert _synth(mod, 0.1, 50)["verdict"] == "wheel did not move"
+  assert "something drove the column" in _synth(mod, 3.0, 80)["verdict"]
+  assert "hand on the wheel" in _synth(mod, 3.0, 5000)["verdict"]
+
+
+def test_the_summary_is_small_enough_to_log_and_empty_when_there_is_nothing():
+  """It leaves the device inside cloudlog lines, so it has to stay small - and
+  an empty summary must be falsy so the hook does not write an empty param."""
+  mod = _module()
+  assert _replay(mod, []).summarise_trace() == {}
+  # a trace of nothing but untraced IDs is also nothing
+  assert _replay(mod, [(0.0, 0x1FA, bytes(8))]).summarise_trace() == {}
+
+  d = _synth(mod, 3.0, 80)
+  assert d["angle_span"] == 3.0
+  assert d["torque_absmax"] == 80
+  series = d.pop("series")
+  assert len(json.dumps(d)) < 400, "summary line is too big for a log"
+  # decimated, not one entry per frame
+  assert len(series) <= 20
+  assert all(len(x) == 3 for x in series)
+
+
+def test_run_flash_reports_the_trace_even_when_it_fails():
+  """A flash that went wrong is exactly when the trace matters, and the hook
+  cannot read it from a return value that never comes."""
+  mod = _module()
+  seen = []
+
+  class Broken:
+    def describe(self): raise RuntimeError("usb fell over")
+    def send(self, *a): pass
+    def poll(self, timeout=0.0): return []
+    def close(self): pass
+
+  ok, msg = mod.run_flash(Broken(), IMAGE.read_bytes(), log=lambda s: None,
+                          trace_out=seen.append)
+  assert not ok and "usb fell over" in msg
+  assert seen == [{}], "trace_out must still be called, with an empty summary"
+
+  # and a trace_out that throws must not change the outcome
+  ok, msg = mod.run_flash(Broken(), IMAGE.read_bytes(), log=lambda s: None,
+                          trace_out=lambda d: (_ for _ in ()).throw(ValueError("boom")))
+  assert not ok and "usb fell over" in msg, "trace_out must not mask the result"

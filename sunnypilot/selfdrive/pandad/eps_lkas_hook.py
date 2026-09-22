@@ -61,6 +61,10 @@ STATE_PARAM = "EpsLkasFlashState"
 VERSION_PARAM = "EpsLkasBoardVersion"
 BUILD_PARAM = "EpsLkasBoardBuild"
 SEEN_PARAM = "EpsLkasBoardSeenAt"
+# The flash runs offroad with loggerd stopped, so nothing it logs is recorded
+# anywhere. This param is how the steering trace survives to the next drive,
+# where card emits it into an ordinary route.
+TRACE_PARAM = "EpsLkasFlashTrace"
 
 WATCH_PERIOD_S = 1.0
 
@@ -185,6 +189,7 @@ def flash_if_requested(panda_serial: str, bus: int = 0, transport_factory=None) 
       transport, image,
       log=lambda s: cloudlog.info(f"eps-lkas:{s}"),
       progress=lambda p: params.put(PROGRESS_PARAM, str(p)),
+      trace_out=lambda d: params.put(TRACE_PARAM, d) if d else None,
     )
 
     if ok:

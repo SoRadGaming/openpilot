@@ -83,6 +83,7 @@ class Car:
     self._board_fw_build: dict | None = None
     self._board_fw_pending: tuple[str, dict] | None = None
     self._board_fw_seen_at: float = 0.0
+    self._flash_trace_done = False
     self.initialized_prev = False
 
     self.last_actuators_output = structs.CarControl.Actuators()
@@ -335,6 +336,34 @@ class Car:
       self._board_fw_seen_at = now
       self.params.put("EpsLkasBoardSeenAt", str(int(time.time())))
 
+  def log_flash_trace(self) -> None:
+    """Emit the last flash's steering trace into this route, once.
+
+    The board is updated offroad, where loggerd is not running - so a flash
+    records nothing at all. The trace is captured by the flasher into a param;
+    this puts it somewhere a route will carry, which is the only way it
+    reaches anyone without SSH on the device.
+
+    Chunked, because one 10 KB log line is not a good idea, and cleared after
+    so it appears in exactly one route.
+    """
+    if self._flash_trace_done:
+      return
+    self._flash_trace_done = True
+    try:
+      d = self.params.get("EpsLkasFlashTrace")
+      if not d:
+        return
+      series = d.pop("series", [])
+      cloudlog.warning(f"eps-lkas flash trace {d}")
+      for i in range(0, len(series), 40):
+        cloudlog.warning(f"eps-lkas flash trace series[{i}] {series[i:i + 40]}")
+      self.params.remove("EpsLkasFlashTrace")
+    except Exception:
+      # Diagnostics must never take card down. It died once already on this
+      # path, from a str handed to a JSON-typed param.
+      pass
+
   def controls_update(self, CS: car.CarState, CC: car.CarControl, CC_SP: custom.CarControlSP):
     """control update loop, driven by carControl"""
 
@@ -376,6 +405,7 @@ class Car:
       self.dynamic_experimental_control = self.params.get_bool("DynamicExperimentalControl")
       self.v_cruise_helper.read_custom_set_speed_params()
       self.write_board_firmware()
+      self.log_flash_trace()
 
       time.sleep(0.1)
 

@@ -193,6 +193,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"EpsLkasFlashRequested", {CLEAR_ON_MANAGER_START, BOOL}},
     {"EpsLkasFlashProgress", {CLEAR_ON_MANAGER_START, STRING}},
     {"EpsLkasFlashState", {CLEAR_ON_MANAGER_START, STRING}},
+    // PERSISTENT, unlike the three above, and deliberately: the flash happens
+    // offroad with loggerd stopped, so the steering trace has to survive until
+    // the next drive for card to emit it into a route. CLEAR_ON_MANAGER_START
+    // would throw it away at exactly the wrong moment.
+    {"EpsLkasFlashTrace", {PERSISTENT, JSON}},
     {"IsDevelopmentBranch", {CLEAR_ON_MANAGER_START, BOOL}},
     {"IsReleaseSpBranch", {CLEAR_ON_MANAGER_START, BOOL}},
     {"LastGPSPositionLLK", {PERSISTENT, STRING}},

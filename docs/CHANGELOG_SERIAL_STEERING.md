@@ -30,11 +30,36 @@ keeps two of them:
 0x18F STEER_STATUS       STEER_TORQUE_SENSOR (column torque), 100 Hz
 ```
 
-written to `/data/eps-lkas-trace/flash-<unixtime>.csv` as raw timestamped
-bytes — no decoding in the receive path, no opendbc import in a module that
-has to load on a bench. Bounded at 24,000 frames (~2 min of both), saved in a
-`finally` so a failed flash keeps its trace too, and every part of the write
-is best-effort: a full disk costs the trace and nothing else.
+kept as raw timestamped bytes — no decoding in the receive path, no opendbc
+import in a module that has to load on a bench. Bounded at 24,000 frames
+(~2 min of both), captured in a `finally` so a failed flash keeps its trace
+too.
+
+**And it comes out without SSH, because not everyone has it.** The first cut
+wrote a CSV to `/data/eps-lkas-trace/` and stopped there, which is useless to
+anyone who cannot fetch a file off the device. The trace now travels the way
+everything else does:
+
+```
+flasher  decodes it into a summary + a 10 Hz series   (summarise_trace)
+hook     puts that in EpsLkasFlashTrace, PERSISTENT   (survives the restart)
+card     emits it to cloudlog on the next drive, once, then clears the param
+```
+
+So it lands in an ordinary route. Flash, drive, send the route — nothing else.
+The CSV is still written for anyone who does have SSH.
+
+The summary states the discriminator outright rather than leaving it to be
+re-derived: `wheel did not move`, `moved, with column torque - looks like a
+hand on the wheel`, or `MOVED WITH LOW COLUMN TORQUE - something drove the
+column`. The decoders are cross-checked against `carState` on route f1 — 2.5°
+against `steeringAngleDeg`, −74..0 against `steeringTorque` — and a test pins
+both.
+
+`EpsLkasFlashTrace` is PERSISTENT on purpose: `CLEAR_ON_MANAGER_START`, which
+the other three flash params use, would throw the trace away at exactly the
+wrong moment. It is written as a **dict**, not `json.dumps`, for the reason
+that killed `card` once before.
 
 Those two also separate the two candidate causes without a scope: **angle
 moving while column torque stays in the low hundreds means something drove the

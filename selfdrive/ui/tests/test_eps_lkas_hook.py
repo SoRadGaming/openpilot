@@ -210,3 +210,36 @@ def test_pandad_calls_the_hook_and_the_watcher_in_the_right_places():
   assert i_flash_panda < i_hook < i_popen, "the hook is in the wrong place"
   # the watcher needs the process object, and must be armed before we block
   assert i_popen < i_watch < i_wait, "the watcher is not armed before the wait"
+
+
+def test_the_flash_trace_survives_to_the_next_drive():
+  """The flash runs offroad with loggerd stopped, so nothing it records is
+  kept. The trace reaches a human through a param that card emits into the
+  next route - which means the key must be PERSISTENT, not cleared when
+  manager restarts, and the value must be a dict.
+  """
+  root = Path(__file__).parents[3]
+  keys = (root / "common/params_keys.h").read_text()
+  line = next(l for l in keys.splitlines() if "EpsLkasFlashTrace" in l and "{" in l)
+  assert "PERSISTENT" in line, \
+    "CLEAR_ON_MANAGER_START would throw the trace away at exactly the wrong moment"
+  assert "JSON" in line
+
+  hook = (root / "sunnypilot/selfdrive/pandad/eps_lkas_hook.py").read_text()
+  assert "trace_out=" in hook, "the hook never asks for the trace"
+  # THE DICT, NOT json.dumps(d). Params.put looks up PYTHON_2_CPP[(type,
+  # keytype)], which has (dict, JSON) and (list, JSON) and no (str, JSON) -
+  # a pre-serialised string raises TypeError. This already killed card once.
+  assert "json.dumps" not in hook.split("trace_out=")[1].split(chr(10))[0]
+
+  card = (root / "selfdrive/car/card.py").read_text()
+  assert "EpsLkasFlashTrace" in card, "nothing emits it into a route"
+  tree = ast.parse(card)
+  fn = next(n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "log_flash_trace")
+  dumped = ast.dump(fn)
+  assert "_flash_trace_done" in dumped, "it would re-log every 100 ms"
+  assert "remove" in dumped, "the trace must appear in exactly one route"
+  assert any(isinstance(h.type, ast.Name) and h.type.id == "Exception"
+             for n in ast.walk(fn) if isinstance(n, ast.Try) for h in n.handlers), \
+    "diagnostics must never take card down"

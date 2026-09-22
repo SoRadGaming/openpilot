@@ -103,6 +103,34 @@ ENGINE_DATA_ID = 0x158
 TRACE_IDS = (0x156, 0x18F)
 TRACE_MAX = 24000          # ~2 min of both at 100 Hz; ~1 MB of raw bytes
 TRACE_DIR = "/data/eps-lkas-trace"
+TRACE_HZ = 10              # the summary series; the raw file keeps all 100 Hz
+
+
+def _i16be(b: bytes, off: int) -> int:
+  """Both signals are 16-bit big-endian signed in the first four bytes."""
+  v = (b[off] << 8) | b[off + 1]
+  return v - 65536 if v & 0x8000 else v
+
+
+def decode_steering_sensors(d: bytes) -> tuple[float, float] | None:
+  """0x156: STEER_ANGLE 7|16@0- (-0.1), STEER_ANGLE_RATE 23|16@0- (1).
+
+  Checked against carState on route f1: this decode gives 2.4..2.5 deg where
+  carState.steeringAngleDeg gives 2.5, and the rate matches at 0.
+  """
+  if len(d) < 4:
+    return None
+  return (_i16be(d, 0) * -0.1, float(_i16be(d, 2)))
+
+
+def decode_steer_status(d: bytes) -> int | None:
+  """0x18F: STEER_TORQUE_SENSOR 7|16@0- (-1). Column torque, not motor torque.
+
+  Checked against carState on route f1: -74..0 from both.
+  """
+  if len(d) < 2:
+    return None
+  return -_i16be(d, 0)
 STATIONARY_CPH = 100               # 1.00 km/h, same decode the bootloader uses
 
 # panda can_recv() reports frames back with the bus number offset like this
@@ -543,6 +571,74 @@ class Flasher:
     self._drain()
     self._send_raw(ID_HOST, bytes([CMD_REBOOT]))
 
+  def summarise_trace(self) -> dict:
+    """Decode the trace into something small enough to put in a log line.
+
+    THIS IS HOW THE TRACE LEAVES THE DEVICE. The raw CSV needs SSH to fetch,
+    which not every owner has, so the answer has to travel out the way
+    everything else does: a param, emitted to cloudlog by card once the next
+    drive starts, landing in an ordinary route.
+
+    The verdict field is the discriminator stated plainly, because the whole
+    point is to tell two things apart: angle moving while column torque stays
+    small means something drove the column; torque in the thousands leading
+    the angle means a hand on the wheel.
+    """
+    ang: list[tuple[float, float, float]] = []      # t, deg, deg/s
+    tq: list[tuple[float, int]] = []                # t, counts
+    for t, addr, data in self._trace:
+      if addr == 0x156:
+        if (v := decode_steering_sensors(data)) is not None:
+          ang.append((t, v[0], v[1]))
+      elif addr == 0x18F:
+        if (v := decode_steer_status(data)) is not None:
+          tq.append((t, v))
+    if not ang and not tq:
+      return {}
+
+    t0 = min(x[0] for x in (ang or tq))
+    degs = [a for _, a, _ in ang]
+    rates = [abs(r) for _, _, r in ang]
+    tqs = [abs(v) for _, v in tq]
+
+    span = (max(degs) - min(degs)) if degs else 0.0
+    peak_tq = max(tqs) if tqs else 0
+
+    if not degs:
+      verdict = "no angle frames"
+    elif span < 0.5:
+      verdict = "wheel did not move"
+    elif peak_tq >= 1000:
+      verdict = "moved, with column torque - looks like a hand on the wheel"
+    else:
+      verdict = "MOVED WITH LOW COLUMN TORQUE - something drove the column"
+
+    # Decimated to TRACE_HZ so the whole thing fits in a handful of log lines.
+    series = []
+    step = 1.0 / TRACE_HZ
+    nxt = t0
+    ti = 0
+    for t, a, _r in ang:
+      if t < nxt:
+        continue
+      nxt = t + step
+      while ti + 1 < len(tq) and tq[ti + 1][0] <= t:
+        ti += 1
+      series.append([round(t - t0, 2), round(a, 1),
+                     tq[ti][1] if tq else 0])
+
+    return {
+      "n": len(self._trace),
+      "dur": round((max(x[0] for x in (ang or tq)) - t0), 2),
+      "angle_min": round(min(degs), 1) if degs else None,
+      "angle_max": round(max(degs), 1) if degs else None,
+      "angle_span": round(span, 1),
+      "rate_max": round(max(rates), 1) if rates else None,
+      "torque_absmax": peak_tq,
+      "verdict": verdict,
+      "series": series,
+    }
+
   def save_trace(self, directory: str = TRACE_DIR) -> str | None:
     """Write the steering trace out. Returns the path, or None.
 
@@ -579,7 +675,8 @@ def describe_hello(d: bytes) -> dict:
 def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
               progress: Callable[[int], None] | None = None,
               dry_run: bool = False, knock: bool = True,
-              hello_timeout: float = 25.0) -> tuple[bool, str]:
+              hello_timeout: float = 25.0,
+              trace_out: Callable[[dict], None] | None = None) -> tuple[bool, str]:
   """Do the whole thing. Returns (ok, message). NEVER RAISES."""
   f = None
   try:
@@ -657,8 +754,17 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
   finally:
     # On the failure paths too - a flash that went wrong is exactly when the
     # steering trace is worth having.
-    if f is not None and (p := f.save_trace()):
-      log(f"  steering trace: {len(f._trace)} frames -> {p}")
+    if f is not None:
+      if (p := f.save_trace()):
+        log(f"  steering trace: {len(f._trace)} frames -> {p}")
+      # The caller decides where this goes. The hook puts it in a param,
+      # because a file on /data needs SSH and the answer has to reach someone
+      # who does not have it.
+      if trace_out is not None:
+        try:
+          trace_out(f.summarise_trace())
+        except Exception:
+          pass
 
 
 def load_bundled_image() -> tuple[bytes | None, str]:
