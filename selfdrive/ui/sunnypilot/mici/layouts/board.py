@@ -26,6 +26,8 @@ from collections.abc import Callable
 
 import pyray as rl
 
+from openpilot.selfdrive.ui.mici.widgets.button import BigButton
+from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog, BigDialog
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.multilang import tr
@@ -35,6 +37,13 @@ from openpilot.system.ui.widgets.scroller import NavScroller
 
 # params are files: read them on a tick, not every frame
 REFRESH_S = 1.0
+
+REQUEST_PARAM = "EpsLkasFlashRequested"
+PROGRESS_PARAM = "EpsLkasFlashProgress"
+STATE_PARAM = "EpsLkasFlashState"
+
+ICON_SIZE = 110
+ICON = "../../sunnypilot/selfdrive/assets/offroad/icon_software.png"
 
 
 def board_firmware() -> tuple[str, dict]:
@@ -206,6 +215,105 @@ class BoardIdentityInfo(Widget):
     self.can_text.render()
 
 
+class UpdateBoardButton(BigButton):
+  """Reflash the gateway board over CAN, from here.
+
+  WHAT THIS BUTTON ACTUALLY DOES: writes one param. pandad's wrapper is
+  watching for it, asks the pandad binary to stand down, flashes the board in
+  the window where nothing else owns the panda, and restarts it. The UI process
+  is untouched throughout, which is why progress can be shown at all.
+
+  THE GATE IS RE-CHECKED INSIDE THE CONFIRM CALLBACK, not only before the
+  dialog opens. A full-screen slide-to-confirm can sit open across an ignition
+  event, and the device.py precedent makes exactly this point about engagement.
+  Between the slide completing and the callback running there is also most of a
+  second of dismiss animation, which is plenty of time for the car to become a
+  car that is on.
+
+  IMPERATIVE enabled STATE, set every tick. Widget.set_enabled has ONE slot and
+  is a plain assignment with no save or restore anywhere, so mixing a callable
+  and a bool means whichever came last wins forever. Every in-tree button that
+  tracks offroad does it this way, from inside _update_state.
+  """
+
+  def __init__(self):
+    super().__init__(tr("update firmware"), "", gui_app.texture(ICON, 70, 70))
+    self.set_click_callback(self._on_click)
+    self._updated = 0.0
+    self._asked = False        # we wrote the request; waiting for pandad
+    self.refresh()
+
+  # -- gating ---------------------------------------------------------------
+  @staticmethod
+  def _can_update() -> tuple[bool, str]:
+    """(allowed, why not). The reason is shown, because a dead button with no
+    explanation is the worst of both."""
+    _version, build = board_firmware()
+    if not build:
+      return False, tr("needs a debugger once")
+    if not build.get("bootloader"):
+      return False, tr("needs a debugger once")
+    if not ui_state.is_offroad():
+      return False, tr("not while driving")
+    return True, ""
+
+  def _on_click(self) -> None:
+    allowed, why = self._can_update()
+    if not allowed:
+      gui_app.push_widget(BigDialog("", why))
+      return
+
+    def confirm() -> None:
+      # Re-checked here: the dialog can sit open across an ignition, and the
+      # dismiss animation adds most of a second on top.
+      ok, _ = self._can_update()
+      if not ok:
+        return
+      ui_state.params.put_bool(REQUEST_PARAM, True)
+      self._asked = True
+      self.set_value(tr("requested"))
+
+    gui_app.push_widget(BigConfirmationDialog(
+      tr("slide to\nupdate the gateway"), gui_app.texture(ICON, ICON_SIZE, ICON_SIZE),
+      confirm, exit_on_confirm=True, red=True))
+
+  # -- what the sub-label says ----------------------------------------------
+  def refresh(self) -> None:
+    self._updated = time.monotonic()
+    params = ui_state.params
+    state = params.get(STATE_PARAM) or ""
+
+    if state == "running":
+      pct = params.get(PROGRESS_PARAM) or "0"
+      self._asked = False
+      self.set_value(tr("updating {}%").format(pct))
+    elif state.startswith("ok "):
+      self._asked = False
+      self.set_value(tr("updated · {}").format(state[3:]))
+    elif state.startswith("failed"):
+      self._asked = False
+      # The whole reason is in the log; a 536 px card cannot carry it.
+      self.set_value(tr("failed — see log"))
+    elif self._asked or params.get_bool(REQUEST_PARAM):
+      # pandad only looks once a second, and only acts when the pandad binary
+      # next exits. Saying nothing here reads as a button that did nothing.
+      self.set_value(tr("requested"))
+    else:
+      allowed, why = self._can_update()
+      version, _build = board_firmware()
+      self.set_value(version if allowed else why)
+
+    self.set_enabled(self._can_update()[0] and not self._busy())
+
+  def _busy(self) -> bool:
+    state = ui_state.params.get(STATE_PARAM) or ""
+    return state == "running" or self._asked
+
+  def _update_state(self):
+    if time.monotonic() - self._updated > REFRESH_S:
+      self.refresh()
+
+
 class BoardLayoutMici(NavScroller):
   def __init__(self, back_callback: Callable):
     super().__init__()
@@ -213,16 +321,18 @@ class BoardLayoutMici(NavScroller):
 
     self._firmware_info = BoardFirmwareInfo()
     self._identity_info = BoardIdentityInfo()
+    self._update_btn = UpdateBoardButton()
 
     # add_widgets is on the inner _Scroller, and going through it is what
     # re-wraps each widget's touch-valid callback with the scroller's own
     # conditions. self.add_widgets(...) does not exist.
-    self._scroller.add_widgets([self._firmware_info, self._identity_info])
+    self._scroller.add_widgets([self._firmware_info, self._identity_info, self._update_btn])
 
   def show_event(self):
     super().show_event()
     self._firmware_info.refresh()
     self._identity_info.refresh()
+    self._update_btn.refresh()
 
 
 def board_page_visible() -> bool:

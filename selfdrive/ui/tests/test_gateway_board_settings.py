@@ -18,6 +18,7 @@ which is not available in every test environment. The DBC and the capnp schema
 ARE loaded, because that is the only way to prove the byte order is right -- and
 the byte order is the one thing here that a reviewer cannot check by eye.
 """
+import ast
 import re
 import struct
 from pathlib import Path
@@ -158,3 +159,78 @@ def test_panel_says_last_seen_not_live():
   panel = BOARD_PANEL.read_text()
   assert "last seen" in panel
   assert "def board_last_seen" in panel
+
+
+# ---------------------------------------------------------------------------
+# The update button. Source-level, like the rest of this file: the panel pulls
+# in raylib, which is not available in every test environment.
+
+FLASH_PARAMS = ["EpsLkasFlashRequested", "EpsLkasFlashProgress", "EpsLkasFlashState"]
+
+
+def test_flash_params_are_registered():
+  registered = set(re.findall(r'\{"(\w+)",\s*\{', PARAMS_KEYS.read_text()))
+  for key in FLASH_PARAMS:
+    assert key in registered, f"{key} is not in params_keys.h; Params would raise UnknownKeyName"
+
+  # A request that survived a restart would be a request nobody made.
+  entry = re.search(r'\{"EpsLkasFlashRequested",\s*\{([^}]*)\}', PARAMS_KEYS.read_text())
+  assert entry and "CLEAR_ON_MANAGER_START" in entry.group(1)
+
+
+def test_button_exists_and_is_on_the_page():
+  panel = BOARD_PANEL.read_text()
+  assert "class UpdateBoardButton(BigButton)" in panel
+  code = "\n".join(line.split("#", 1)[0] for line in panel.splitlines())
+  assert re.search(r"add_widgets\(\[.*_update_btn\]\)", code), \
+    "the button is built but never added to the scroller"
+
+
+def test_confirmation_exits_on_confirm():
+  """With exit_on_confirm=False the full-screen dialog stays up forever on a
+  536x240 screen, with no feedback and the button hidden behind it."""
+  panel = BOARD_PANEL.read_text()
+  assert "exit_on_confirm=True" in panel
+  assert "BigConfirmationDialog(" in panel
+
+
+def test_the_gate_is_rechecked_inside_the_confirm_callback():
+  """A slide-to-confirm can sit open across an ignition event, and the dismiss
+  animation adds most of a second on top. device.py makes the same point about
+  engagement: "Check engaged again in case it changed while the dialog was
+  open"."""
+  panel = BOARD_PANEL.read_text()
+  tree = ast.parse(panel)
+  confirm = None
+  for node in ast.walk(tree):
+    if isinstance(node, ast.FunctionDef) and node.name == "confirm":
+      confirm = node
+  assert confirm is not None, "no confirm callback found"
+  calls = [n.func.attr for n in ast.walk(confirm)
+           if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+  assert "_can_update" in calls, "the confirm callback does not re-check the gate"
+  assert "put_bool" in calls, "the confirm callback does not write the request param"
+
+
+def test_enabled_state_is_imperative_and_never_mixed():
+  """Widget.set_enabled has ONE slot and is a plain assignment with no save or
+  restore anywhere, so mixing a callable and a bool means whichever ran last
+  wins for the life of the UI process."""
+  panel = BOARD_PANEL.read_text()
+  code = "\n".join(line.split("#", 1)[0] for line in panel.splitlines())
+  assert "set_enabled(lambda" not in code, "callable and imperative styles are mixed"
+  # and it must actually be re-asserted on the tick, not set once in __init__
+  tree = ast.parse(panel)
+  refresh = next(n for n in ast.walk(tree)
+                 if isinstance(n, ast.FunctionDef) and n.name == "refresh"
+                 and any(isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                         and c.func.attr == "set_enabled" for c in ast.walk(n)))
+  assert refresh is not None
+
+
+def test_a_refusal_is_explained_not_silent():
+  """A dead button with no reason is the worst of both."""
+  panel = BOARD_PANEL.read_text()
+  assert "BigDialog(" in panel, "a blocked press says nothing"
+  assert "needs a debugger once" in panel
+  assert "not while driving" in panel
