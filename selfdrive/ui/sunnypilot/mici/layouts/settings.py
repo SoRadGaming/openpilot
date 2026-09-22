@@ -12,6 +12,7 @@ from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog, Bi
 from openpilot.selfdrive.ui.sunnypilot.mici.layouts.sunnylink import SunnylinkLayoutMici
 from openpilot.selfdrive.ui.sunnypilot.mici.layouts.models import ModelsLayoutMici
 from openpilot.selfdrive.ui.sunnypilot.mici.layouts.vehicle import VehicleLayoutMici, car_brand
+from openpilot.selfdrive.ui.sunnypilot.mici.layouts.board import BoardLayoutMici, board_page_visible
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.multilang import tr
@@ -51,6 +52,15 @@ class SettingsLayoutSP(OP.SettingsLayout):
     # hidden by a brand lookup that came back empty
     vehicle_btn.set_visible(lambda: car_brand() in ("", "honda"))
 
+    # the EPS-LKAS gateway board: which firmware is on it, and whether it can be
+    # updated over CAN at all. Hidden until the board has identified itself once,
+    # so a car without one never sees it.
+    board_panel = BoardLayoutMici(back_callback=gui_app.pop_widget)
+    board_btn = SettingsBigButton(tr("gateway"), "",
+                                  gui_app.texture("../../sunnypilot/selfdrive/assets/offroad/icon_software.png", ICON_SIZE, ICON_SIZE))
+    board_btn.set_click_callback(lambda: gui_app.push_widget(board_panel))
+    board_btn.set_visible(board_page_visible)
+
     # onroad: enable button sits at the front (left of toggles)
     self._enable_offroad_btn_onroad = BigCircleButton(self.icon_offroad_enable, red=True)
     self._enable_offroad_btn_onroad.set_click_callback(lambda: self._handle_always_offroad(True))
@@ -70,6 +80,7 @@ class SettingsLayoutSP(OP.SettingsLayout):
     items.insert(1, sunnylink_btn)
     items.insert(2, models_btn)
     items.insert(3, vehicle_btn)
+    items.insert(4, board_btn)
 
     # front slots (only one ever visible at a time): exit-always-offroad, then enable-onroad
     items.insert(0, self._enable_offroad_btn_onroad)

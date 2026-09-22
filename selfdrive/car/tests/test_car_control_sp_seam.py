@@ -78,6 +78,23 @@ def run_checks() -> list[tuple[str, bool, str]]:
   r = cap.as_reader()
   check("...and round-trips", r.linbusGateway.present and r.linbusGateway.actuating and r.linbusGateway.valid and not r.linbusGateway.dryRun)
 
+  # The firmware-identity fields, which are the ones most likely to drift: they are
+  # written by a decoder in the opendbc submodule and read by a UI page in this repo,
+  # so nothing else makes the two halves meet. fwGitHash is UInt32 specifically -
+  # about half of all commits have the top bit set, and an Int32 would make those
+  # negative on the wire and unrecognisable against git log.
+  cs_sp_fw = structs.CarStateSP()
+  cs_sp_fw.linbusGateway.fwValid = True
+  cs_sp_fw.linbusGateway.fwGitHash = 0xF1234567
+  cs_sp_fw.linbusGateway.fwAppSlot = True
+  cs_sp_fw.linbusGateway.fwBootloader = True
+  cs_sp_fw.linbusGateway.boardUid = 0x3F2A10
+  rf = convert_to_capnp(cs_sp_fw).as_reader().linbusGateway
+  check("linbusGateway firmware fields convert", rf.fwValid and rf.fwAppSlot and rf.fwBootloader)
+  check("fwGitHash is UInt32: a top-bit-set commit survives", rf.fwGitHash == 0xF1234567)
+  check("boardUid round-trips", rf.boardUid == 0x3F2A10)
+  check("unset firmware fields default false/zero", not rf.fwDirty and not rf.fwReadOnly)
+
   # --- every nested struct in the capnp schema must be rebuilt by the converter
   schema_nested = [n for n in custom.CarControlSP.schema.fieldnames
                    if custom.CarControlSP.schema.fields[n].proto.slot.type.which() == "struct"]

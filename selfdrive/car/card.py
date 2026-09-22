@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 import time
 import threading
@@ -78,6 +79,8 @@ class Car:
     self.CC_prev = car.CarControl.new_message()
     self.CS_prev = car.CarState.new_message()
     self.CS_SP_prev = custom.CarStateSP.new_message()
+    self._board_fw_version: str | None = None
+    self._board_fw_build: dict | None = None
     self.initialized_prev = False
 
     self.last_actuators_output = structs.CarControl.Actuators()
@@ -268,6 +271,41 @@ class Car:
     cs_sp_send.valid = CS.canValid
     cs_sp_send.carStateSP = CS_SP
     self.pm.send('carStateSP', cs_sp_send)
+
+    self.publish_board_firmware(CS_SP)
+
+  def publish_board_firmware(self, CS_SP: custom.CarStateSP) -> None:
+    """Latch the LIN-bus gateway's firmware identity into params.
+
+    WHY A PARAM AND NOT JUST carStateSP. card is only_onroad, so carStateSP does not exist
+    when the settings page is open -- which is offroad, always. Without a latch the page
+    could never show anything. The param is the only way the answer outlives the drive.
+
+    Written on CHANGE, not on a timer. A param put is a disk write and this is called at
+    100 Hz; the board sends this once a minute and its content changes about once a month.
+    """
+    gw = CS_SP.linbusGateway
+    if not gw.fwValid:
+      return
+
+    # Comparing the formatted string, not the int, so the stored form is the compared form
+    # and a format change cannot silently stop matching.
+    version = f"{gw.fwGitHash:08x}"
+    build = {"dirty": bool(gw.fwDirty), "appSlot": bool(gw.fwAppSlot),
+             "bootloader": bool(gw.fwBootloader), "readOnly": bool(gw.fwReadOnly),
+             "uid": f"{gw.boardUid:06x}"}
+    if version != self._board_fw_version or build != self._board_fw_build:
+      self._board_fw_version = version
+      self._board_fw_build = build
+      self.params.put("EpsLkasBoardVersion", version)
+      self.params.put("EpsLkasBoardBuild", json.dumps(build))
+      cloudlog.info(f"eps-lkas board firmware {version} {build}")
+
+    # "Last seen" is a separate, much slower write: it is the difference between "the board
+    # was talking this drive" and "this is what it said the last time it did", and the
+    # settings page is misleading without it. Once a minute is plenty for a 1/min frame.
+    if self.sm.frame % int(60. / DT_CTRL) == 0:
+      self.params.put("EpsLkasBoardSeenAt", str(int(time.time())))
 
   def controls_update(self, CS: car.CarState, CC: car.CarControl, CC_SP: custom.CarControlSP):
     """control update loop, driven by carControl"""

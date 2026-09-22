@@ -512,6 +512,22 @@ struct CarStateSP @0xb86e6369214c01c8 {
     # ORed in -- it is a timed hold, see above. Not sticky on this side either -- it is
     # whatever the board's latest fresh frame says, so the board clearing it clears this.
     latchedUntilKeyOff @18 :Bool;
+
+    # GW_VERSION (0x707) + GW_BUILD (0x70F) -- WHICH FIRMWARE AND WHICH BOARD.
+    #
+    # Sent once at mode entry and once a minute, so these are the slowest fields in this
+    # struct by three orders of magnitude. GW_BUILD does not exist at all on firmware older
+    # than 625b782a, and NEITHER frame is sent by a board sitting in its CAN bootloader --
+    # that one answers on 0x711 HELLO instead. fwValid is the only honest "have we ever
+    # heard this"; `present` above means "this platform can have a board", not that one
+    # answered.
+    fwValid @19 :Bool;
+    fwGitHash @20 :UInt32;      # first 8 hex digits of the commit, as %08x
+    fwDirty @21 :Bool;          # built from an edited tree: fwGitHash names a commit it is NOT
+    fwAppSlot @22 :Bool;        # linked for 0x08004000, i.e. runs under the bootloader
+    fwBootloader @23 :Bool;     # a bootloader IS at 0x08000000 -- gates any CAN update
+    fwReadOnly @24 :Bool;       # the INCAR_READONLY stand-down image
+    boardUid @25 :UInt32;       # 24-bit folded MCU UID: which physical board
   }
 }
 

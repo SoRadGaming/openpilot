@@ -177,6 +177,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"HondaDynBrakeGain", {PERSISTENT, FLOAT, "0.0"}},
     {"IntelligentCruiseButtonManagement", {PERSISTENT | BACKUP , BOOL}},
     {"InteractivityTimeout", {PERSISTENT | BACKUP, INT, "0"}},
+    // EPS-LKAS gateway board. PERSISTENT because the settings page is offroad and card,
+    // which writes these, is only_onroad -- without persistence the page could never show
+    // anything. Paired with EpsLkasBoardSeenAt so the row can say "last seen" rather than
+    // implying the value is live.
+    {"EpsLkasBoardVersion", {PERSISTENT, STRING}},
+    {"EpsLkasBoardBuild", {PERSISTENT, JSON}},
+    {"EpsLkasBoardSeenAt", {PERSISTENT, STRING}},
     {"IsDevelopmentBranch", {CLEAR_ON_MANAGER_START, BOOL}},
     {"IsReleaseSpBranch", {CLEAR_ON_MANAGER_START, BOOL}},
     {"LastGPSPositionLLK", {PERSISTENT, STRING}},
