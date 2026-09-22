@@ -21,6 +21,8 @@ all, and would otherwise show its old hash forever with no hint that it is
 stale.
 """
 import json
+import os
+import struct
 import time
 from collections.abc import Callable
 
@@ -29,6 +31,11 @@ import pyray as rl
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog, BigDialog
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.sunnypilot.selfdrive.pandad.eps_lkas_flasher import (
+  APP_ID_MAGIC,
+  APP_ID_OFFSET,
+  EPS_LKAS_APPSLOT_BIN,
+)
 from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.widgets import Widget
@@ -315,8 +322,20 @@ class UpdateBoardButton(BigButton):
       self.set_value(tr("failed"))
     else:
       allowed, why = self._can_update()
-      version, _build = board_firmware()
-      self.set_value(version if allowed else why)
+      if not allowed:
+        self.set_value(why)
+      else:
+        # WHAT IT WOULD INSTALL, not what is running -- the card to the left
+        # already says what is running. Without this the button could not tell
+        # you whether there was anything to install at all.
+        version, _build = board_firmware()
+        offer = bundled_firmware()
+        if not offer:
+          self.set_value(tr("no image"))
+        elif offer == version:
+          self.set_value(tr("up to date"))
+        else:
+          self.set_value(tr("to {}").format(offer))
 
     self.set_enabled(self._can_update()[0] and not self._busy())
 
@@ -355,6 +374,42 @@ class BoardLayoutMici(NavScroller):
     self._firmware_info.refresh()
     self._identity_info.refresh()
     self._update_btn.refresh()
+
+
+# (hash, mtime) of the bundled image. Keyed on mtime so a git pull that
+# replaces the file is picked up without re-reading it every tick.
+_bundled_cache: list = ["", -1.0]
+
+
+def bundled_firmware() -> str:
+  """The commit of the image that would be installed, or "".
+
+  READ FROM THE IMAGE ITSELF, at the same offset and with the same magic the
+  bootloader checks, so the screen and the board can never disagree about what
+  is on offer. Only the first 0x110 bytes are touched -- there is no reason to
+  pull 46 KB off disk to answer a question about sixteen of them.
+
+  The image ships inside sunnypilot: there is no download, and no separate
+  firmware channel. Updating the board's firmware IS updating sunnypilot.
+  """
+  try:
+    mtime = os.path.getmtime(EPS_LKAS_APPSLOT_BIN)
+  except OSError:
+    return ""
+  if mtime != _bundled_cache[1]:
+    _bundled_cache[1] = mtime
+    _bundled_cache[0] = ""
+    try:
+      with open(EPS_LKAS_APPSLOT_BIN, "rb") as fh:
+        head = fh.read(APP_ID_OFFSET + 16)
+      if len(head) >= APP_ID_OFFSET + 16:
+        magic, _origin, git, _flags = struct.unpack(
+          "<4I", head[APP_ID_OFFSET:APP_ID_OFFSET + 16])
+        if magic == APP_ID_MAGIC:
+          _bundled_cache[0] = f"{git:08x}"
+    except OSError:
+      pass
+  return _bundled_cache[0]
 
 
 _visible_cache: list = [False, 0.0]

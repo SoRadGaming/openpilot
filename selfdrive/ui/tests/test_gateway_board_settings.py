@@ -279,3 +279,52 @@ def test_a_refusal_is_explained_not_silent():
   assert "BigDialog(" in panel, "a blocked press says nothing"
   assert "needs a debugger once" in panel
   assert "not while driving" in panel
+
+
+def test_the_button_says_what_it_would_install():
+  """Without this the card could not tell you there was anything to install:
+  it showed the board's own hash, which is what the card beside it shows."""
+  panel = BOARD_PANEL.read_text()
+  assert "def bundled_firmware" in panel
+  assert "up to date" in panel
+  assert "no image" in panel
+  # the offer must be compared against the board's version, not just displayed
+  assert re.search(r"offer\s*==\s*version", panel), \
+    "the bundled hash is read but never compared with the board's"
+
+
+def test_the_ui_shares_the_marker_constants_with_the_flasher():
+  """The screen and the bootloader must never disagree about where the marker
+  is. Importing them is the only way to make that true by construction -- a
+  second copy of 0x100 in this file is a copy that can drift."""
+  panel = BOARD_PANEL.read_text()
+  tree = ast.parse(panel)
+  imported = set()
+  for node in ast.walk(tree):
+    if isinstance(node, ast.ImportFrom) and node.module and "eps_lkas_flasher" in node.module:
+      imported |= {a.name for a in node.names}
+  for name in ("APP_ID_MAGIC", "APP_ID_OFFSET", "EPS_LKAS_APPSLOT_BIN"):
+    assert name in imported, f"{name} is not imported from the flasher"
+
+  # and it must not define its own
+  code = "\n".join(line.split("#", 1)[0] for line in panel.splitlines())
+  assert not re.search(r"^APP_ID_OFFSET\s*=", code, re.M), "a second copy of the offset"
+  assert not re.search(r"^APP_ID_MAGIC\s*=", code, re.M), "a second copy of the magic"
+
+
+def test_bundled_hash_read_agrees_with_the_full_parse():
+  """The UI reads only the first 0x110 bytes. That shortcut has to give the
+  same answer as parsing the whole image."""
+  import importlib.util
+  import struct as _struct
+  spec = importlib.util.spec_from_file_location(
+    "eps_lkas_flasher", ROOT / "sunnypilot/selfdrive/pandad/eps_lkas_flasher.py")
+  fl = importlib.util.module_from_spec(spec)
+  spec.loader.exec_module(fl)
+
+  path = ROOT / "sunnypilot/selfdrive/pandad/eps_lkas_appslot.bin"
+  head = path.read_bytes()[:fl.APP_ID_OFFSET + 16]
+  magic, _origin, git, _flags = _struct.unpack(
+    "<4I", head[fl.APP_ID_OFFSET:fl.APP_ID_OFFSET + 16])
+  assert magic == fl.APP_ID_MAGIC
+  assert f"{git:08x}" == fl.image_identity(path.read_bytes())["git"]
