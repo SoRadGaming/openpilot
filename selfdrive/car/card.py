@@ -295,9 +295,16 @@ class Car:
     # Comparing the formatted string, not the int, so the stored form is the
     # compared form and a format change cannot silently stop matching.
     version = f"{gw.fwGitHash:08x}"
-    build = {"dirty": bool(gw.fwDirty), "appSlot": bool(gw.fwAppSlot),
-             "bootloader": bool(gw.fwBootloader), "readOnly": bool(gw.fwReadOnly),
-             "uid": f"{gw.boardUid:06x}"}
+    # AN EMPTY DICT WHEN 0x70F NEVER ARRIVED, not a dict full of defaults.
+    # Firmware older than 2026-09-22 sends 0x707 and not 0x70F, and writing
+    # zeros for the fields it did not send made the screen say "board id
+    # 000000" and "no bootloader" where it should have said "unknown" and
+    # "pre-bootloader". Absence and a negative answer are different facts.
+    build = {}
+    if gw.fwBuildValid:
+      build = {"dirty": bool(gw.fwDirty), "appSlot": bool(gw.fwAppSlot),
+               "bootloader": bool(gw.fwBootloader), "readOnly": bool(gw.fwReadOnly),
+               "uid": f"{gw.boardUid:06x}"}
     self._board_fw_pending = (version, build)
 
   def write_board_firmware(self) -> None:

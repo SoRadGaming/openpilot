@@ -528,6 +528,11 @@ struct CarStateSP @0xb86e6369214c01c8 {
     fwBootloader @23 :Bool;     # a bootloader IS at 0x08000000 -- gates any CAN update
     fwReadOnly @24 :Bool;       # the INCAR_READONLY stand-down image
     boardUid @25 :UInt32;       # 24-bit folded MCU UID: which physical board
+    # 0x70F was actually received. WITHOUT THIS, "the board said it has no
+    # bootloader" and "the board is too old to have 0x70F at all" are the same
+    # reading, because every field above defaults to false/0 - and the screen
+    # showed a board id of 000000 for a real board on a real car.
+    fwBuildValid @26 :Bool;
   }
 }
 

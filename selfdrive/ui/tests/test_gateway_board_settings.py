@@ -38,7 +38,8 @@ PARAMS = ["EpsLkasBoardVersion", "EpsLkasBoardBuild", "EpsLkasBoardSeenAt"]
 
 # The seven fields added to LinbusGateway, in order. Order matters: card splats the
 # dataclass into custom.CarStateSP.new_message(**dict).
-FW_FIELDS = ["fwValid", "fwGitHash", "fwDirty", "fwAppSlot", "fwBootloader", "fwReadOnly", "boardUid"]
+FW_FIELDS = ["fwValid", "fwGitHash", "fwDirty", "fwAppSlot", "fwBootloader", "fwReadOnly",
+             "boardUid", "fwBuildValid"]
 
 
 def test_dbc_decodes_a_real_board_frame():
@@ -328,3 +329,22 @@ def test_bundled_hash_read_agrees_with_the_full_parse():
     "<4I", head[fl.APP_ID_OFFSET:fl.APP_ID_OFFSET + 16])
   assert magic == fl.APP_ID_MAGIC
   assert f"{git:08x}" == fl.image_identity(path.read_bytes())["git"]
+
+
+def test_absence_and_a_negative_answer_are_different():
+  """Firmware older than 2026-09-22 sends 0x707 and not 0x70F. Writing zeros
+  for the fields it did not send made a real board on a real car show
+  "board id 000000" and "no bootloader" where it should have said "unknown"
+  and "pre-bootloader"."""
+  card = CARD.read_text()
+  tree = ast.parse(card)
+  fn = next(n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "stage_board_firmware")
+  # the build dict must be gated on fwBuildValid, not written unconditionally
+  names = {n.attr for n in ast.walk(fn) if isinstance(n, ast.Attribute)}
+  assert "fwBuildValid" in names, "card writes the 0x70F fields without checking one arrived"
+
+  panel = BOARD_PANEL.read_text()
+  # and the UI's "never saw it" branches must therefore be reachable
+  assert "pre-bootloader" in panel
+  assert re.search(r"if not build:", panel), "the absence branch is gone"
