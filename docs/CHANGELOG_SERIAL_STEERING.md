@@ -13,6 +13,51 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-09-23 — board `d43b12aa` · the flash now records what it does to the steering
+
+**A driver reported the EPS humming and the wheel moving slightly, left and
+right, while the board was being reflashed over CAN in park — hands off the
+wheel.** Nothing can say what happened, because nothing was watching: the
+flash runs offroad, loggerd is not running, and the routes either side of it
+end and begin outside the window. It is a 47.25 s hole with no data in it.
+
+Meanwhile the panda was receiving the entire car bus for all of it — about
+100,000 frames on bus 0 — and `_pump` discarded every one. The flasher now
+keeps two of them:
+
+```
+0x156 STEERING_SENSORS   STEER_ANGLE (0.1 deg) + STEER_ANGLE_RATE, 100 Hz
+0x18F STEER_STATUS       STEER_TORQUE_SENSOR (column torque), 100 Hz
+```
+
+written to `/data/eps-lkas-trace/flash-<unixtime>.csv` as raw timestamped
+bytes — no decoding in the receive path, no opendbc import in a module that
+has to load on a bench. Bounded at 24,000 frames (~2 min of both), saved in a
+`finally` so a failed flash keeps its trace too, and every part of the write
+is best-effort: a full disk costs the trace and nothing else.
+
+Those two also separate the two candidate causes without a scope: **angle
+moving while column torque stays in the low hundreds means something drove the
+column; torque in the thousands leading the angle means a hand on the wheel.**
+There is no third instrument available — `0x1AB STEER_MOTOR_TORQUE` does not
+exist on this car, and the EPS's own motor torque is reported only over the
+LKAS serial link, which the board stops mirroring the instant it enters its
+bootloader.
+
+**What is already ruled out.** The comma cannot reach the EPS: torque reaches
+it only over the 12 V LKAS serial line, and the OBD-C connector carries CAN,
+SBU and VBUS only. `SAFETY_ELM327` *closes* the harness relay rather than
+opening it, so the stock camera stayed connected to the car bus throughout,
+and the panda's relay does not click during the flash at all. And the key
+cycle spans the whole window with neither EPS key-cycle latch set, so whatever
+the noise was, it did not fault the EPS.
+
+The board half of this is firmware `d43b12aa`, which also fixes a real RULE-2
+exposure in the knock handler — it used to drop relay K2 while both LKAS
+transmitters were still enabled. See the board's own CHANGELOG, and
+`docs/EPS-FAULT-STATES.md` for why "the random LKAS error" is a different
+fault from the two the code was hardened against.
+
 ## 2026-09-22 — `6a4f1f5`, board `577a723e` · the lane graphic, and how to tell whether the fix landed
 
 **The dash lane graphic was not tracking sunnypilot.** Two rules were wanted:

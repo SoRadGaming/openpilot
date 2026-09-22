@@ -226,3 +226,78 @@ def test_run_flash_returns_rather_than_raising():
   ok, msg = mod.run_flash(Broken(), IMAGE.read_bytes(), log=lambda s: None)
   assert not ok
   assert "RuntimeError" in msg and "usb fell over" in msg
+
+
+def _tracing_flasher(mod, frames):
+  """A Flasher fed a fixed frame list, pumped until the transport is empty."""
+  class T:
+    def __init__(self): self.n = 0
+    def describe(self): return "fake"
+    def send(self, *a): pass
+    def poll(self, timeout=0.0):
+      self.n += 1
+      return frames if self.n <= 3 else []
+    def close(self): pass
+  f = mod.Flasher(T(), log=lambda s: None)
+  for _ in range(4):
+    f._pump()
+  return f
+
+
+def test_the_steering_trace_captures_the_two_ids_that_answer_the_question(tmp_path):
+  """The flash runs offroad with loggerd stopped, so nothing records it. A
+  driver reported the wheel moving during an update, hands off, and the 47 s
+  window had no data in it at all - while the panda was receiving the whole
+  bus and _pump discarded it. These two IDs are the witness."""
+  mod = _module()
+  assert mod.TRACE_IDS == (0x156, 0x18F)
+
+  f = _tracing_flasher(mod, [
+    (0x156, bytes([0x12, 0x34, 0, 0, 0, 0, 0, 0]), mod.RX),   # STEERING_SENSORS
+    (0x18F, bytes([0xAB, 0xCD, 0, 0, 0, 0, 0, 0]), mod.RX),   # STEER_STATUS
+    (mod.ID_BOARD, bytes(8), mod.RX),
+    (0x1FA, bytes(8), mod.RX),                                 # ordinary traffic
+  ])
+  assert len(f._trace) == 6, "both traced IDs, three pumps"
+  # and the traced frames must NOT reach _rx, which is flow control and is
+  # scanned linearly on every receive
+  assert len(f._rx) == 3, "only the board's replies belong in _rx"
+
+  path = f.save_trace(str(tmp_path))
+  assert path is not None
+  txt = Path(path).read_text()
+  assert chr(92) + "n" not in txt, "literal backslash-n in the output"
+  assert "t,addr,data" in txt
+  assert "0x156" in txt and "0x18f" in txt
+  assert "1234000000000000" in txt and "abcd000000000000" in txt
+  assert len([ln for ln in txt.splitlines() if ln and not ln.startswith("#")]) == 7
+
+
+def test_the_trace_is_bounded_and_never_costs_more_than_itself(tmp_path):
+  """It runs inside pandad's wrapper. A full disk must lose the trace and
+  nothing else, and a long session must not grow without limit."""
+  mod = _module()
+  assert mod.TRACE_MAX <= 30000, "an unbounded trace is a memory leak in pandad"
+
+  f = _tracing_flasher(mod, [(0x156, bytes(8), mod.RX)])
+  assert f._trace.maxlen == mod.TRACE_MAX
+
+  assert f.save_trace("Z:/definitely/not/writable") is None
+  # nothing captured -> nothing written, and no empty file left behind
+  empty = _tracing_flasher(mod, [(0x1FA, bytes(8), mod.RX)])
+  assert empty.save_trace(str(tmp_path)) is None
+  assert not list(tmp_path.iterdir())
+
+
+def test_run_flash_saves_the_trace_on_the_failure_paths_too():
+  """A flash that went wrong is exactly when the trace is worth having, so the
+  save has to be in a finally, not on the success path."""
+  src = FLASHER.read_text()
+  tree = ast.parse(src)
+  run_flash = next(n for n in tree.body
+                   if isinstance(n, ast.FunctionDef) and n.name == "run_flash")
+  tries = [n for n in ast.walk(run_flash) if isinstance(n, ast.Try)]
+  assert any(
+    any("save_trace" in ast.dump(stmt) for stmt in t.finalbody)
+    for t in tries
+  ), "save_trace is not in a finally block"

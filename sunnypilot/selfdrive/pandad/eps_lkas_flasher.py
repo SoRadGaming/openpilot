@@ -75,6 +75,34 @@ APP_ID_DIRTY, APP_ID_READONLY, APP_ID_TEST = 0x01, 0x02, 0x04
 
 # ---- the car ---------------------------------------------------------------
 ENGINE_DATA_ID = 0x158
+
+# THE FLASH IS THE ONE THING NOTHING WATCHES.
+#
+# It runs offroad, so loggerd is not running and nothing - not CAN, not
+# cloudlog - is recorded. A driver reported the EPS humming and the wheel
+# moving slightly during an update, with their hands off the wheel, and there
+# was no way to check: the routes either side of the flash end and begin
+# outside it, leaving a 47 s hole with no data in it at all.
+#
+# Meanwhile the panda was receiving the whole car bus the entire time - about
+# 100,000 frames on bus 0 - and _pump threw every one of them away. These two
+# carry the answer, and are the reason this trace exists:
+#
+#   0x156 STEERING_SENSORS  STEER_ANGLE (0.1 deg) + STEER_ANGLE_RATE, 100 Hz
+#   0x18F STEER_STATUS      STEER_TORQUE_SENSOR (column torque), 100 Hz
+#
+# Together they also separate the two candidate causes without a scope: angle
+# moving while column torque stays in the low hundreds means something drove
+# the column, and torque in the thousands leading the angle means a hand.
+#
+# 0x1AB STEER_MOTOR_TORQUE does not exist on this car, and the EPS's own motor
+# torque is reported only over the LKAS serial link - which the board stops
+# mirroring the moment it enters its bootloader, and which is blind below
+# about 20 km/h anyway. So this is the best available witness, not a
+# second-best one.
+TRACE_IDS = (0x156, 0x18F)
+TRACE_MAX = 24000          # ~2 min of both at 100 Hz; ~1 MB of raw bytes
+TRACE_DIR = "/data/eps-lkas-trace"
 STATIONARY_CPH = 100               # 1.00 km/h, same decode the bootloader uses
 
 # panda can_recv() reports frames back with the bus number offset like this
@@ -298,6 +326,10 @@ class Flasher:
     # and slower in a car. Nothing here cares about any identifier except the
     # board's replies, our own echoes, and the speed frame.
     self._rx: deque[tuple[int, bytes, str]] = deque(maxlen=512)
+    # Separate from _rx on purpose. _rx is flow control and is scanned
+    # linearly on every receive, so it has to stay short; this one is only
+    # ever appended to, and read once at the end.
+    self._trace: deque[tuple[float, int, bytes]] = deque(maxlen=TRACE_MAX)
     self.rejected = 0
 
   # -- wire -----------------------------------------------------------------
@@ -307,6 +339,11 @@ class Flasher:
         self.rejected += 1
         if self.rejected == 1:
           self.log(f"  panda SAFETY REJECTED {addr:#05x} - the mode is not letting this out")
+        continue
+      if kind != ECHO and addr in TRACE_IDS:
+        # Timestamp and raw bytes only. No decoding in the receive path, and
+        # no opendbc import in a module that must load on a bench.
+        self._trace.append((time.monotonic(), addr, data))
         continue
       if kind != ECHO and addr not in (ID_BOARD, ENGINE_DATA_ID):
         continue                      # ordinary car traffic; see __init__
@@ -506,6 +543,30 @@ class Flasher:
     self._drain()
     self._send_raw(ID_HOST, bytes([CMD_REBOOT]))
 
+  def save_trace(self, directory: str = TRACE_DIR) -> str | None:
+    """Write the steering trace out. Returns the path, or None.
+
+    Best effort in the strongest sense: this runs inside pandad's wrapper, so
+    a full disk or a read-only mount must cost nothing but the trace itself.
+    """
+    if not self._trace:
+      return None
+    try:
+      os.makedirs(directory, exist_ok=True)
+      path = os.path.join(directory, f"flash-{int(time.time())}.csv")
+      t0 = self._trace[0][0]
+      with open(path, "w") as fh:
+        fh.write("# EPS-LKAS flash steering trace.\n"
+                 "# t = seconds from the first frame captured.\n"
+                 "# 0x156 STEERING_SENSORS, 0x18F STEER_STATUS - decode with\n"
+                 "# opendbc honda _steering_sensors_c / _steering_control_e.\n")
+        fh.write("t,addr,data\n")
+        for t, addr, data in self._trace:
+          fh.write(f"{t - t0:.4f},{addr:#05x},{data.hex()}\n")
+      return path
+    except Exception:
+      return None
+
 
 def describe_hello(d: bytes) -> dict:
   """HELLO is the only frame a board with an empty slot ever sends."""
@@ -520,6 +581,7 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
               dry_run: bool = False, knock: bool = True,
               hello_timeout: float = 25.0) -> tuple[bool, str]:
   """Do the whole thing. Returns (ok, message). NEVER RAISES."""
+  f = None
   try:
     if (why := check_app_slot_image(image)):
       return False, f"refusing this image: {why}"
@@ -592,6 +654,11 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
     # wrapper down with it, the pandad binary would never start, and the car
     # would have no CAN at all until manager noticed.
     return False, f"{type(e).__name__}: {e}"
+  finally:
+    # On the failure paths too - a flash that went wrong is exactly when the
+    # steering trace is worth having.
+    if f is not None and (p := f.save_trace()):
+      log(f"  steering trace: {len(f._trace)} frames -> {p}")
 
 
 def load_bundled_image() -> tuple[bytes | None, str]:
