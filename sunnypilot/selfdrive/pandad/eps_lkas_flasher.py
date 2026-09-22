@@ -390,13 +390,25 @@ class Flasher:
           return None
     return "no answer to ENTER - the board did not reset, or it left its boot window"
 
-  def info(self) -> tuple[int, int] | None:
-    self._drain()
-    self._send_raw(ID_HOST, bytes([CMD_INFO]))
-    d = self._recv(2.0, want=RSP_INFO)
-    if d is None or d[0] != RSP_INFO:
-      return None
-    return d[2] | (d[3] << 8), int.from_bytes(d[4:8], "little")
+  def info(self, tries: int = 3) -> tuple[int, int] | None:
+    """Slot size and the CRC32 of what is installed.
+
+    ECHO-WAITED AND RETRIED, unlike ENTER. ENTER is fire-and-forget because it
+    is racing an 800 ms boot window and a round trip spent being careful is
+    window spent. INFO has no such pressure, and it is a single command whose
+    loss costs the whole session - which is exactly what happened on a bench
+    run: the adapter's echo slots were still full from the ENTER burst, the
+    INFO frame was silently never transmitted, and the session died with
+    "no INFO reply" pointing at the board rather than at the adapter.
+    """
+    for _ in range(tries):
+      self._drain()
+      if self._send(ID_HOST, bytes([CMD_INFO])) is not None:
+        continue                      # never made it onto the wire; try again
+      d = self._recv(2.0, want=RSP_INFO)
+      if d is not None and d[0] == RSP_INFO:
+        return d[2] | (d[3] << 8), int.from_bytes(d[4:8], "little")
+    return None
 
   def abort(self) -> None:
     """Close the session rather than leaving it to time out.

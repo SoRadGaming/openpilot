@@ -184,6 +184,15 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"EpsLkasBoardVersion", {PERSISTENT, STRING}},
     {"EpsLkasBoardBuild", {PERSISTENT, JSON}},
     {"EpsLkasBoardSeenAt", {PERSISTENT, STRING}},
+    // The update request and its progress. CLEAR_ON_MANAGER_START, like DoReboot
+    // and DoShutdown: a request that survived a restart would be a request nobody
+    // made. The flasher also clears EpsLkasFlashRequested BEFORE it attempts
+    // anything - leaving it set would have pandad's loop re-enter, the watcher
+    // fire again, and the gateway that steers the car reflashed in a loop with no
+    // backoff. A retry must be a fresh button press.
+    {"EpsLkasFlashRequested", {CLEAR_ON_MANAGER_START, BOOL}},
+    {"EpsLkasFlashProgress", {CLEAR_ON_MANAGER_START, STRING}},
+    {"EpsLkasFlashState", {CLEAR_ON_MANAGER_START, STRING}},
     {"IsDevelopmentBranch", {CLEAR_ON_MANAGER_START, BOOL}},
     {"IsReleaseSpBranch", {CLEAR_ON_MANAGER_START, BOOL}},
     {"LastGPSPositionLLK", {PERSISTENT, STRING}},

@@ -13,6 +13,7 @@ from openpilot.system.hardware import HARDWARE
 from openpilot.common.swaglog import cloudlog
 
 from openpilot.sunnypilot.selfdrive.pandad.rivian_long_flasher import flash_rivian_long
+from openpilot.sunnypilot.selfdrive.pandad.eps_lkas_hook import flash_if_requested, watch_for_request
 
 
 def get_expected_signature() -> bytes:
@@ -101,14 +102,28 @@ def main() -> None:
     cloudlog.exception("pandad.uncaught_exception")
 
   count = 0
+  # Set by the EPS-LKAS watcher when IT asked ./pandad to exit. That re-entry
+  # must not touch the panda: recover_internal_panda() on an odd count drives
+  # BOOT0 high and reflashes the panda, which would be an extremely surprising
+  # side effect of pressing "update the gateway board". count is left alone so
+  # the normal reset/recover alternation is undisturbed by the detour.
+  skip_panda_reset = [False]
+
+  def request_skip_panda_reset() -> None:
+    skip_panda_reset[0] = True
+
   while not do_exit:
     try:
       cloudlog.event("pandad.flash_and_connect", count=count)
-      if (count % 2) == 0:
-        HARDWARE.reset_internal_panda()
+      if skip_panda_reset[0]:
+        skip_panda_reset[0] = False
+        cloudlog.info("eps-lkas: re-entry after a board flash, leaving the panda alone")
       else:
-        HARDWARE.recover_internal_panda()
-      count += 1
+        if (count % 2) == 0:
+          HARDWARE.reset_internal_panda()
+        else:
+          HARDWARE.recover_internal_panda()
+        count += 1
 
       # Flash all Pandas in DFU mode
       for serial in PandaDFU.list():
@@ -127,9 +142,20 @@ def main() -> None:
         cloudlog.info(f"{len(panda_serials)} panda found, connecting - {panda_serials}")
         flash_panda(panda_serials[0])
 
+        # EPS-LKAS gateway board, over the car's CAN bus. This is the only
+        # window where nothing else owns the panda: ./pandad has not started
+        # yet, and the flash_panda() above has just repaired anything that was
+        # in bootstub. Returns normally whatever happens - an exception here
+        # would mean ./pandad never starts and the car has no CAN at all.
+        flash_if_requested(panda_serials[0])
+
         # run real pandad
         os.environ['MANAGER_DAEMON'] = 'pandad'
         process = subprocess.Popen(["./pandad"], cwd=os.path.join(BASEDIR, "selfdrive/pandad"))
+        # A later request arrives while we are blocked below, so something has
+        # to reopen the window. The watcher asks ./pandad to exit; the loop then
+        # comes back round to flash_if_requested() above. Offroad only.
+        watch_for_request(process, request_skip_panda_reset)
         process.wait()
     # TODO: wrap all panda exceptions in a base panda exception
     except (usb1.USBErrorNoDevice, usb1.USBErrorPipe):
