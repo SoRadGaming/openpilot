@@ -428,3 +428,29 @@ def test_up_to_date_disables_the_button():
   # and it must be decided before ignition/offroad, which are less useful to say
   assert src.index("up to date") < src.index("ignition off"), \
     "'ignition off' would mask 'up to date' at a parked car"
+
+
+CARCONTROLLER = ROOT / "opendbc_repo/opendbc/car/honda/carcontroller.py"
+
+
+def test_lat_ready_means_lateral_is_enabled_not_merely_possible():
+  """The board uses this one bit to decide whether to draw lane markings.
+
+  It used to be `steering_available or CC.latActive`, and steering_available is
+  `cruiseState.available and vEgo > minSteerSpeed` - true with MADS OFF. So the
+  cluster showed dashed lanes whenever the car was moving with cruise main on,
+  which is not "openpilot's lateral is on" by any reading.
+
+  mads.enabled is `state in ENABLED_STATES` = (paused, enabled, softDisabling,
+  overriding). `paused` is the one that matters: the board pauses openpilot's
+  lateral itself on driver torque, and this staying true across that is what
+  keeps the dashed lanes up instead of blanking mid-override.
+  """
+  src = CARCONTROLLER.read_text()
+  m = re.search(r"^\s*lat_ready = (.+)$", src, re.M)
+  assert m, "lat_ready is no longer assigned"
+  expr = m.group(1)
+  assert "mads.enabled" in expr, \
+    f"lat_ready is {expr!r} - it must be MADS enabled, not a cruise/speed proxy"
+  assert "steering_available" not in expr, \
+    "steering_available is true with MADS off; it cannot gate the lane graphic"
