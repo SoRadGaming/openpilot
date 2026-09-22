@@ -105,14 +105,14 @@ class BoardFirmwareInfo(Widget):
     max_width = int(self._rect.width - 20)
 
     self.fw_header = UnifiedLabel(tr("board firmware"), 48, max_width=max_width, text_color=header_color,
-                                  font_weight=FontWeight.DISPLAY)
+                                  font_weight=FontWeight.DISPLAY, wrap_text=False)
     self.fw_text = UnifiedLabel("", 32, max_width=max_width, text_color=value_color,
-                                font_weight=FontWeight.ROMAN, scroll=True)
+                                font_weight=FontWeight.ROMAN, scroll=True, wrap_text=False)
 
     self.seen_header = UnifiedLabel(tr("last seen"), 48, max_width=max_width, text_color=header_color,
-                                    font_weight=FontWeight.DISPLAY)
+                                    font_weight=FontWeight.DISPLAY, wrap_text=False)
     self.seen_text = UnifiedLabel("", 32, max_width=max_width, text_color=value_color,
-                                  font_weight=FontWeight.ROMAN, scroll=True)
+                                  font_weight=FontWeight.ROMAN, scroll=True, wrap_text=False)
 
     self._updated = 0.0
     self.refresh()
@@ -175,14 +175,14 @@ class BoardIdentityInfo(Widget):
     max_width = int(self._rect.width - 20)
 
     self.uid_header = UnifiedLabel(tr("board id"), 48, max_width=max_width, text_color=header_color,
-                                   font_weight=FontWeight.DISPLAY)
+                                   font_weight=FontWeight.DISPLAY, wrap_text=False)
     self.uid_text = UnifiedLabel("", 32, max_width=max_width, text_color=value_color,
-                                 font_weight=FontWeight.ROMAN, scroll=True)
+                                 font_weight=FontWeight.ROMAN, scroll=True, wrap_text=False)
 
     self.can_header = UnifiedLabel(tr("can update"), 48, max_width=max_width, text_color=header_color,
-                                   font_weight=FontWeight.DISPLAY)
+                                   font_weight=FontWeight.DISPLAY, wrap_text=False)
     self.can_text = UnifiedLabel("", 32, max_width=max_width, text_color=value_color,
-                                 font_weight=FontWeight.ROMAN, scroll=True)
+                                 font_weight=FontWeight.ROMAN, scroll=True, wrap_text=False)
 
     self._updated = 0.0
     self.refresh()
@@ -299,8 +299,11 @@ class UpdateBoardButton(BigButton):
     the ./pandad binary to exit - so the button looked idle, and pressing it
     again wrote a request that was already pending.
 
-    The strings are kept short deliberately: the sub-label is one line of about
-    322 px at 36 pt, and "updated b386c2c6" does not fit in it.
+    The strings are kept short because the sub-label is one line of 322 px at
+    36 pt (BigButton._width_hint: 402 minus 2x40 padding). An earlier version
+    of this comment claimed "updated b386c2c6" did not fit; measured, it is
+    ~312 px and does fit. Short is still right - there is no room for a hash
+    AND a word - but the number was made up and is now not.
     """
     self._updated = time.monotonic()
     params = ui_state.params

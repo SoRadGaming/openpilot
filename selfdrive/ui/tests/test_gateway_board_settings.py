@@ -348,3 +348,35 @@ def test_absence_and_a_negative_answer_are_different():
   # and the UI's "never saw it" branches must therefore be reachable
   assert "pre-bootloader" in panel
   assert re.search(r"if not build:", panel), "the absence branch is gone"
+
+
+VEHICLE_PANEL = ROOT / "selfdrive/ui/sunnypilot/mici/layouts/vehicle.py"
+
+
+def test_hand_positioned_labels_never_wrap():
+  """A wrapped header silently overprints the value beneath it.
+
+  These cards hand-position four labels at fixed y offsets inside a 180 px
+  box. UnifiedLabel sizes its rect ONCE at construction and set_text never
+  re-measures, so a header that exceeds max_width wraps to two lines and eats
+  the row below - the four labels then need ~236 px of a 180 px card, and all
+  the driver sees is the last value.
+
+  "board firmware" is 343 px against a 340 px limit. Three pixels.
+
+  DeviceInfoLayoutMici, the card these were copied from, passes wrap_text=False
+  on all four labels. HondaLearnedInfo copied it without the flag and board.py
+  copied HondaLearnedInfo; this test stops that propagating any further.
+  """
+  for path in (BOARD_PANEL, VEHICLE_PANEL):
+    tree = ast.parse(path.read_text())
+    for node in ast.walk(tree):
+      if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+          and node.func.id == "UnifiedLabel"):
+        kw = {k.arg for k in node.keywords}
+        assert "wrap_text" in kw, (
+          f"{path.name}:{node.lineno}: UnifiedLabel without wrap_text=False in a "
+          f"hand-positioned card - a wrapped header overprints the row below it")
+        val = next(k.value for k in node.keywords if k.arg == "wrap_text")
+        assert isinstance(val, ast.Constant) and val.value is False, \
+          f"{path.name}:{node.lineno}: wrap_text must be False here"

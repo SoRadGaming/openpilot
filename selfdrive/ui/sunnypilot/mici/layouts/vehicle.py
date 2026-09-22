@@ -62,7 +62,15 @@ def car_brand() -> str:
 
 
 class HondaLearnedInfo(Widget):
-  """Two header/value pairs, laid out like SunnylinkInfo and CurrentModelInfo."""
+  """Two header/value pairs, laid out like SunnylinkInfo and CurrentModelInfo.
+
+  wrap_text=False ON EVERY LABEL, because these are hand-positioned at fixed
+  offsets in a 180 px card and a wrapped header silently overprints the value
+  under it. "learned pedal gain" measures ~410 px against a 340 px max_width,
+  so it wraps - and the four labels then need 236 px of a 180 px card. The card
+  this was copied from (DeviceInfoLayoutMici) passes the flag on all four; the
+  copy dropped it.
+  """
 
   def __init__(self):
     super().__init__()
@@ -73,13 +81,13 @@ class HondaLearnedInfo(Widget):
     max_width = int(self._rect.width - 20)
 
     self.gain_header = UnifiedLabel(tr("learned pedal gain"), 48, max_width=max_width, text_color=header_color,
-                                    font_weight=FontWeight.DISPLAY)
+                                    font_weight=FontWeight.DISPLAY, wrap_text=False)
     self.gain_text = UnifiedLabel("", 32, max_width=max_width, text_color=value_color,
-                                  font_weight=FontWeight.ROMAN, scroll=True)
+                                  font_weight=FontWeight.ROMAN, scroll=True, wrap_text=False)
 
     self.trim_header = UnifiedLabel(tr("brake / aero"), 48, max_width=max_width, text_color=header_color,
-                                    font_weight=FontWeight.DISPLAY)
-    self.trim_text = UnifiedLabel("", 32, max_width=max_width, text_color=value_color, font_weight=FontWeight.ROMAN)
+                                    font_weight=FontWeight.DISPLAY, wrap_text=False)
+    self.trim_text = UnifiedLabel("", 32, max_width=max_width, text_color=value_color, font_weight=FontWeight.ROMAN, wrap_text=False)
 
     self._updated = 0.0
     self.refresh()
