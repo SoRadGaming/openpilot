@@ -50,6 +50,7 @@ from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.selfdrive.pandad.eps_lkas_flasher import (
   PandaTransport,
+  image_identity,
   load_bundled_image,
   run_flash,
 )
@@ -58,12 +59,28 @@ REQUEST_PARAM = "EpsLkasFlashRequested"
 PROGRESS_PARAM = "EpsLkasFlashProgress"
 STATE_PARAM = "EpsLkasFlashState"
 VERSION_PARAM = "EpsLkasBoardVersion"
+BUILD_PARAM = "EpsLkasBoardBuild"
+SEEN_PARAM = "EpsLkasBoardSeenAt"
 
 WATCH_PERIOD_S = 1.0
 
 
 def _clear_request(params: Params) -> None:
   params.put_bool(REQUEST_PARAM, False)
+
+
+def _existing_build(params: Params) -> dict:
+  """Whatever card last decoded, so the board UID survives a flash."""
+  try:
+    raw = params.get(BUILD_PARAM)
+    if isinstance(raw, dict):
+      return dict(raw)
+    if raw:
+      import json                                        # noqa: PLC0415
+      return dict(json.loads(raw))
+  except Exception:
+    pass
+  return {}
 
 
 def watch_for_request(process, skip_reset, params: Params | None = None) -> threading.Thread:
@@ -81,12 +98,23 @@ def watch_for_request(process, skip_reset, params: Params | None = None) -> thre
   """
   params = params or Params()
 
+  refused = False
+
   def run() -> None:
+    nonlocal refused
     while process.poll() is None:
       try:
         if params.get_bool(REQUEST_PARAM):
           if params.get_bool("IsOnroad"):
-            cloudlog.warning("eps-lkas: flash requested while onroad, ignoring")
+            # Once, not once a second. And the request is dropped rather than
+            # latched for the rest of the drive: the module's own rule is that
+            # a retry is a fresh button press, and a request that fires the
+            # moment the car is parked is not one anybody made.
+            if not refused:
+              refused = True
+              cloudlog.warning("eps-lkas: flash requested while onroad, dropping it")
+              _clear_request(params)
+              params.put(STATE_PARAM, "failed: not while driving")
           else:
             cloudlog.info("eps-lkas: flash requested, asking pandad to exit")
             skip_reset()
@@ -121,6 +149,21 @@ def flash_if_requested(panda_serial: str, bus: int = 0, transport_factory=None) 
     cloudlog.exception("eps-lkas: could not read the request param")
     return
 
+  # ITS OWN ONROAD CHECK, not just the watcher's. This runs on EVERY re-entry
+  # of pandad's loop - including ones the watcher did not cause, such as a
+  # ./pandad crash mid-drive. Without this, a request left over from a press
+  # made while parked would be honoured at road speed by an exit nothing here
+  # asked for.
+  try:
+    if params.get_bool("IsOnroad"):
+      cloudlog.warning("eps-lkas: request present but the car is onroad, dropping it")
+      _clear_request(params)
+      params.put(STATE_PARAM, "failed: not while driving")
+      return
+  except Exception:
+    cloudlog.exception("eps-lkas: could not read IsOnroad")
+    return
+
   # BEFORE anything else. See the note at the top of this file.
   _clear_request(params)
 
@@ -146,10 +189,21 @@ def flash_if_requested(panda_serial: str, bus: int = 0, transport_factory=None) 
 
     if ok:
       params.put(STATE_PARAM, f"ok {msg}")
-      # The settings page reads this. Writing it here rather than waiting for
-      # card to see a 0x707 on the next drive is what makes the page show the
-      # new firmware at the moment it is asked to, instead of the old one.
+      # The settings page reads all three. Writing them here rather than
+      # waiting for card to see a 0x707 on the next drive is what makes the
+      # page show the new firmware at the moment it is asked to.
+      #
+      # THE FLAGS MUST MOVE WITH THE HASH. Writing only the version left the
+      # page showing a new commit beside the PREVIOUS image's flags - which,
+      # for the very first CAN update a board ever receives, would have meant a
+      # fresh hash sitting next to "no bootloader".
+      ident = image_identity(image)
+      build = _existing_build(params)
+      build.update({"dirty": ident["dirty"], "readOnly": ident["readOnly"],
+                    "appSlot": True, "bootloader": True})
       params.put(VERSION_PARAM, msg)
+      params.put(BUILD_PARAM, build)
+      params.put(SEEN_PARAM, str(int(time.time())))
       cloudlog.event("eps-lkas.flashed", version=msg)
     else:
       params.put(STATE_PARAM, f"failed: {msg}")

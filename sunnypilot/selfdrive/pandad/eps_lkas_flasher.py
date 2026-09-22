@@ -37,6 +37,7 @@ import os
 import struct
 import time
 import zlib
+from collections import deque
 from collections.abc import Callable
 
 # ---- inc/boot_proto.h. Change a number there, change it here. ---------------
@@ -80,7 +81,17 @@ STATIONARY_CPH = 100               # 1.00 km/h, same decode the bootloader uses
 PANDA_ECHO_OFFSET = 128
 PANDA_REJECT_OFFSET = 192
 
-SAFETY_ELM327 = 15
+# opendbc/safety/declarations.h: SAFETY_ELM327 is 3. It was 15 here, which is
+# SAFETY_VOLKSWAGEN_MQB - a one-digit mistake that made the feature completely
+# non-functional in three ways at once, and reported itself as "the board has
+# no bootloader, it needs an SWD visit". MQB's TX allowlist has no 0x710/0x712
+# so nothing reached the board; mode 15 falls through to the default arm of
+# set_safety_mode, which OPENS the harness relay and cuts the stock camera off
+# the bus - the exact thing the docstring rejects allOutput for; and it counts
+# as a car safety mode, so the panda force-clears heartbeat_disabled and drops
+# to SILENT a few seconds in. The health() readback below exists so a wrong
+# number can never again present as a dead board.
+SAFETY_ELM327 = 3
 ELM327_KEEP_NORMAL_CAN = 1         # any non-zero param: do NOT remap bus 1 onto OBD
 
 EPS_LKAS_APPSLOT_BIN = os.path.join(os.path.dirname(__file__), "eps_lkas_appslot.bin")
@@ -179,6 +190,14 @@ class PandaTransport:
     # more than one panda is attached, which would hang this with no output.
     self.p = Panda(serial, cli=False)
     self.p.set_safety_mode(SAFETY_ELM327, ELM327_KEEP_NORMAL_CAN)
+
+    # Read it back. A wrong mode number is otherwise indistinguishable from a
+    # board that is not answering, and the failure it produces points at the
+    # hardware rather than at this file.
+    mode = self.p.health().get("safety_mode")
+    if mode != SAFETY_ELM327:
+      raise RuntimeError(f"panda is in safety mode {mode}, not elm327 ({SAFETY_ELM327}); "
+                         f"0x710/0x712 would be dropped")
     self.p.can_clear(0xFFFF)
 
   def describe(self) -> str:
@@ -272,7 +291,13 @@ class Flasher:
     self.t = transport
     self.log = log
     self.progress = progress
-    self._rx: list[tuple[int, bytes, str]] = []
+    # BOUNDED, AND FILTERED. On the bench this saw a handful of frames a
+    # second; on the car's bus 0 it is about 1830. Appending all of them made
+    # _rx grow without limit for the whole session and turned _recv's linear
+    # scan into an O(n^2) crawl - a flash that works on a bench and gets slower
+    # and slower in a car. Nothing here cares about any identifier except the
+    # board's replies, our own echoes, and the speed frame.
+    self._rx: deque[tuple[int, bytes, str]] = deque(maxlen=512)
     self.rejected = 0
 
   # -- wire -----------------------------------------------------------------
@@ -283,6 +308,8 @@ class Flasher:
         if self.rejected == 1:
           self.log(f"  panda SAFETY REJECTED {addr:#05x} - the mode is not letting this out")
         continue
+      if kind != ECHO and addr not in (ID_BOARD, ENGINE_DATA_ID):
+        continue                      # ordinary car traffic; see __init__
       self._rx.append((addr, data, kind))
 
   def _send_raw(self, can_id: int, payload: bytes) -> None:
@@ -304,9 +331,9 @@ class Flasher:
     self.t.send(can_id, payload)
     end = time.monotonic() + echo_timeout
     while True:
-      for i, (_a, _d, kind) in enumerate(self._rx):
-        if kind == ECHO:
-          self._rx.pop(i)
+      for item in list(self._rx):
+        if item[2] == ECHO:
+          self._rx.remove(item)
           return None
       if time.monotonic() >= end:
         return f"frame {can_id:#05x} was never transmitted (no echo in {echo_timeout}s)"
@@ -315,12 +342,13 @@ class Flasher:
   def _recv(self, timeout: float, want: int | None = None) -> bytes | None:
     end = time.monotonic() + timeout
     while True:
-      for i, (addr, data, kind) in enumerate(self._rx):
+      for item in list(self._rx):
+        addr, data, kind = item
         if kind == ECHO or addr != ID_BOARD:
           continue
         if want is not None and data[0] != want and data[0] != RSP_NAK:
           continue
-        self._rx.pop(i)
+        self._rx.remove(item)
         return data
       if time.monotonic() >= end:
         return None
@@ -364,10 +392,17 @@ class Flasher:
     self._send_raw(ID_HOST, bytes([CMD_ENTER]) + MAGIC)
 
   def wait_hello(self, timeout: float) -> bytes | None:
+    """The post-reset HELLO, or None.
+
+    A NAK seen here is returned too, and run_flash reports it. The board NAKs a
+    knock it refuses - "the car is not stationary" - and swallowing that meant
+    waiting the full timeout and then blaming the board for having no
+    bootloader, which is the single most misleading thing this tool could say.
+    """
     end = time.monotonic() + timeout
     while time.monotonic() < end:
       d = self._recv(0.2)
-      if d is not None and d[0] == RSP_HELLO:
+      if d is not None and d[0] in (RSP_HELLO, RSP_NAK):
         return d
     return None
 
@@ -444,6 +479,15 @@ class Flasher:
         err = self._expect_ack(CMD_CEND, timeout=3.0)
         if err is None:
           break
+        # A LOST ACK IS NOT A LOST CHUNK. If the board programmed the chunk and
+        # only the reply went missing, resending the whole chunk writes into
+        # flash that is no longer erased and fails with PROGERR - turning a
+        # dropped frame into a failed update. Ask again first; the board's
+        # chunk index and buffer are still where we left them.
+        if "no ACK" in err:
+          self._send(ID_HOST, bytes([CMD_CEND]) + struct.pack("<HH", idx, crc16_ccitt(body)))
+          if self._expect_ack(CMD_CEND, timeout=3.0) is None:
+            break
         if attempt == 2:
           return f"chunk {idx}: {err}"
       pct = min(100, 100 * (idx + 1) // chunks)
@@ -501,6 +545,8 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
     if hello is None:
       return False, ("no HELLO. Either the board has no bootloader (it needs one SWD "
                      "visit), or it never reset.")
+    if hello[0] == RSP_NAK:
+      return False, f"refused: {describe_nak(hello)}"
     h = describe_hello(hello)
     log(f"  HELLO v{h['proto']}: installed {h['git']}, appOk={h['appOk']}")
 
@@ -527,7 +573,13 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
     # instead of at the end of the next drive.
     after = f.wait_hello(25.0)
     if after is None:
-      return True, f"installed {ident['git']} (no confirming HELLO seen)"
+      # Still the bare hash: the hook writes this straight into a param the
+      # settings page renders, and an English sentence there would be shown to
+      # the driver as a firmware version.
+      log("  no confirming HELLO seen - the image was accepted but not witnessed")
+      return True, ident["git"]
+    if after[0] == RSP_NAK:
+      return False, f"refused: {describe_nak(after)}"
     a = describe_hello(after)
     if not a["appOk"]:
       return False, (f"installed, but the board refuses to run it "

@@ -267,8 +267,12 @@ class UpdateBoardButton(BigButton):
       # Re-checked here: the dialog can sit open across an ignition, and the
       # dismiss animation adds most of a second on top.
       ok, _ = self._can_update()
-      if not ok:
+      if not ok or self._busy():
         return
+      # Clear the previous run's terminal state, so the sub-label does not show
+      # a stale "updated" while this one is pending.
+      ui_state.params.put(STATE_PARAM, "")
+      ui_state.params.put(PROGRESS_PARAM, "0")
       ui_state.params.put_bool(REQUEST_PARAM, True)
       self._asked = True
       self.set_value(tr("requested"))
@@ -279,25 +283,36 @@ class UpdateBoardButton(BigButton):
 
   # -- what the sub-label says ----------------------------------------------
   def refresh(self) -> None:
+    """A PENDING REQUEST OUTRANKS A FINISHED ONE.
+
+    EpsLkasFlashState is not cleared between updates, so after one flash it
+    says "ok <hash>" for the rest of the boot. Testing it first meant the
+    second press of the session read that stale terminal state, cleared the
+    in-flight flag and re-enabled the button while pandad was still waiting for
+    the ./pandad binary to exit - so the button looked idle, and pressing it
+    again wrote a request that was already pending.
+
+    The strings are kept short deliberately: the sub-label is one line of about
+    322 px at 36 pt, and "updated b386c2c6" does not fit in it.
+    """
     self._updated = time.monotonic()
     params = ui_state.params
     state = params.get(STATE_PARAM) or ""
+    requested = self._asked or params.get_bool(REQUEST_PARAM)
 
     if state == "running":
-      pct = params.get(PROGRESS_PARAM) or "0"
       self._asked = False
-      self.set_value(tr("updating {}%").format(pct))
-    elif state.startswith("ok "):
-      self._asked = False
-      self.set_value(tr("updated · {}").format(state[3:]))
-    elif state.startswith("failed"):
-      self._asked = False
-      # The whole reason is in the log; a 536 px card cannot carry it.
-      self.set_value(tr("failed — see log"))
-    elif self._asked or params.get_bool(REQUEST_PARAM):
-      # pandad only looks once a second, and only acts when the pandad binary
+      self.set_value(tr("{}%").format(params.get(PROGRESS_PARAM) or "0"))
+    elif requested:
+      # pandad only looks once a second, and only acts when the ./pandad binary
       # next exits. Saying nothing here reads as a button that did nothing.
       self.set_value(tr("requested"))
+    elif state.startswith("ok "):
+      self.set_value(tr("updated"))
+    elif state.startswith("failed"):
+      # The whole reason is in the log and in the state param; one short line
+      # cannot carry it.
+      self.set_value(tr("failed"))
     else:
       allowed, why = self._can_update()
       version, _build = board_firmware()
@@ -306,8 +321,15 @@ class UpdateBoardButton(BigButton):
     self.set_enabled(self._can_update()[0] and not self._busy())
 
   def _busy(self) -> bool:
-    state = ui_state.params.get(STATE_PARAM) or ""
-    return state == "running" or self._asked
+    """In flight, by any measure the UI can see.
+
+    EpsLkasFlashRequested is included because there is a window - from the
+    confirm write until pandad next looks, up to a second, plus however long
+    the ./pandad binary takes to exit - where nothing else says anything is
+    happening.
+    """
+    params = ui_state.params
+    return (params.get(STATE_PARAM) or "") == "running"         or self._asked or params.get_bool(REQUEST_PARAM)
 
   def _update_state(self):
     if time.monotonic() - self._updated > REFRESH_S:
@@ -335,11 +357,24 @@ class BoardLayoutMici(NavScroller):
     self._update_btn.refresh()
 
 
+_visible_cache: list = [False, 0.0]
+
+
 def board_page_visible() -> bool:
   """Show the page once the board has ever identified itself.
 
   Not gated on the car brand: an EPS-LKAS board is a thing you fitted, not a
   thing the fingerprint knows about, and the honest test for "is there one" is
   that one has spoken.
+
+  CACHED ON A TICK. The settings carousel asks this every frame to decide
+  whether to draw the row, and ui_state.params has no cache - so the
+  uncached version was a file read sixty times a second to answer a question
+  that changes once in the life of an installation. car_brand() in vehicle.py
+  is cached for exactly the same reason.
   """
-  return bool(ui_state.params.get("EpsLkasBoardVersion"))
+  now = time.monotonic()
+  if now - _visible_cache[1] > REFRESH_S:
+    _visible_cache[1] = now
+    _visible_cache[0] = bool(ui_state.params.get("EpsLkasBoardVersion"))
+  return _visible_cache[0]

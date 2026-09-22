@@ -146,11 +146,19 @@ def test_elm327_param_is_not_zero():
   """In elm327 mode panda does `if (param == 0) set_can_mode(CAN_MODE_OBD_CAN2)`,
   which re-multiplexes bus 1 onto the OBD-II port. The default param is 0."""
   mod = _module()
-  assert mod.SAFETY_ELM327 == 15
+
+  # Against opendbc's own header, NOT a literal. This assertion used to read
+  # `== 15` and so locked in the bug it was supposed to prevent: 15 is
+  # SAFETY_VOLKSWAGEN_MQB. A test that compares a constant to itself proves
+  # only that somebody typed the same number twice.
+  decl = (ROOT / "opendbc_repo/opendbc/safety/declarations.h").read_text()
+  want = int(re.search(r"#define SAFETY_ELM327 (\d+)U", decl).group(1))
+  assert mod.SAFETY_ELM327 == want,     f"safety mode is {mod.SAFETY_ELM327}, opendbc says elm327 is {want}"
   assert mod.ELM327_KEEP_NORMAL_CAN != 0
   src = FLASHER.read_text()
   assert "set_safety_mode(SAFETY_ELM327, ELM327_KEEP_NORMAL_CAN)" in src
   assert "cli=False" in src, "Panda(cli=True) prompts on stdin with several pandas attached"
+  assert 'health().get("safety_mode")' in src,     "the safety mode is set but never read back, so a wrong one looks like a dead board"
 
 
 def test_commands_are_padded_to_eight_bytes():

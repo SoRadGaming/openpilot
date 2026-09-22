@@ -122,9 +122,54 @@ def test_params_are_registered():
     assert key in registered, f"{key} is not in params_keys.h; Params would raise UnknownKeyName"
 
   card = CARD.read_text()
-  assert "def publish_board_firmware" in card
+  assert "def write_board_firmware" in card
   for key in PARAMS:
     assert key in card, f"card.py never writes {key}"
+
+
+def test_json_params_are_given_objects_not_strings():
+  """THE BUG THIS EXISTS FOR. Params.put looks up PYTHON_2_CPP[(type(v), keytype)],
+  and the only JSON entries are (dict, JSON) and (list, JSON). Passing a
+  pre-serialised str to a JSON-typed key raises TypeError - and on the card path
+  nothing catches it, so card died on the first drive that decoded a 0x707 and
+  kept dying a minute after every restart."""
+  keys = PARAMS_KEYS.read_text()
+  json_keys = {m.group(1) for m in re.finditer(r'\{"(\w+)",\s*\{[^}]*JSON', keys)}
+  assert "EpsLkasBoardBuild" in json_keys, "EpsLkasBoardBuild is no longer JSON-typed"
+
+  tree = ast.parse(CARD.read_text())
+  for node in ast.walk(tree):
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "put" and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value in json_keys):
+      value = node.args[1]
+      bad = (isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute)
+             and value.func.attr == "dumps")
+      assert not bad, (f"card.py line {node.lineno}: {node.args[0].value} is JSON-typed; "
+                       f"pass the object, not json.dumps(...) - Params serialises it")
+      assert not (isinstance(value, ast.Constant) and isinstance(value.value, str)),         f"card.py line {node.lineno}: {node.args[0].value} is JSON-typed but given a str"
+
+
+def test_board_firmware_is_not_written_from_the_control_loop():
+  """A Params put is a blocking write with two fsyncs. state_publish runs at
+  100 Hz; params_thread exists at 10 Hz for exactly this."""
+  tree = ast.parse(CARD.read_text())
+  writer = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "write_board_firmware")
+  # and it must be called from params_thread, not from state_publish
+  pt = next(n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "params_thread")
+  called = {c.func.attr for c in ast.walk(pt)
+            if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)}
+  assert "write_board_firmware" in called, "the param write is not on params_thread"
+
+  sp = next(n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "state_publish")
+  sp_calls = {c.func.attr for c in ast.walk(sp)
+              if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)}
+  assert "write_board_firmware" not in sp_calls,     "the blocking write is back on the 100 Hz control loop"
+  assert writer is not None
 
 
 def test_panel_is_reachable():
