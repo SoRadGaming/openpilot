@@ -13,6 +13,64 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-09-22 — `6a4f1f5`, board `577a723e` · the lane graphic, and how to tell whether the fix landed
+
+**The dash lane graphic was not tracking sunnypilot.** Two rules were wanted:
+the graphic follows lateral being *enabled*, and it goes solid only while the
+car is actually steering. The board already implemented exactly that. The
+signal it was given did not mean what the name said.
+
+`carcontroller.py` was packing
+
+```python
+lat_ready = steering_available or CC.latActive
+```
+
+and `steering_available` is `cruiseState.available and vEgo > minSteerSpeed` —
+cruise main on and moving faster than the minimum. That is true with **MADS
+off**, so the graphic came up whenever the car was rolling with cruise main
+lit, which is most of a drive. Now:
+
+```python
+lat_ready = CC_SP.mads.enabled or CC.latActive
+```
+
+`mads.enabled` is the MADS state machine being in one of its enabled states,
+which is what "lateral is enabled" actually means. No firmware change was
+needed for this — the board reads the bit in one place and the rule there was
+already right.
+
+What to expect:
+
+| | graphic |
+|---|---|
+| MADS off, cruise main on, moving | blank |
+| MADS on, not steering | dashed |
+| board steering | solid |
+| driver overrides, assist hands back | dashed, not blank |
+| assist without override | stays solid |
+
+**And a bit to prove it, because two drives could not.** The board's decision is
+`op_lat = wants || (sp.has_req && fresh && sp.lat_ready)`, so everything past
+the first term depends on `0x500 SP_HUD_STATUS` arriving at all. If it never
+arrives, `op_lat` collapses to `latActive` and fixing `lat_ready` changes
+nothing — and the two cases produce **identical logs**. Both attempts to tell
+them apart from routes `ed`/`ee` came back inconclusive:
+
+* `0x70B REASON` — the only 0x500-derived codes are `integrator_too_large` and
+  `brake`, and neither occurred. Absence of a reason is not absence of a frame.
+* `0x70B AUTHORITY` vs `0x707 AUTHORITY` — both 160, and they always will be:
+  `hondacan.py` sends `SP_HUD_MAX_TORQUE = 0` and the board only folds
+  `max_torque` when it is non-zero, so the two can never differ.
+
+Board firmware `577a723e` adds **`GW_BUILD.BUILD_SP_FRESH`** (`0x70F` byte 0
+bit 5): 0x500 is arriving and fresh, sampled when the beat is sent. Over a
+drive, never-set means never arrived. `route_flatten.py` says so outright
+rather than leaving it to be re-derived.
+
+**This needs the board reflashed** — Settings → gateway → update firmware. The
+card will read `to 577a723e`.
+
 ## 2026-09-18 — `ef4f294` · MADS follows the board's hand-back
 
 When the gateway releases the wheel on driver torque, MADS now turns off, exactly
