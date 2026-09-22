@@ -413,3 +413,18 @@ def test_the_button_title_leaves_room_for_its_sub_label():
   m = re.search(r'super\(\)\.__init__\(tr\("([^"]*)"\)', panel)
   assert m, "could not find the button title"
   assert len(m.group(1)) <= 10,     f'button title "{m.group(1)}" is long enough to wrap and squeeze out the sub-label'
+
+
+def test_up_to_date_disables_the_button():
+  """A live button under a success message is an invitation to reflash the
+  gateway that steers the car for no reason. If the board reports the hash we
+  would install, it is running that image and there is nothing to recover."""
+  panel = BOARD_PANEL.read_text()
+  tree = ast.parse(panel)
+  fn = next(n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "_can_update")
+  src = ast.get_source_segment(panel, fn)
+  assert "up to date" in src, "'up to date' is not a refusal, so the button stays enabled"
+  # and it must be decided before ignition/offroad, which are less useful to say
+  assert src.index("up to date") < src.index("ignition off"), \
+    "'ignition off' would mask 'up to date' at a parked car"

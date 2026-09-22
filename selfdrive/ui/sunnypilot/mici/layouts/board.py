@@ -203,9 +203,26 @@ class UpdateBoardButton(BigButton):
   def _can_update() -> tuple[bool, str]:
     """(allowed, why not). The reason is shown, because a dead button with no
     explanation is the worst of both."""
-    _version, build = board_firmware()
+    version, build = board_firmware()
     if not build or not build.get("bootloader"):
       return False, tr("needs SWD once")
+
+    # NOTHING TO INSTALL IS A REASON TO BE DISABLED, and it goes before the
+    # ignition and offroad tests because it is the more useful thing to say to
+    # someone standing at a parked car.
+    #
+    # This was deliberately left ENABLED at first, on the reasoning that
+    # reinstalling is a legitimate recovery action. That reasoning does not
+    # hold: if the board is reporting this hash then it is running this image
+    # and there is nothing to recover from - a board that had actually failed
+    # would be reporting a different version, or none. What the live button
+    # really offered was a pointless reflash of the gateway that steers the
+    # car, one press away, with a success message still on screen.
+    offer = bundled_firmware()
+    if not offer:
+      return False, tr("no image")
+    if offer == version:
+      return False, tr("up to date")
 
     # IGNITION BEFORE OFFROAD, and the order is the whole point.
     #
@@ -287,21 +304,11 @@ class UpdateBoardButton(BigButton):
       # cannot carry it.
       self.set_value(tr("failed"))
     else:
+      # WHAT IT WOULD INSTALL, not what is running -- the card beside it
+      # already says what is running. _can_update() carries the reasons it
+      # cannot, "up to date" among them.
       allowed, why = self._can_update()
-      if not allowed:
-        self.set_value(why)
-      else:
-        # WHAT IT WOULD INSTALL, not what is running -- the card to the left
-        # already says what is running. Without this the button could not tell
-        # you whether there was anything to install at all.
-        version, _build = board_firmware()
-        offer = bundled_firmware()
-        if not offer:
-          self.set_value(tr("no image"))
-        elif offer == version:
-          self.set_value(tr("up to date"))
-        else:
-          self.set_value(tr("to {}").format(offer))
+      self.set_value(tr("to {}").format(bundled_firmware()) if allowed else why)
 
     self.set_enabled(self._can_update()[0] and not self._busy())
 
