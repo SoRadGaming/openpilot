@@ -94,7 +94,19 @@ def board_last_seen() -> str:
 
 
 class BoardFirmwareInfo(Widget):
-  """Two header/value pairs, laid out like HondaLearnedInfo and DeviceInfoLayoutMici."""
+  """One card: which firmware, and which board.
+
+  TWO PAIRS, SHORT HEADERS. These are hand-positioned at fixed offsets in a
+  180 px box and UnifiedLabel sizes its rect once at construction, so a header
+  wider than max_width wraps and its second line lands on the value beneath it.
+  "board firmware" was 343 px against a 340 px limit and did exactly that.
+  wrap_text=False is the belt; short headers are the braces.
+
+  "can update" used to be a third row on a second card. It is gone: every board
+  that ships has a bootloader, so the row said "yes" forever. The FLAG still
+  gates the update button - a board stood down to a standalone image has no
+  bootloader, and the button must not offer what it cannot do.
+  """
 
   def __init__(self):
     super().__init__()
@@ -104,15 +116,15 @@ class BoardFirmwareInfo(Widget):
     value_color = rl.Color(255, 255, 255, int(255 * 0.9 * 0.65))
     max_width = int(self._rect.width - 20)
 
-    self.fw_header = UnifiedLabel(tr("board firmware"), 48, max_width=max_width, text_color=header_color,
+    self.fw_header = UnifiedLabel(tr("firmware"), 48, max_width=max_width, text_color=header_color,
                                   font_weight=FontWeight.DISPLAY, wrap_text=False)
     self.fw_text = UnifiedLabel("", 32, max_width=max_width, text_color=value_color,
                                 font_weight=FontWeight.ROMAN, scroll=True, wrap_text=False)
 
-    self.seen_header = UnifiedLabel(tr("last seen"), 48, max_width=max_width, text_color=header_color,
-                                    font_weight=FontWeight.DISPLAY, wrap_text=False)
-    self.seen_text = UnifiedLabel("", 32, max_width=max_width, text_color=value_color,
-                                  font_weight=FontWeight.ROMAN, scroll=True, wrap_text=False)
+    self.id_header = UnifiedLabel(tr("board id"), 48, max_width=max_width, text_color=header_color,
+                                  font_weight=FontWeight.DISPLAY, wrap_text=False)
+    self.id_text = UnifiedLabel("", 32, max_width=max_width, text_color=value_color,
+                                font_weight=FontWeight.ROMAN, scroll=True, wrap_text=False)
 
     self._updated = 0.0
     self.refresh()
@@ -123,27 +135,25 @@ class BoardFirmwareInfo(Widget):
 
     if not version:
       self.fw_text.set_text(tr("never seen"))
-      self.seen_text.set_text(tr("drive once to read it"))
+      self.id_text.set_text(tr("drive once to read it"))
       return
 
-    # The dirty flag is not decoration. It means 0x707's hash names a commit the
-    # image was NOT built from, so quoting that hash at anyone is misleading
-    # unless it is said out loud.
+    # The age belongs with the hash, because a hash with no age invites you to
+    # believe it is current. card is only_onroad and this page is offroad, so
+    # nothing here is ever live - and in the one state the update runs in
+    # (always-offroad, ignition on) card is not running at all.
+    age = board_last_seen()
     marks = []
     if build.get("dirty"):
       marks.append(tr("dirty"))
     if build.get("readOnly"):
       marks.append(tr("stood down"))
-    self.fw_text.set_text(version + (f"  ({', '.join(marks)})" if marks else ""))
+    txt = version + (f" • {age}" if age else "")
+    self.fw_text.set_text(txt + (f" ({', '.join(marks)})" if marks else ""))
 
-    seen = board_last_seen() or tr("unknown")
-    # Absent build flags mean firmware older than 2026-09-22, which is exactly
-    # the firmware that has no bootloader -- so say the useful thing, not "no".
-    if not build:
-      seen += tr("  · pre-bootloader")
-    elif not build.get("bootloader"):
-      seen += tr("  · no bootloader")
-    self.seen_text.set_text(seen)
+    uid = build.get("uid") or tr("unknown")
+    # No bootloader is worth saying here, because it is why the button refuses.
+    self.id_text.set_text(uid + ("" if build.get("bootloader") else tr(" • no bootloader")))
 
   def _update_state(self):
     if time.monotonic() - self._updated > REFRESH_S:
@@ -152,74 +162,12 @@ class BoardFirmwareInfo(Widget):
   def _render(self, _):
     self.fw_header.set_position(self._rect.x + 20, self._rect.y - 10)
     self.fw_header.render()
-
-    self.fw_text.set_position(self._rect.x + 20, self._rect.y + 68 - 25)
+    self.fw_text.set_position(self._rect.x + 20, self._rect.y + 43)
     self.fw_text.render()
-
-    self.seen_header.set_position(self._rect.x + 20, self._rect.y + 114 - 30)
-    self.seen_header.render()
-
-    self.seen_text.set_position(self._rect.x + 20, self._rect.y + 161 - 25)
-    self.seen_text.render()
-
-
-class BoardIdentityInfo(Widget):
-  """Which physical board, and how it is built. The second card."""
-
-  def __init__(self):
-    super().__init__()
-    self.set_rect(rl.Rectangle(0, 0, 360, 180))
-
-    header_color = rl.Color(255, 255, 255, int(255 * 0.9))
-    value_color = rl.Color(255, 255, 255, int(255 * 0.9 * 0.65))
-    max_width = int(self._rect.width - 20)
-
-    self.uid_header = UnifiedLabel(tr("board id"), 48, max_width=max_width, text_color=header_color,
-                                   font_weight=FontWeight.DISPLAY, wrap_text=False)
-    self.uid_text = UnifiedLabel("", 32, max_width=max_width, text_color=value_color,
-                                 font_weight=FontWeight.ROMAN, scroll=True, wrap_text=False)
-
-    self.can_header = UnifiedLabel(tr("can update"), 48, max_width=max_width, text_color=header_color,
-                                   font_weight=FontWeight.DISPLAY, wrap_text=False)
-    self.can_text = UnifiedLabel("", 32, max_width=max_width, text_color=value_color,
-                                 font_weight=FontWeight.ROMAN, scroll=True, wrap_text=False)
-
-    self._updated = 0.0
-    self.refresh()
-
-  def refresh(self) -> None:
-    self._updated = time.monotonic()
-    _, build = board_firmware()
-
-    self.uid_text.set_text(build.get("uid") or tr("unknown"))
-
-    # This is the question the page exists to answer before any update button
-    # does: BUILD_BOOTLOADER is a run-time check of the reset vector at
-    # 0x08000000, so it is the difference between "can be reflashed from here"
-    # and "needs a one-time visit with a debugger".
-    if not build:
-      self.can_text.set_text(tr("no — needs SWD once"))
-    elif build.get("bootloader"):
-      self.can_text.set_text(tr("yes — over CAN"))
-    else:
-      self.can_text.set_text(tr("no — needs SWD once"))
-
-  def _update_state(self):
-    if time.monotonic() - self._updated > REFRESH_S:
-      self.refresh()
-
-  def _render(self, _):
-    self.uid_header.set_position(self._rect.x + 20, self._rect.y - 10)
-    self.uid_header.render()
-
-    self.uid_text.set_position(self._rect.x + 20, self._rect.y + 68 - 25)
-    self.uid_text.render()
-
-    self.can_header.set_position(self._rect.x + 20, self._rect.y + 114 - 30)
-    self.can_header.render()
-
-    self.can_text.set_position(self._rect.x + 20, self._rect.y + 161 - 25)
-    self.can_text.render()
+    self.id_header.set_position(self._rect.x + 20, self._rect.y + 84)
+    self.id_header.render()
+    self.id_text.set_position(self._rect.x + 20, self._rect.y + 136)
+    self.id_text.render()
 
 
 class UpdateBoardButton(BigButton):
@@ -244,7 +192,7 @@ class UpdateBoardButton(BigButton):
   """
 
   def __init__(self):
-    super().__init__(tr("update firmware"), "", gui_app.texture(ICON, 70, 70))
+    super().__init__(tr("update"), "", gui_app.texture(ICON, 70, 70))
     self.set_click_callback(self._on_click)
     self._updated = 0.0
     self._asked = False        # we wrote the request; waiting for pandad
@@ -256,12 +204,27 @@ class UpdateBoardButton(BigButton):
     """(allowed, why not). The reason is shown, because a dead button with no
     explanation is the worst of both."""
     _version, build = board_firmware()
-    if not build:
-      return False, tr("needs a debugger once")
-    if not build.get("bootloader"):
-      return False, tr("needs a debugger once")
+    if not build or not build.get("bootloader"):
+      return False, tr("needs SWD once")
+
+    # IGNITION BEFORE OFFROAD, and the order is the whole point.
+    #
+    # is_offroad() is `not started`, and started is `deviceState.started and
+    # ignition` - so it is TRUE for both "ignition off" and "ignition on with
+    # Always Offroad". Those are opposite situations: the second is the state
+    # this update is designed for, and the first is one where the board has no
+    # 12 V and the bus is dead, so the flash can only fail with "no HELLO".
+    # Testing offroad alone enabled the button in the one state guaranteed not
+    # to work.
+    #
+    # ui_state.ignition is latched - it is only reassigned while pandaStates
+    # is arriving and the panda type is known, and never cleared if the panda
+    # goes away. Upstream gates on it the same way (device.py), and a stale
+    # reading costs a clear failure message rather than anything worse.
+    if not ui_state.ignition:
+      return False, tr("ignition off")
     if not ui_state.is_offroad():
-      return False, tr("not while driving")
+      return False, tr("use always offroad")
     return True, ""
 
   def _on_click(self) -> None:
@@ -364,18 +327,16 @@ class BoardLayoutMici(NavScroller):
     self.set_back_callback(back_callback)
 
     self._firmware_info = BoardFirmwareInfo()
-    self._identity_info = BoardIdentityInfo()
     self._update_btn = UpdateBoardButton()
 
     # add_widgets is on the inner _Scroller, and going through it is what
     # re-wraps each widget's touch-valid callback with the scroller's own
     # conditions. self.add_widgets(...) does not exist.
-    self._scroller.add_widgets([self._firmware_info, self._identity_info, self._update_btn])
+    self._scroller.add_widgets([self._firmware_info, self._update_btn])
 
   def show_event(self):
     super().show_event()
     self._firmware_info.refresh()
-    self._identity_info.refresh()
     self._update_btn.refresh()
 
 

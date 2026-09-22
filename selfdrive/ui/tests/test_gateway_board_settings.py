@@ -278,8 +278,9 @@ def test_a_refusal_is_explained_not_silent():
   """A dead button with no reason is the worst of both."""
   panel = BOARD_PANEL.read_text()
   assert "BigDialog(" in panel, "a blocked press says nothing"
-  assert "needs a debugger once" in panel
-  assert "not while driving" in panel
+  assert "needs SWD once" in panel
+  assert "ignition off" in panel
+  assert "use always offroad" in panel
 
 
 def test_the_button_says_what_it_would_install():
@@ -344,10 +345,14 @@ def test_absence_and_a_negative_answer_are_different():
   names = {n.attr for n in ast.walk(fn) if isinstance(n, ast.Attribute)}
   assert "fwBuildValid" in names, "card writes the 0x70F fields without checking one arrived"
 
+  # The UI collapses "never sent 0x70F" and "sent it, bootloader false" into
+  # one message, and that is correct rather than lazy: 0x70F landed in the same
+  # commit as the bootloader, so a board that does not send it genuinely has no
+  # bootloader. What must NOT collapse is card's write - an absent frame must
+  # not be recorded as a real answer of zero, which is what put "board id
+  # 000000" on the screen.
   panel = BOARD_PANEL.read_text()
-  # and the UI's "never saw it" branches must therefore be reachable
-  assert "pre-bootloader" in panel
-  assert re.search(r"if not build:", panel), "the absence branch is gone"
+  assert "no bootloader" in panel
 
 
 VEHICLE_PANEL = ROOT / "selfdrive/ui/sunnypilot/mici/layouts/vehicle.py"
@@ -380,3 +385,31 @@ def test_hand_positioned_labels_never_wrap():
         val = next(k.value for k in node.keywords if k.arg == "wrap_text")
         assert isinstance(val, ast.Constant) and val.value is False, \
           f"{path.name}:{node.lineno}: wrap_text must be False here"
+
+
+def test_no_glyphs_the_baked_font_does_not_have():
+  """The .fnt atlases carry ASCII 32-126 plus EXTRA_CHARS plus whatever the
+  translations use. An em dash (U+2014) and a middle dot (U+00B7) are in none
+  of those, and raylib silently substitutes a wrong glyph - so the card read
+  "no _ needs SWD once" on the device. The bullet (U+2022) and en dash
+  (U+2013) ARE in EXTRA_CHARS and are safe."""
+  extra = re.search(r'EXTRA_CHARS\s*=\s*"([^"]*)"',
+                    (ROOT / "selfdrive/assets/fonts/process.py").read_text(encoding="utf-8")).group(1)
+  allowed = set(map(chr, range(32, 127))) | set(extra)
+  for path in (BOARD_PANEL, VEHICLE_PANEL):
+    for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+      for m in re.finditer(r'tr\("([^"]*)"\)', line):
+        bad = sorted({c for c in m.group(1) if c not in allowed})
+        assert not bad, (f"{path.name}:{i}: {[hex(ord(c)) for c in bad]} is not in the "
+                         f"baked font; raylib will substitute a wrong glyph")
+
+
+def test_the_button_title_leaves_room_for_its_sub_label():
+  """BigButton gives the sub-label whatever the title does not use. "update
+  firmware" is 370 px at 48 pt against a 322 px content width, so it wrapped to
+  two lines and left ~33 px for a 42 px sub-label line - which was then force
+  elided. The title has to fit one line."""
+  panel = BOARD_PANEL.read_text()
+  m = re.search(r'super\(\)\.__init__\(tr\("([^"]*)"\)', panel)
+  assert m, "could not find the button title"
+  assert len(m.group(1)) <= 10,     f'button title "{m.group(1)}" is long enough to wrap and squeeze out the sub-label'
