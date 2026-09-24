@@ -138,6 +138,19 @@ HOLD_PING_S = 2.0          # keep-alive; the bootloader resets after 10 s silent
 POST_CAPTURE_S = 6.0       # after the post-reboot HELLO: app start and K2 re-split
 EPS_PERIOD_S = 0.010       # 0x18F cadence - the grid the firing-order fit uses
 
+# WHICH CAR MESSAGES DOES THE BURST DISTURB? The owner confirms this car has
+# active noise cancellation and VCM active control engine mounts. The update
+# left BOTH signatures: structural vibration up 2.5x (the mounts' job) and
+# cabin sound up far more at 88 Hz (ANC's). Both are timed from engine speed,
+# so one disturbance upstream - the data burst corrupting or starving the
+# frames they depend on - would take out both. Error counters say whether the
+# bus saw errors; this says which messages actually went missing, and whether
+# anything started answering our frames.
+CENSUS_OWN = range(0x700, 0x720)   # the board's telemetry and the bootloader protocol
+CENSUS_MIN_HZ = 5.0                # ignore IDs too slow to rate over a few seconds
+CENSUS_LOST = 0.8                  # report an ID below 80% of its pre-knock rate
+CENSUS_MIN_PHASE_S = 1.0           # phases shorter than this rate too noisily
+
 # Named for what is happening DURING the phase that starts at each mark.
 PHASE_NAMES = {
   "start": "pre",          # parked, board running normally, relays split
@@ -525,6 +538,11 @@ class Flasher:
     # happened in each phase rather than across the whole run.
     self._marks: list[tuple[float, str]] = []
     self._health: list[tuple[float, dict]] = []
+    # frames per car-bus ID in the phase currently running, and the finished
+    # phases keyed by their start time
+    self._census: dict[int, int] = {}
+    self._census_phase: dict[float, dict[int, int]] = {}
+    self._phase_start: float | None = None
     self.rejected = 0
 
   # -- wire -----------------------------------------------------------------
@@ -535,6 +553,8 @@ class Flasher:
         if self.rejected == 1:
           self.log(f"  panda SAFETY REJECTED {addr:#05x} - the mode is not letting this out")
         continue
+      if kind == RX:
+        self._census[addr] = self._census.get(addr, 0) + 1
       if kind != ECHO and addr in TRACE_IDS:
         # Timestamp and raw bytes only. No decoding in the receive path, and
         # no opendbc import in a module that must load on a bench.
@@ -688,6 +708,10 @@ class Flasher:
 
   def mark(self, label: str) -> None:
     now = time.monotonic()
+    if self._phase_start is not None:
+      self._census_phase[self._phase_start] = self._census
+    self._census = {}
+    self._phase_start = now
     self._marks.append((now, label))
     h = None
     health = getattr(self.t, "health", None)
@@ -858,6 +882,32 @@ class Flasher:
       "series": series,
     }
 
+  def _census_row(self, row: dict, start: float, dur: float, pre_start: float) -> None:
+    """Add "lost" and "new" to a phase row, relative to the pre-knock phase."""
+    if dur < CENSUS_MIN_PHASE_S or start == pre_start:
+      return
+    pre = self._census_phase.get(pre_start)
+    here = self._census_phase.get(start)
+    if not pre or here is None:
+      return
+    pre_marks = sorted(self._marks)
+    pre_dur = pre_marks[1][0] - pre_marks[0][0] if len(pre_marks) > 1 else 0.0
+    if pre_dur < CENSUS_MIN_PHASE_S:
+      return
+    lost = {}
+    for addr, n in pre.items():
+      if addr in CENSUS_OWN or n / pre_dur < CENSUS_MIN_HZ:
+        continue
+      ratio = (here.get(addr, 0) / dur) / (n / pre_dur)
+      if ratio < CENSUS_LOST:
+        lost[f"{addr:x}"] = round(ratio, 2)
+    new = sorted(f"{addr:x}" for addr, n in here.items()
+                 if addr not in pre and addr not in CENSUS_OWN and n >= 3)
+    if lost:
+      row["lost"] = dict(sorted(lost.items(), key=lambda kv: kv[1])[:8])
+    if new:
+      row["new"] = new[:8]
+
   def _phase_table(self, grid, rpm, load, ang) -> list[dict]:
     marks = sorted(self._marks)
     if len(marks) < 2:
@@ -885,6 +935,7 @@ class Flasher:
         row["sd"] = round((sum((y - mu) ** 2 for y in ys) / len(ys)) ** 0.5, 2)
       if an:
         row["ang"] = round(max(an) - min(an), 1)
+      self._census_row(row, a, b - a, marks[0][0])
       ha, hb = health.get(a) or {}, health.get(b) or {}
       for bus in (0, 1, 2):
         ea = (ha.get(bus) or {}).get("total_error_cnt")

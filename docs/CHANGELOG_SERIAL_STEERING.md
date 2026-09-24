@@ -46,6 +46,13 @@ The flasher now makes every update answer that itself:
   against the independent 2.02 and 5.04.
 * **Panda CAN error counters** per bus at every step.
 
+**Confirmed by the owner: the car has active noise cancellation and VCM active
+control engine mounts** — and the update left both fingerprints: structure up
+2.5× (the mounts), cabin sound at 88 Hz up ~24× (ANC). So each phase also carries
+a census of every car-bus ID against the pre-knock baseline: `lost` names any ID
+that slowed below 80% or vanished, `new` any that appeared (something answering
+our frames). On real f5→f6 traffic, 72 IDs, it reports nothing.
+
 It arrives in the next route's `eps-lkas flash trace` line as a `phases` table:
 `pre reset enter hold erase data finish copy post`, each with `rpm`, `ld`,
 `o3` (and an off-order `ref`), `sd`, `ang` and error deltas `e0`/`e2`. **The

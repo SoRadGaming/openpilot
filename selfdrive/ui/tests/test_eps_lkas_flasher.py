@@ -525,3 +525,47 @@ def test_panda_health_is_best_effort():
   h = t.health()
   assert set(h) == {0, 2}
   assert h[0]["total_error_cnt"] == 3 and "ignored" not in h[0]
+
+
+def test_the_census_names_what_the_burst_starves_and_what_starts_answering():
+  """ANC and the active mounts are both timed from engine speed. If the data
+  burst corrupts or starves the frames they depend on, the census names them;
+  if something starts answering our frames, it names that too. The board's
+  own IDs are excluded - they change across the bootloader by design."""
+  mod = _module()
+  frames = []
+
+  class T:
+    def describe(self): return "replay"
+    def send(self, *a): pass
+    def poll(self, timeout=0.0):
+      out, frames[:] = list(frames), []
+      return out
+    def close(self): pass
+
+  f = mod.Flasher(T(), log=lambda s: None)
+
+  def run(per_id):
+    for addr, n in per_id.items():
+      frames.extend([(addr, bytes(8), mod.RX)] * n)
+    frames.append((0x17C, bytes(8), mod.ECHO))        # an echo: never counted
+    f._pump()
+
+  f.mark("start")
+  run({0x17C: 500, 0x1A6: 250, 0x711: 50, 0x3FF: 2})     # 5 s before the knock
+  f.mark("data")
+  run({0x17C: 200, 0x1A6: 250, 0x711: 300, 0x7E8: 4})    # 5 s of data stream
+  f.mark("end")
+  # the marks are real monotonic times a few microseconds apart; give the
+  # phases their nominal 5 s durations so the rates mean something
+  (a, _), (b, _), (c, _) = f._marks
+  f._marks = [(0.0, "start"), (5.0, "data"), (10.0, "end")]
+  f._census_phase = {0.0: f._census_phase[a], 5.0: f._census_phase[b]}
+
+  row = {}
+  f._census_row(row, 5.0, 5.0, 0.0)
+  assert row.get("lost") == {"17c": 0.4}, row
+  assert row.get("new") == ["7e8"], row
+  assert "711" not in str(row), "the board's own IDs must not be reported"
+  assert "3ff" not in str(row), "too slow to rate"
+  assert f._census_phase[0.0][0x17C] == 500, "echoes are not traffic"
