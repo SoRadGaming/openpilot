@@ -13,6 +13,45 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-09-24 — the update "hum" is the engine, and the next update measures it
+
+**The trace worked.** It came out in route f6 with no SSH and said the wheel did
+not move during the flash (0.6–0.7°, one 0.1° step). Together with f5 (same key
+cycle, before) and a phone video of the whole update, the hum turned out to be
+**engine firing vibration**, not the EPS: the V6's 3rd order (~44 Hz) and its
+harmonic (~88 Hz), pitch-locked to idle rpm, **2.5× stronger after the flash**
+at matched rpm and load, ~24× louder in the cabin, held until the engine was
+restarted. The EPS neither makes nor amplifies it (column-to-body ratio 16.7 vs
+16.5) and reports nothing. Full write-up: `docs/CAN-UPDATE.md` in the board repo.
+
+The video puts the step **1.7 s after the knock, as the data stream begins**,
+with rpm unchanged. So the update is still the suspect — as something that
+knocks an engine vibration or noise control into a fallback — but which step of
+it could not be told apart. **Workaround: cycle the ignition after an update.**
+
+The flasher now makes every update answer that itself:
+
+* **5 s baseline** before the knock, and **6 s after** the post-reboot HELLO
+  through the app start and K2 re-split, which nothing recorded before.
+* **An 8 s hold** with the bootloader session open and no data, between INFO and
+  BEGIN — so the knock and the data stream are 8 s apart, not 1.7 s. INFO every
+  2 s keeps the session alive; the board is in bypass throughout.
+* **Engine rpm from `0x17C`**, and the accessory-load bit (`0x1A6` byte 2
+  bit 6). Not `0x158`'s ENGINE_RPM field, which reads ~8% low in Park — the
+  torque converter — and once produced "it cannot be the engine".
+* **The firing-order amplitude per phase**, fitted in the column torque with its
+  phase tracked from rpm, on the EPS's own 10 ms grid rebuilt from the `0x18F`
+  counter. USB-batch receive times jitter ~10 ms, which would make a 44 Hz fit
+  meaningless. Replayed over real f5/f6 frames it gives 2.10 and 5.02 counts
+  against the independent 2.02 and 5.04.
+* **Panda CAN error counters** per bus at every step.
+
+It arrives in the next route's `eps-lkas flash trace` line as a `phases` table:
+`pre reset enter hold erase data finish copy post`, each with `rpm`, `ld`,
+`o3` (and an off-order `ref`), `sd`, `ang` and error deltas `e0`/`e2`. **The
+phase whose `o3` steps up is the trigger.** The update sits at 0% for ~13 s
+before moving; that is the baseline and the hold.
+
 ## 2026-09-23 — board `d43b12aa` · the flash now records what it does to the steering
 
 **A driver reported the EPS humming and the wheel moving slightly, left and

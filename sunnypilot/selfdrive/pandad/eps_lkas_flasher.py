@@ -100,10 +100,56 @@ ENGINE_DATA_ID = 0x158
 # mirroring the moment it enters its bootloader, and which is blind below
 # about 20 km/h anyway. So this is the best available witness, not a
 # second-best one.
-TRACE_IDS = (0x156, 0x18F)
+TRACE_IDS = (0x156, 0x18F, 0x17C, 0x1A6)
 TRACE_MAX = 24000          # ~2 min of both at 100 Hz; ~1 MB of raw bytes
 TRACE_DIR = "/data/eps-lkas-trace"
 TRACE_HZ = 10              # the summary series; the raw file keeps all 100 Hz
+
+# WHAT THE SECOND UPDATE TAUGHT (2026-09-23, routes f5/f6 and a phone video).
+#
+# The "hum" during an update is not the EPS. It is the V6's firing vibration -
+# the 3rd engine order, ~44 Hz at idle, and its 2nd harmonic ~88 Hz - which
+# stepped up about 2.5x structurally (24x in the cabin audio) at the moment the
+# update's data stream began, 1.7 s AFTER the knock, with the rpm unchanged. It
+# then held until the engine was restarted. The column-to-body vibration ratio
+# did not change, so the EPS neither makes it nor amplifies it; its torque
+# sensor simply sits in a shaking column.
+#
+# So these two are traced as well, because the vibration only means anything
+# at a known rpm and load:
+#
+#   0x17C POWERTRAIN_DATA  ENGINE_RPM, bytes 2-3. NOT the ENGINE_RPM field of
+#                          0x158, which reads ~8% low on this car at idle in
+#                          Park - that is the torque converter, not the crank,
+#                          and using it once produced "it cannot be the engine".
+#   0x1A6                  byte 2 bit 6: an accessory load that cycles about
+#                          every 7 s with a 12 V dip and a sag in idle. The
+#                          firing-order amplitude is only comparable at the
+#                          same load state.
+ENGINE_RPM_ID = 0x17C
+LOAD_ID = 0x1A6
+
+# The phases. Each gap exists to separate two events in time so that whatever
+# the vibration follows is unambiguous. They cost ~19 s per update; the car is
+# parked in bypass throughout, which is stock wiring.
+PRE_CAPTURE_S = 4.0        # baseline, before the knock, on top of moving()'s 1 s
+HOLD_BEFORE_DATA_S = 8.0   # bootloader session open, relays in bypass, no data
+HOLD_PING_S = 2.0          # keep-alive; the bootloader resets after 10 s silent
+POST_CAPTURE_S = 6.0       # after the post-reboot HELLO: app start and K2 re-split
+EPS_PERIOD_S = 0.010       # 0x18F cadence - the grid the firing-order fit uses
+
+# Named for what is happening DURING the phase that starts at each mark.
+PHASE_NAMES = {
+  "start": "pre",          # parked, board running normally, relays split
+  "knock": "reset",        # relays drop, board resets into the bootloader
+  "hello": "enter",        # ENTER, INFO
+  "hold": "hold",          # bootloader session open, nothing sent but pings
+  "begin": "erase",        # BEGIN: the bootloader erases bank 2
+  "data": "data",          # the chunk stream - ~770 frames/s on the car bus
+  "finish": "finish",      # FINISH: CRC check
+  "reboot": "copy",        # bootloader copies staging into the app slot
+  "hello_after": "post",   # app starts, K1/K2 re-split
+}
 
 
 def _i16be(b: bytes, off: int) -> int:
@@ -121,6 +167,103 @@ def decode_steering_sensors(d: bytes) -> tuple[float, float] | None:
   if len(d) < 4:
     return None
   return (_i16be(d, 0) * -0.1, float(_i16be(d, 2)))
+
+
+def steer_status_counter(d: bytes) -> int | None:
+  """0x18F COUNTER 53|2@0+ - byte 6 bits 5:4. The frame is 7 bytes."""
+  if len(d) < 7:
+    return None
+  return (d[6] >> 4) & 0x3
+
+
+def decode_engine_rpm(d: bytes) -> int | None:
+  """0x17C POWERTRAIN_DATA ENGINE_RPM 23|16@0+ - bytes 2-3, big-endian."""
+  if len(d) < 4:
+    return None
+  return (d[2] << 8) | d[3]
+
+
+def decode_load_bit(d: bytes) -> int | None:
+  """0x1A6 byte 2 bit 6 - see LOAD_ID."""
+  if len(d) < 3:
+    return None
+  return (d[2] >> 6) & 1
+
+
+def eps_grid(tq: list) -> list[tuple[float, float]]:
+  """Rebuild 0x18F sample times from the EPS's own clock.
+
+  Receive timestamps here are USB-batch times - frames that arrive together
+  share one, and they jitter by ~10 ms. The firing order is ~44 Hz, a 22.7 ms
+  period, so a fit on those times measures nothing. The EPS sends 0x18F every
+  10.000 ms with a 2-bit counter: each frame's index is its predecessor's plus
+  the counter step, choosing among step, step+4, step+8... whichever best
+  matches the (coarse) receive gap, so dropped frames leave a hole rather than
+  sliding everything after them.
+
+  tq is [(t_rx, value, raw_bytes)]. Returns [(t, value)] on the EPS grid.
+  """
+  out: list[tuple[float, float]] = []
+  k = 0
+  prev_c = None
+  prev_t = 0.0
+  t0 = tq[0][0] if tq else 0.0
+  for t, v, raw in tq:
+    c = steer_status_counter(raw)
+    if prev_c is not None and c is not None:
+      est = (t - prev_t) / EPS_PERIOD_S
+      base = (c - prev_c) % 4 or 4
+      k += min((base + 4 * m for m in range(64)), key=lambda st: abs(st - est))
+    elif prev_c is not None:
+      k += 1
+    out.append((t0 + k * EPS_PERIOD_S, float(v)))
+    prev_c, prev_t = c, t
+  return out
+
+
+def _solve3(a: list[list[float]], b: list[float]) -> list[float] | None:
+  m = [row[:] + [bb] for row, bb in zip(a, b)]
+  for i in range(3):
+    p = max(range(i, 3), key=lambda r: abs(m[r][i]))
+    if abs(m[p][i]) < 1e-12:
+      return None
+    m[i], m[p] = m[p], m[i]
+    for r in range(3):
+      if r != i:
+        f = m[r][i] / m[i][i]
+        m[r] = [x - f * y for x, y in zip(m[r], m[i])]
+  return [m[i][3] / m[i][i] for i in range(3)]
+
+
+def order_amplitude(samples: list[tuple[float, float]], rpm: list[tuple[float, int]],
+                    order: float) -> float | None:
+  """Least-squares amplitude of one engine order, phase tracked from rpm.
+
+  Tracking beats a fixed-frequency fit because idle wanders by tens of rpm:
+  at the 3rd order that is ~1 Hz, more than a few seconds' frequency
+  resolution. This is the method that separated the firing order from the
+  noise on routes f5/f6.
+  """
+  if len(samples) < 50 or not rpm:
+    return None
+  import math
+  j = 0
+  ph = 0.0
+  prev = samples[0][0]
+  S = [[0.0] * 3 for _ in range(3)]
+  B = [0.0] * 3
+  for t, y in samples:
+    while j + 1 < len(rpm) and rpm[j + 1][0] <= t:
+      j += 1
+    ph += 2.0 * math.pi * order * rpm[j][1] / 60.0 * (t - prev)
+    prev = t
+    v = (math.cos(ph), math.sin(ph), 1.0)
+    for x in range(3):
+      B[x] += v[x] * y
+      for z in range(3):
+        S[x][z] += v[x] * v[z]
+  sol = _solve3(S, B)
+  return None if sol is None else math.hypot(sol[0], sol[1])
 
 
 def decode_steer_status(d: bytes) -> int | None:
@@ -262,6 +405,25 @@ class PandaTransport:
   def send(self, can_id: int, data: bytes) -> None:
     self.p.can_send(can_id, bytes(data).ljust(8, b"\x00"), self.bus)
 
+  def health(self) -> dict:
+    """CAN error counters per bus, best effort.
+
+    The data stream is the prime suspect for the vibration, and the one
+    mechanism a CAN log would show is error frames. During the previous update
+    the panda counted 123,231 errors on its camera-side controller with the car
+    and camera buses joined through K1's bypass. These counters say whether
+    that happens during the stream, the hold, or not at all.
+    """
+    out = {}
+    for b in (0, 1, 2):
+      try:
+        h = self.p.can_health(b)
+        out[b] = {k: h[k] for k in ("total_error_cnt", "bus_off_cnt", "error_passive",
+                                     "total_rx_lost_cnt", "total_tx_lost_cnt") if k in h}
+      except Exception:
+        pass
+    return out
+
   def poll(self, timeout: float = 0.0) -> list[tuple[int, bytes, str]]:
     end = time.monotonic() + timeout
     while True:
@@ -358,6 +520,11 @@ class Flasher:
     # linearly on every receive, so it has to stay short; this one is only
     # ever appended to, and read once at the end.
     self._trace: deque[tuple[float, int, bytes]] = deque(maxlen=TRACE_MAX)
+    # (monotonic time, label) at each step of the procedure, and the panda's
+    # CAN error counters at the same instants - so the summary can say what
+    # happened in each phase rather than across the whole run.
+    self._marks: list[tuple[float, str]] = []
+    self._health: list[tuple[float, dict]] = []
     self.rejected = 0
 
   # -- wire -----------------------------------------------------------------
@@ -519,6 +686,43 @@ class Flasher:
     """
     self._send_raw(ID_HOST, bytes([CMD_ABORT]))
 
+  def mark(self, label: str) -> None:
+    now = time.monotonic()
+    self._marks.append((now, label))
+    h = None
+    health = getattr(self.t, "health", None)
+    if health is not None:
+      try:
+        h = health()
+      except Exception:
+        h = None
+    self._health.append((now, h or {}))
+
+  def listen(self, seconds: float) -> None:
+    """Keep receiving - and so keep tracing - without sending anything."""
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+      self._pump(0.05)
+
+  def hold(self, seconds: float) -> str | None:
+    """Keep the bootloader session open with no data flowing.
+
+    The knock and the data stream used to be 1.7 s apart, and the vibration
+    started with the data stream - close enough that one cannot be told from
+    the other. This puts seconds between them. The board sits in bypass the
+    whole time, which is stock wiring. INFO is the keep-alive: any command
+    refreshes the bootloader's 10 s session timer (boot_main.c).
+    """
+    end = time.monotonic() + seconds
+    next_ping = time.monotonic() + HOLD_PING_S
+    while time.monotonic() < end:
+      self._pump(0.05)
+      if time.monotonic() >= next_ping:
+        next_ping += HOLD_PING_S
+        if self.info() is None:
+          return "the bootloader stopped answering during the hold"
+    return None
+
   def program(self, image: bytes) -> str | None:
     n = len(image)
     chunks = (n + CHUNK_BYTES - 1) // CHUNK_BYTES
@@ -528,6 +732,7 @@ class Flasher:
       return e
     if (e := self._expect_ack(CMD_BEGIN, timeout=20.0)):     # erases all of bank 2
       return e
+    self.mark("data")
 
     last_pct = -1
     for idx in range(chunks):
@@ -561,6 +766,7 @@ class Flasher:
         if self.progress:
           self.progress(pct)
 
+    self.mark("finish")
     crc = zlib.crc32(image) & 0xFFFFFFFF
     self._drain()
     if (e := self._send(ID_HOST, bytes([CMD_FINISH]) + struct.pack("<I", crc))):
@@ -575,32 +781,42 @@ class Flasher:
     """Decode the trace into something small enough to put in a log line.
 
     THIS IS HOW THE TRACE LEAVES THE DEVICE. The raw CSV needs SSH to fetch,
-    which not every owner has, so the answer has to travel out the way
-    everything else does: a param, emitted to cloudlog by card once the next
-    drive starts, landing in an ordinary route.
+    which not every owner has, so the answer travels the way everything else
+    does: a param, emitted to cloudlog by card on the next drive, landing in an
+    ordinary route.
 
-    The verdict field is the discriminator stated plainly, because the whole
-    point is to tell two things apart: angle moving while column torque stays
-    small means something drove the column; torque in the thousands leading
-    the angle means a hand on the wheel.
+    Two answers. "verdict" is whether the wheel MOVED - angle against column
+    torque separates a hand from something driving the column. "phases" is
+    what the idle vibration did in each step of the procedure: the 3rd engine
+    order in the column torque, fitted on the EPS's own sample grid with its
+    phase tracked from rpm, beside an off-order reference, the rpm, the load
+    state and the panda's CAN error counts. Whichever phase the o3 column
+    steps up in is the trigger.
     """
-    ang: list[tuple[float, float, float]] = []      # t, deg, deg/s
-    tq: list[tuple[float, int]] = []                # t, counts
+    ang: list[tuple[float, float, float]] = []
+    tq: list[tuple[float, int, bytes]] = []
+    rpm: list[tuple[float, int]] = []
+    load: list[tuple[float, int]] = []
     for t, addr, data in self._trace:
       if addr == 0x156:
         if (v := decode_steering_sensors(data)) is not None:
           ang.append((t, v[0], v[1]))
       elif addr == 0x18F:
         if (v := decode_steer_status(data)) is not None:
-          tq.append((t, v))
+          tq.append((t, v, data))
+      elif addr == ENGINE_RPM_ID:
+        if (v := decode_engine_rpm(data)) is not None:
+          rpm.append((t, v))
+      elif addr == LOAD_ID:
+        if (v := decode_load_bit(data)) is not None:
+          load.append((t, v))
     if not ang and not tq:
       return {}
 
     t0 = min(x[0] for x in (ang or tq))
     degs = [a for _, a, _ in ang]
     rates = [abs(r) for _, _, r in ang]
-    tqs = [abs(v) for _, v in tq]
-
+    tqs = [abs(v) for _, v, _ in tq]
     span = (max(degs) - min(degs)) if degs else 0.0
     peak_tq = max(tqs) if tqs else 0
 
@@ -617,15 +833,17 @@ class Flasher:
     series = []
     step = 1.0 / TRACE_HZ
     nxt = t0
-    ti = 0
+    ti = ri = 0
     for t, a, _r in ang:
       if t < nxt:
         continue
       nxt = t + step
       while ti + 1 < len(tq) and tq[ti + 1][0] <= t:
         ti += 1
+      while ri + 1 < len(rpm) and rpm[ri + 1][0] <= t:
+        ri += 1
       series.append([round(t - t0, 2), round(a, 1),
-                     tq[ti][1] if tq else 0])
+                     tq[ti][1] if tq else 0, rpm[ri][1] if rpm else 0])
 
     return {
       "n": len(self._trace),
@@ -636,8 +854,45 @@ class Flasher:
       "rate_max": round(max(rates), 1) if rates else None,
       "torque_absmax": peak_tq,
       "verdict": verdict,
+      "phases": self._phase_table(eps_grid(tq), rpm, load, ang),
       "series": series,
     }
+
+  def _phase_table(self, grid, rpm, load, ang) -> list[dict]:
+    marks = sorted(self._marks)
+    if len(marks) < 2:
+      return []
+    base = marks[0][0]
+    health = dict(self._health)
+    out = []
+    for (a, label), (b, _next) in zip(marks, marks[1:]):
+      seg = [(t, y) for t, y in grid if a <= t < b]
+      r = [v for t, v in rpm if a <= t < b]
+      ld = [v for t, v in load if a <= t < b]
+      an = [x for t, x, _ in ang if a <= t < b]
+      row = {"p": PHASE_NAMES.get(label, label), "s": round(a - base, 2), "d": round(b - a, 2)}
+      if r:
+        row["rpm"] = round(sum(r) / len(r))
+      if ld:
+        row["ld"] = round(sum(ld) / len(ld), 2)
+      if (o3 := order_amplitude(seg, rpm, 3.0)) is not None:
+        row["o3"] = round(o3, 2)
+        ref = order_amplitude(seg, rpm, 2.6)
+        row["ref"] = None if ref is None else round(ref, 2)
+      if len(seg) > 1:
+        ys = [y for _, y in seg]
+        mu = sum(ys) / len(ys)
+        row["sd"] = round((sum((y - mu) ** 2 for y in ys) / len(ys)) ** 0.5, 2)
+      if an:
+        row["ang"] = round(max(an) - min(an), 1)
+      ha, hb = health.get(a) or {}, health.get(b) or {}
+      for bus in (0, 1, 2):
+        ea = (ha.get(bus) or {}).get("total_error_cnt")
+        eb = (hb.get(bus) or {}).get("total_error_cnt")
+        if ea is not None and eb is not None:
+          row[f"e{bus}"] = eb - ea
+      out.append(row)
+    return out
 
   def save_trace(self, directory: str = TRACE_DIR) -> str | None:
     """Write the steering trace out. Returns the path, or None.
@@ -692,15 +947,19 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
 
     f = Flasher(transport, log=log, progress=progress)
     log(f"  {transport.describe()}")
+    f.mark("start")
 
     if f.moving():
       return False, "the car is moving - stop first"
 
     if knock:
+      f.listen(PRE_CAPTURE_S)
       log("  knocking: asking the application to reboot into its bootloader")
+      f.mark("knock")
       f.knock()
 
     hello = f.wait_hello(hello_timeout)
+    f.mark("hello")
     if hello is None:
       return False, ("no HELLO. Either the board has no bootloader (it needs one SWD "
                      "visit), or it never reset.")
@@ -717,6 +976,11 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
       return False, "no INFO reply"
     log(f"  app slot {slot[0]} KB, current contents CRC32 {slot[1]:#010x}")
 
+    f.mark("hold")
+    if (e := f.hold(HOLD_BEFORE_DATA_S)):
+      return False, e
+    f.mark("begin")
+
     if dry_run:
       f.abort()
       return True, f"dry run: reached the bootloader, installed {h['git']}, nothing written"
@@ -726,11 +990,17 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
     log("  image accepted and the staging header is written")
 
     f.reboot()
+    f.mark("reboot")
 
     # Read the result back out of the post-reset HELLO rather than believing our
     # own optimism. This is also what makes the settings page honest immediately
     # instead of at the end of the next drive.
     after = f.wait_hello(25.0)
+    f.mark("hello_after")
+    # The app starts ~1 s after this HELLO and re-splits K1/K2. Nothing else
+    # records that moment, and on route f6 the column shifted 1.4 deg somewhere
+    # in exactly that unrecorded window.
+    f.listen(POST_CAPTURE_S)
     if after is None:
       # Still the bare hash: the hook writes this straight into a param the
       # settings page renders, and an English sentence there would be shown to
@@ -755,6 +1025,10 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
     # On the failure paths too - a flash that went wrong is exactly when the
     # steering trace is worth having.
     if f is not None:
+      try:
+        f.mark("end")
+      except Exception:
+        pass
       if (p := f.save_trace()):
         log(f"  steering trace: {len(f._trace)} frames -> {p}")
       # The caller decides where this goes. The hook puts it in a param,

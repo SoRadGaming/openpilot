@@ -251,7 +251,9 @@ def test_the_steering_trace_captures_the_two_ids_that_answer_the_question(tmp_pa
   window had no data in it at all - while the panda was receiving the whole
   bus and _pump discarded it. These two IDs are the witness."""
   mod = _module()
-  assert mod.TRACE_IDS == (0x156, 0x18F)
+  # angle, column torque, and - since the second update showed the "hum" is
+  # engine firing vibration - engine rpm and the accessory-load bit
+  assert mod.TRACE_IDS == (0x156, 0x18F, 0x17C, 0x1A6)
 
   f = _tracing_flasher(mod, [
     (0x156, bytes([0x12, 0x34, 0, 0, 0, 0, 0, 0]), mod.RX),   # STEERING_SENSORS
@@ -371,7 +373,7 @@ def test_the_summary_is_small_enough_to_log_and_empty_when_there_is_nothing():
   assert len(json.dumps(d)) < 400, "summary line is too big for a log"
   # decimated, not one entry per frame
   assert len(series) <= 20
-  assert all(len(x) == 3 for x in series)
+  assert all(len(x) == 4 for x in series), "t, angle, column torque, rpm"
 
 
 def test_run_flash_reports_the_trace_even_when_it_fails():
@@ -395,3 +397,131 @@ def test_run_flash_reports_the_trace_even_when_it_fails():
   ok, msg = mod.run_flash(Broken(), IMAGE.read_bytes(), log=lambda s: None,
                           trace_out=lambda d: (_ for _ in ()).throw(ValueError("boom")))
   assert not ok and "usb fell over" in msg, "trace_out must not mask the result"
+
+
+def _f18f(value: int, counter: int) -> bytes:
+  """A 7-byte 0x18F with STEER_TORQUE_SENSOR = value and the given counter."""
+  raw = (-value) & 0xFFFF
+  return bytes([raw >> 8, raw & 0xFF, 0, 0, 0, 0, (counter & 3) << 4])
+
+
+def _f17c(rpm: int) -> bytes:
+  return bytes([0, 0, rpm >> 8, rpm & 0xFF, 0, 0, 0, 0])
+
+
+def test_engine_rpm_comes_from_0x17c_not_0x158():
+  """0x158's ENGINE_RPM field reads ~8% low at idle in Park on this car - it is
+  the torque converter - and using it once produced the wrong conclusion that
+  the vibration could not be the engine. Real f6 frame: 0x17C 0000037500000005
+  is 885 rpm, where 0x158 read 810 at the same instant."""
+  mod = _module()
+  assert mod.ENGINE_RPM_ID == 0x17C
+  assert mod.decode_engine_rpm(bytes.fromhex("0000037500000005")) == 885
+  assert mod.decode_load_bit(bytes([0, 0, 0x40])) == 1
+  assert mod.decode_load_bit(bytes([0, 0, 0x00])) == 0
+  assert mod.steer_status_counter(_f18f(0, 2)) == 2
+  assert mod.decode_steer_status(_f18f(-74, 0)) == -74
+
+
+def test_the_eps_grid_ignores_usb_batching_and_keeps_dropped_frames_as_holes():
+  """Receive times come in USB batches with ~10 ms of jitter, which scrambles a
+  44 Hz fit. The grid is rebuilt from the frame counter at exactly 10 ms."""
+  mod = _module()
+  frames = []
+  # five frames sent 10 ms apart but all RECEIVED in one USB batch - which
+  # arrives when the last of them does, at 1.040 - then one lost (counter 1
+  # never arrives), then two more in a later batch
+  for k, c in enumerate((0, 1, 2, 3, 0)):
+    frames.append((1.040, k, _f18f(k, c)))
+  frames.append((1.070, 6, _f18f(6, 2)))        # counter 1 skipped: one frame lost
+  frames.append((1.070, 7, _f18f(7, 3)))
+  g = mod.eps_grid(frames)
+  ts = [round(t - g[0][0], 3) for t, _ in g]
+  assert ts == [0.0, 0.01, 0.02, 0.03, 0.04, 0.06, 0.07], ts
+
+
+def test_the_firing_order_fit_finds_the_order_and_only_the_order():
+  """The measurement the next update rests on. A 44 Hz vibration whose
+  frequency follows a wandering idle must come out at order 3 and not at the
+  off-order reference."""
+  import math
+  mod = _module()
+  rpm = [(i * 0.01, 870 + int(20 * math.sin(i / 90))) for i in range(600)]
+  ph = 0.0
+  samples = []
+  for i in range(600):
+    t = i * 0.01
+    ph += 2 * math.pi * 3 * rpm[i][1] / 60 * 0.01
+    samples.append((t, 5.0 * math.cos(ph) + 0.3 * math.sin(i * 1.7)))
+  o3 = mod.order_amplitude(samples, rpm, 3.0)
+  ref = mod.order_amplitude(samples, rpm, 2.6)
+  assert abs(o3 - 5.0) < 0.3, o3
+  assert ref < 0.8, ref
+  assert mod.order_amplitude(samples[:20], rpm, 3.0) is None, "too short to mean anything"
+
+
+def test_the_phase_table_shows_which_step_the_vibration_starts_in():
+  """End to end on a synthetic run: marks, rpm, column torque that only
+  vibrates once the data stream starts. The table must put the step in the
+  data phase and nowhere earlier - that is the whole point of the hold."""
+  import math
+  mod = _module()
+
+  class T:
+    def describe(self): return "replay"
+    def send(self, *a): pass
+    def poll(self, timeout=0.0): return []
+    def close(self): pass
+
+  f = mod.Flasher(T(), log=lambda s: None)
+  marks = [(0.0, "start"), (5.0, "knock"), (5.3, "hello"), (5.5, "hold"),
+           (13.5, "begin"), (14.8, "data"), (22.0, "finish"), (22.2, "reboot"),
+           (23.0, "hello_after"), (29.0, "end")]
+  f._marks = list(marks)
+  f._health = [(t, {0: {"total_error_cnt": (7 if t >= 22.0 else 0)}}) for t, _ in marks]
+  ph = 0.0
+  for i in range(2900):
+    t = i * 0.01
+    ph += 2 * math.pi * 3 * 875 / 60 * 0.01
+    amp = 5.0 if t >= 14.8 else 1.0
+    f._trace.append((t, 0x18F, _f18f(int(round(amp * math.cos(ph))) * 1, i % 4)))
+    f._trace.append((t, 0x17C, _f17c(875)))
+    f._trace.append((t, 0x156, bytes([0xFF, 0xE7, 0, 0, 0, 0])))
+  rows = {r["p"]: r for r in f.summarise_trace()["phases"]}
+  assert list(rows) == ["pre", "reset", "enter", "hold", "erase", "data", "finish", "copy", "post"]
+  assert rows["pre"]["o3"] < 2 and rows["hold"]["o3"] < 2
+  assert rows["data"]["o3"] > 3.5
+  assert rows["data"]["rpm"] == 875
+  # errors counted between the data mark (14.8) and the finish mark (22.0)
+  assert rows["data"].get("e0") == 7, "the error delta lands in the phase it happened in"
+  assert rows["finish"].get("e0") == 0 and rows["pre"].get("e0") == 0
+
+
+def test_the_hold_keeps_the_bootloader_alive_and_sits_before_the_data():
+  """The bootloader resets after 10 s without a command. The hold pings well
+  inside that, and it must come after INFO and before program() - otherwise it
+  separates nothing."""
+  mod = _module()
+  assert mod.HOLD_PING_S * 2 < 10.0
+  assert 3.0 <= mod.HOLD_BEFORE_DATA_S <= 9.0
+  src = FLASHER.read_text()
+  body = src[src.index("def run_flash"):]
+  assert body.index("f.info()") < body.index("f.hold(") < body.index("f.program(image)")
+  assert body.index("f.mark(\"knock\")") < body.index("f.knock()")
+  assert body.index("f.wait_hello(25.0)") < body.index("f.listen(POST_CAPTURE_S)")
+
+
+def test_panda_health_is_best_effort():
+  mod = _module()
+  t = mod.PandaTransport.__new__(mod.PandaTransport)
+
+  class P:
+    def can_health(self, b):
+      if b == 1:
+        raise RuntimeError("no bus 1")
+      return {"total_error_cnt": 3, "bus_off_cnt": 0, "error_passive": False,
+              "total_rx_lost_cnt": 0, "total_tx_lost_cnt": 0, "ignored": 9}
+  t.p = P()
+  h = t.health()
+  assert set(h) == {0, 2}
+  assert h[0]["total_error_cnt"] == 3 and "ignored" not in h[0]
