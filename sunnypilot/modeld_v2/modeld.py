@@ -323,7 +323,7 @@ def main(demo=False):
   long_delay = CP.longitudinalActuatorDelay + model.LONG_SMOOTH_SECONDS
   prev_action = log.ModelDataV2.Action()
 
-  DH = DesireHelper()
+  DH = DesireHelper(CP.carFingerprint)
   meta_constants = load_meta_constants()
 
   while True:

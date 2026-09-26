@@ -13,6 +13,32 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-09-27 — a lane-change nudge must be firm, or held
+
+**Just touching the wheel with the blinker on started a lane change.** The
+nudge threshold is 600 counts (lowered from 1200 on 2026-09-16 so weak
+deliberate nudges at cruise work), and the lane-change logic confirmed on a
+single model frame: route fc t=768.8 went on one 10 ms reading of 645.
+
+Across 115 blinker windows on routes d9..fd, the pushes that confirmed lane
+changes split two ways — **firm tugs that are often brief** (3765–4773 counts for
+only 50–100 ms) and **light pushes that are held**. The brushes are the ones
+that are both light and brief. So now, for this car only:
+
+* **firm** (1500 or more in the wanted direction) confirms at once, as before;
+* **light** (over 600, under 1500) must be held for 4 model frames — 150 ms.
+
+Run through the real `desire_helper` on 92 recorded windows: 37 confirm at the
+same instant, 29 later (mostly 50–150 ms, three at 0.4–0.9 s — weak pushes
+hovering at the threshold), and **3 no longer confirm: peaks of 693, 740 and
+903 held for one or two frames**. None confirms earlier, none confirms where the
+old rule did not, and every other car keeps upstream behaviour (the rule is
+keyed by fingerprint in `NUDGE_FIRM`).
+
+`steeringPressed` stays at 600: driver monitoring and the lateral controller
+should still see a light hand. Only the lane-change confirmation changed.
+Eight tests in `sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py`.
+
 ## 2026-09-27 — board `d995bc95` · the pothole latch
 
 **LKAS faulting until restart after a big pothole** is the EPS's state-8 latch,
