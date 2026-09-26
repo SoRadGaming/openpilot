@@ -13,6 +13,25 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-09-27 — board `d995bc95` · the pothole latch
+
+**LKAS faulting until restart after a big pothole** is the EPS's state-8 latch,
+and both reported cases were the **same stretch of motorway**, 127 m apart in
+opposite directions — fixed potholes on the regular route. The EPS's motor
+torque swings hard against the column, it goes silent for 60–70 ms, and it comes
+back refusing LKAS for the key cycle. Nothing the board or openpilot did started
+it, and nothing passive clears it.
+
+Board firmware `d995bc95` fixes the one thing the board did wrong inside every
+such silence — its request counter froze while the EPS kept counting, feeding it
+2–5 wrong-parity requests — as an experiment; see the board's CHANGELOG and
+`docs/EPS-FAULT-STATES.md`. Every answered frame is unchanged. The next pass over
+those holes with LKAS engaged is the test. **Until then, take over or hold the
+wheel through that stretch.**
+
+It goes in with the next board update, which also runs the per-phase idle
+vibration measurement.
+
 ## 2026-09-24 — the update "hum" is the engine, and the next update measures it
 
 **The trace worked.** It came out in route f6 with no SSH and said the wheel did
