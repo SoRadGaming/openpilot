@@ -10,6 +10,7 @@ change on a single 10 ms reading of 645 counts; the driver reported that just
 touching the wheel with the blinker on started one.
 """
 import inspect
+from collections.abc import Sequence
 from types import SimpleNamespace
 
 from openpilot.common.test import OpenpilotTestCase
@@ -34,7 +35,7 @@ def _armed(fingerprint: str = "", left: bool = True) -> DesireHelper:
   return dh
 
 
-def _frames_to_confirm(dh: DesireHelper, torques: list[float], left: bool = True) -> int | None:
+def _frames_to_confirm(dh: DesireHelper, torques: Sequence[float], left: bool = True) -> int | None:
   for n, t in enumerate(torques):
     dh.update(_cs(t, left), True, 1.0)
     if dh.lane_change_state == LaneChangeState.laneChangeStarting:

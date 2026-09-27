@@ -120,7 +120,12 @@ class StateMachine:
           self.add_current_alert_types(ET.NO_ENTRY)
 
         else:
-          if self.check_contains(ET.OVERRIDE_LATERAL):
+          # FORK(LKAS-GATEWAY): turned on while the gateway reports the driver has the wheel
+          # (mads.py raises silentLkasDisable beside the ENABLE): start paused, never active.
+          # Nothing else raises silentLkasDisable while MADS is disabled.
+          if self._events_sp.has(EventNameSP.silentLkasDisable):
+            self.state = State.paused
+          elif self.check_contains(ET.OVERRIDE_LATERAL):
             self.state = State.overriding
           else:
             self.state = State.enabled

@@ -134,7 +134,12 @@ class LatControlTorqueExtBase:
       self.lateral_jerk_measurement = self.lat_jerk_friction_factor * self.actual_lateral_jerk
 
   def update_output_torque(self, CS):
-    freeze_integrator = self._steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
+    # FORK(LKAS-GATEWAY): self._pid is the owning controller's PID (LatControlTorqueExt.update),
+    # so this second update in the frame must respect its LIN-bus gateway hold too, or the
+    # integrator winds open-loop while the board is not actuating. integrator_frozen was set by
+    # _linbus_integrator_gate() earlier this frame and is always False without the gateway.
+    freeze_integrator = (self._steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
+                         or getattr(self.lac_torque, "integrator_frozen", False))
     self._output_torque = self._pid.update(self._pid_log.error,
                                            feedforward=self._ff,
                                            speed=CS.vEgo,

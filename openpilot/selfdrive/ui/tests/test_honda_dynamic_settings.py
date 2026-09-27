@@ -42,7 +42,7 @@ def _panel_constant(name: str, path: Path = HONDA_PANEL):
     if isinstance(node, ast.Assign | ast.AnnAssign):
       targets = node.targets if isinstance(node, ast.Assign) else [node.target]
       for target in targets:
-        if isinstance(target, ast.Name) and target.id == name:
+        if isinstance(target, ast.Name) and target.id == name and node.value is not None:
           return ast.literal_eval(node.value)
   raise AssertionError(f"{name} not found in {path.name}")
 

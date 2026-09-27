@@ -29,6 +29,7 @@ from openpilot.common.test import OpenpilotTestCase
 State = custom.ModularAssistiveDrivingSystem.ModularAssistiveDrivingSystemState
 EventName = log.OnroadEvent.EventName
 SafetyModel = structs.CarParams.SafetyModel
+ButtonType = structs.CarState.ButtonEvent.Type
 
 REASON_NO_REQUEST = 1   # what the board reports once the driver lets go and openpilot is quiet
 
@@ -165,7 +166,9 @@ class TestGatewayPause(OpenpilotTestCase):
 
   def test_selfdrived_subscribes_the_gateway_state(self):
     """mads.py treats an sm without carStateSP as no gateway, so losing the subscription would be silent."""
-    src = Path(importlib.util.find_spec("openpilot.selfdrive.selfdrived.selfdrived").origin).read_text()
+    spec = importlib.util.find_spec("openpilot.selfdrive.selfdrived.selfdrived")
+    assert spec is not None and spec.origin is not None
+    src = Path(spec.origin).read_text()
     services = re.search(r"messaging\.SubMaster\(\[(.*?)\]", src, re.DOTALL)
     assert services is not None and "'carStateSP'" in services.group(1)
 
@@ -175,3 +178,38 @@ class TestGatewayPause(OpenpilotTestCase):
     mads.enabled = mads.active = False
     assert step(mads, sd, gateway(override=True), n=10) == [State.disabled] * 10
     assert step(mads, sd, gateway(override=False), n=10) == [State.disabled] * 10
+
+  @parameterized.expand([("lkas_button",), ("unified_engagement",)], names=["how"], ids=lambda how: how)
+  def test_turning_mads_on_during_an_override_starts_paused(self, mocker, how):
+    """MADS off, the board already reporting the driver's hands on the wheel, and the driver
+    turns MADS on. It used to go enabled (active, one request frame) on the press and only
+    pause on the next frame, because the gateway block needed self.enabled. It must come on
+    paused: enabled for the dashed lanes, never active, and resume when the board lets go."""
+    mads, sd = make_mads(mocker)
+    mads.state_machine.state = State.disabled
+    mads.enabled = mads.active = False
+    step(mads, sd, gateway(override=True), n=5)
+
+    press = car_state()
+    if how == "lkas_button":
+      press.buttonEvents = [structs.CarState.ButtonEvent(type=ButtonType.lkas, pressed=True)]
+    else:
+      mads.unified_engagement_mode = True
+      sd.events.add(EventName.buttonEnable)
+    assert step(mads, sd, gateway(override=True), cs=press) == [State.paused]
+    assert mads.enabled and not mads.active, "active on the press frame: one request while the driver has the wheel"
+    assert step(mads, sd, gateway(override=True), n=20) == [State.paused] * 20
+    assert step(mads, sd, gateway(override=False)) == [State.enabled]
+    assert mads.active
+
+  @parameterized.expand([("not_present", gateway(override=True, present=False)),
+                         ("no_override", gateway(override=False))],
+                        names=["label", "gw"], ids=lambda label, gw: label)
+  def test_turning_mads_on_without_an_override_is_upstream(self, mocker, label, gw):
+    mads, sd = make_mads(mocker)
+    mads.state_machine.state = State.disabled
+    mads.enabled = mads.active = False
+    press = car_state()
+    press.buttonEvents = [structs.CarState.ButtonEvent(type=ButtonType.lkas, pressed=True)]
+    assert step(mads, sd, gw, cs=press) == [State.enabled], label
+    assert mads.active and not mads._gw_paused

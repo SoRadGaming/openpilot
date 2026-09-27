@@ -8,10 +8,10 @@ these changes across an upstream merge without losing any of them.
 |---|---|
 | **Scope** | openpilot → `0x0E4` / `0x500` on CAN → board → the EPS's 12 V serial link, and the board's telemetry back into openpilot |
 | **Platform** | `HONDA_ACCORD_9G_AU`, the only member of `HONDA_ELESYS` (`HondaFlags.ELESYS = 1024`) |
-| **sunnypilot fork** | `S:/OP/sp-live`, `SoRadGaming/sunnypilot` `master`, HEAD `10e088a2d`. Fork point `31dc4d8e5` |
-| **opendbc fork** | `S:/OP/sp-live/opendbc_repo`, `SoRadGaming/opendbc` `sp-master`, HEAD `cf583b37`. Fork point `b9712d20` |
-| **Board firmware** | `S:/Software/EPS-LKAS`. Last firmware commit `d995bc9`; HEAD is `8932130`, and the two commits since (`91ea537`, `8932130`) change documentation only. The bundled app-slot image is `d995bc95` (sp-live `1f20b7b68`) |
-| **Written** | 2026-09-27, from the diffs, not from the commit messages alone. Revised after review the same day |
+| **sunnypilot fork** | `SoRadGaming/sunnypilot` `master`, after the 2026-09-27 upstream sync: branch `merge/upstream-2026-09-27` (`d1a14edcb` plus the post-merge review fixes). Fork point `a5f44653d` (previously `31dc4d8e5`). Every sunnypilot path is under `openpilot/` since the sync |
+| **opendbc fork** | `SoRadGaming/opendbc` `sp-master`, after the sync: `8bd6e314` plus the review fixes. Fork point `f95f996f` (previously `b9712d20`) |
+| **Board firmware** | `S:/Software/EPS-LKAS`. Last firmware commit `d995bc9`; the commits since change documentation and tools only (`862540c` teaches `bundle_appslot.py` the new layout). The bundled app-slot image is `d995bc95` (sp-live `1f20b7b68`) |
+| **Written** | 2026-09-27, from the diffs, not from the commit messages alone. Revised after review the same day, and again for the upstream sync (section 14) |
 
 Sibling documents in `docs/fork/` cover the other two areas. Area A, updating the board's
 firmware from the comma, is `GATEWAY-UPDATE.md`. Area C is the car itself: fingerprint, tuning,
@@ -91,34 +91,42 @@ the hunk. Integration-test sections ("integration §N") refer to
 | odbc | `opendbc/dbc/generator/honda/honda_accord_au_2015_can.dbc` | the two `IMPORT` lines for the fragments above (the file itself is area C). `031743c4` imported `_sunnypilot_hud.dbc`; `ad76c278` rewrote the line to `_sunnypilot_linbus_gw.dbc` | `2f19864a` `031743c4` `ad76c278` | |
 | odbc | `opendbc/safety/modes/honda.h` | `{0x500, 0, 8, .check_relay = false}` in both `HONDA_N_ELESYS_STANDDOWN*_TX_MSGS` lists (the lists themselves are area C) | `031743c4` `a091808d` | `test_honda.py` `TestHondaElesys*` `TX_MSGS` |
 | odbc | `opendbc/safety/tests/test_honda.py` | `[0x500, 0]` in the two ELESYS `TX_MSGS` | `031743c4` `a091808d` | itself |
-| odbc | `opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py` | sections 7, 8, 10–15 are protocol tests (1–6 and 9 are area C) | `031743c4` `ad76c278` `02e7fd71` `1a133e47` `23dce590` `2cc16a02` | runs standalone |
-| sp | `cereal/custom.capnp` | `CarControlSP.lateralControl @5`; `CarStateSP.linbusGateway @1`, `driverTorqueStale @2`; `LinbusGateway @0–@18` (`@19–@26` are area A) | `176e6c07c` `27048ebaa` `98f657457` `56a404318` | seam test |
-| sp | `selfdrive/car/helpers.py` | `convert_carControlSP` rebuilds `lateralControl` | `d11d2c9a8` | seam test |
-| sp | `sunnypilot/selfdrive/controls/controlsd_ext.py` | `state_control_ext(sm, lac_log=None, LaC=None)` fills `CC_SP.lateralControl`; `run_ext(sm, pm, lac_log=None, LaC=None)` | `176e6c07c` | integration §7 (the car side only) |
-| sp | `selfdrive/controls/controlsd.py` | `'carStateSP'` in the SubMaster, the `LaC.set_linbus_gateway()` call, `self.run_ext(self.sm, self.pm, lac_log, self.LaC)` | `176e6c07c` | none |
-| sp | `selfdrive/controls/lib/latcontrol.py` | `LINBUS_I_CARRY_MAX`, `LINBUS_I_HOLD_TAU`, the `linbus_gateway_*`/`_linbus_was_actuating`/`integrator_frozen` attributes, `set_linbus_gateway()`, `_linbus_integrator_gate()` | `176e6c07c` `39b857567` | **none** |
-| sp | `selfdrive/controls/lib/latcontrol_torque.py`, `sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py` | `linbus_hold = self._linbus_integrator_gate()` plus `or linbus_hold` in `freeze_integrator` | `176e6c07c` `946b5fa21` | **none** |
-| sp | `selfdrive/controls/lib/desire_helper.py` | `update(..., driver_torque_stale=False)` and `not driver_torque_stale` in `torque_applied`. `NUDGE_FIRM`, `NUDGE_HOLD_FRAMES`, `nudge_frames` and the `DesireHelper(car_fingerprint)` constructor are area C | `56a404318` | `test_lane_change_nudge.py::test_a_stale_torque_still_confirms_nothing`, integration §15 |
-| sp | `selfdrive/modeld/modeld.py`, `sunnypilot/modeld_v2/modeld.py` | `"carStateSP"` in the SubMaster, `sm['carStateSP'].driverTorqueStale` passed to `DH.update`. `DesireHelper(CP.carFingerprint)` is area C | `56a404318` | none |
-| sp | `sunnypilot/mads/mads.py` | `LINBUS_REASON_DRIVER_OVERRIDE`, `self._gw_paused`, the gateway pause/resume block. Also the steer-rate emergency takeover (`EMERGENCY_STEER_RATE`, `EMERGENCY_STEER_FRAMES`, `self._fast_steer`), see "Other" in section 9 | `ef4f29432` `4932aa73c` `35622a994` | **none** |
-| sp | `selfdrive/selfdrived/selfdrived.py` | `'carStateSP'` added to the SubMaster, for MADS | `ef4f29432` | none |
-| sp | `selfdrive/car/tests/test_car_control_sp_seam.py` | the capnp ↔ dataclass seam for `lateralControl` and `linbusGateway` | `d11d2c9a8` `2dd8827d5` | itself |
-| sp | `sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | one test: `test_a_stale_torque_still_confirms_nothing` (the rest is area C) | `10e088a2d` | itself |
+| odbc | `opendbc/safety/tests/common.py` (added in the 2026-09 merge) | `test_tx_hook_on_wrong_safety_mode` no longer checks `0x500` between the two `TestHondaElesys*` classes: both stand-down TX lists carry it, so each mode "allowed" the other's frame. It is still checked against every other brand, and the area C exemptions (`0x1A6`, `0x30C`) are unchanged. Tagged `FORK(LKAS-GATEWAY)` | 2026-09 merge | `test_honda.py` (942 run, OK) |
+| odbc | `opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py` | sections 7, 8, 10–15 are protocol tests (1–6 and 9 are area C). Since the 2026-09 merge §10 sets `mads.enabled` for the `LAT_READY` case and adds the MADS-off case, §15 passes `driver_torque_stale=` by keyword, and `TestDynamicTuningIntegration` lets unittest discovery report the script | `031743c4` `ad76c278` `02e7fd71` `1a133e47` `23dce590` `2cc16a02`, 2026-09 merge | runs standalone, or under discovery |
+| sp | `openpilot/cereal/custom.capnp` | `CarControlSP.lateralControl @5`; `CarStateSP.linbusGateway @1`, `driverTorqueStale @2`; `LinbusGateway @0–@18` (`@19–@26` are area A) | `176e6c07c` `27048ebaa` `98f657457` `56a404318` | seam test |
+| sp | `openpilot/selfdrive/car/helpers.py` | `convert_carControlSP` rebuilds `lateralControl` | `d11d2c9a8` | seam test |
+| sp | `openpilot/sunnypilot/selfdrive/controls/controlsd_ext.py` | `state_control_ext(sm, lac_log=None, LaC=None)` fills `CC_SP.lateralControl`; `run_ext(sm, pm, lac_log=None, LaC=None)` | `176e6c07c` | integration §7 (the car side only) |
+| sp | `openpilot/selfdrive/controls/controlsd.py` | `'carStateSP'` in the SubMaster, the `LaC.set_linbus_gateway()` call before upstream's 3-value `LaC.update()`, `self.run_ext(self.sm, self.pm, lac_log, self.LaC)` | `176e6c07c` | none |
+| sp | `openpilot/selfdrive/controls/lib/latcontrol.py` | `LINBUS_I_CARRY_MAX`, `LINBUS_I_HOLD_TAU`, the `linbus_gateway_*`/`_linbus_was_actuating`/`integrator_frozen` attributes, `set_linbus_gateway()`, `_linbus_integrator_gate()` | `176e6c07c` `39b857567` | the freeze only: `test_latcontrol_gateway_hold.py`. The carry and the decay have no test |
+| sp | `openpilot/selfdrive/controls/lib/latcontrol_torque.py`, `openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py` | `linbus_hold = self._linbus_integrator_gate()` plus `or linbus_hold` in `freeze_integrator` | `176e6c07c` `946b5fa21` | `test_latcontrol_gateway_hold.py` (both controllers, through the extension) |
+| sp | `openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_ext_base.py` (added in the 2026-09 merge) | `or getattr(self.lac_torque, "integrator_frozen", False)` in `update_output_torque()`'s `freeze_integrator`. The extension updates the owning controller's PID a second time in the frame when Lateral Jerk (upstream `91a53aa16`) or NNLC is on, and without this that second update wound the integrator open-loop through every hold | 2026-09 merge | `test_latcontrol_gateway_hold.py` (new, same merge) |
+| sp | `openpilot/selfdrive/controls/lib/desire_helper.py` | `update(..., left_edge_detected=False, right_edge_detected=False, driver_torque_stale=False)`: the fork's parameter is last, after upstream's road-edge parameters, and callers pass it by keyword. `not driver_torque_stale` in upstream's rewritten `torque_applied`. `NUDGE_FIRM`, `NUDGE_HOLD_FRAMES`, `nudge_frames` and the `DesireHelper(car_fingerprint)` constructor are area C | `56a404318`, 2026-09 merge | `TestLaneChangeNudge.test_a_stale_torque_still_confirms_nothing` and `test_driver_torque_stale_comes_after_the_road_edges`, integration §15 |
+| sp | `openpilot/selfdrive/modeld/modeld.py`, `openpilot/sunnypilot/modeld_v2/modeld.py` | `"carStateSP"` in upstream's renamed SubMaster, `driver_torque_stale=sm['carStateSP'].driverTorqueStale` passed to `DH.update` by keyword after the edges. `DesireHelper(CP.carFingerprint)` is area C | `56a404318`, 2026-09 merge | none |
+| sp | `openpilot/sunnypilot/mads/mads.py` | `LINBUS_REASON_DRIVER_OVERRIDE`, `self._gw_paused`, the gateway pause block, and `if self._gw_paused: return False` at the top of `should_silent_lkas_enable()` (`2cfcd3c6a`). Also the steer-rate emergency takeover (`EMERGENCY_STEER_RATE`, `EMERGENCY_STEER_FRAMES`, `self._fast_steer`), see "Other" in section 9. Since the 2026-09 merge the gateway block also fires on the frame MADS is being turned on (`self.enabled or ...check_contains(ET.ENABLE)`), so an LKAS press or UEM engagement during an override no longer gives one active frame, and a `KeyError` fallback treats a `SubMaster` without `carStateSP` (upstream's MADS tests) as "no gateway" | `ef4f29432` `4932aa73c` `35622a994` `2cfcd3c6a`, 2026-09 merge | `test_mads_gateway_pause.py` (18 tests) |
+| sp | `openpilot/sunnypilot/mads/state.py` (added in the 2026-09 merge) | DISABLED branch: an ENABLE that arrives with `silentLkasDisable` goes to `paused`, not `enabled`/`overriding`. Only the gateway block can raise `silentLkasDisable` while MADS is disabled | 2026-09 merge | `test_mads_gateway_pause.py::test_turning_mads_on_during_an_override_starts_paused` |
+| sp | `openpilot/selfdrive/selfdrived/selfdrived.py` | `'carStateSP'` added to upstream's SubMaster, for MADS | `ef4f29432` | `test_mads_gateway_pause.py::test_selfdrived_subscribes_the_gateway_state` |
+| sp | `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | the capnp ↔ dataclass seam for `lateralControl` and `linbusGateway` | `d11d2c9a8` `2dd8827d5` | itself |
+| sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | two tests: `test_a_stale_torque_still_confirms_nothing` and `test_driver_torque_stale_comes_after_the_road_edges` (the rest is area C) | `10e088a2d`, 2026-09 merge | itself |
+| sp | `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | the gateway pause and its resume, every brake mode, the brake and regen guard, the emergency takeover beside an override, no board no pause, `selfdrived`'s subscription, and the enable-frame cases | `2cfcd3c6a`, 2026-09 merge | itself |
+| sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` (added in the 2026-09 merge) | 300 frames on `HONDA_ACCORD_9G_AU` with Lateral Jerk on and the board present but not actuating: `pid.i` stays 0.0 in both torque controllers. Control case: with no gateway the same run winds `abs(i)` above 1e-3, as upstream does | 2026-09 merge | itself |
 
-`selfdrive/car/card.py` has no area-B hunk. It already published `carStateSP` before the fork.
+`openpilot/selfdrive/car/card.py` has no area-B hunk. It already published `carStateSP` before the fork.
 Its fork additions (`stage_board_firmware`, `write_board_firmware`, `log_flash_trace`) are
 area A.
 
-**Markers.** Only four area-B opendbc hunks carry `# FORK(HONDA_ELESYS):`: the brake-release
+**Markers.** In opendbc, four area-B hunks carry `# FORK(HONDA_ELESYS):`: the brake-release
 ceiling (`carcontroller.py`), the `pt_msgs` registration (`carstate.py`),
-`create_steering_control` (`hondacan.py`) and `steerAtStandstill` (`interface.py`).
+`create_steering_control` (`hondacan.py`) and `steerAtStandstill` (`interface.py`), and the
+`0x500` exemption in `safety/tests/common.py` carries `FORK(LKAS-GATEWAY)`.
 `carstate_ext.py`, `structs.py`, the `0x500` block in `carcontroller.py`,
 `create_sp_hud_status`, the `0x500` entries in `honda.h` and `_sunnypilot_linbus_gw.dbc` are
-unmarked, so use the greps in section 14.3, not the marker. The area-B hunks in the sunnypilot tree carry no `FORK(...)` marker at all. The only `FORK`
-markers in sunnypilot code are area C: `# FORK(HONDA_ACCORD_9G_AU): A NUDGE MUST BE FIRM` in
-`desire_helper.py` and the `# FORK:` comments in `longcontrol.py`. The phrase "LIN-bus
-gateway" is the common anchor for the sunnypilot area-B hunks, but not all of them contain it
-(see the grep in section 14.3).
+unmarked, so use the greps in section 14.3, not the marker. In sunnypilot, every area-B hunk
+the 2026-09 merge touched carries `FORK(LKAS-GATEWAY)` (13 lines: `controlsd.py`,
+`selfdrived.py`, both `modeld.py`, `desire_helper.py`'s `update()`, `mads.py`, `state.py`,
+`latcontrol_torque_ext_base.py`). The older ones (`latcontrol.py`, both torque controllers,
+`controlsd_ext.py`, `helpers.py`, `custom.capnp`) have prose comments only; the phrase
+"LIN-bus gateway" is their common anchor, but not all of them contain it (see the grep in
+section 14.3).
 
 ---
 
@@ -415,7 +423,7 @@ as 0. Details are in `docs/SP_HUD_STATUS.md`, "What sunnypilot reads: `0x70B`".
 
 ## 6. cereal and dataclass fields
 
-`cereal/custom.capnp` and opendbc `structs.py` must agree on **names**, exactly. `card`
+`openpilot/cereal/custom.capnp` and opendbc `structs.py` must agree on **names**, exactly. `card`
 publishes the dataclass through `convert_to_capnp()`, which does
 `custom.CarStateSP.new_message(**asdictref(struct))`: the fields are matched by name.
 Declaration order in `structs.py` does not matter. The fork already differs at the top level
@@ -478,10 +486,11 @@ not in its `ignore` list, so it is part of `sm.all_checks()`), `modeld` and `mod
 
 ## 7. The integrator hold (SP-PROTOCOL v2)
 
-Files: `selfdrive/controls/lib/latcontrol.py`, `selfdrive/controls/lib/latcontrol_torque.py`,
-`sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py`, and `controlsd.py`. Commits
-`176e6c07c` (hold), `39b857567` (carry the trim) and `946b5fa21` (the comments in both torque
-controllers). `_v0` is the one that runs on this car by default: `controlsd_ext.initialize_lateral_control()`
+Files: `openpilot/selfdrive/controls/lib/latcontrol.py`, `openpilot/selfdrive/controls/lib/latcontrol_torque.py`,
+`openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py`,
+`openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_ext_base.py` and `controlsd.py`. Commits
+`176e6c07c` (hold), `39b857567` (carry the trim), `946b5fa21` (the comments in both torque
+controllers) and the 2026-09 merge (the extension). `_v0` is the one that runs on this car by default: `controlsd_ext.initialize_lateral_control()`
 returns `LatControlTorqueV0` for torque tuning whenever `EnforceTorqueControl` is off, and
 when it is on with `TorqueControlTune == 0.0`. The upstream `latcontrol_torque.py` runs only
 when `EnforceTorqueControl` is on with another tune.
@@ -495,7 +504,19 @@ self.LaC.set_linbus_gateway(bool(gw.present), bool(gw.actuating))
 linbus_hold = self._linbus_integrator_gate()
 ...
 freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5 or linbus_hold
+
+# LatControlTorqueExtBase.update_output_torque(), the extension's second PID update (2026-09 merge):
+freeze_integrator = (self._steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
+                     or getattr(self.lac_torque, "integrator_frozen", False))
 ```
+
+**The extension.** With upstream's Lateral Jerk controller (`LateralJerkTorqueController`,
+`91a53aa16`, off by default) or NNLC on, `LatControlTorqueExt` updates the owning controller's
+PID a second time in the same frame, and that update did not know about the hold: the
+integrator wound open-loop while the board was not actuating, and `0x500 INTEGRATOR` reported
+it. The merge makes that update freeze on the controller's `integrator_frozen`, which the gate
+set earlier in the frame and which is always False without a gateway. `pid_log.i` is not
+changed. `test_latcontrol_gateway_hold.py` pins it for both torque controllers.
 
 `_linbus_integrator_gate()` behaves as follows:
 
@@ -517,8 +538,13 @@ first version reset the PID on takeover. `docs/SP_HUD_STATUS.md`, board `SP-PROT
 `latActive` is deliberately not gated on actuation. The board engages on the request bit, so
 if openpilot waited for the board, neither side would start.
 
-**No test covers this in the fork.** Integration §7 only checks that the `0x500` bytes carry
-whatever `CC_SP.lateralControl` holds.
+**Tests.** `test_latcontrol_gateway_hold.py` (added in the 2026-09 merge) runs 300 frames with
+the board present and not actuating and checks that `pid.i` stays 0.0 in both torque
+controllers, with a no-gateway control case that winds. It covers the freeze only: the carry,
+the decay and the `integrator_frozen` echo have no test. Integration §7 only checks that the
+`0x500` bytes carry whatever `CC_SP.lateralControl` holds. A replay probe after the merge ran
+`LatControlTorqueV0` with a gateway and saw the freeze, the `exp(-dt/30)` decay and the 0.25
+clip on the takeover frame, and bit-identical output with `present` False.
 
 ---
 
@@ -582,20 +608,24 @@ board silent, then latch.
 ### 8.3 Consumers
 
 * `desire_helper.DesireHelper.update(carstate, lateral_active, lane_change_prob,
-  driver_torque_stale=False)`. `torque_applied` now requires `not driver_torque_stale`. It fails
-  closed: while stale, no nudge can confirm a lane change. The timer-based auto lane change
-  still works. The `NUDGE_FIRM` / `NUDGE_HOLD_FRAMES` rule applied after it is area C.
-* `modeld.py` and `modeld_v2/modeld.py` pass `sm['carStateSP'].driverTorqueStale` as the fourth
-  positional argument. **Upstream has since added two positional parameters in that slot**, see
-  section 14.1.
+  left_edge_detected=False, right_edge_detected=False, driver_torque_stale=False)`.
+  `torque_applied` requires `not driver_torque_stale`. It fails closed: while stale, no nudge
+  can confirm a lane change. The timer-based auto lane change still works. The `NUDGE_FIRM` /
+  `NUDGE_HOLD_FRAMES` rule applied after it is area C.
+* `modeld.py` and `modeld_v2/modeld.py` pass `driver_torque_stale=sm['carStateSP'].driverTorqueStale`
+  **by keyword**, after upstream's `left_edge, right_edge`. Before the 2026-09 merge the fork
+  passed it as the fourth positional argument, which is where upstream put
+  `left_edge_detected`; a positional call there mixes the two up with no error.
 
 With the mirror in place, `driverTorqueStale` should be true only when the board is silent or
 its frame fails its checksum.
 
 **Tests:** integration §14 and §14b (the latch rule, the substitution, the sign, `CHECKSUM_OK=0`,
 a board going silent mid-engagement, a live sensor winning) and §15, which skips when run
-standalone because `desire_helper` cannot be imported. Also
-`test_lane_change_nudge.py::test_a_stale_torque_still_confirms_nothing`.
+from opendbc alone because `desire_helper` cannot be imported, and runs with the sunnypilot
+tree on `PYTHONPATH`. Also `TestLaneChangeNudge.test_a_stale_torque_still_confirms_nothing`
+and `test_driver_torque_stale_comes_after_the_road_edges`, which fails if the parameter is not
+after the edges.
 
 ---
 
@@ -619,21 +649,46 @@ It reports the override as `0x70B REASON = 4` (`GW_RSN_OVERRIDE`). openpilot has
 override of its own: neither `steeringPressed` nor panda's Honda safety stops the command. So
 MADS has to follow the board.
 
-`sunnypilot/mads/mads.py`, in `update_events()`:
+`openpilot/sunnypilot/mads/mads.py`, as merged (2026-09-27):
 
 ```python
 LINBUS_REASON_DRIVER_OVERRIDE = 4
-gw = self.selfdrive.sm['carStateSP'].linbusGateway
-gw_override = bool(gw.present and gw.grantValid and not gw.granted and
+
+def should_silent_lkas_enable(self, CS):
+  if self._gw_paused:                        # FORK(LKAS-GATEWAY), 2cfcd3c6a: the pause holds
+    return False
+  if self.steering_mode_on_brake == MadsSteeringModeOnBrake.PAUSE and \
+     (CS.brakePressed or CS.regenBraking or self.pedal_pressed_non_gas_pressed(CS)):   # upstream 79b79edd2
+    return False
+  ...
+
+# in update_events(), after the emergency block:
+try:
+  gw = self.selfdrive.sm['carStateSP'].linbusGateway
+except KeyError:
+  gw = None                                  # a SubMaster without carStateSP (upstream's MADS tests)
+gw_override = bool(gw is not None and gw.present and gw.grantValid and not gw.granted and
                    gw.grantReason == LINBUS_REASON_DRIVER_OVERRIDE)
-if gw_override and self.enabled:
-  if self.state_machine.state != State.paused:
-    self._gw_paused = True
-  self.transition_paused_state()            # silentLkasDisable -> State.paused
+if gw_override and (self.enabled or self.state_machine.check_contains(ET.ENABLE)) and not emergency:
+  self._gw_paused = True
+  self.transition_paused_state()             # silentLkasDisable -> State.paused
 elif self._gw_paused and not gw_override:
-  self._gw_paused = False
+  self._gw_paused = False                    # the generic block below resumes, through its guards
+
+if self.should_silent_lkas_enable(CS):       # upstream
   if self.state_machine.state == State.paused:
     self.events_sp.add(EventNameSP.silentLkasEnable)
+```
+
+and in `openpilot/sunnypilot/mads/state.py`, DISABLED branch, when an ENABLE event is present:
+
+```python
+if self._events_sp.has(EventNameSP.silentLkasDisable):   # FORK(LKAS-GATEWAY)
+  self.state = State.paused
+elif self.check_contains(ET.OVERRIDE_LATERAL):
+  self.state = State.overriding
+else:
+  self.state = State.enabled
 ```
 
 * **Pause, not disable** (`4932aa73c`, replacing `ef4f29432`). The episodes last seconds and end
@@ -642,13 +697,43 @@ elif self._gw_paused and not gw_override:
   exactly that behaviour. Route `e2` against `e1` (openpilot still commanding through
   overrides): board engaged 79.7 % against 42.7 %, peak driver torque 173 against 256, and no EPS
   latch against a latch.
+* **The pause holds for the whole override** (`2cfcd3c6a`). While `_gw_paused` is set,
+  `should_silent_lkas_enable()` says no, the same way upstream's own pause reasons hold while
+  their cause lasts. Before this, the upstream resume block lifted the pause on the next frame
+  and the gateway block paused it again, so `carControl.latActive` read `0101…` for the whole of
+  every override: route `00000103` from t=58.5, 31 s of `grantReason == 4`. The board ignores
+  `0x0E4` while it has released to the driver, so the steering was not affected. `_gw_paused` is
+  set even when something else paused MADS first, so releasing the brake mid-override does not
+  resume lateral while the board still reports the driver's hands on the wheel.
+* **The resume is the ordinary one.** When the board stops reporting the override the gateway
+  block only clears the flag; the upstream block then resumes through
+  `should_silent_lkas_enable()`. So upstream's brake/regen guard (`79b79edd2`, arrived in the
+  2026-09 merge) applies to a gateway pause as it does to any other: in Pause mode, a brake
+  held at the end of an override keeps MADS paused until it is released. This relies on the
+  board ending reason 4 on driver torque alone (`GW_DRIVER_LATCH` is 0 in the Stage 10 image):
+  it does not wait for openpilot to ask again.
+* **Turning MADS on during an override starts it paused** (2026-09 merge). `self.enabled` is
+  still False on the frame of an LKAS press or a unified engagement, so the gateway block used
+  to wait a frame: MADS went disabled → enabled (active, one request frame) and paused on the
+  next. Now the block also fires when an `ET.ENABLE` event is present, and `state.py` sends an
+  ENABLE that arrives with `silentLkasDisable` to `paused`. Nothing else raises
+  `silentLkasDisable` while MADS is disabled, so other cars are unaffected.
+* **An emergency takeover outranks the pause.** The gateway block does not fire on a frame the
+  emergency block turned MADS off (`not emergency`); a `silentLkasDisable` beside the
+  `lkasDisable` would have turned "off" into "paused".
 * `_gw_paused` makes sure MADS only lifts a pause it caused. A brake, gear or door pause is not
   its to resume.
 * `granted` is False whenever `grantValid` is, so an old or silent board cannot trigger this.
   `present` keeps it off every other car.
 * `selfdrived.py` subscribes to `carStateSP` for this.
 
-**Re-apply: the position is load-bearing.** In the fork's `update_events()` the order is:
+A closed-loop replay of route `00000103` through the merged tree agrees (it was run before the
+enable-frame fix, and the pre-merge fork with `2cfcd3c6a` gave the same frames): through the
+same 31 s override `latActive` was true on 0.1 % of frames (3 single frames), MADS stayed
+`paused` until the driver's own LKAS presses turned it off, and `0x0E4` carried a request on 3
+frames against the log's 761.
+
+**Re-apply: the position is load-bearing.** In `update_events()` the order is:
 
 1. the upstream `not self.selfdrive.enabled and self.enabled` block (door, gear, brake-hold pauses);
 2. the upstream `MadsSteeringModeOnBrake.DISENGAGE` block;
@@ -657,38 +742,20 @@ elif self._gw_paused and not gw_override:
 5. the upstream `if self.should_silent_lkas_enable(CS):` block;
 6. the upstream lateral-mismatch check and the `events.remove(...)` calls.
 
-Keep the gateway block after 2 and 3 and before 5. The emergency block runs first so a fast
-wheel is seen before the gateway pause and clears `_gw_paused`. What happens when both fire on
-the same frame (`lkasDisable` from 3 and `silentLkasDisable` from 4) has not been analysed.
-Keep the constants and `self._gw_paused = False`, `self._fast_steer = 0` in `__init__`.
+Keep the gateway block after 2 and 3 and before 5, and the `_gw_paused` check first in
+`should_silent_lkas_enable()`, ahead of upstream's guards. Keep the constants and
+`self._gw_paused = False`, `self._fast_steer = 0` in `__init__`, and the DISABLED branch in
+`state.py`. To check on a route: look at `selfdriveStateSP.mads.state` and
+`carControl.latActive` during a stretch where `carStateSP.linbusGateway.grantReason == 4`.
 
-**Known problem: MADS flaps through a board override. Confirmed on a route; not yet fixed.** On the
-second frame of an override, MADS is already `paused`, so `transition_paused_state()` adds
-nothing. The upstream block 5 then calls `should_silent_lkas_enable(CS)`, which knows nothing
-about `_gw_paused`. It returns True (no brake, no gear event), so it adds `silentLkasEnable`,
-and `state.py` moves `paused → enabled` (`silentLkasEnable` is an `ET.ENABLE` event). On the
-next frame the gateway block pauses again, so `latActive` alternates frame by frame for the
-whole of every board override instead of staying off. **Route `00000103` shows it:** from
-t=58.5 there is a 31 s stretch of `0x70B` `grantReason == 4` in which `carControl.latActive` reads
-`0101…` on consecutive frames. Stretches where MADS was not enabled read all zeros, as they
-should. The board ignores `0x0E4` while it has released to the driver, so the steering itself
-was not affected, but openpilot is requesting on half the frames it should be silent on. Upstream's own
-pause reasons avoid this by making `should_silent_lkas_enable()` return False while they hold:
-the fork's copy already does so for the brake (`pedal_pressed_non_gas_pressed`) and for gears
-(`GEARS_ALLOW_PAUSED_SILENT`). The likely fix is `if self._gw_paused: return False` at the top of
-`should_silent_lkas_enable()`. Upstream `79b79edd2` (2026-07-15, not in the fork) edits the same
-function (it widens the brake check to `CS.brakePressed or CS.regenBraking or ...`), so the merge
-will touch this line anyway. A second, smaller defect: the fork's own resume (`elif
-self._gw_paused and not gw_override:`) adds `silentLkasEnable` without calling
-`should_silent_lkas_enable()`, so after the merge it would resume through upstream's new brake
-guard (README, Behaviour item 4). Fix both together: `if self._gw_paused: return False` at the
-top of `should_silent_lkas_enable()`, and make the gateway resume add `silentLkasEnable` only
-when `should_silent_lkas_enable(CS)` is true once `_gw_paused` has been cleared. The same commit adds `sunnypilot/mads/tests/test_mads_steering_mode.py`,
-which is the natural place for a gateway pause test. To check on a route: look at
-`selfdriveStateSP.mads.state` and `carControl.latActive` during a stretch where
-`carStateSP.linbusGateway.grantReason == 4`.
-
-**No test covers the pause or the resume.**
+**Tests:** `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py`, 18 tests in the style of
+upstream's `test_mads_steering_mode.py` (`OpenpilotTestCase`, a mocked car): the pause holds
+through the whole override and in every brake mode; it resumes on its own; a brake or regen
+held in Pause mode outlasts the override; releasing the brake mid-override does not resume; an
+emergency turns MADS off on the first override frame and during a pause; no board, no pause;
+`selfdrived` subscribes the gateway state; an override does not turn MADS on; turning MADS on
+during an override starts paused (LKAS button and unified engagement); and without an override
+the enable is upstream's.
 
 ### Other: the steer-rate emergency takeover (`35622a994`)
 
@@ -700,15 +767,17 @@ gateway block:
 EMERGENCY_STEER_RATE = 200.0   # deg/s
 EMERGENCY_STEER_FRAMES = 2
 self._fast_steer = self._fast_steer + 1 if abs(CS.steeringRateDeg) >= EMERGENCY_STEER_RATE else 0
-if self._fast_steer >= EMERGENCY_STEER_FRAMES and self.enabled:
+emergency = self._fast_steer >= EMERGENCY_STEER_FRAMES and self.enabled
+if emergency:
     self.events_sp.add(EventNameSP.lkasDisable); self._gw_paused = False
 ```
 
 It turns MADS **off** (not paused) on a fast wheel. The evidence is 18 routes and 7,438 s of the
 board steering, where the maximum steering rate was 151 °/s and no frame reached 200. **It is not
 gated on `present` or on the fingerprint, so it applies to every car running this fork.** Keep
-that in mind if the fork is ever used on another car, or if the hunk is proposed upstream. There
-is no test.
+that in mind if the fork is ever used on another car, or if the hunk is proposed upstream. The
+two emergency cases in `test_mads_gateway_pause.py` test it beside a gateway override; nothing
+tests it on another car.
 
 ---
 
@@ -747,7 +816,8 @@ Expected behaviour (`docs/CHANGELOG_SERIAL_STEERING.md`, 2026-09-22):
 ### 10.1 `LKAS_PROBLEM` read-back (carstate.py)
 
 This hunk belongs to area C (it came with the port, `04a48a0a`), but the protocol depends on
-it. In `CarState.update()`, in the non-Bosch branch that sets `carFaultedNonCritical`:
+it. In `CarState.update()`, in the non-Bosch branch that sets `carFaultedNonCritical` (since
+the 2026-09 merge, upstream's `if not (self.CP.flags & HondaFlags.BOSCH):`):
 
 ```python
 if self.CP.carFingerprint in HONDA_ELESYS:
@@ -778,43 +848,56 @@ openpilot must never send `0x33D` on this car: it would read back its own frame 
 
 ## 12. Tests and how to run them
 
+Since the 2026-09 merge every sunnypilot test here is a `unittest.TestCase` or
+`OpenpilotTestCase`, collected by upstream's `tools/test_runner.py` (pytest is gone upstream).
+Run them in the openpilot venv, from the repo root (WSL `~/sp-merge` for the sync).
+
 | test | covers | how |
 |---|---|---|
-| `opendbc_repo/opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py` §7, §8, §10–§15 | `0x500` bytes, bus, checksum, counter, version, km/h, integrator; `0x704` → `actuating`, staleness, liveness-exempt; v3 byte 5/6; `0x0E4` byte 2; brake ramp; `0x70B` decode; latch and mirror; stale lane change | `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=opendbc_repo python opendbc_repo/opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py`. It prints PASS/FAIL per check and exits 1 on any failure. It runs on Windows |
-| `opendbc_repo/opendbc/safety/tests/test_honda.py` `TestHondaElesysScmStanddownSafety`, `TestHondaElesysStanddownGasInterceptorSafety` | `[0x500, 0]` is in `TX_MSGS` | opendbc safety test harness (needs libsafety built) |
-| `selfdrive/car/tests/test_car_control_sp_seam.py` | every nested `CarControlSP` struct is rebuilt by `convert_carControlSP`; `lateralControl` values survive the seam; `linbusGateway` converts to capnp | pytest, or standalone with `PYTHONPATH=<repo>;<repo>/opendbc_repo`. Needs pycapnp to load the schema, which the commit messages say fails on Windows (not re-checked) |
-| `sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py::test_a_stale_torque_still_confirms_nothing` | stale torque never confirms | pytest; imports cereal |
+| `opendbc_repo/opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py` §7, §8, §10–§15 | `0x500` bytes, bus, checksum, counter, version, km/h, integrator; `0x704` → `actuating`, staleness, liveness-exempt; v3 byte 5/6 (§10: `LAT_READY` with MADS on, and without it); `0x0E4` byte 2; brake ramp; `0x70B` decode; latch and mirror; stale lane change | `python opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py` from `opendbc_repo`. It prints PASS/FAIL per check and exits 1 on any failure; §15 SKIPs unless the sunnypilot tree is on `PYTHONPATH`. Under unittest discovery, `TestDynamicTuningIntegration.test_all_checks_pass` reports it |
+| `opendbc_repo/opendbc/safety/tests/test_honda.py` `TestHondaElesysScmStanddownSafety`, `TestHondaElesysStanddownGasInterceptorSafety` | `[0x500, 0]` is in `TX_MSGS`; with `common.py`'s exemption, `0x500` is still refused by every other brand's mode | `python -m unittest opendbc.safety.tests.test_honda` (builds libsafety; 942 run, OK) |
+| `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | every nested `CarControlSP` struct is rebuilt by `convert_carControlSP`; `lateralControl` values survive the seam; `linbusGateway` converts to capnp | `python tools/test_runner.py <file>` |
+| `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` (`test_a_stale_torque_still_confirms_nothing`, `test_driver_torque_stale_comes_after_the_road_edges`) | stale torque never confirms; the parameter sits after upstream's road-edge parameters | runner |
+| `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | the gateway pause and resume (section 9), 18 tests | runner |
+| `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` | the integrator freeze through the torque-controller extension, 4 tests | runner |
+
+After the merge all of these pass: the fork's sunnypilot targets together with upstream's
+MADS, lateral and sunnylink tests gave 309 passed and 1 skipped (a sunnylink test that needs
+`jsonschema`), and upstream's whole suite 1600 passed, 0 failed.
 
 **What the seam test does not cover.** It round-trips values only for `linbusGateway`
 `present`, `actuating`, `valid` and `dryRun`, and for the firmware fields. The grant fields
 (`@5`–`@18`) and `driverTorqueStale` go through the seam only at their default values, as part
 of the splat, which checks that the names exist. A type problem, such as a float reaching a
-UInt8 field, would only show up on the car.
+UInt8 field, would only show up on the car. (An end-to-end probe after the merge pushed every
+gateway field at a non-default value through `convert_to_capnp()`, including negative `Int16`s
+and a `UInt32` with the top bit set, without loss; it is not a test.)
 
-**The integration script currently has one failure** (re-run on 2026-09-27 at opendbc
-`cf583b37`): `v3: enabled, lateral available, not asking -> READY and LAT_READY  b5=0x04`. §15
-skips (`desire_helper not importable here`). The failing test builds
-`CC_SP = structs.CarControlSP()` with `mads.enabled` False. Since `43a98b9d`, `LAT_READY` comes
-from `mads.enabled`, so it is correctly 0 here. The test was not updated. Fix the test (set
-`CC_SP.mads.enabled = True` for that case, and add a MADS-off case that expects 0), not the code.
+**The integration script's §10 failure is fixed** (2026-09 merge). It built `CC_SP` with
+`mads.enabled` False and expected `LAT_READY`, which since `43a98b9d` comes from
+`mads.enabled`. §10 now sets `CC_SP.mads.enabled = True` for that case and adds a MADS-off case
+that expects `LAT_READY` clear, so the rule is pinned both ways. The script also used to call
+`sys.exit(1)` at import, which aborted opendbc's test discovery; that now happens only under
+`__main__`.
 
-**Gaps:** nothing tests the integrator gate (carry, decay, `integrator_frozen`), the MADS
-gateway pause and resume, the steer-rate takeover, `controlsd_ext` filling `lateralControl`,
-or the mirror-freshness case in section 8.2.
+**Gaps:** nothing tests the integrator carry and decay or the `integrator_frozen` echo,
+`controlsd_ext` filling `lateralControl`, the steer-rate takeover on any car other than through
+a gateway override, or the mirror-freshness case in section 8.2.
 
 ---
 
 ## 13. Stale comments and documents
 
-These were found while writing this document. They are in comments and docs, so they mislead
-readers but do not change behaviour. Board line numbers below are at `d995bc9`.
+These were found while writing this document, and re-checked after the 2026-09 merge: all are
+still present except the last row. They are in comments and docs, so they mislead readers but
+do not change behaviour. Board line numbers below are at `d995bc9`.
 
 | where | says | actually |
 |---|---|---|
 | `hondacan.py` `create_steering_control` comment; `_steering_control_e.dbc` `CM_ BO_ 228`, `LDW_RIGHT`/`LDW_LEFT`; `_sunnypilot_linbus_gw.dbc` `LDW_ACTIVE`; integration test §11 comment; `docs/SP_HUD_STATUS.md` | LDW bits are inert on board firmware `875ba124` | true of `875ba124` only. Board `8340c1d` (2026-09-12) copies `0x0E4` byte 2 bits 5:4 into the serial frame, and `df42a0d` (Stage 6) feeds `LDW_*`, `STEERING_REQUIRED` and `OP_SATURATED` into the board's own `0x33D` alerts |
 | board line references in fork comments: `hondacan.py` (`create_steering_control`: `gw_active.c:759-773`, `lkas_uart.c:449`; `SP_HUD_MAX_TORQUE`: `gw_active.c:1348`, `:1104,1108`); `_steering_control_e.dbc` (the same two); `_sunnypilot_linbus_gw.dbc` (`gw_active.c:234`, `:1017-1022`, `:1104,1108`, `:1267`, `:1348`, `:1356-1375`, `:1391`, `:1394`, `:1401-1406`, `sp_hud.c:88`); `carstate_ext.py` (`gw_active.c:1391`, `:1017-1022`, `:1401-1406`) | line numbers | they are `875ba124` line numbers and point at unrelated code now. At `d995bc9` the `MAX_TORQUE` fold is at `gw_active.c:2435` and the `RETRY_IN = 255` assignment at `:2497`. Cite functions or constants rather than lines when rewriting |
 | `custom.capnp` (the `fwBuildValid` block), `carstate.py` `get_can_parsers`, `carstate_ext.py` `_update_linbus_firmware`, `_sunnypilot_linbus_gw.dbc` `CM_ BO_ 1807` | board firmware `625b782a` | no such commit. It is `625b782e` (`625b782ea8`, "An app-slot image must SAY it is one") |
-| `selfdrive/controls/lib/latcontrol.py` `LatControl.__init__` comment | the torque controllers "reset the PID the frame it takes over" | since `39b857567` the integrator is clipped to 0.25 and decayed with τ = 30 s instead. `946b5fa21` fixed the controllers' comments but not this one |
+| `openpilot/selfdrive/controls/lib/latcontrol.py` `LatControl.__init__` comment | the torque controllers "reset the PID the frame it takes over" | since `39b857567` the integrator is clipped to 0.25 and decayed with τ = 30 s instead. `946b5fa21` fixed the controllers' comments but not this one |
 | `docs/SP_HUD_STATUS.md` "Required behaviour in the torque controllers"; board `docs/SP-PROTOCOL-V3.md` §1.3 code sample (`self.pid.reset()`) | the PID is reset on takeover | clipped and decayed, as above |
 | `docs/SP_HUD_STATUS.md` `LAT_READY` row; board `docs/SP-PROTOCOL-V3.md` §1.2; board `gw_active.c` lane-graphic comment (line ~1844) | "would steer if the board allowed it" / `steering_available or latActive` | `mads.enabled or latActive` since `43a98b9d` |
 | `docs/SP_HUD_STATUS.md` "Round 1 is telemetry only" | nothing reads `granted`/`grantReason` | `mads.py` reads both since `ef4f29432` |
@@ -826,59 +909,54 @@ readers but do not change behaviour. Board line numbers below are at `d995bc9`.
 | `carcontroller.py` brake-release comment | 4 serial counts per frame | 8 at the current authority of 160 |
 | `structs.py` comments in `LinbusGateway` | "names and order must stay in lockstep" | only names matter (section 6) |
 | `carstate_ext.py` comment on `LINBUS_GW_STALE_FRAMES` | `GW_ACTIVE` "has been observed dropping" | true of early firmware; later measured at 10.0 Hz with none lost. The 500 ms window is still reasonable |
-| integration test §10 | expects `LAT_READY` with MADS off | see section 12 |
+| integration test §10 | expected `LAT_READY` with MADS off | fixed in the 2026-09 merge (section 12) |
 
 ---
 
-## 14. Upstream merge
+## 14. Upstream merges
 
-### 14.1 What upstream has moved since the fork point
+### 14.1 What the 2026-09 merge did in this area
 
-* **sunnypilot `master` (`a5f44653d`) has moved the code under `openpilot/`**: `5edc0bd89` "mv
-  root dirs into nested openpilot" and `37eda06c9` "move cereal/ into nested openpilot". Every
-  code path in this document gains an `openpilot/` prefix, for example
-  `openpilot/cereal/custom.capnp`, `openpilot/selfdrive/controls/lib/latcontrol.py` and
-  `openpilot/sunnypilot/mads/mads.py`. `docs/` and the root `.md` files (`CHANGELOG-elesys.md`,
-  `FEATURES-elesys.md`) stay where they are; there is no `openpilot/docs`. Imports changed with
-  the move: `from cereal import ...` is now `from openpilot.cereal import ...`. The fork's new
-  files (`test_car_control_sp_seam.py`, `test_lane_change_nudge.py`) need that change. Expect
-  git's rename detection to carry most hunks, and check each one by hand.
-* **`DesireHelper.update()` changed signature upstream.** It is now
-  `update(self, carstate, lateral_active, lane_change_prob, left_edge_detected=False, right_edge_detected=False)`,
-  and both `modeld` files call `DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob, left_edge, right_edge)`.
-  The fork passes `driverTorqueStale` as the fourth positional argument. A merge that keeps
-  either side's call against the other's signature puts `left_edge` into
-  `driver_torque_stale`, or `driverTorqueStale` into `left_edge_detected`, with no error. Add
-  `driver_torque_stale=False` after the edge parameters and pass it **by keyword** in both
-  `modeld` files. Upstream also rewrote the body of `update()` (the `DESIRES` table and
-  `lane_change_ll_prob` are gone); re-apply `not driver_torque_stale` to the upstream
-  `torque_applied` expression.
-* **SubMaster lists were rewritten upstream** (service renames, for example `liveDelay` →
-  `lateralDelay`, `liveCalibration` → `extrinsicsCalibration`, `roadCameraState` →
-  `narrowRoadCameraState`). Re-add `'carStateSP'` by hand to the lists in `controlsd.py`,
-  `selfdrived.py`, `modeld.py` and `modeld_v2/modeld.py`. `controlsd_ext.run_ext` and
-  `state_control_ext` are unchanged upstream apart from the move, so the fork's signatures
-  apply as they are.
-* **`mads.py`**: upstream `79b79edd2` changes `should_silent_lkas_enable()` (section 9). The
-  fork's `update_events()` hunk sits in a region upstream has not otherwise touched.
-* **opendbc upstream stopped using `Platforms.with_flags` in Honda.** commaai's `57506094`
-  removed the helper, but sunnypilot's opendbc still defines it (`opendbc/car/__init__.py`).
-  Upstream Honda `values.py` no longer calls it and tests flags directly: `CP.flags & HondaFlags.BOSCH`, and `HONDA_BOSCH` is built as a frozenset. Every
-  area-B gate is written `carFingerprint in HONDA_ELESYS`. Area C owns the definition of
-  `HONDA_ELESYS`. After the merge, either keep a frozenset `HONDA_ELESYS` or convert these call
-  sites to `CP.flags & HondaFlags.ELESYS`: `carcontroller.py` (brake ceiling, `serial_gateway`,
-  the `0x500` branch), `hondacan.py` (the import), `carstate.py` (`pt_msgs`, the
-  `carFaultedNonCritical` branch), `carstate_ext.py` (`update`), `interface.py`
-  (`steerAtStandstill`).
-* Other upstream opendbc changes to the same files: `045cd8d3` (unused Honda parameters
-  removed, which changes `create_brake_command`/`create_acc_commands` signatures, both area C)
-  and `063414f6` (a hybrid `blockPcmEnable` line in `carstate_ext.update`, which is next to the
-  fork's call and its changed signature).
+Upstream sunnypilot `a5f44653d` and opendbc `f95f996f` were merged on 2026-09-27. Every hunk in
+section 2 was carried; nothing was lost, and nothing here reaches the car differently. An
+open-loop replay of route `00000103` (670 s) gave byte-identical `sendcan` for `0x0E4` (66,304
+frames) and `0x500` (6,631 frames, 10.00 Hz, version 3), and identical `carStateSP`, including
+every `linbusGateway` field and `driverTorqueStale`.
+
+* **The layout moved under `openpilot/`** (`5edc0bd89`, `37eda06c9`). Every sunnypilot path in
+  this document gained the prefix; `docs/` and the root `.md` files did not move. Imports moved
+  with it: `from openpilot.cereal import ...`. The fork's added tests were file-location
+  conflicts and were accepted at the new paths.
+* **`DesireHelper.update()` changed signature upstream** to
+  `update(self, carstate, lateral_active, lane_change_prob, left_edge_detected=False, right_edge_detected=False)`.
+  `driver_torque_stale=False` now comes after the edge parameters, both `modeld` files pass it
+  by keyword, and `not driver_torque_stale` is in upstream's rewritten `torque_applied`
+  (section 8.3). The opendbc integration §15 passes it by keyword too.
+* **SubMaster lists were rewritten upstream** (`liveDelay` → `lateralDelay`, `liveCalibration` →
+  `extrinsicsCalibration`, `roadCameraState` → `narrowRoadCameraState`, …). `'carStateSP'` was
+  re-added to the lists in `controlsd.py`, `selfdrived.py`, `modeld.py` and
+  `modeld_v2/modeld.py`.
+* **`LaC.update()` returns three values upstream** (`14a00e0cc`); `set_linbus_gateway()` sits
+  before it and `run_ext(sm, pm, lac_log, LaC)` after it. `controlsd_ext.run_ext` and
+  `state_control_ext` were unchanged upstream apart from the move, so the fork's signatures
+  apply as they are. Upstream renamed `update_live_torque_params` to
+  `update_torque_parameters`; the hold follows it in both torque controllers.
+* **MADS** (section 9): upstream `79b79edd2`'s brake/regen guard, merged with the fork's
+  `2cfcd3c6a` gateway-pause fix (this was a content conflict), plus the enable-frame fix and the
+  `KeyError` fallback found in review.
+* **Upstream's Lateral Jerk controller** (`91a53aa16`, opt-in) and NNLC update the PID a second
+  time through `LatControlTorqueExtBase`, which skipped the hold. Fixed in
+  `latcontrol_torque_ext_base.py` (section 7).
+* **opendbc upstream stopped using `Platforms.with_flags` in Honda.** `HONDA_ELESYS` (area C) is
+  now `frozenset(c for c in CAR if c.config.flags & HondaFlags.ELESYS)`. Every area-B gate is
+  still written `carFingerprint in HONDA_ELESYS`, and `hondacan.py` no longer imports it: the
+  brake-command units bit is passed as `elesys=` (area C).
+* Upstream's `blockPcmEnable` line landed beside the fork's `CarStateExt.update(ret, ret_sp, ...)`
+  call in `carstate_ext.py` and merged cleanly; it does not affect this car.
 * **Ordinals:** at `a5f44653d`, upstream `CarControlSP` ends at `@4` and `CarStateSP` has only
-  `speedLimit @0`. There is no collision today. If upstream has added fields by the time you
-  merge, the fork's fields must move to the next free ordinals in `custom.capnp`. `structs.py`
-  has no ordinals and needs no change unless a name changes. Old logs then decode the moved
-  fields wrongly. Say so in the changelog.
+  `speedLimit @0`. No collision.
+* `safety/tests/common.py` gained the Elesys-only `0x500` exemption (section 2), which fixed two
+  cross-mode failures that predate the merge.
 
 ### 14.2 Hook points, and what breaks silently if a hunk is lost
 
@@ -898,24 +976,27 @@ readers but do not change behaviour. Board line numbers below are at `d995bc9`.
 | `controlsd.state_control`, before `LaC.update` | `set_linbus_gateway` | the gate sees `present=False`. The integrator winds open-loop before every takeover (route `b3`), and `INTEGRATOR_FROZEN` reads 0 |
 | `controlsd.update` → `run_ext(sm, pm, lac_log, LaC)`, and `controlsd_ext.state_control_ext` | the `lateralControl` fill | `0x500 INTEGRATOR` is always 0, so the board's first-engagement guard never fires |
 | `latcontrol_torque(_v0).update` | `linbus_hold` in `freeze_integrator` | as above. Check **both** controllers. `_v0` is the one that runs by default |
+| `LatControlTorqueExtBase.update_output_torque` | `integrator_frozen` in `freeze_integrator` | with Lateral Jerk or NNLC on, the integrator winds open-loop through every hold. `test_latcontrol_gateway_hold.py` fails |
 | `LatControl` PID attribute | `getattr(self, "pid", None)` in the gate | if upstream renames `self.pid`, the freeze survives but the carry and decay stop |
-| `desire_helper.update` and both `modeld` call sites | `driver_torque_stale` | a stale value confirms lane changes (only if the mirror is also down). A positional mix-up with upstream's new edge parameters (section 14.1) is silent |
-| `selfdrived` SubMaster | `'carStateSP'` | `mads.py` raises `KeyError` on `sm['carStateSP']` |
+| `desire_helper.update` and both `modeld` call sites | `driver_torque_stale`, last and by keyword | a stale value confirms lane changes (only if the mirror is also down). A positional call would land in upstream's edge parameters, silently |
+| `selfdrived` SubMaster | `'carStateSP'` | `mads.py`'s `KeyError` fallback then treats the car as having no gateway, and the pause silently stops working. `test_selfdrived_subscribes_the_gateway_state` catches it |
+| `mads.should_silent_lkas_enable` | `if self._gw_paused: return False` first | the MADS flap comes back: `latActive` alternates frame by frame through every override (route `00000103`) |
 | `mads.update_events` | the gateway block | the car goes on requesting through every board hand-back, and the cluster says "steering" while the wheel is the driver's |
+| `mads/state.py`, DISABLED | `silentLkasDisable` beside an ENABLE → `paused` | turning MADS on during an override gives one active frame before the pause |
 | `honda.h` ELESYS TX lists | `{0x500, 0, 8}` | panda drops `0x500` silently |
 
-### 14.3 After the merge
+### 14.3 After every merge
 
-1. Grep for everything this area touches. Both commands were checked at the current fork
-   HEADs and hit every area-B file in section 2; they also hit area-A and area-C lines and some
-   upstream code, so compare against section 2 rather than counting hits.
+1. Grep for everything this area touches. Both commands hit every area-B file in section 2;
+   they also hit area-A and area-C lines and some upstream code, so compare against section 2
+   rather than counting hits.
 
-   In the sunnypilot tree (after the move; drop `openpilot/` to run it on the current tree):
+   In the sunnypilot tree:
 
    ```
    git grep -n -P -e "LIN-bus gateway" -e linbus -e LINBUS_ -e driverTorqueStale -e driver_torque_stale \
      -e "lateralControl\b" -e _gw_paused -e EMERGENCY_STEER -e carStateSP -e run_ext \
-     -e set_linbus_gateway -e integrator_frozen \
+     -e set_linbus_gateway -e integrator_frozen -e "FORK\(LKAS-GATEWAY\)" \
      -- openpilot/cereal/custom.capnp openpilot/selfdrive openpilot/sunnypilot
    ```
 
@@ -925,24 +1006,25 @@ readers but do not change behaviour. Board line numbers below are at `d995bc9`.
    In opendbc:
 
    ```
-   git grep -n -e "FORK(HONDA_ELESYS)" -e "FORK(HONDA_ACCORD_9G_AU)" -e HONDA_ELESYS -e SP_HUD \
+   git grep -n -e "FORK(HONDA_ELESYS)" -e "FORK(HONDA_ACCORD_9G_AU)" -e "FORK(LKAS-GATEWAY)" -e HONDA_ELESYS -e SP_HUD \
      -e EPS_LIN_RAW -e GW_STEER_GRANT -e brake_release -e LateralControl -e LinbusGateway \
      -e driverTorqueStale -e linbus -e 0x500 -e serial_gateway \
      -- opendbc/car/honda opendbc/car/structs.py opendbc/dbc/generator/honda \
-        opendbc/safety/modes/honda.h opendbc/safety/tests/test_honda.py opendbc/sunnypilot/car/honda
+        opendbc/safety/modes/honda.h opendbc/safety/tests opendbc/sunnypilot/car/honda
    ```
 
    The path list is there because `0x500` also matches Ford, Hyundai and Rivian radar code.
-2. Run the integration script (section 12). The only accepted failure is the known §10
-   `LAT_READY` case, until that test is fixed.
-3. Run the seam test and the nudge test on a machine that can load cereal, and the opendbc
-   Honda safety tests. Convert both to `unittest.TestCase` first: upstream's
-   `tools/test_runner.py` collects only `TestCase` classes, so bare `def test_*` functions run
-   as zero tests and "pass" (README, Tests).
+2. Run the integration script (section 12), with the sunnypilot tree on `PYTHONPATH` so §15
+   runs. There is no accepted failure.
+3. Run the section 12 tests under `tools/test_runner.py`, and the opendbc Honda safety tests.
+   Check the runner's counts: a module that reports 0 tests has been dropped.
 4. Diff the new `custom.capnp` `CarControlSP`/`CarStateSP` against `structs.py` field by field,
-   by name.
-5. Check both `modeld` `DH.update(...)` calls pass `driver_torque_stale=` by keyword.
-6. On the first drive, check the route:
+   by name, and check upstream's highest ordinals.
+5. Check both `modeld` `DH.update(...)` calls pass `driver_torque_stale=` by keyword, after any
+   parameters upstream has added.
+6. If upstream has touched `mads.py` or `mads/state.py`, re-read section 9 against the merged
+   code: the `_gw_paused` check must still come first in `should_silent_lkas_enable()`.
+7. On the first drive, check the route:
    * `0x500` appears as `src 128` (the panda's TX echo on bus 0) and not as `src 130` (bus 2),
      with version 3 and a moving counter;
    * `0x70F BUILD_SP_FRESH` is 1 (the board's `tools/route_flatten.py` reports it);
@@ -950,6 +1032,6 @@ readers but do not change behaviour. Board line numbers below are at `d995bc9`.
    * `0x0E4` byte 2 bit 2 is 0 on every frame;
    * `carStateSP.linbusGateway.valid` and `grantValid` are mostly 1, and `driverTorqueStale` is
      rare;
-   * during any `grantReason == 4` stretch, MADS is `paused` and `latActive` is 0 (see the
-     suspected problem in section 9);
+   * during any `grantReason == 4` stretch, MADS is `paused` and `latActive` is 0 on every
+     frame (section 9);
    * the lane graphic follows the table in section 10.

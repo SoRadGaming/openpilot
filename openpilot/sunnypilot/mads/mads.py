@@ -11,6 +11,7 @@ from opendbc.car import structs
 from opendbc.car.hyundai.values import HyundaiFlags
 from openpilot.common.params import Params
 from openpilot.sunnypilot.mads.helpers import MadsSteeringModeOnBrake, read_steering_mode_param, MADS_NO_ACC_MAIN_BUTTON
+from openpilot.selfdrive.selfdrived.events import ET
 from openpilot.sunnypilot.mads.state import StateMachine, GEARS_ALLOW_PAUSED_SILENT
 
 State = custom.ModularAssistiveDrivingSystem.ModularAssistiveDrivingSystemState
@@ -284,13 +285,18 @@ class ModularAssistiveDrivingSystem:
     #
     # An emergency takeover on this frame outranks the pause: its lkasDisable must turn MADS
     # off, and a silentLkasDisable alongside it would turn that into a pause (state.py).
+    #
+    # FORK(LKAS-GATEWAY): MADS being turned ON during an override counts too. self.enabled is
+    # still False on that frame, so without the ENABLE check MADS went disabled -> enabled
+    # (active, one request frame) and only paused on the next one. With it, the state machine
+    # sees silentLkasDisable beside the ENABLE and enters paused directly (state.py DISABLED).
     try:
       gw = self.selfdrive.sm['carStateSP'].linbusGateway
     except KeyError:
       gw = None  # FORK(LKAS-GATEWAY): an sm without carStateSP (upstream's MADS tests) has no gateway
     gw_override = bool(gw is not None and gw.present and gw.grantValid and not gw.granted and
                        gw.grantReason == LINBUS_REASON_DRIVER_OVERRIDE)
-    if gw_override and self.enabled and not emergency:
+    if gw_override and (self.enabled or self.state_machine.check_contains(ET.ENABLE)) and not emergency:
       # Set even when something else paused MADS first: releasing the brake must not
       # resume lateral while the board still reports the driver's hands on the wheel.
       self._gw_paused = True

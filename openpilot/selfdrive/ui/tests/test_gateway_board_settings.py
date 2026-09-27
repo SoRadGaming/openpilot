@@ -19,14 +19,17 @@ ARE loaded, because that is the only way to prove the byte order is right -- and
 the byte order is the one thing here that a reviewer cannot check by eye.
 """
 import ast
+import math
 import re
 import struct
 import unittest
 from pathlib import Path
 
+from opendbc.can.parser import CANParser
+
 ROOT = Path(__file__).parents[3]      # openpilot/
 REPO = Path(__file__).parents[4]      # the repo root, which holds opendbc_repo/
-DBC = REPO / "opendbc_repo/opendbc/dbc/generator/honda/_sunnypilot_linbus_gw.dbc"
+CAR_DBC = "honda_accord_au_2015_can_generated"   # includes generator/honda/_sunnypilot_linbus_gw.dbc
 CARSTATE = REPO / "opendbc_repo/opendbc/car/honda/carstate.py"
 CARSTATE_EXT = REPO / "opendbc_repo/opendbc/sunnypilot/car/honda/carstate_ext.py"
 STRUCTS = REPO / "opendbc_repo/opendbc/car/structs.py"
@@ -58,28 +61,35 @@ class TestGatewayBoardSettings(unittest.TestCase):
     board packs it LSB-first, so it must be @1+. Getting this wrong produces a
     plausible-looking hash that matches no commit, which is far worse than an
     obvious failure.
+
+    Decoded with opendbc's own CANParser on the car's generated DBC -- the code
+    card actually runs, always installed, and generated in memory from
+    _sunnypilot_linbus_gw.dbc -- rather than cantools, which is in neither venv
+    and made this test skip itself silently.
     """
-    try:
-      import cantools
-    except ImportError:
-      self.skipTest("cantools is not installed here; the DBC byte order is only checked where it is")
-    db = cantools.database.load_file(str(DBC), strict=True)
+    def decode(version, build):
+      cp = CANParser(CAR_DBC, [("GW_VERSION", math.nan), ("GW_BUILD", math.nan)], 0)
+      cp.update([(int(1e9), [(0x707, version, 0), (0x70F, build, 0)])])
+      return cp.vl["GW_VERSION"], cp.vl["GW_BUILD"]
 
     # exactly the bytes gw_version_pack() puts on the wire for commit 0x52ca4732
-    raw = struct.pack("<I", 0x52CA4732) + bytes([0x6E, 160, 0x79, 3])
-    d = db.decode_message("GW_VERSION", raw)
-    assert int(d["GIT_HASH"]) == 0x52CA4732, f"GIT_HASH decoded as {int(d['GIT_HASH']):#x}, byte order is wrong"
-    assert int(d["AUTHORITY"]) == 160
-    assert int(d["HOLD_FRAMES"]) == 0x79 & 0x1F
-
+    version = struct.pack("<I", 0x52CA4732) + bytes([0x6E, 160, 0x79, 3])
     # gw_build_pack(): flags, floor LE, lin_max, 24-bit uid LE, counter
-    raw = bytes([0x06]) + struct.pack("<H", 5150) + bytes([160]) + struct.pack("<I", 0x3F2A10)[:3] + bytes([7])
-    d = db.decode_message("GW_BUILD", raw)
-    assert int(d["BUILD_DIRTY"]) == 0
-    assert int(d["BUILD_APP_SLOT"]) == 1
-    assert int(d["BUILD_BOOTLOADER"]) == 1
-    assert int(d["EPS_FLOOR_CPH"]) == 5150, "the EPS floor is 16-bit little-endian"
-    assert int(d["BOARD_UID"]) == 0x3F2A10, "the board UID is 24-bit little-endian"
+    build = bytes([0x06]) + struct.pack("<H", 5150) + bytes([160]) + struct.pack("<I", 0x3F2A10)[:3] + bytes([7])
+    d, b = decode(version, build)
+    self.assertEqual(int(d["GIT_HASH"]), 0x52CA4732, f"GIT_HASH decoded as {int(d['GIT_HASH']):#x}, byte order is wrong")
+    self.assertEqual(int(d["AUTHORITY"]), 160)
+    self.assertEqual(int(d["HOLD_FRAMES"]), 0x79 & 0x1F)
+    self.assertEqual(int(b["BUILD_DIRTY"]), 0)
+    self.assertEqual(int(b["BUILD_APP_SLOT"]), 1)
+    self.assertEqual(int(b["BUILD_BOOTLOADER"]), 1)
+    self.assertEqual(int(b["EPS_FLOOR_CPH"]), 5150, "the EPS floor is 16-bit little-endian")
+    self.assertEqual(int(b["BOARD_UID"]), 0x3F2A10, "the board UID is 24-bit little-endian")
+
+    # negative control: the same hash packed MSB-first must not decode to it,
+    # or the check above could not tell the two byte orders apart
+    d, _ = decode(struct.pack(">I", 0x52CA4732) + version[4:], build)
+    self.assertNotEqual(int(d["GIT_HASH"]), 0x52CA4732)
 
   def test_frames_are_registered_liveness_exempt(self):
     """float("nan") is what stops a 1/min identity frame costing openpilot its CAN."""
@@ -311,6 +321,7 @@ class TestGatewayBoardSettings(unittest.TestCase):
     import struct as _struct
     spec = importlib.util.spec_from_file_location(
       "eps_lkas_flasher", ROOT / "sunnypilot/selfdrive/pandad/eps_lkas_flasher.py")
+    assert spec is not None and spec.loader is not None
     fl = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fl)
 
@@ -405,6 +416,7 @@ class TestGatewayBoardSettings(unittest.TestCase):
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.FunctionDef) and n.name == "_can_update")
     src = ast.get_source_segment(panel, fn)
+    assert src is not None
     assert "up to date" in src, "'up to date' is not a refusal, so the button stays enabled"
     # and it must be decided before ignition/offroad, which are less useful to say
     assert src.index("up to date") < src.index("ignition off"), \

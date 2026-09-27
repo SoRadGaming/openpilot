@@ -118,11 +118,13 @@ def _hook(test: unittest.TestCase, params: FakeParams):
   spec = importlib.util.spec_from_file_location(
     "openpilot.sunnypilot.selfdrive.pandad.eps_lkas_flasher",
     ROOT / "sunnypilot/selfdrive/pandad/eps_lkas_flasher.py")
+  assert spec is not None and spec.loader is not None
   fl = importlib.util.module_from_spec(spec)
   sys.modules[spec.name] = fl
   spec.loader.exec_module(fl)
 
   spec2 = importlib.util.spec_from_file_location("eps_lkas_hook", HOOK)
+  assert spec2 is not None and spec2.loader is not None
   mod = importlib.util.module_from_spec(spec2)
   spec2.loader.exec_module(mod)
   mod._saved = saved

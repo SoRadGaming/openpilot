@@ -18,9 +18,10 @@ of the rest.
 
 | | |
 |---|---|
-| sunnypilot fork point | `31dc4d8e5` (2026-06-28). Documented at `HEAD` `10e088a2d`. |
-| opendbc fork point | `b9712d20` (2026-06-08). Documented at `HEAD` `cf583b37` (the commit the sunnypilot fork pins). |
-| upstream compared against | sunnypilot `refs/upstream/master` `a5f44653d`; opendbc `refs/upstream/master` `f95f996f` |
+| sunnypilot fork point | `a5f44653d` (upstream, merged 2026-09-27; the previous fork point was `31dc4d8e5`). Documented at the merge branch `merge/upstream-2026-09-27` (`d1a14edcb` plus the post-merge review fixes). |
+| opendbc fork point | `f95f996f` (upstream, merged 2026-09-27; previously `b9712d20`). Documented at the merge `8bd6e314` plus the review fixes, which becomes the `sp-master` the sunnypilot fork pins. |
+| upstream compared against | sunnypilot `refs/upstream/master` `a5f44653d`; opendbc `refs/upstream/master` `f95f996f`. Nothing upstream is outstanding. What the merge did in this area is in §12. |
+| paths | Since the merge every sunnypilot path is under `openpilot/`. Python module paths (`openpilot.sunnypilot...`) did not change. |
 | board firmware repo | `S:\Software\EPS-LKAS`. This repo is not a fork; all of its code is custom. It holds the bootloader, the protocol header `inc/boot_proto.h`, the marker header `inc/gw_app_id.h`, `tools/bundle_appslot.py`, `docs/CAN-UPDATE.md` and `docs/UPDATING-FROM-THE-COMMA.md`. |
 | history | The feature's introduction (the page, the flasher, the pandad wiring, the update button, the `a925fdce1` review fixes) is recorded **only in the commit messages** listed in §2.3. `docs/CHANGELOG_SERIAL_STEERING.md` covers the trace and vibration work (entries 2026-09-23 and 2026-09-24) and mentions the bundles in passing in the 2026-09-22 (`577a723e`, an area B entry) and 2026-09-27 (`d995bc95`) entries. This document is the map, not the history. |
 
@@ -46,7 +47,7 @@ slides to confirm, and three things happen:
 The UI process keeps running throughout, which is why the page can show live progress.
 
 The firmware image **ships inside sunnypilot**, at
-`sunnypilot/selfdrive/pandad/eps_lkas_appslot.bin`, so updating the board's firmware is
+`openpilot/sunnypilot/selfdrive/pandad/eps_lkas_appslot.bin`, so updating the board's firmware is
 updating sunnypilot. The update path has no download and no network code.
 
 The board is safe to update in this way because of its relays. For the whole session its
@@ -63,19 +64,19 @@ sitting in its bootloader with stock LKAS working (`docs/CAN-UPDATE.md` in the f
 
 | file | status | area A content |
 |---|---|---|
-| `sunnypilot/selfdrive/pandad/eps_lkas_flasher.py` | added, all A | The bootloader protocol, the transports, the image checks and the flash trace. It has no openpilot imports. |
-| `sunnypilot/selfdrive/pandad/eps_lkas_hook.py` | added, all A | Glue between pandad and the flasher. Contains the params handling, the watcher thread, and the version write-back. |
-| `sunnypilot/selfdrive/pandad/eps_lkas_appslot.bin` | added, all A | The bundled board image. Currently `d995bc95`, 46,540 bytes. |
-| `selfdrive/pandad/pandad.py` | modified, all A | Imports the hook, adds the `skip_panda_reset` guard, and calls `flash_if_requested()` and `watch_for_request()`. |
-| `selfdrive/ui/sunnypilot/mici/layouts/board.py` | added, all A | The Settings > gateway page: the firmware card and the update button. |
-| `selfdrive/ui/sunnypilot/mici/layouts/settings.py` | modified, **mixed** | A: the `board_btn` row. C: the `vehicle_btn` row. |
-| `selfdrive/car/card.py` | modified, **mixed** | A: `stage_board_firmware`, `write_board_firmware`, `log_flash_trace`, their call sites, five `__init__` attributes, and an unused `import json`. C: `skip_fw_query=bool(fixed_fingerprint)`. |
-| `common/params_keys.h` | modified, **mixed** | A: the seven `EpsLkas*` keys. C: the `HondaDyn*` keys. |
-| `cereal/custom.capnp` | modified, **mixed** | A: `CarStateSP.LinbusGateway` fields `@19`-`@26`. B: the struct itself and fields `@0`-`@18`, `driverTorqueStale`, and `CarControlSP.lateralControl`. |
-| `selfdrive/ui/tests/test_eps_lkas_flasher.py` | added, all A | 26 tests. |
-| `selfdrive/ui/tests/test_eps_lkas_hook.py` | added, all A | 9 tests. |
-| `selfdrive/ui/tests/test_gateway_board_settings.py` | added, **mixed** | 24 tests are A. `test_lat_ready_means_lateral_is_enabled_not_merely_possible` is B (added in `6a4f1f5ea`). Two A tests also read C's `vehicle.py`. |
-| `selfdrive/car/tests/test_car_control_sp_seam.py` | added, **mixed** | A: the firmware-identity block. B: the rest (the file was created in `d11d2c9a8` for B's `lateralControl`). |
+| `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_flasher.py` | added, all A | The bootloader protocol, the transports, the image checks and the flash trace. It has no openpilot imports. |
+| `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_hook.py` | added, all A | Glue between pandad and the flasher. Contains the params handling, the watcher thread, and the version write-back. |
+| `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_appslot.bin` | added, all A | The bundled board image. Currently `d995bc95`, 46,540 bytes. |
+| `openpilot/selfdrive/pandad/pandad.py` | modified, all A | Imports the hook, adds the `skip_panda_reset` guard, and calls `flash_if_requested()` and `watch_for_request()`. |
+| `openpilot/selfdrive/ui/sunnypilot/mici/layouts/board.py` | added, all A | The Settings > gateway page: the firmware card and the update button. |
+| `openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py` | modified, **mixed** | A: the `board_btn` row. C: the `vehicle_btn` row. |
+| `openpilot/selfdrive/car/card.py` | modified, **mixed** | A: `stage_board_firmware`, `write_board_firmware`, `log_flash_trace`, their call sites, five `__init__` attributes, and an unused `import json`. C: `skip_fw_query=bool(fixed_fingerprint)`. |
+| `openpilot/common/params_keys.h` | modified, **mixed** | A: the seven `EpsLkas*` keys. C: the `HondaDyn*` keys. |
+| `openpilot/cereal/custom.capnp` | modified, **mixed** | A: `CarStateSP.LinbusGateway` fields `@19`-`@26`. B: the struct itself and fields `@0`-`@18`, `driverTorqueStale`, and `CarControlSP.lateralControl`. |
+| `openpilot/selfdrive/ui/tests/test_eps_lkas_flasher.py` | added, all A | 26 tests. |
+| `openpilot/selfdrive/ui/tests/test_eps_lkas_hook.py` | added, all A | 10 tests. |
+| `openpilot/selfdrive/ui/tests/test_gateway_board_settings.py` | added, **mixed** | 24 tests are A. `test_lat_ready_means_lateral_is_enabled_not_merely_possible` is B (added in `6a4f1f5ea`). Two A tests also read C's `vehicle.py`. |
+| `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | added, **mixed** | A: the firmware-identity block. B: the rest (the file was created in `d11d2c9a8` for B's `lateralControl`). |
 | `docs/CHANGELOG_SERIAL_STEERING.md` | added | History; see the header table for what it does and does not cover. |
 
 ### 2.2 opendbc fork (`opendbc_repo`)
@@ -123,9 +124,12 @@ opendbc:
 
 ### 2.4 FORK markers
 
-No area A hunk in an upstream sunnypilot file carries a `FORK(...)` comment. The only marker
-near this area is `FORK(HONDA_ELESYS)` at `opendbc/car/honda/carstate.py:316`, which heads the
-gateway parser registration that A shares with B.
+Since the 2026-09 merge three area A lines carry `FORK(GATEWAY-UPDATE)`: the gateway row and
+its `items.insert(3, board_btn)` in mici `settings.py`, and the watcher call in `pandad.py`.
+The other area A hunks in upstream sunnypilot files (`card.py`, `params_keys.h`,
+`custom.capnp`, the rest of `pandad.py`) have prose comments only. In opendbc,
+`FORK(HONDA_ELESYS)` at `opendbc/car/honda/carstate.py:317` heads the gateway parser
+registration that A shares with B.
 
 To find the A hunks after a merge, grep for these strings:
 
@@ -147,11 +151,17 @@ To find the A hunks after a merge, grep for these strings:
 
 ### 3.1 Where the page is
 
-`selfdrive/ui/sunnypilot/mici/layouts/settings.py` builds a row titled **gateway** (icon
-`../../sunnypilot/selfdrive/assets/offroad/icon_software.png`). The row opens
-`BoardLayoutMici` and is inserted with `items.insert(4, board_btn)`. That puts it after
-sunnylink (1), models (2) and C's vehicle row (3), all counted before the two front slots are
-prepended.
+`openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py` builds a row titled **gateway**
+(icon `../../sunnypilot/selfdrive/assets/offroad/icon_software.png`). The row opens
+`BoardLayoutMici` and is inserted with `items.insert(3, board_btn)`, after upstream's own
+`items.insert(1, models_btn)` and `items.insert(5, sunnylink_btn)` and C's
+`items.insert(2, vehicle_btn)`. That puts it after models (1) and vehicle (2), all counted
+before the two front slots are prepended; sunnylink stays after the same base items as
+upstream put it. Before the 2026-09 merge the row was at 4, after sunnylink (1), models (2)
+and vehicle (3).
+
+The panel is constructed without `back_callback`: upstream `099143ad9` removed it from its own
+mici panels, and `NavWidget` pops itself on swipe-down.
 
 The row is visible only when `board_page_visible()` is true, which means
 `EpsLkasBoardVersion` is non-empty: the board has identified itself at least once. The row is
@@ -180,9 +190,9 @@ Two layout rules are pinned by tests:
 * Every `UnifiedLabel` passes `wrap_text=False`. A wrapped header overprints the row below
   it. `board firmware` was 343 px against a 340 px limit.
 * Only glyphs the font has are used. An em dash or a middle dot rendered as a wrong glyph on
-  the device. The page uses only the bullet (U+2022). The glyph test scans only `tr()`
-  strings, and the age separator `f" • {age}"` (board.py line 151) is not in one, so that
-  bullet is not checked by any test.
+  the device. The page uses only the bullet (U+2022), which is in the font's
+  `EXTRA_FONT_CHARS`. The glyph test scans only `tr()` strings, and the age separator
+  `f" • {age}"` (board.py line 150) is not in one, so that bullet is not checked by any test.
 
 ### 3.3 The update button (`UpdateBoardButton`)
 
@@ -279,7 +289,7 @@ verified per language).
 
 ## 4. Params
 
-All seven are in `common/params_keys.h`, between `InteractivityTimeout` and
+All seven are in `openpilot/common/params_keys.h`, between `InteractivityTimeout` and
 `IsDevelopmentBranch`. **None carries `BACKUP`**, so none appears in a sunnylink backup.
 
 | key | flags | type | written by | read by | why this persistence |
@@ -294,11 +304,10 @@ All seven are in `common/params_keys.h`, between `InteractivityTimeout` and
 
 **JSON-typed params take the object, never `json.dumps(...)`.** `Params.put` looks up
 `PYTHON_2_CPP[(type(value), key_type)]`, which has entries for `(dict, JSON)` and
-`(list, JSON)` but none for `(str, JSON)`. A pre-serialised string raises `TypeError`. In this
-fork the table is in the Cython `common/params_pyx.pyx` (line 49; `common/params.py` only
-re-exports it). Upstream `a5f44653d` replaced that with a ctypes implementation in
-`openpilot/common/params.py`, which has the same table (line 82) and the same missing
-`(str, JSON)` entry, so the rule holds after a merge.
+`(list, JSON)` but none for `(str, JSON)`. A pre-serialised string raises `TypeError`. Since
+the 2026-09 merge the table is in upstream's ctypes implementation,
+`openpilot/common/params.py` (line 82), which has the same missing `(str, JSON)` entry. Before
+the merge it was in the Cython `common/params_pyx.pyx`; the rule is the same in both.
 
 The history of this rule: the adversarial review in `a925fdce1` found card passing
 `json.dumps(build)` into `EpsLkasBoardBuild` and said card **would have** died on the first
@@ -324,7 +333,7 @@ the board writes, for the rest of that card process.
 
 ---
 
-## 5. pandad integration (`selfdrive/pandad/pandad.py` + `eps_lkas_hook.py`)
+## 5. pandad integration (`openpilot/selfdrive/pandad/pandad.py` + `eps_lkas_hook.py`)
 
 ### 5.1 Why pandad
 
@@ -357,7 +366,11 @@ There are five:
 4. After `flash_panda(panda_serials[0])`, which guarantees the panda is out of bootstub, and
    before `Popen`: `flash_if_requested(panda_serials[0])`.
 5. After `Popen` and before `process.wait()`: `watch_for_request(process,
-   request_skip_panda_reset)`.
+   request_skip_panda_reset)`, under a `FORK(GATEWAY-UPDATE)` comment.
+
+Since the 2026-09 merge these sit in upstream's version of the file, where `HARDWARE` comes
+from `openpilot.common.hardware` and `./pandad` is started with
+`cwd=os.path.join(BASEDIR, "openpilot/selfdrive/pandad")`. The loop is otherwise the same.
 
 ### 5.3 `eps_lkas_hook.py`
 
@@ -365,8 +378,10 @@ There are five:
 `eps_lkas_watch`. The thread polls every `WATCH_PERIOD_S = 1.0` s while `process.poll() is
 None`:
 
-* If the request is set and `IsOnroad` is set, it logs a warning, clears the request, and
+* If the request is set and `IsOffroad` is not set, it logs a warning, clears the request, and
   writes `failed: not while driving`. It does this only once per watcher (the `refused` flag).
+  `IsOffroad` is the only onroad/offroad param upstream keeps (`ad5151b38` deleted
+  `IsOnroad`); a missing or false `IsOffroad` reads as onroad, which refuses.
 * If the request is set and the car is offroad, it logs, calls `skip_reset()` **first**, then
   `process.send_signal(signal.SIGINT)`, and returns. SIGINT is used because it is the signal
   pandad.py's own handler forwards "to close the relay and exit". `terminate()` is not used.
@@ -378,8 +393,9 @@ entry and always returns normally:
 1. If the request param is false or unreadable, it returns with no writes.
 2. **It makes its own onroad check.** The re-entry might not be the watcher's doing; for
    example, `./pandad` could have crashed mid-drive. If onroad, it clears the request, writes
-   `failed: not while driving`, and returns. If `IsOnroad` cannot be read, it logs
-   `could not read IsOnroad` and returns **without clearing the request**.
+   `failed: not while driving`, and returns. The test is `not params.get_bool("IsOffroad")`.
+   If `IsOffroad` cannot be read, it logs `could not read IsOffroad` and returns **without
+   clearing the request**.
 3. **It clears the request before anything else.** Left set, the loop would re-enter, the
    watcher would fire again, and the board would be reflashed forever with no backoff.
    `CLEAR_ON_MANAGER_START` does not protect against this, because manager does not restart
@@ -412,14 +428,14 @@ only card writes and only together with a `uid`. A hand-set request param can re
 | must not | enforced by |
 |---|---|
 | **Raise** into pandad. An exception here means `./pandad` never starts and the car has no CAN until manager notices. | `flash_if_requested` catches everything. `run_flash` returns `(ok, msg)` and never raises. The flasher contains no `raise SystemExit` and no `sys.exit()` outside `__main__`; this rule is why it does not reuse the firmware repo's `check_app_image`/`can_update.py`, which raise `SystemExit` (a `BaseException`). Tests: `test_nothing_raises_out_of_the_flasher`, `test_run_flash_returns_rather_than_raising`, `test_hook_never_raises`. |
-| **Reset or DFU-recover the panda** as a side effect | the `skip_panda_reset` guard, armed before the signal. Tests: `test_pandad_skips_the_panda_reset_on_that_re_entry`; `test_watcher_stops_pandad_offroad` asserts exactly one SIGINT and that the skip was armed, but **not their order**. The order (skip, then signal) is enforced only by the code, at `eps_lkas_hook.py` lines 124-125. To pin it, make `FakeProcess.send_signal` record whether the skip had already fired. |
-| **Run onroad** | Four layers, from the outside in: the watcher's `IsOnroad` check; the hook's own `IsOnroad` check; the flasher's `moving()` check on `0x158`; the board, whose app knock handler and bootloader both NAK with `BOOT_ERR_MOVING` at 1.00 km/h or more. The UI gate is not counted as a safety layer. Test: `test_watcher_ignores_a_request_while_onroad`. |
+| **Reset or DFU-recover the panda** as a side effect | the `skip_panda_reset` guard, armed before the signal. Tests: `test_pandad_skips_the_panda_reset_on_that_re_entry`; `test_watcher_stops_pandad_offroad` asserts exactly one SIGINT and that the skip was armed, but **not their order**. The order (skip, then signal) is enforced only by the code, at `eps_lkas_hook.py` lines 126-127. To pin it, make `FakeProcess.send_signal` record whether the skip had already fired. |
+| **Run onroad** | Four layers, from the outside in: the watcher's `IsOffroad` check; the hook's own `IsOffroad` check; the flasher's `moving()` check on `0x158`; the board, whose app knock handler and bootloader both NAK with `BOOT_ERR_MOVING` at 1.00 km/h or more. The UI gate is not counted as a safety layer. Test: `test_watcher_ignores_a_request_while_onroad`. |
 | **Loop** | The request is cleared first. Test: `test_request_is_cleared_before_anything_is_attempted`. |
 | **Stop the UI** | Only `./pandad` is signalled. |
 
 ---
 
-## 6. The flasher (`sunnypilot/selfdrive/pandad/eps_lkas_flasher.py`)
+## 6. The flasher (`openpilot/sunnypilot/selfdrive/pandad/eps_lkas_flasher.py`)
 
 This is a self-contained port of the bootloader protocol. It shares no code with the firmware
 repo's `tools/can_update.py`, for two reasons: that tool depends on python-can, which is not
@@ -485,7 +501,7 @@ top of the flasher ("Change a number there, change it here"). **Nothing checks t
 module's constants to literal values typed into the test: the `CMD_*` and `RSP_*` codes,
 `MAGIC`, `CHUNK_BYTES`, `DATA_PER_FRAME`, `STATIONARY_CPH`, `APP_ID_MAGIC` and `APP_ORIGIN`.
 It does not cover `PROTO_VERSION`, the CAN IDs, the NAK error codes or the HELLO status bits.
-A change on the firmware side will not fail it; diff the two by hand (§12.4). The memory map,
+A change on the firmware side will not fail it; diff the two by hand (§12.3). The memory map,
 the staging header and the power-loss behaviour are documented in `docs/CAN-UPDATE.md` in the
 firmware repo and are not repeated here.
 
@@ -629,11 +645,15 @@ The procedure, in the firmware repo:
    `status --porcelain` also returns `""` and passes. With no working git, neither check
    happens and nothing says so.
 
-   If none of those apply, it copies the image to `DEFAULT_DST`, which is hard-coded to
-   `S:/OP/sp-live/sunnypilot/selfdrive/pandad/eps_lkas_appslot.bin` (`--dst` overrides it).
+   If none of those apply, it copies the image next to `eps_lkas_flasher.py` in
+   `S:/OP/sp-live`, taking the first of `DST_CANDIDATES` that holds the flasher:
+   `openpilot/sunnypilot/selfdrive/pandad/` (the nested layout since the 2026-09-27 sync),
+   then the old `sunnypilot/selfdrive/pandad/`. It never creates a directory, and refuses if
+   neither exists. `--dst` overrides it. This is firmware commit `862540c`; before it the
+   destination was hard-coded to the old path, which nothing reads after the merge.
 
-   `docs/CAN-UPDATE.md` line 327 prints this command with a literal backspace byte (0x08)
-   where `\b` should be, so it renders as `python toolsundle_appslot.py`.
+   (`docs/CAN-UPDATE.md` used to print this command with a literal backspace byte where `\b`
+   should be. It now reads `python tools/bundle_appslot.py --reconfigure`.)
 3. Commit the `.bin` in sunnypilot and push. The device picks it up on its next update, and
    the page changes from `up to date` to `to <hash>`.
 
@@ -651,7 +671,7 @@ app-slot build configures `INCAR_TEST=ON`. It is not the dirty bit.
 | `1f20b7b68` | **`d995bc95`** (current) | 46,540 |
 
 In git the `.bin` is not in LFS; `text=auto` detects it as binary. It ships in release builds,
-because `release/release_files.py` does not exclude it.
+because `tools/release/release_files.py` does not exclude it.
 
 ### 6.5 What `run_flash()` can return
 
@@ -683,12 +703,15 @@ dry-runs.
 ### 6.6 By hand (bench, or with `./pandad` stopped)
 
 ```
-python -m sunnypilot.selfdrive.pandad.eps_lkas_flasher --dry-run     # reach the bootloader, write nothing
-python -m sunnypilot.selfdrive.pandad.eps_lkas_flasher --bench       # candleLight instead of the panda
+python -m openpilot.sunnypilot.selfdrive.pandad.eps_lkas_flasher --dry-run     # reach the bootloader, write nothing
+python -m openpilot.sunnypilot.selfdrive.pandad.eps_lkas_flasher --bench       # candleLight instead of the panda
    --bin <file>   image to install (default: the bundled one)
    --bus 0|2      0 car, 2 camera; 1 is refused (no transceiver on the board)
    --no-knock     wait for a manual reset instead of knocking
 ```
+
+Run it from the repo root. The module path gained `openpilot.` in the 2026-09 merge; the
+flasher's own docstring uses the new form.
 
 Running the panda transport by hand on a device while `./pandad` runs has not been tried
 with this module. The firmware repo's procedure for its own tool requires openpilot to be
@@ -772,7 +795,7 @@ is the correct one.
   `fwBootloader`, `fwReadOnly`, `boardUid`, `fwBuildValid`, in that order, after B's fields.
   **The names must match the capnp struct.** card converts the dataclass with
   `convert_to_capnp()`, which splats it into `custom.CarStateSP.new_message(**dict)` by
-  keyword, so a name mismatch raises there, in `Car.state_update()` (`CS_SP = convert_to_capnp(CS_SP)`, card.py:208 at `10e088a2d`), on the
+  keyword, so a name mismatch raises there, in `Car.state_update()` (`CS_SP = convert_to_capnp(CS_SP)`, `openpilot/selfdrive/car/card.py:209` after the merge), on the
   first CAN cycle of a drive. Field order cannot cause a failure in a keyword splat; it is
   kept identical by convention and pinned by `test_capnp_and_dataclass_agree`.
 
@@ -939,12 +962,23 @@ prunes that directory.
 
 ## 10. Tests
 
-All 60 tests in the three `selfdrive/ui/tests` files passed at `HEAD` on Windows. They were
-run with pytest, `--noconftest`, and an empty ini file, because the repo `conftest.py` needs a
-built openpilot. `test_car_control_sp_seam.py` was **not** run here, because `cereal` could
-not be imported in this shell.
+Upstream removed pytest (`98e7c4f98`, `ac4ab9a9b`); its `tools/test_runner.py` (also
+`tools/op.sh test`) collects only `unittest.TestCase` classes. In the 2026-09 merge every test
+file below became one `TestCase` class. After the merge, in WSL under the runner, all 61 tests
+in the three `openpilot/selfdrive/ui/tests` files (26 + 10 + 25; 60 are area A) and the seam
+test passed:
 
-### 10.1 `selfdrive/ui/tests/test_eps_lkas_flasher.py`
+```bash
+python tools/test_runner.py -v openpilot/selfdrive/ui/tests/test_eps_lkas_flasher.py \
+  openpilot/selfdrive/ui/tests/test_eps_lkas_hook.py openpilot/selfdrive/ui/tests/test_gateway_board_settings.py \
+  openpilot/selfdrive/car/tests/test_car_control_sp_seam.py
+```
+
+The UI and flasher tests still parse source instead of importing raylib. They keep
+`ROOT = Path(__file__).parents[3]`, which is now `openpilot/`, and use
+`REPO = Path(__file__).parents[4]` for paths into `opendbc_repo/`.
+
+### 10.1 `openpilot/selfdrive/ui/tests/test_eps_lkas_flasher.py`
 
 This file loads the flasher by file path, without panda or python-can. It has 26 tests,
 grouped below by what they pin.
@@ -1010,39 +1044,44 @@ grouped below by what they pin.
 | `test_the_hold_keeps_the_bootloader_alive_and_sits_before_the_data` | the ping interval is under half the timeout; ordering info < hold < program |
 | `test_the_census_names_what_the_burst_starves_and_what_starts_answering` | `lost`/`new`, the board-ID exclusion, the rate floor, echoes not counted |
 
-### 10.2 `selfdrive/ui/tests/test_eps_lkas_hook.py`
+### 10.2 `openpilot/selfdrive/ui/tests/test_eps_lkas_hook.py`
 
 This file stubs `openpilot.common.params` with a `FakeParams` and uses a `FakeProcess`. It has
-9 tests:
+10 tests:
 
 | test | pins |
 |---|---|
-| `test_watcher_ignores_a_request_while_onroad` | no signal, no skip while onroad |
+| `test_watcher_ignores_a_request_while_onroad` | no signal, no skip while onroad (`IsOffroad=False`) |
 | `test_watcher_stops_pandad_offroad` | exactly one SIGINT, and the skip was armed. It does **not** check that the skip came first (§5.4). |
 | `test_watcher_does_nothing_without_a_request` | no request, no action |
-| `test_request_is_cleared_before_anything_is_attempted` | the first write is the request clear, and the state ends `failed...` (no panda here, so `PandaTransport` raises) |
+| `test_request_is_cleared_before_anything_is_attempted` | the first write is the request clear; the state ends `failed...` (no panda here, so `PandaTransport` raises) but **not** `failed: not while driving`, and `running` was written, so the flash path really ran |
 | `test_no_request_means_no_writes_at_all` | no request, no writes |
 | `test_hook_never_raises` | a params object that raises does not escape |
 | `test_pandad_skips_the_panda_reset_on_that_re_entry` | AST: the resets are in the `else` branch of the skip check |
 | `test_pandad_calls_the_hook_and_the_watcher_in_the_right_places` | source order `flash_panda` < hook < `Popen` < watcher < `wait` |
 | `test_the_flash_trace_survives_to_the_next_drive` | `EpsLkasFlashTrace` is `PERSISTENT` and `JSON`; no `json.dumps` in `trace_out`; card's emitter is once-only, removes the param, and catches `Exception` |
+| `test_every_param_the_hook_and_the_page_use_is_registered` | every param key `eps_lkas_hook.py` and `board.py` read or write is in `params_keys.h` (added in the 2026-09 merge) |
 
 `FakeParams` accepts any key, and its `get_bool` returns `False` for a key it was not given.
-**These tests cannot detect that a param the hook reads no longer exists in
-`params_keys.h`**, and three of them (`test_request_is_cleared_before_anything_is_attempted`,
-`test_no_request_means_no_writes_at_all`, `test_hook_never_raises`) set no onroad key at all,
-so they currently run as "offroad" by default. See §12.3.
+With the hook testing `not IsOffroad`, a `FakeParams` without `IsOffroad` reads as onroad, so
+every `FakeParams` meant to be offroad says `IsOffroad=True`.
+`test_no_request_means_no_writes_at_all` and `test_hook_never_raises` return before the onroad
+read and need no key. The last test exists because `FakeParams` could not see that `IsOnroad`
+had been deleted upstream; see §12.1.
 
-### 10.3 `selfdrive/ui/tests/test_gateway_board_settings.py`
+### 10.3 `openpilot/selfdrive/ui/tests/test_gateway_board_settings.py`
 
-This file parses source rather than importing the UI (raylib). It loads the DBC with
-`cantools`. It has 24 area A tests.
+This file parses source rather than importing the UI (raylib). It decodes the board's frames
+with opendbc's own `CANParser` on `honda_accord_au_2015_can_generated` (generated in memory
+from `_sunnypilot_linbus_gw.dbc`, so no build is needed). Until the 2026-09 merge it used
+`cantools`, which is in neither venv, so the byte-order test skipped itself silently. It has
+24 area A tests.
 
 **Wire, schema and params:**
 
 | test | pins |
 |---|---|
-| `test_dbc_decodes_a_real_board_frame` | little-endian `GIT_HASH`, `EPS_FLOOR_CPH`, `BOARD_UID`, against `gw_version_pack`/`gw_build_pack` byte layouts |
+| `test_dbc_decodes_a_real_board_frame` | little-endian `GIT_HASH`, `EPS_FLOOR_CPH`, `BOARD_UID`, against `gw_version_pack`/`gw_build_pack` byte layouts; negative control: the hash packed MSB-first must not decode to the same value |
 | `test_frames_are_registered_liveness_exempt` | `("GW_VERSION"/"GW_BUILD", float("nan"))` in `carstate.py` |
 | `test_capnp_and_dataclass_agree` | the `FW_FIELDS` exist in both, in the same order, with unique ordinals |
 | `test_decoder_exists_and_is_called` | `_update_linbus_firmware` exists, is called, and uses the `ts_nanos` tests |
@@ -1079,10 +1118,10 @@ This file parses source rather than importing the UI (raylib). It loads the DBC 
 | test | pins |
 |---|---|
 | `test_hand_positioned_labels_never_wrap` | every `UnifiedLabel` has `wrap_text=False` |
-| `test_no_glyphs_the_baked_font_does_not_have` | every `tr()` string is in ASCII 32-126 plus `EXTRA_CHARS` from `selfdrive/assets/fonts/process.py`. Strings outside `tr()` are not checked. |
+| `test_no_glyphs_the_baked_font_does_not_have` | every `tr()` string is in ASCII 32-126 plus `EXTRA_FONT_CHARS` from `openpilot/system/ui/lib/application.py`, the set upstream loads its fonts with since `96ca1f8ed` (before the merge it read `EXTRA_CHARS` from the deleted `selfdrive/assets/fonts/process.py`). Strings outside `tr()` are not checked. |
 | `test_the_button_title_leaves_room_for_its_sub_label` | the title is 10 characters or fewer |
 
-### 10.4 `selfdrive/car/tests/test_car_control_sp_seam.py` (A block only)
+### 10.4 `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` (A block only)
 
 This block drives a `structs.CarStateSP` through the real `convert_to_capnp()` and makes four
 checks:
@@ -1112,12 +1151,12 @@ This is the only test that exercises the dataclass-to-capnp splat card uses.
 
 | file | hunk | owner |
 |---|---|---|
-| `selfdrive/car/card.py` | `skip_fw_query=bool(fixed_fingerprint)` on `get_car()`: with the platform fixed, the VIN/FW query's OBD multiplexing costs the Elesys radar its bus (`d11d2c9a8`) | C |
-| `selfdrive/car/card.py` | `import json` at the top, **unused** since `a925fdce1`; harmless | A (leftover) |
-| `selfdrive/ui/sunnypilot/mici/layouts/settings.py` | `VehicleLayoutMici`, `car_brand`, `vehicle_btn`, `items.insert(3, vehicle_btn)` | C |
-| `selfdrive/ui/tests/test_gateway_board_settings.py` | `test_lat_ready_means_lateral_is_enabled_not_merely_possible` | B |
-| `selfdrive/car/tests/test_car_control_sp_seam.py` | everything outside the firmware-identity block | B |
-| `cereal/custom.capnp`, `opendbc/car/structs.py`, `carstate_ext.py`, `_sunnypilot_linbus_gw.dbc` | everything not listed in §8 | B |
+| `openpilot/selfdrive/car/card.py` | `skip_fw_query=bool(fixed_fingerprint)` on `get_car()`: with the platform fixed, the VIN/FW query's OBD multiplexing costs the Elesys radar its bus (`d11d2c9a8`) | C |
+| `openpilot/selfdrive/car/card.py` | `import json` at the top, **unused** since `a925fdce1`; harmless | A (leftover) |
+| `openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py` | `VehicleLayoutMici`, `car_brand`, `vehicle_btn`, `items.insert(2, vehicle_btn)` | C |
+| `openpilot/selfdrive/ui/tests/test_gateway_board_settings.py` | `test_lat_ready_means_lateral_is_enabled_not_merely_possible` | B |
+| `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | everything outside the firmware-identity block | B |
+| `openpilot/cereal/custom.capnp`, `opendbc/car/structs.py`, `carstate_ext.py`, `_sunnypilot_linbus_gw.dbc` | everything not listed in §8 | B |
 
 ### 11.2 Behaviours found by reading, not yet observed
 
@@ -1138,112 +1177,76 @@ This is the only test that exercises the dataclass-to-capnp splat card uses.
 
 ### 11.3 Stale references
 
-* `selfdrive/ui/sunnypilot/mici/layouts/board.py`, module docstring (line 17), says the
+* `openpilot/selfdrive/ui/sunnypilot/mici/layouts/board.py`, module docstring (line 17), says the
   identity is latched "by `card.publish_board_firmware()`". No such method exists; the
   methods are `stage_board_firmware` and `write_board_firmware` (§8.4).
 * `docs/CHANGELOG_SERIAL_STEERING.md` (2026-09-22 entry) says "Settings → gateway → update
   firmware". The button title is now `update` (`b648e51ca`).
-* Firmware repo `docs/CAN-UPDATE.md` line 327: the backspace byte in the bundle command
-  (§6.4).
-* `625b782a` in `cereal/custom.capnp` (the `fwBuildValid` block),
+* `625b782a` in `openpilot/cereal/custom.capnp` (the `fwBuildValid` block),
   `opendbc/car/honda/carstate.py` `get_can_parsers`, `carstate_ext.py`
   `_update_linbus_firmware` and `_sunnypilot_linbus_gw.dbc` `CM_ BO_ 1807`: the board
   commit is `625b782e`.
 
 ---
 
-## 12. Upstream merge
+## 12. Upstream merges
 
-Upstream sunnypilot `a5f44653d` is 549 commits ahead of the fork point. It includes a
-restructure that **moves every tree under a top-level `openpilot/` directory** and removes
-the root `opendbc` symlink:
+### 12.1 What the 2026-09 merge did in this area
 
-* `5edc0bd89` mv root dirs into nested openpilot
-* `37eda06c9` move cereal into nested openpilot
-* `20e0f21b5` prefix paths with openpilot
+Upstream sunnypilot `a5f44653d` was 549 commits ahead of the old fork point. It moved every
+tree under a top-level `openpilot/` directory (`5edc0bd89` "mv root dirs into nested
+openpilot", `37eda06c9` "move cereal into nested openpilot", `20e0f21b5` "prefix paths with
+openpilot"). Python import paths (`openpilot.sunnypilot...`) did not change. Every area A
+hunk survived; this was checked by reading the merged code, not only the conflict list.
 
-Python import paths (`openpilot.sunnypilot...`) are unchanged, but every file path in this
-area moves. The findings below come from reading the upstream tree. No trial merge was done.
-
-### 12.1 Files this area adds (move them; they have no upstream counterpart)
-
-| fork path | upstream-layout path |
+| hunk | what happened |
 |---|---|
-| `sunnypilot/selfdrive/pandad/eps_lkas_flasher.py`, `eps_lkas_hook.py`, `eps_lkas_appslot.bin` | `openpilot/sunnypilot/selfdrive/pandad/`, next to `rivian_long_flasher.py` |
-| `selfdrive/ui/sunnypilot/mici/layouts/board.py` | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/board.py` |
-| `selfdrive/ui/tests/test_eps_lkas_*.py`, `test_gateway_board_settings.py` | `openpilot/selfdrive/ui/tests/` |
-| `selfdrive/car/tests/test_car_control_sp_seam.py` | `openpilot/selfdrive/car/tests/` |
+| `eps_lkas_flasher.py`, `eps_lkas_hook.py`, `eps_lkas_appslot.bin` | file-location conflicts; accepted at `openpilot/sunnypilot/selfdrive/pandad/`, next to `rivian_long_flasher.py`. The flasher is unchanged apart from the `python -m openpilot.sunnypilot...` path in its docstring. The `.bin` is the same `d995bc95` blob and still passes `check_app_slot_image()`. |
+| `eps_lkas_hook.py` onroad check | **`IsOnroad` no longer exists** (`ad5151b38`, "single IsOffroad param"). Upstream's `Params` raises `UnknownKeyName` on an unknown key, the hook caught it, and no flash could ever have started: the page would have sat at `requested`. Both reads are now `not params.get_bool("IsOffroad")`, and the log string names `IsOffroad`. A missing `IsOffroad` reads as onroad, which refuses. Upstream's manager writes `IsOffroad=True` (with `block=True`) before it starts pandad, and `hardwared` still forces `started=False` under `OffroadMode`, so Always Offroad still means `IsOffroad=True`. |
+| `pandad.py` | content conflict; the five hunks of §5.2 were re-applied onto upstream's file (`openpilot.common.hardware`, the new `Popen` `cwd`). |
+| `card.py` | merged automatically, unchanged (the unused `import json` came along). |
+| `params_keys.h`, `custom.capnp` | merged automatically, unchanged; keys, flags, types and ordinals as before. Upstream `CarStateSP` is still only `speedLimit @0`. |
+| mici `settings.py` and `board.py` | content conflict in `settings.py`; `board.py` was a file-location conflict. `back_callback` dropped (upstream `099143ad9`); the gateway row is at index 3 (§3.1). |
+| the tests | converted to `unittest.TestCase`; `REPO` root for `opendbc_repo/`; `IsOffroad=True` in every offroad `FakeParams`; the registration test; the font test on `EXTRA_FONT_CHARS`; the DBC test on opendbc's `CANParser` instead of `cantools`. |
+| opendbc (`_sunnypilot_linbus_gw.dbc`, the `nan` registration, `_update_linbus_firmware`, the eight `structs.py` fields) | unchanged. The generated `honda_accord_au_2015_can_generated.dbc` still has `BO_ 1799` and `BO_ 1807`. |
+| the bundle destination | the firmware repo's `bundle_appslot.py` finds the flasher in either layout (`862540c`, §6.4), and its `docs/CAN-UPDATE.md` names the new path. |
+
+Checked against upstream and unchanged: the ctypes `Params` table (`(dict, JSON)` works,
+`(str, JSON)` raises, puts are non-blocking by default); opendbc's parser still enforces only
+signals named exactly `CHECKSUM`/`COUNTER`, and still treats `nan` as `ignore_alive`; the panda
+Python API at `74a0adce` (`health()["safety_mode"]` survives the repacked health packet); the
+panda's ELM327 mode with a non-zero param (`CAN_MODE_NORMAL`, relay closed, `0x7xx` with DLC 8
+allowed, `SAFETY_ELM327` still `3U`); every mici API `board.py` uses; the `icon_software.png`
+asset. `tools/release/release_files.py` does not exclude the `.bin`.
+
+Two behaviour changes in this area come from upstream, and are intended:
+
+* **The UI is no longer restarted after a crash** (`03803d0c8`). A crash in `board.py` now
+  leaves `ui` down until manager or the device restarts, where before it came back by itself.
+* **The settings order changed**: models, vehicle, gateway, then upstream's items, with
+  sunnylink where upstream put it.
 
 ### 12.2 Hook points in upstream files
 
-| upstream file (new path) | hook | upstream change to expect |
+These are where the next merge can collide with area A.
+
+| upstream file | hook | what to watch for |
 |---|---|---|
-| `openpilot/selfdrive/pandad/pandad.py` | the five hunks of §5.2: the import; the `skip_panda_reset` state and setter; the guarded reset; `flash_if_requested(panda_serials[0])` between `flash_panda()` and `Popen`; `watch_for_request(process, request_skip_panda_reset)` between `Popen` and `wait()` | `HARDWARE` now comes from `openpilot.common.hardware`, and `Popen` uses `cwd=os.path.join(BASEDIR, "openpilot/selfdrive/pandad")`. The loop is otherwise the same, so re-apply the five hunks onto upstream's file. |
-| `openpilot/selfdrive/car/card.py` | 5 attributes in `__init__`; `self.stage_board_firmware(CS_SP)` as the last line of `state_publish()`; the three methods; `write_board_firmware()` and `log_flash_trace()` in `params_thread()` | `state_publish` and `params_thread` still exist. `CS_SP` is capnp by then (`convert_to_capnp` in `state_update`). Drop the unused `import json`. |
-| `openpilot/common/params_keys.h` | the seven `EpsLkas*` entries with the flags and types in §4 | The format is unchanged. |
-| `openpilot/cereal/custom.capnp` | the `LinbusGateway` fields `@19`-`@26` inside B's struct | Upstream `CarStateSP` is still only `speedLimit @0`. If upstream ever adds `@1` or `@2` there, the fork's fields (B's `linbusGateway @1` and `driverTorqueStale @2`) must move to new ordinals, and ordinals must never be reused. **The cost:** every route the fork has already recorded carries `linbusGateway` at `@1` and `driverTorqueStale` at `@2`. After a renumber, those old routes decode those slots as whatever upstream put there, and the fork's fields read as unset. Anything that replays or analyses old fork routes then needs the old schema. |
-| `openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py` | the import, `board_panel`/`board_btn`, `set_visible(board_page_visible)`, `items.insert(n, board_btn)` | Upstream now inserts `models_btn` at 1 and `sunnylink_btn` at 5, and constructs panels **without** `back_callback`. `NavWidget.set_back_callback` still exists (`nav_widget.py:81`), so `BoardLayoutMici(back_callback=...)` still works, but follow upstream's style. Choose a new index relative to C's vehicle row. The test only requires some `items.insert(<n>, board_btn)`. |
+| `openpilot/selfdrive/pandad/pandad.py` | the five hunks of §5.2: the import; the `skip_panda_reset` state and setter; the guarded reset; `flash_if_requested(panda_serials[0])` between `flash_panda()` and `Popen`; `watch_for_request(process, request_skip_panda_reset)` between `Popen` and `wait()` | The Python wrapper must still own the panda before spawning `./pandad` and block on it. If upstream removes that window, this feature needs a new one. Do not substitute `systemctl stop comma` or `pkill` (§5.1). |
+| `openpilot/selfdrive/car/card.py` | 5 attributes in `__init__`; `self.stage_board_firmware(CS_SP)` as the last line of `state_publish()`; the three methods; `write_board_firmware()` and `log_flash_trace()` in `params_thread()` | `state_publish` and `params_thread` must still exist, and `CS_SP` must still be capnp by then (`convert_to_capnp` in `state_update`). |
+| `openpilot/common/params_keys.h` | the seven `EpsLkas*` entries with the flags and types in §4 | The format. Also any onroad/offroad key the hook reads (`IsOffroad` today); the registration test fails if one disappears. |
+| `openpilot/cereal/custom.capnp` | the `LinbusGateway` fields `@19`-`@26` inside B's struct | If upstream ever adds `@1` or `@2` to `CarStateSP`, the fork's fields (B's `linbusGateway @1` and `driverTorqueStale @2`) must move to new ordinals, and ordinals must never be reused. **The cost:** every route the fork has already recorded carries `linbusGateway` at `@1` and `driverTorqueStale` at `@2`. After a renumber, those old routes decode those slots as whatever upstream put there, and the fork's fields read as unset. Anything that replays or analyses old fork routes then needs the old schema. |
+| `openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py` | the import, `board_panel`/`board_btn`, `set_visible(board_page_visible)`, `items.insert(3, board_btn)` | Upstream's own inserts and constructor style. The test only requires some `items.insert(<n>, board_btn)`. |
 | opendbc `opendbc/car/honda/carstate.py` | `GW_VERSION`/`GW_BUILD` in `pt_msgs` with `float("nan")` | shared with B |
-| opendbc `opendbc/sunnypilot/car/honda/carstate_ext.py` | `_update_linbus_firmware()` and its call; it relies on B's `ret_sp` parameter | Upstream's `update(self, ret, can_parsers)` has no `ret_sp`. B re-applies that change. |
-| opendbc `opendbc/car/structs.py` | the eight fields | `CarStateSP` is still an `auto_dataclass` upstream |
+| opendbc `opendbc/sunnypilot/car/honda/carstate_ext.py` | `_update_linbus_firmware()` and its call; it relies on B's `ret_sp` parameter | Upstream's `update(self, ret, can_parsers)` has no `ret_sp`; B carries that change. |
+| opendbc `opendbc/car/structs.py` | the eight fields | `CarStateSP` is still an `auto_dataclass` upstream. |
 | opendbc `_sunnypilot_linbus_gw.dbc` | `GW_VERSION`, `GW_BUILD` including `BUILD_SP_FRESH` (`cf583b37`) | fork-only file; carry it as is |
-| `.gitmodules`, `opendbc_repo` pin | `.gitmodules` points `opendbc` at `https://github.com/SoRadGaming/opendbc.git`, `branch = sp-master`; the pin must be a commit carrying the decode | Merge the opendbc fork first (upstream is 173 ahead), then bump the pin. |
+| `.gitmodules`, `opendbc_repo` pin | `.gitmodules` points `opendbc` at `https://github.com/SoRadGaming/opendbc.git`, `branch = sp-master`; the pin must be a commit carrying the decode | Merge the opendbc fork first, push it, then bump the pin. |
 
-### 12.3 Breaks the merge will cause in this area
+### 12.3 After every merge
 
-1. **`IsOnroad` no longer exists upstream.** `ad5151b38` ("single IsOffroad param") deleted it
-   from `params_keys.h`; manager now writes only `IsOffroad` (`CLEAR_ON_MANAGER_START`,
-   `BOOL`). `ad5151b38` is in upstream only, not an ancestor of the fork point.
-   `eps_lkas_hook.py` reads `IsOnroad` twice (lines 112 and 162). The upstream `Params`
-   raises `UnknownKeyName` (an `Exception`) on the read. The consequences:
-   * the watcher catches it and logs it once a second;
-   * the hook logs `could not read IsOnroad` and returns without clearing the request;
-   * **no flash can ever start**, and the page sits at `requested`.
-
-   This fails safe, but the feature is dead, and **the hook tests will still pass**, because
-   `FakeParams` accepts any key.
-
-   **Fix, all of it:**
-   * In the hook, replace both reads with `not params.get_bool("IsOffroad")`. A missing or
-     false `IsOffroad` then reads as onroad, which refuses: the safe default. Update the log
-     string on line 168 to name `IsOffroad`.
-   * In the hook tests, put **`IsOffroad=True`** into every `FakeParams` that is meant to be
-     offroad: `test_watcher_stops_pandad_offroad` and
-     `test_watcher_does_nothing_without_a_request` (both use `IsOnroad=False` today), **and
-     `test_request_is_cleared_before_anything_is_attempted`**, which sets no onroad key. Use
-     `IsOffroad=False` for `test_watcher_ignores_a_request_while_onroad`.
-     `test_no_request_means_no_writes_at_all` and `test_hook_never_raises` return before the
-     onroad read and need no key.
-   * Why the third one matters: after the switch, a `FakeParams` with no `IsOffroad` reads as
-     onroad. `test_request_is_cleared_before_anything_is_attempted` would then take the
-     `failed: not while driving` drop path and **still pass**, because the first write is
-     still the request clear and the state still starts with `failed`. The flash path would
-     no longer be exercised by any test. Consider asserting the state is not
-     `failed: not while driving` in that test.
-   * Add a test that every key the hook and `board.py` read appears in `params_keys.h`.
-2. **Test paths.** The tests set `ROOT = Path(__file__).parents[3]`. Under
-   `openpilot/selfdrive/ui/tests/` that is `<repo>/openpilot`: paths into `sunnypilot/`,
-   `selfdrive/` and `common/` still resolve, but every `ROOT / "opendbc_repo/..."` does not.
-   The affected reads are `declarations.h` in the flasher test, and the DBC, `carstate.py`,
-   `carstate_ext.py`, `structs.py` and `carcontroller.py` in the settings test. Use a second
-   root at `parents[4]` for `opendbc_repo`.
-3. **The font test.** `selfdrive/assets/fonts/process.py` and `EXTRA_CHARS` are gone. Upstream
-   loads TTFs on the fly (`96ca1f8ed`) with `EXTRA_FONT_CHARS` in
-   `openpilot/system/ui/lib/application.py` (line 97). Re-point
-   `test_no_glyphs_the_baked_font_does_not_have` at that constant. The page uses only the
-   bullet (U+2022), which is in `EXTRA_FONT_CHARS`. The test scans only `tr()` strings, and
-   the age separator on board.py line 151 is not in one.
-4. **The bundle destination.** `DEFAULT_DST` in the firmware repo's `tools/bundle_appslot.py`
-   must become `.../sp-live/openpilot/sunnypilot/selfdrive/pandad/eps_lkas_appslot.bin`.
-   Otherwise the script writes the image where nothing reads it, and the page keeps offering
-   the old one. Update the path in the firmware repo's `docs/CAN-UPDATE.md` too.
-5. **The CLI module path** in the flasher docstring (`python -m
-   sunnypilot.selfdrive.pandad...`) assumes `sunnypilot/` at the repo root. Under the nested
-   layout it is `openpilot.sunnypilot...`. Not verified.
-
-### 12.4 After every merge
-
-- [ ] `git grep -n "IsOnroad"`: no hits in fork code.
+- [ ] `test_every_param_the_hook_and_the_page_use_is_registered` passes, and
+      `git grep -n IsOnroad -- openpilot` has no hits in fork code.
 - [ ] `SAFETY_ELM327` in `opendbc/safety/declarations.h` is still `3U` (it is at upstream
       `f95f996f`). If it changes, `test_elm327_param_is_not_zero` fails, which is the intent.
 - [ ] Diff the constants at the top of `eps_lkas_flasher.py` against the firmware repo's
@@ -1254,8 +1257,7 @@ area moves. The findings below come from reading the upstream tree. No trial mer
       `can_send(addr, dat, bus)`, `can_recv()` yielding `(addr, dat, src)` with echo `+128`
       and reject `+192`, `can_health(bus)`, and `can_clear(0xFFFF)`.
 - [ ] `pandad.py` still has a Python wrapper that owns the panda before spawning `./pandad`
-      and blocks on it. If upstream removes that window, this feature needs a new one. Do not
-      substitute `systemctl stop comma` or `pkill` (§5.1).
+      and blocks on it (§12.2).
 - [ ] `Params.put` still rejects `(str, JSON)`, and card's JSON writes still pass dicts.
 - [ ] mici APIs used by `board.py` are unchanged:
       * `BigButton(text, value, icon)` and `.set_value`
@@ -1263,16 +1265,15 @@ area moves. The findings below come from reading the upstream tree. No trial mer
       * `NavScroller._scroller.add_widgets`
       * `UnifiedLabel(..., wrap_text=)`
       * `ui_state.ignition` and `ui_state.is_offroad()`
+      * `EXTRA_FONT_CHARS` in `openpilot/system/ui/lib/application.py`
 
       All of these are present at `a5f44653d`.
-- [ ] Convert the three UI test files and `test_car_control_sp_seam.py` to
-      `unittest.TestCase` first. Upstream removed pytest (`98e7c4f98`, `ac4ab9a9b`) and its
-      `tools/test_runner.py` collects only `TestCase` classes, so today's bare `def test_*`
-      functions would run as zero tests and "pass" (README, Tests). Then run all 60 UI tests
-      and the seam test under the runner, and check the count.
+- [ ] Run the four test files under `tools/test_runner.py` (§10) and check the counts: 26,
+      10, 25 and 1. A module that reports 0 tests has been dropped by the runner.
 - [ ] Rehearse the hook on the spare board with the bench transport (§6.6).
 - [ ] When bundling, confirm `git` runs in the firmware repo, since `bundle_appslot.py`
-      silently skips its HEAD and clean-tree checks without it (§6.4).
+      silently skips its HEAD and clean-tree checks without it (§6.4), and that the image
+      landed next to `eps_lkas_flasher.py` in the layout the checkout has.
 - [ ] In the car:
       * the gateway row appears;
       * the card shows the board's hash and a recent "last seen";

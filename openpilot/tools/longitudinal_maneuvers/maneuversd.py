@@ -3,11 +3,13 @@ import numpy as np
 from dataclasses import dataclass
 
 from openpilot.cereal import messaging
+from opendbc.car.structs import car
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.drive_helpers import should_stop
+from openpilot.sunnypilot.selfdrive.controls.lib.stopping_tune import STOPPING_SPEED
 
 
 @dataclass
@@ -140,7 +142,9 @@ MANEUVERS = [
 def main():
   params = Params()
   cloudlog.info("maneuversd is waiting for CarParams")
-  params.get("CarParams", block=True)
+  CP = messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams)
+  # FORK(HONDA_ACCORD_9G_AU): the car's own stopping speed (stopping_tune.py), as the planner uses; None = upstream's 0.3
+  v_ego_stopping = STOPPING_SPEED.get(CP.carFingerprint)
 
   sm = messaging.SubMaster(['carState', 'carControl', 'controlsState', 'selfdriveState', 'modelV2'], poll='modelV2')
   pm = messaging.PubMaster(['longitudinalPlan', 'longitudinalPlanSP', 'driverAssistance', 'alertDebug'])
@@ -178,7 +182,7 @@ def main():
     pm.send('alertDebug', alert_msg)
 
     longitudinalPlan.aTarget = accel
-    longitudinalPlan.shouldStop = should_stop(v_ego, accel)
+    longitudinalPlan.shouldStop = should_stop(v_ego, accel, v_ego_stopping=v_ego_stopping)
 
     longitudinalPlan.allowBrake = True
     longitudinalPlan.allowThrottle = True

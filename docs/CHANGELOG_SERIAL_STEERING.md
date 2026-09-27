@@ -13,6 +13,90 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-09-27 — upstream sync: sunnypilot `a5f44653d`, opendbc `f95f996f`
+
+**The fork now runs on current upstream sunnypilot (openpilot 0.11.2, sunnypilot
+2026.003.000).** Merged as sunnypilot `6b6b2b31e` / `d1a14edcb` and opendbc
+`8bd6e314`, plus the fixes from the review after it. The rule was: take upstream,
+but keep this car's behaviour wherever upstream changed it; every other car gets
+upstream's. The full list, item by item, is `docs/fork/UPSTREAM-2026-09.md`.
+
+**First boot: do it parked, with internet.**
+
+* The OS updates from AGNOS 18.4 to 19.7 before openpilot starts. It downloads
+  first and blocks startup until it is done.
+* The internal panda is reflashed (new firmware). Honda safety is unchanged.
+* The first start builds the new tree, which takes a while.
+* Expect the Experimental-mode confirmation page once, if you turn it on.
+
+**Kept as it was on this car:**
+
+* **Stopping.** Upstream now starts a stop below 0.3 m/s and ramps at 1.0 m/s³
+  for every car. This car keeps 0.8 m/s and 0.8 m/s³, the tune its red-light
+  holds were proven on, plus the stopping-exit debounce. The one difference: the
+  0.8 m/s is now checked against the measured speed rather than the plan's.
+* **Engage speed.** Upstream lets gas-interceptor Hondas engage from standstill;
+  this car keeps its 19 mph minimum.
+* **Lane changes.** Upstream's new lane-change logic, with the firm-or-held nudge
+  on top. A brush still does not start one.
+* **The gateway.** Steering commands, `0x500`, the board telemetry and the
+  in-app board update are unchanged. A replay of route `00000103` sent
+  byte-identical `0x0E4` and `0x500`.
+
+**What changes for you:**
+
+* **MADS in Pause mode:** with the brake held, lateral stays paused until you
+  release it, including at a standstill and at the end of a board override
+  (upstream's brake guard). Route `00000103` was recorded with "remain active",
+  where this changes nothing, so check which mode the device is set to.
+* **Turning MADS on while you have the wheel** during a board override now
+  starts it paused. Before, it was active for one frame first.
+* **Curves with vision curve slowdown on** can brake harder: up to 1.2 m/s²
+  where the old planner used about 0.35–0.6. The set speed is now handled outside
+  the longitudinal MPC and jerk-limited. Road-test it.
+* **Steering delay:** the delay learner drops what it had learned (0.38 s),
+  uses 0.58 s until it has relearned, and now learns only above 80 km/h. Accepted
+  as a one-time relearn: the first stretch of highway puts it back near 0.38 s.
+* **Driver monitoring:** camera alerts at 5 / 8 / 13 s (were 3 / 5 / 11), wheel
+  alerts at 5 / 15 / 25 s (were 15 / 24 / 30), a new sound on the first "Pay
+  Attention", and timed lockouts (1, 5, 15, 30 min) after two red alerts or one
+  ignored for 5 s. The DM slowdown starts 5 s later. The right-hand-drive face
+  icon is no longer mirrored.
+* **Sounds:** engage, disengage and refuse are re-recorded, and the warning
+  alerts play new files.
+* **Screen:** a screensaver shows for 5 minutes before the display turns off
+  offroad. Settings are reordered: models, vehicle, gateway, then the rest, with
+  a new software tile.
+* **If the screen UI crashes it no longer restarts by itself;** that needs a
+  reboot.
+* **Log names:** `livePose` is `deviceMotion`, `liveDelay` is `lateralDelay`,
+  and so on. Old logs still decode; the parquet scripts in `S:/OP` keep working
+  while `S:/OP/cereal` keeps the old schema.
+* Routes start about 0.5 s sooner, and remote "Take Snapshot" is gone.
+
+**Check on the first drive:**
+
+* No ACC/CMBS fault on the first ignition, and Settings > gateway shows the
+  board's hash.
+* Stops latch at about 0.8 m/s and hold without rolling; no engagement below
+  19 mph.
+* During a board override (`0x70B` reason 4) MADS stays paused and
+  `latActive` stays 0 on every frame.
+* In Pause mode, a held brake keeps lateral paused until released.
+* A brush with the blinker on does not change lanes; a firm tug or a held push
+  does.
+* Curve entries with vision curve slowdown: how hard it brakes.
+* Steering feel before and after the first stretch above 80 km/h (the delay
+  learner).
+* No `*Lagging` events in the first routes (a new CPU cap applies onroad).
+
+The fork's own code moved with upstream's layout: every sunnypilot path is now
+under `openpilot/`, and the board image is
+`openpilot/sunnypilot/selfdrive/pandad/eps_lkas_appslot.bin` (the firmware
+repo's `bundle_appslot.py` finds either layout since `862540c`). All fork tests
+are `unittest` test cases now, run with `tools/test_runner.py`, and pass with
+upstream's whole suite.
+
 ## 2026-09-27 — MADS stays paused through the whole board override (`2cfcd3c6a`)
 
 **While you had the wheel, openpilot kept asking to steer on every other frame.**

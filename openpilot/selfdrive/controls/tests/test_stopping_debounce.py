@@ -6,6 +6,8 @@ stopping_tune.py gets upstream's stopping speed (0.3 m/s) and ramp (1.0 m/s^3).
 """
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from opendbc.car.structs import car
 from openpilot.cereal import custom
 from openpilot.common.params import Params
@@ -136,7 +138,8 @@ class TestStoppingTune(OpenpilotTestCase):
 
   def test_the_table_holds_this_cars_values(self):
     assert STOPPING_SPEED[THIS_CAR] == 0.8
-    assert STOPPING_DECEL_RATE[THIS_CAR] == 0.8
+    # float32(0.8), what CP.stoppingDecelRate delivered before the merge (bit-for-bit ramp parity)
+    assert STOPPING_DECEL_RATE[THIS_CAR] == float(np.float32(0.8))
     assert OTHER_CAR not in STOPPING_SPEED and OTHER_CAR not in STOPPING_DECEL_RATE
 
   def _ramp_after(self, fingerprint: str, frames: int) -> float:
@@ -145,8 +148,18 @@ class TestStoppingTune(OpenpilotTestCase):
     return float(loc.last_output_accel)
 
   def test_this_car_ramps_at_its_own_rate(self):
-    assert make_loc(False, THIS_CAR).stopping_decel_rate == 0.8
+    assert make_loc(False, THIS_CAR).stopping_decel_rate == float(np.float32(0.8))
     self.assertAlmostEqual(self._ramp_after(THIS_CAR, 100), -0.8 * 100 * DT_CTRL, places=6)
+
+  def test_this_car_holds_exactly_at_its_stop_accel(self):
+    """CP.stopAccel is a capnp Float32 (-0.8 reads back as -0.800000011920929). Ramping at the
+    Python float 0.8 from zero stops one step short of it and takes a 101st step to -0.808;
+    ramping at float32(0.8), as CP.stoppingDecelRate did before the merge, lands on it."""
+    loc = make_loc(False, THIS_CAR)
+    loc.CP.stopAccel = -0.8   # this car's value (opendbc honda/interface.py)
+    run(loc, 400, True)
+    assert abs(float(loc.last_output_accel) - loc.CP.stopAccel) < 1e-6, \
+      f"hold is {float(loc.last_output_accel):.6f}, stopAccel is {loc.CP.stopAccel:.6f}"
 
   def test_another_car_ramps_at_upstreams_rate(self):
     assert make_loc(False, OTHER_CAR).stopping_decel_rate == 1.0

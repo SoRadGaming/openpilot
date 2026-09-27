@@ -40,6 +40,7 @@ def _module():
   """
   import importlib.util
   spec = importlib.util.spec_from_file_location("eps_lkas_flasher", FLASHER)
+  assert spec is not None and spec.loader is not None
   mod = importlib.util.module_from_spec(spec)
   spec.loader.exec_module(mod)
   return mod

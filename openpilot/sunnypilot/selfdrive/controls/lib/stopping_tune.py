@@ -20,5 +20,8 @@ STOPPING_SPEED = {
 # fingerprint -> m/s^3: how fast LongControl ramps the output toward stopAccel while stopping
 # (upstream: 1.0 for every car)
 STOPPING_DECEL_RATE = {
-  "HONDA_ACCORD_9G_AU": 0.8,
+  # float32(0.8), exactly what CP.stoppingDecelRate (a capnp Float32) delivered before the merge.
+  # The Python float 0.8 is 1.2e-8 short of it, which from a non-negative start takes the ramp one
+  # 0.008 m/s^2 step past stopAccel (-0.808 instead of -0.800, one COMPUTER_BRAKE count).
+  "HONDA_ACCORD_9G_AU": 0.800000011920929,
 }
