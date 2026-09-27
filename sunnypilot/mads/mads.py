@@ -96,6 +96,14 @@ class ModularAssistiveDrivingSystem:
     return False
 
   def should_silent_lkas_enable(self, CS: structs.CarState) -> bool:
+    # The gateway's pause holds for as long as the board reports the driver override, the
+    # same way the brake and gear pauses below hold for as long as their cause. Without
+    # this, the resume just below the gateway block lifted our pause on the very next frame
+    # and the block paused it again: carControl.latActive read 0101... for the whole of
+    # every override (route 00000103 t=58.5, 31 s of it). See update_events().
+    if self._gw_paused:
+      return False
+
     if self.steering_mode_on_brake == MadsSteeringModeOnBrake.PAUSE and self.pedal_pressed_non_gas_pressed(CS):
       return False
 
@@ -229,7 +237,8 @@ class ModularAssistiveDrivingSystem:
       self._fast_steer += 1
     else:
       self._fast_steer = 0
-    if self._fast_steer >= EMERGENCY_STEER_FRAMES and self.enabled:
+    emergency = self._fast_steer >= EMERGENCY_STEER_FRAMES and self.enabled
+    if emergency:
       self.events_sp.add(EventNameSP.lkasDisable)
       self._gw_paused = False
 
@@ -263,17 +272,27 @@ class ModularAssistiveDrivingSystem:
     #
     # `granted` is false whenever `grantValid` is, so a board too old to send 0x70B, or one
     # that has gone quiet, can never trigger this. `present` keeps it off every other car.
+    #
+    # THE PAUSE HOLDS, AND THE RESUME IS THE ORDINARY ONE. While `_gw_paused` is set,
+    # should_silent_lkas_enable() says no, so nothing lifts the pause mid-override. When the
+    # board stops reporting the override we only clear the flag; the generic block below
+    # then resumes through should_silent_lkas_enable(), so a brake held in Pause mode, or a
+    # gear event, keeps it paused exactly as it would any other pause. This relies on the
+    # board ending reason 4 on driver torque alone (GW_DRIVER_LATCH is 0 in the Stage 10
+    # image): it does not wait for openpilot to ask again.
+    #
+    # An emergency takeover on this frame outranks the pause: its lkasDisable must turn MADS
+    # off, and a silentLkasDisable alongside it would turn that into a pause (state.py).
     gw = self.selfdrive.sm['carStateSP'].linbusGateway
     gw_override = bool(gw.present and gw.grantValid and not gw.granted and
                        gw.grantReason == LINBUS_REASON_DRIVER_OVERRIDE)
-    if gw_override and self.enabled:
-      if self.state_machine.state != State.paused:
-        self._gw_paused = True
+    if gw_override and self.enabled and not emergency:
+      # Set even when something else paused MADS first: releasing the brake must not
+      # resume lateral while the board still reports the driver's hands on the wheel.
+      self._gw_paused = True
       self.transition_paused_state()
     elif self._gw_paused and not gw_override:
       self._gw_paused = False
-      if self.state_machine.state == State.paused:
-        self.events_sp.add(EventNameSP.silentLkasEnable)
 
     if self.should_silent_lkas_enable(CS):
       if self.state_machine.state == State.paused:
