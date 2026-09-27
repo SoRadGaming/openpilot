@@ -13,6 +13,33 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-09-27 — MADS stays paused through the whole board override (`2cfcd3c6a`)
+
+**While you had the wheel, openpilot kept asking to steer on every other frame.**
+When the board hands the wheel back (`0x70B` reason 4, driver override), MADS
+pauses: lanes stay dashed, lateral goes inactive. On the next frame the generic
+silent-resume saw nothing holding the pause (no brake, no gear event) and
+re-enabled it, and the frame after that the gateway paused it again. Route
+`00000103` from t=58.5: 31 s of override with `carControl.latActive` reading
+`0101…`. The steering was not affected, because the board ignores `0x0E4` while it
+has let go, but openpilot's request and the board's view disagreed the whole time.
+
+* The pause now holds for as long as the board reports the override, the same
+  way a held brake holds a brake pause.
+* When the board lets go, MADS resumes through the normal path, so a brake still
+  held in Pause mode keeps it paused until you release it. That is also what
+  upstream's new brake guard expects.
+* Releasing the brake in the middle of an override no longer resumes.
+* A fast-wheel emergency takeover on the same frame as the override turns MADS
+  **off**, as designed. Before, the pause beside it turned "off" into "paused".
+
+This is safe with the Stage 10 board image: its override latch is compiled out
+(`GW_DRIVER_LATCH 0`), so reason 4 ends on your hands and the release dwell alone.
+The board does not wait for openpilot to ask again.
+
+Eleven tests in `sunnypilot/mads/tests/test_mads_gateway_pause.py`. Five of them
+fail on the old code.
+
 ## 2026-09-27 — a lane-change nudge must be firm, or held
 
 **Just touching the wheel with the blinker on started a lane change.** The
