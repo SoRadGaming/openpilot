@@ -42,6 +42,52 @@ measured the fork at sunnypilot `10e088a2d` and opendbc `cf583b37` against the o
 
 ---
 
+## How the car gets updates
+
+The comma does **not** install from this repo. The comma installer and updater only speak
+`github.com/<user>/openpilot`, so the device was installed from `install.soradgaming.com/fork/SoRadGaming/sunnypilot`
+and tracks **`SoRadGaming/openpilot`, branch `sunnypilot`**:
+
+```
+SoRadGaming/sunnypilot  master ──(its CI: "tests" workflow)──►  mirror-sunnypilot.yaml  ──►  SoRadGaming/openpilot  sunnypilot ──► the comma
+                        pre-*  ─────────────────────────────►   (in SoRadGaming/openpilot,  ──►                        pre-*      ──► branch picker
+                                                                  on its master branch)
+```
+
+The mirror workflow (`.github/workflows/mirror-sunnypilot.yaml` on `SoRadGaming/openpilot` **master**, which is otherwise
+the owner's old openpilot longitudinal fork and must not be written) runs on a best-effort 15-minute schedule. GitHub
+throttles it, and in practice it has run every 3–6 hours. Its rules, all documented at the top of the file:
+
+* **`sunnypilot` moves only for a commit that built.** The jobs `build release` and `unit tests` of this repo's `tests`
+  workflow must have succeeded for that exact commit. A commit with no CI run is held, not passed. `force` on a manual
+  run skips the gate.
+* **Fast-forward only**, and every push is leased. A hand push or rollback on `sunnypilot` is held rather than
+  overwritten; `overwrite` on a manual run replaces it.
+* **`pre-*` branches here are mirrored under the same name, create-only**, so the device's branch picker offers them as
+  rollbacks. `pre-upstream-2026-09` is the fork as it was before the 2026-09 sync.
+* **Upstream syncs change `.github/workflows/`, and GitHub's Actions token may not push that.** The run then goes red and
+  its summary gives the two commands to push it by hand. Alternatively, add a `MIRROR_TOKEN` secret to
+  `SoRadGaming/openpilot` (a fine-grained token for that repo only, with Contents and Workflows read and write), and the
+  mirror retries with it.
+
+After pushing master, start the mirror instead of waiting for the schedule. A manual run waits up to 20 minutes for the CI
+to finish:
+
+```bash
+gh workflow run mirror-sunnypilot.yaml -R SoRadGaming/openpilot
+```
+
+Then check what the car will get:
+
+```bash
+git ls-remote https://github.com/SoRadGaming/openpilot.git sunnypilot
+```
+
+This repo's own CI also runs `static analysis`, which fails on the 22 ruff findings the fork carried in from before the
+sync (card.py, board.py, eps_lkas_flasher.py, eps_lkas_hook.py). The mirror does not wait on that job.
+
+---
+
 ## Where the forks stand (2026-09-27, after the sync)
 
 | | sunnypilot | opendbc |
@@ -812,8 +858,12 @@ First drive:
 ### Step 8: land it
 
 Opendbc `sp-master` should already be pushed from Step 1 (confirm with `git ls-remote origin sp-master`). Fast-forward
-sunnypilot `master` to the merge branch and push it with `GIT_LFS_SKIP_PUSH=1`; the device runs what `master` has.
-Bring `S:/OP/sp-live` up to date from it: its layout changes with the merge.
+sunnypilot `master` to the merge branch and push it with `GIT_LFS_SKIP_PUSH=1`. The car does not see master directly
+([How the car gets updates](#how-the-car-gets-updates)). A sync changes `.github/workflows/`, so expect the mirror to
+hold it and push it to `SoRadGaming/openpilot` `sunnypilot` by hand with the commands from the run summary, unless a
+`MIRROR_TOKEN` is set. Before landing, also push a `pre-<date>` snapshot of the old master to this repo; the mirror
+publishes it as a rollback on the device. Bring `S:/OP/sp-live` up to date from master: its layout changes with the
+merge.
 
 The firmware repo's `tools/bundle_appslot.py` finds `eps_lkas_flasher.py` in either layout (nested first, since
 `862540c`), and `docs/CAN-UPDATE.md` names the nested path, so nothing there needs changing unless upstream moves the

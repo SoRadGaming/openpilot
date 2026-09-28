@@ -5,8 +5,10 @@ which translates openpilot's `0x0E4` onto the car's 9600-baud LKAS serial link.
 Newest first. Routes are sunnypilot routes on `15646e8515eda1a7`.
 
 Two repositories move together: this one and `SoRadGaming/opendbc` (the
-`opendbc_repo` submodule). Both land on **master**, because the comma only runs
-what master has.
+`opendbc_repo` submodule). Both land on **master**. The comma does not install
+from this repo: it runs `SoRadGaming/openpilot`, branch `sunnypilot`, which a
+GitHub Action there mirrors from this repo's master once master's CI build and
+unit tests pass (`docs/fork/README.md`, "How the car gets updates").
 
 The board's own history is in `S:\Software\EPS-LKAS\CHANGELOG.md`. The protocol
 is `docs/SP_GATEWAY_FIRMWARE.md`.
