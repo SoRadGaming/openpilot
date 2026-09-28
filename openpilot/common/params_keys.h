@@ -294,11 +294,15 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"MapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
     {"NextMapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"Offroad_OSMUpdateRequired", {CLEAR_ON_MANAGER_START, JSON}},
+    // FORK(SPEED-LIMIT): mapd_manager re-requests the OSM tiles once per boot when offroad, unmetered and a week old.
+    {"OsmAutoUpdateWeekly", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"OsmDbUpdatesCheck", {CLEAR_ON_MANAGER_START, BOOL}},  // mapd database update happens with device ON, reset on boot
     {"OSMDownloadBounds", {PERSISTENT, STRING}},
     {"OsmDownloadedDate", {PERSISTENT, STRING, "0.0"}},
     {"OSMDownloadLocations", {PERSISTENT, JSON}},
     {"OSMDownloadProgress", {CLEAR_ON_MANAGER_START, JSON}},
+    // FORK(SPEED-LIMIT): OsmDownloadedDate of the last download mapd finished; the weekly refresh measures age from it.
+    {"OsmLastCompleteDate", {PERSISTENT, STRING}},
     {"OsmLocal", {PERSISTENT, BOOL}},
     {"OsmLocationName", {PERSISTENT, STRING}},
     {"OsmLocationTitle", {PERSISTENT, STRING}},
@@ -310,6 +314,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"RoadNameToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
 
     // Speed Limit
+    // FORK(SPEED-LIMIT): hardening for untagged OSM roads and tunnels - SLA prompts only for a real new map limit,
+    // a carried map limit is dropped after 10 s of 'no limit' with good GPS, the map limit is frozen while GPS is lost.
+    {"SpeedLimitMapStrict", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"SpeedLimitMode", {PERSISTENT | BACKUP, INT, "1"}},
     {"SpeedLimitOffsetType", {PERSISTENT | BACKUP, INT, "0"}},
     {"SpeedLimitPolicy", {PERSISTENT | BACKUP, INT, "3"}},

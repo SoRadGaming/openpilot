@@ -88,6 +88,10 @@ class SpeedLimitAssist:
     self.state = SpeedLimitAssistState.disabled
     self._state_prev = SpeedLimitAssistState.disabled
     self.pcm_op_long = CP.openpilotLongitudinalControl and CP.pcmCruise
+    # FORK(SPEED-LIMIT): SpeedLimitMapStrict - prompt only for a real new limit (off = upstream behavior).
+    self.map_strict = self.params.get_bool("SpeedLimitMapStrict")
+    self._last_nonzero_limit = 0.
+    self._map_limit_frozen = False
 
     self._plus_hold = 0.
     self._minus_hold = 0.
@@ -106,6 +110,9 @@ class SpeedLimitAssist:
 
   @property
   def speed_limit_changed(self) -> bool:
+    # FORK(SPEED-LIMIT): a drop to 0 (untagged road, lost way) is not a new limit, nor is the same one after a junction gap.
+    if self.map_strict:
+      return self._speed_limit > 0. and round(self._speed_limit * CV.MS_TO_KPH) != round(self._last_nonzero_limit * CV.MS_TO_KPH)
     return self._has_speed_limit and bool(self._speed_limit != self.speed_limit_prev)
 
   @property
@@ -145,6 +152,7 @@ class SpeedLimitAssist:
       self.is_metric = self.params.get_bool("IsMetric")
       set_speed_limit_assist_availability(self.CP, self.CP_SP, self.params)
       self.enabled = self.params.get("SpeedLimitMode", return_default=True) == Mode.assist
+      self.map_strict = self.params.get_bool("SpeedLimitMapStrict")  # FORK(SPEED-LIMIT)
 
   def update_buttons(self, release_toggle: int) -> None:
     released = self._release_toggle_prev ^ release_toggle
@@ -260,6 +268,9 @@ class SpeedLimitAssist:
           elif self.speed_limit_changed and self.apply_confirm_speed_threshold:
             self.state = SpeedLimitAssistState.preActive
             self.pre_active_timer = int(PRE_ACTIVE_GUARD_PERIOD[self.pcm_op_long] / DT_MDL)
+          # FORK(SPEED-LIMIT): strict - the resolver dropped the carried limit, so there is nothing left to adapt to.
+          elif self.map_strict and not self._has_speed_limit:
+            self.state = SpeedLimitAssistState.active
           elif self.v_offset >= LIMIT_SPEED_OFFSET_TH:
             self.state = SpeedLimitAssistState.active
 
@@ -293,11 +304,14 @@ class SpeedLimitAssist:
         elif self.long_engaged_timer <= 0:
           if self.target_set_speed_confirmed:
             self._update_confirmed_state()
-          elif self._has_speed_limit:
+          # FORK(SPEED-LIMIT): strict - engaging on an untagged road with only a carried limit is not a prompt.
+          elif self._has_speed_limit and (not self.map_strict or self._speed_limit > 0.):
             self.state = SpeedLimitAssistState.preActive
             self.pre_active_timer = int(PRE_ACTIVE_GUARD_PERIOD[self.pcm_op_long] / DT_MDL)
           else:
             self.state = SpeedLimitAssistState.pending
+            if self.map_strict:
+              self._last_nonzero_limit = 0.  # FORK(SPEED-LIMIT): the first real limit after engaging still prompts
 
     enabled = self.state in ENABLED_STATES
     active = self.state in ACTIVE_STATES
@@ -349,11 +363,16 @@ class SpeedLimitAssist:
         elif self.long_engaged_timer <= 0:
           if self._update_non_pcm_long_confirmed_state():
             self.state = SpeedLimitAssistState.active
-          elif self._has_speed_limit:
+          # FORK(SPEED-LIMIT): strict - engaging with only a carried limit, or a tunnel's frozen one, is not a prompt.
+          elif self._has_speed_limit and (not self.map_strict or (self._speed_limit > 0. and not self._map_limit_frozen)):
             self.state = SpeedLimitAssistState.preActive
             self.pre_active_timer = int(PRE_ACTIVE_GUARD_PERIOD[self.pcm_op_long] / DT_MDL)
           else:
             self.state = SpeedLimitAssistState.inactive
+            # FORK(SPEED-LIMIT): the first real limit after engaging still prompts. Not in a tunnel: there the frozen
+            # limit must stay the reference, or it would read as new and prompt the moment GPS returns.
+            if self.map_strict and not self._map_limit_frozen:
+              self._last_nonzero_limit = 0.
 
     enabled = self.state in ENABLED_STATES
     active = self.state in ACTIVE_STATES
@@ -371,6 +390,11 @@ class SpeedLimitAssist:
       if self._state_prev not in ACTIVE_STATES:
         self.update_active_event(events_sp)
 
+      # FORK(SPEED-LIMIT): strict - the same limit coming back after a junction gap is not a new one, so no chime.
+      elif self.map_strict:
+        if self.speed_limit_changed:
+          self.update_active_event(events_sp)
+
       # only notify if we acquire a valid speed limit
       # do not check has_speed_limit here
       elif self._speed_limit != self.speed_limit_prev:
@@ -380,8 +404,10 @@ class SpeedLimitAssist:
           self.update_active_event(events_sp)
 
   def update(self, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float, v_cruise_cluster: float, speed_limit: float,
-             speed_limit_final_last: float, has_speed_limit: bool, distance: float, events_sp: EventsSP) -> None:
+             speed_limit_final_last: float, has_speed_limit: bool, distance: float, events_sp: EventsSP,
+             map_limit_frozen: bool = False) -> None:  # FORK(SPEED-LIMIT): SpeedLimitResolver.map_limit_frozen
     self.long_enabled = long_enabled
+    self._map_limit_frozen = map_limit_frozen  # FORK(SPEED-LIMIT)
     self.v_ego = v_ego
     self.a_ego = a_ego
 
@@ -402,6 +428,11 @@ class SpeedLimitAssist:
     self.update_events(events_sp)
 
     # Update change tracking variables
+    # FORK(SPEED-LIMIT): after the state machine and events, so a change is visible for exactly one frame.
+    if self._speed_limit > 0.:
+      self._last_nonzero_limit = self._speed_limit
+    elif not self._has_speed_limit:
+      self._last_nonzero_limit = 0.  # the resolver dropped the carried limit: the next tagged road prompts, same number or not
     self.speed_limit_prev = self._speed_limit
     self.v_cruise_cluster_prev = self.v_cruise_cluster
     self.long_enabled_prev = self.long_enabled

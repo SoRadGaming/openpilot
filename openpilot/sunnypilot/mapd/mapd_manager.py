@@ -20,6 +20,7 @@ from openpilot.sunnypilot.mapd.live_map_data.osm_map_data import OsmMapData
 from openpilot.common.hardware.hw import Paths
 from openpilot.sunnypilot.mapd import MAPD_PATH
 from openpilot.sunnypilot.mapd.mapd_installer import VERSION, update_installed_version
+from openpilot.sunnypilot.mapd.osm_auto_update import OsmAutoUpdater  # FORK(SPEED-LIMIT): weekly OSM refresh
 
 # PFEIFER - MAPD {{
 params = Params()
@@ -64,6 +65,7 @@ def clear_downloaded_maps() -> None:
   for param in ("OsmDownloadedDate", "OsmLocal", "OsmLocationName", "OsmLocationTitle",
                 "OsmStateName", "OsmStateTitle"):
     params.remove(param)
+  params.remove("OsmLastCompleteDate")  # FORK(SPEED-LIMIT): osm_auto_update.record_completion() writes it
 
   cloudlog.info("mapd: downloaded maps cleared")
 
@@ -131,6 +133,7 @@ def main_thread():
 
   rk = Ratekeeper(1, print_delay_threshold=None)
   live_map_sp = OsmMapData()
+  auto_updater = OsmAutoUpdater(params, mem_params)  # FORK(SPEED-LIMIT): gated by OsmAutoUpdateWeekly, once per boot
 
   # Create folder needed for OSM
   try:
@@ -148,6 +151,7 @@ def main_thread():
       clear_downloaded_maps()
       params.remove("Mapd_ClearCache")
 
+    auto_updater.update()  # FORK(SPEED-LIMIT): may set OsmDbUpdatesCheck; must run before update_osm_db()
     update_osm_db()
     live_map_sp.tick()
     rk.keep_time()

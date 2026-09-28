@@ -10,6 +10,7 @@ import time
 from openpilot.common.parameterized import parameterized
 
 from openpilot.cereal import custom
+from openpilot.common.params import Params  # FORK(SPEED-LIMIT)
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import LIMIT_MAX_MAP_DATA_AGE
 
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver, ALL_SOURCES
@@ -74,6 +75,11 @@ def resolver_class():
 
 
 class TestSpeedLimitResolverValidation(OpenpilotTestCase):
+  map_strict = True  # FORK(SPEED-LIMIT): written explicitly; nothing writes the params_keys.h default in a test prefix
+
+  # FORK(SPEED-LIMIT)
+  def setup_method(self):
+    Params().put_bool("SpeedLimitMapStrict", self.map_strict, block=True)
 
   @parameterized.expand(list(Policy), names=["policy"])
   def test_initial_state(self, resolver_class, policy):
@@ -145,3 +151,12 @@ class TestSpeedLimitResolverValidation(OpenpilotTestCase):
     resolver._get_from_map_data(sm_mock)
     assert resolver.limit_solutions[SpeedLimitSource.map] == 0.
     assert resolver.distance_solutions[SpeedLimitSource.map] == 0.
+
+
+# FORK(SPEED-LIMIT): every test above again with SpeedLimitMapStrict off (upstream behavior; the parent runs it on).
+class TestSpeedLimitResolverValidationMapStrictOff(TestSpeedLimitResolverValidation):
+  map_strict = False
+
+  def test_map_strict_follows_the_class(self, resolver_class):
+    assert resolver_class().map_strict is self.map_strict
+    assert TestSpeedLimitResolverValidation.map_strict is True

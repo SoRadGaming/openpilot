@@ -48,6 +48,7 @@ DEFAULT_CAR = TOYOTA.TOYOTA_RAV4_TSS2
 
 class TestSpeedLimitAssist(OpenpilotTestCase):
   car_name = DEFAULT_CAR
+  map_strict = True  # FORK(SPEED-LIMIT): written explicitly; nothing writes the params_keys.h default in a test prefix
 
   def setup_method(self):
     self.params = Params()
@@ -77,6 +78,7 @@ class TestSpeedLimitAssist(OpenpilotTestCase):
     self.params.put_bool("IsMetric", False, block=True)
     self.params.put("SpeedLimitOffsetType", 0, block=True)
     self.params.put("SpeedLimitValueOffset", 0, block=True)
+    self.params.put_bool("SpeedLimitMapStrict", self.map_strict, block=True)  # FORK(SPEED-LIMIT)
 
   def reset_state(self):
     self.sla.state = SpeedLimitAssistState.disabled
@@ -276,6 +278,15 @@ class TestSpeedLimitAssist(OpenpilotTestCase):
         assert self.sla.state in [SpeedLimitAssistState.preActive, SpeedLimitAssistState.active]
       elif initial_state in ACTIVE_STATES:
         assert self.sla.state in ACTIVE_STATES
+
+
+# FORK(SPEED-LIMIT): every test above again with SpeedLimitMapStrict off (upstream behavior; the parent runs it on).
+class TestSpeedLimitAssistMapStrictOff(TestSpeedLimitAssist):
+  map_strict = False
+
+  def test_map_strict_follows_the_class(self):
+    assert self.sla.map_strict is self.map_strict
+    assert TestSpeedLimitAssist.map_strict is True
 
 
 class TestButtonStateTrackerSLAIntegration(OpenpilotTestCase):

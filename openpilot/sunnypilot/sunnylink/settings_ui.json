@@ -906,6 +906,12 @@
                   ]
                 },
                 {
+                  "key": "SpeedLimitMapStrict",
+                  "widget": "toggle",
+                  "title": "Strict Map Speed Limits",
+                  "description": "Prompt only for a new speed limit, not when the limit disappears or the same one returns. On a road the map has no limit for, forget the previous road's map limit after 10 seconds instead of keeping it for the rest of the drive. While GPS is lost (tunnels), keep the limit you entered with instead of the streets overhead, until the map has found the road again, and do not prompt for it when engaging."
+                },
+                {
                   "key": "SpeedLimitOffsetType",
                   "widget": "multiple_button",
                   "title": "Speed Limit Offset Type",
