@@ -1,145 +1,538 @@
 name: mirror sunnypilot
 
 # Lives in SoRadGaming/openpilot, on the DEFAULT branch (master).
-# Replaces update-sunnypilot.ps1 / .bat.
 #
-# Watches SoRadGaming/sunnypilot@master and republishes it here as the
-# `sunnypilot` branch, so the self-hosted installer URL always serves the
-# latest code:
+# Republishes SoRadGaming/sunnypilot so the comma can install and update from
+# this repo (the installer and the updater only speak github.com/<user>/openpilot):
 #
-#     install.soradgaming.com/fork/SoRadGaming/sunnypilot
+#     SoRadGaming/sunnypilot@master   ->  this repo's `sunnypilot` branch
+#     SoRadGaming/sunnypilot@pre-*    ->  the same name here (rollback snapshots,
+#                                          so the device's branch picker offers them)
 #
-# NO CREDENTIALS. Reading sunnypilot needs no auth (it is public), and the push
-# is to THIS repo, so the automatic GITHUB_TOKEN covers it. Nothing to create,
-# nothing to rotate, nothing to expire.
+#     install URL:  install.soradgaming.com/fork/SoRadGaming/sunnypilot
 #
-# Only LFS POINTERS move. The binaries live on sunnypilot's public GitLab LFS
-# (.lfsconfig -> gitlab.com/sunnypilot/public/sunnypilot-new-lfs), and .lfsconfig
-# travels with the branch content, so the comma device fetches them from GitLab
-# at install time regardless of which GitHub repo served the branch. Nothing here
-# ever talks to GitLab: no SSH keys, and none of the ~421 MB of binaries moves.
+# WANT IT NOW, NOT AT THE NEXT CRON TICK? GitHub throttles scheduled runs on quiet
+# repos - in practice this ran every 3-6 hours, not every 15 minutes. Kick it by hand:
 #
-# WHY IT IS SAFE ON master: the force-push only ever touches refs/heads/sunnypilot.
-# This repo's master (where this file lives) is a separate branch and is never
-# written by this workflow. The target branch is a pure mirror, never hand-edited,
-# which is why --force is correct and why there is never anything to merge.
+#     gh workflow run mirror-sunnypilot.yaml -R SoRadGaming/openpilot
+#
+# Doing that straight after pushing master is fine: a MANUAL run waits up to
+# CI_WAIT_MINUTES for sunnypilot's CI to finish. A scheduled run looks once and, if
+# CI is still going, leaves master for a later tick.
+#
+# THE CAR ONLY GETS A COMMIT THAT BUILT AND PASSED UNIT TESTS. A push to sunnypilot
+# master runs that repo's own CI ("tests" workflow). Before `sunnypilot` moves here,
+# the jobs named in REQUIRED_JOBS must have succeeded for that exact commit, in a
+# run of that workflow on master (a push run, or one started there by hand - never
+# a pull_request run, which tests a merge result):
+#   * still running -> master waits for a later run (not an error);
+#   * any one failed, or missing -> master is HELD: the car keeps what it has;
+#   * no CI run for the commit -> waits CI_START_GRACE_MINUTES after the last push
+#     to sunnypilot (GitHub creates runs a few seconds late), then HELD. Missing
+#     evidence never counts as a pass. Usual causes: [skip ci] in the message,
+#     Actions turned off on sunnypilot, or an upstream sync changed tests.yaml's
+#     trigger. Start the tests by hand (gh workflow run tests.yaml -R
+#     SoRadGaming/sunnypilot --ref master) and the next run judges that;
+#   * required jobs unfinished CI_STUCK_HOURS after the run started -> HELD (stuck).
+# `force` on a manual run skips this gate.
+#
+# ONLY FAST-FORWARDS. `sunnypilot` here moves only when the commit it holds now is in
+# the history of the new master (upstream syncs are merges, so they qualify). If a
+# different commit was pushed here by hand - a rollback, say - or master was rewound,
+# master is HELD rather than overwritten; a manual run with `overwrite` replaces it.
+# Snapshots are create-only: a device may be sitting on one, so a pre-* that already
+# exists here at another commit is HELD the same way. They are not CI-gated (they
+# are cut from master by hand), and one deleted in sunnypilot is left here on
+# purpose; delete it by hand once no device runs it.
+#
+# HELD MEANS A RED RUN, with the reason in the run summary. Snapshots still move when
+# master is held - that is when a rollback matters most. The same hold is reported
+# red once: a later SCHEDULED run that finds exactly the same holds goes green with
+# a warning, so a hold mails once rather than every tick (manual runs always go red).
+#
+# PAUSE:   gh workflow disable mirror-sunnypilot.yaml -R SoRadGaming/openpilot
+# RESUME:  gh workflow enable  mirror-sunnypilot.yaml -R SoRadGaming/openpilot
+# (GitHub also disables schedules in public repos after 60 days without activity.)
+#
+# CREDENTIALS: none needed for ordinary updates. The automatic GITHUB_TOKEN can
+# push here, reading sunnypilot needs no auth (public), and only LFS POINTERS move
+# (.lfsconfig points the device at sunnypilot's public GitLab LFS, so none of the
+# ~421 MB of binaries passes through this job). GITHUB_TOKEN pushes start no
+# workflows in this repo.
+#   ONE EXCEPTION: GitHub refuses to let GITHUB_TOKEN push commits that add or
+#   change files under .github/workflows/ - and every upstream sync does (the
+#   2026-09-27 sync changed 22). That ref is then HELD, and the run summary gives
+#   the two commands to push it by hand from inside any git clone, in any shell
+#   (bash or PowerShell). To make it automatic, add a repository secret
+#   MIRROR_TOKEN: a fine-grained personal access token limited to
+#   SoRadGaming/openpilot with "Contents: read and write" and
+#   "Workflows: read and write". It is used ONLY to retry a ref that GitHub refused
+#   to GITHUB_TOKEN, because a push made with a personal token DOES start the
+#   push-triggered workflows defined in the pushed commit, here, where they can read
+#   this repo's secrets. Old snapshot trees have such workflows: the hand push of
+#   pre-upstream-2026-09 started "Debug Discourse Posting" here (run 36442048654).
+#
+# WHY WRITING HERE IS SAFE: only `sunnypilot` and pre-* names are ever written, never
+# this repo's default branch (checked every run), and every push carries a lease on
+# what Plan saw here, so a hand push made while this job runs is refused, not
+# overwritten. Worth adding once, as a repo setting: a ruleset on master that blocks
+# force pushes and deletion.
 
 on:
   schedule:
-    # every 15 min. GitHub queues scheduled runs and often fires them late, so
-    # treat this as "within ~15-30 min", not exact. Use the Run workflow button
-    # when you want it now.
-    - cron: '*/15 * * * *'
+    # Off the top of the hour on purpose: GitHub delays and drops scheduled runs
+    # most at :00. Still best-effort - see "WANT IT NOW" above.
+    - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
     inputs:
-      source_branch:
-        description: "branch of SoRadGaming/sunnypilot to mirror"
-        required: false
-        default: master
+      force:
+        description: "mirror master even if its CI has not passed (skips the CI gate)"
+        type: boolean
+        default: false
+      overwrite:
+        description: "replace `sunnypilot` or a pre-* here even when it is not a fast-forward (a hand push, a rewound master, a re-cut snapshot)"
+        type: boolean
+        default: false
+      dry_run:
+        description: "only report what would be mirrored"
+        type: boolean
+        default: false
 
 permissions:
-  contents: write        # push refs/heads/sunnypilot to this repo
+  contents: write        # push the mirror branches to this repo
 
 concurrency:
-  group: mirror-sunnypilot
-  cancel-in-progress: true
+  # One queue per trigger. GitHub keeps only one PENDING run per group and a newer one
+  # cancels it, so with a single group the next cron tick would silently replace a
+  # queued manual force/dry_run run. Two runs overlapping is harmless: every push is
+  # leased on what that run's Plan saw.
+  group: mirror-sunnypilot-${{ github.event_name }}
+  cancel-in-progress: false   # never kill a push half way; queue behind it
 
 env:
-  SOURCE_URL: https://github.com/SoRadGaming/sunnypilot.git
-  TARGET_BRANCH: sunnypilot
+  SOURCE_REPO: SoRadGaming/sunnypilot
+  MAIN_SOURCE: master
+  MAIN_TARGET: sunnypilot
+  SNAPSHOT_GLOB: 'pre-*'
+  CI_WORKFLOW: tests.yaml
+  # What "built" means. 'process replay' is left out on purpose: it diffs controls
+  # output against reference logs, so a deliberate controls change fails it and
+  # `force` would become a habit. Add it here if that stops being a concern.
+  REQUIRED_JOBS: 'build release,unit tests'
+  CI_WAIT_MINUTES: 20          # a manual run polls this long for CI to finish
+  CI_START_GRACE_MINUTES: 30   # "no CI run" this soon after a push = not created yet
+  CI_STUCK_HOURS: 3            # required jobs unfinished this long = stuck
 
-  # Pointers only. SKIP_PUSH stops the pre-push hook trying to upload binaries;
-  # SKIP_SMUDGE is belt-and-braces (we never check out a work tree anyway).
+  # Pointers only. SKIP_PUSH stops a pre-push hook trying to upload binaries;
+  # SKIP_SMUDGE is belt-and-braces (there is never a work tree).
   GIT_LFS_SKIP_SMUDGE: 1
   GIT_LFS_SKIP_PUSH: 1
 
 jobs:
   mirror:
-    name: republish sunnypilot@master as this repo's sunnypilot branch
+    name: republish sunnypilot master and pre-* snapshots
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45          # CI_WAIT_MINUTES of polling plus the fetch
 
     steps:
-      # Two ls-remote calls, ~1 second, no clone. On a 15-minute cron the vast
-      # majority of runs stop here, so we only pay the ~99 MB fetch when there
-      # is genuinely something new.
-      - name: Check whether the mirror is already current
-        id: check
+      # ls-remote only, no clone: most ticks stop here.
+      - name: Plan
+        id: plan
+        env:
+          OVERWRITE: ${{ github.event.inputs.overwrite || 'false' }}
         run: |
           set -euo pipefail
-
-          SOURCE_BRANCH="${{ github.event.inputs.source_branch || 'master' }}"
+          SOURCE_URL="https://github.com/${SOURCE_REPO}.git"
           TARGET_URL="https://github.com/${GITHUB_REPOSITORY}.git"
 
-          SRC="$(git ls-remote "$SOURCE_URL" "refs/heads/${SOURCE_BRANCH}" | cut -f1)"
-          if [ -z "$SRC" ]; then
-            echo "::error::branch '${SOURCE_BRANCH}' not found in ${SOURCE_URL}"
-            exit 1
+          git ls-remote --heads "$SOURCE_URL" > src.txt
+          git ls-remote --heads "$TARGET_URL" > dst.txt
+          # This repo's own branch is the one thing that must never be written, whatever
+          # MAIN_TARGET and SNAPSHOT_GLOB say.
+          default="$(git ls-remote --symref "$TARGET_URL" HEAD | awk '$1 == "ref:" { sub("^refs/heads/", "", $2); print $2 }')"
+          [ -n "$default" ] || { echo "::error::cannot tell ${GITHUB_REPOSITORY}'s default branch; writing nothing"; exit 1; }
+
+          sha_of() { awk -v r="refs/heads/$2" '$2 == r { print $1 }' "$1"; }
+
+          # plan.txt  every branch that differs: <source> <target> <source sha> <target sha or ->
+          # pairs.txt the ones still to push (later steps remove what they hold back)
+          # held.txt  what is held back, tab separated: target, sha, wait|fail, signature, why.
+          #           The signature names the hold for "Held back?" below: same signature,
+          #           same hold; 'transient' ones are always reported.
+          : > plan.txt; : > pairs.txt; : > held.txt
+          add() {
+            local src="$1" tgt="$2" s d
+            case "$tgt" in "$default"|master|main)
+              echo "::error::refusing to write '${tgt}' - it is (or looks like) this repo's own branch. Check MAIN_TARGET / SNAPSHOT_GLOB."; exit 1 ;;
+            esac
+            s="$(sha_of src.txt "$src")"
+            [ -n "$s" ] || { echo "::error::${SOURCE_REPO} has no branch '$src'"; exit 1; }
+            d="$(sha_of dst.txt "$tgt")"
+            [ "$s" != "$d" ] || return 0
+            echo "$src $tgt $s ${d:--}" >> plan.txt
+            if [ "$src" != "$MAIN_SOURCE" ] && [ -n "$d" ] && [ "$OVERWRITE" != "true" ]; then
+              echo "snapshot ${tgt} is here at ${d} but ${SOURCE_REPO} has it at ${s}: held (create-only)"
+              printf '%s\t%s\tfail\tsnapshot-moved %s %s\t%s\n' "$tgt" "$s" "$s" "$d" \
+                "already here at ${d:0:9}; snapshots are create-only so a device on one never changes under it. A manual run with overwrite replaces it." >> held.txt
+              return 0
+            fi
+            echo "$src $tgt $s ${d:--}" >> pairs.txt
+          }
+
+          add "$MAIN_SOURCE" "$MAIN_TARGET"
+          # snapshots: every source branch matching SNAPSHOT_GLOB, same name here
+          while read -r _ ref; do
+            b="${ref#refs/heads/}"
+            [ "$b" != "$MAIN_TARGET" ] || continue     # would collide with the main mirror
+            # shellcheck disable=SC2053
+            if [[ "$b" == $SNAPSHOT_GLOB ]]; then add "$b" "$b"; fi
+          done < src.txt
+
+          echo "planned:"; cat pairs.txt
+          if [ -s pairs.txt ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; else echo "changed=false" >> "$GITHUB_OUTPUT"; fi
+          echo "main_sha=$(sha_of src.txt "$MAIN_SOURCE")" >> "$GITHUB_OUTPUT"
+
+      # Only when master itself is about to move. A verdict never fails this step: a
+      # held master must not stop the snapshots. The red run comes from "Report".
+      - name: CI gate for master
+        id: gate
+        if: steps.plan.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ github.event.inputs.force || 'false' }}
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ steps.plan.outputs.main_sha }}
+        run: |
+          set -euo pipefail
+          # Public data. This repo's token first (higher rate limit); anonymously if GitHub
+          # will not take it for another repo. Messages go to stderr - stdout is the JSON.
+          api() {
+            local url="https://api.github.com/$1"
+            if curl -fsSL -H "Accept: application/vnd.github+json" -H "Authorization: Bearer ${GH_TOKEN}" "$url" 2> api.err; then return 0; fi
+            echo "$1 with GITHUB_TOKEN: $(tail -n1 api.err); asking anonymously" >&2
+            curl -fsSL -H "Accept: application/vnd.github+json" "$url"
+          }
+          age_of() { local t; t="$(date -u -d "$1" +%s)" || return 1; echo $(( $(date -u +%s) - t )); }   # seconds since an ISO time
+
+          # judge: sets verdict (pass|wait|fail), sig and why from the API. Never exits:
+          # anything it cannot find out is a 'transient' fail.
+          judge() {
+            local runs_json sel attempt started jobs_json j line status concl age repo_json pushed
+            local fails=() waits=()
+            sig=-; why=; ci_url=
+            # Newest run first. head_sha is checked again here, not only trusted to the
+            # query: a filter GitHub ignored would otherwise judge some other commit.
+            if ! runs_json="$(api "repos/${SOURCE_REPO}/actions/workflows/${CI_WORKFLOW}/runs?head_sha=${SHA}&per_page=30")" \
+               || ! sel="$(jq -r --arg sha "$SHA" --arg b "$MAIN_SOURCE" 'first(.workflow_runs[] | select(.head_sha == $sha and .head_branch == $b and (.event == "push" or .event == "workflow_dispatch"))) | [.id, .run_attempt, (.run_started_at // .created_at), .html_url] | @tsv' <<< "$runs_json")"; then
+              verdict=fail; sig=transient; why="could not read ${SOURCE_REPO}'s CI runs from the GitHub API"; return 0
+            fi
+            IFS=$'\t' read -r run attempt started ci_url <<< "$sel" || true
+            if [ -z "$run" ]; then
+              if ! repo_json="$(api "repos/${SOURCE_REPO}")" || ! pushed="$(jq -r '.pushed_at' <<< "$repo_json")" \
+                 || ! age="$(age_of "$pushed")"; then
+                verdict=fail; sig=transient; why="no ${CI_WORKFLOW} run found, and could not read when ${SOURCE_REPO} was last pushed"; return 0
+              fi
+              if [ "$age" -lt $(( CI_START_GRACE_MINUTES * 60 )) ]; then
+                verdict=wait; why="no ${CI_WORKFLOW} run yet; ${SOURCE_REPO} was pushed $(( age / 60 )) min ago"
+              else
+                verdict=fail; sig="no-ci-run ${SHA}"
+                why="no ${CI_WORKFLOW} run on ${MAIN_SOURCE} for this commit, $(( age / 60 )) min after the last push ([skip ci]? Actions off?). Start it: gh workflow run ${CI_WORKFLOW} -R ${SOURCE_REPO} --ref ${MAIN_SOURCE} - or mirror with force."
+              fi
+              return 0
+            fi
+            if ! jobs_json="$(api "repos/${SOURCE_REPO}/actions/runs/${run}/jobs?per_page=100")" \
+               || ! jq -r '.jobs[] | [.name, .status, (.conclusion // "")] | @tsv' <<< "$jobs_json" > jobs.tsv; then
+              verdict=fail; sig=transient; why="could not read the jobs of ${ci_url}"; return 0
+            fi
+            echo "CI run ${ci_url} (attempt ${attempt}) for ${SHA}:"; cat jobs.tsv
+            IFS=',' read -ra NEED <<< "$REQUIRED_JOBS"
+            for j in "${NEED[@]}"; do
+              line="$(awk -F'\t' -v n="$j" '$1 == n' jobs.tsv | head -1)"
+              if [ -z "$line" ]; then fails+=("required job '$j' is not in the run (renamed upstream? update REQUIRED_JOBS)"); continue; fi
+              status="$(cut -f2 <<< "$line")"; concl="$(cut -f3 <<< "$line")"
+              if [ "$status" != "completed" ]; then waits+=("'$j' is $status")
+              elif [ "$concl" != "success" ]; then fails+=("'$j' finished '$concl'"); fi
+            done
+            if [ ${#fails[@]} -gt 0 ]; then
+              verdict=fail; sig="ci-failed ${SHA} ${run}-${attempt}"; why="$(printf '%s; ' "${fails[@]}")${ci_url}"
+            elif [ ${#waits[@]} -gt 0 ]; then
+              if ! age="$(age_of "$started")"; then age=0; fi
+              if [ "$age" -ge $(( CI_STUCK_HOURS * 3600 )) ]; then
+                verdict=fail; sig="ci-stuck ${SHA} ${run}-${attempt}"
+                why="$(printf '%s; ' "${waits[@]}")unfinished $(( age / 3600 )) h after ${ci_url} started. Stuck? Re-run it, or mirror with force."
+              else
+                verdict=wait; why="$(printf '%s; ' "${waits[@]}")${ci_url}"
+              fi
+            else
+              verdict=pass; why="${ci_url}"
+            fi
+          }
+
+          verdict=none; sig=-; why=; ci_url=
+          if ! grep -q "^${MAIN_SOURCE} ${MAIN_TARGET} " pairs.txt; then
+            echo "master is not moving this run; nothing to gate"
+          elif [ "$FORCE" = "true" ]; then
+            verdict=forced
+            echo "::warning::force: skipping the CI gate for ${SHA}"
+          else
+            deadline=$(( $(date -u +%s) + CI_WAIT_MINUTES * 60 ))
+            while :; do
+              judge
+              # Only a manual run waits here: someone kicked it and is watching.
+              [ "$verdict" = wait ] && [ "$EVENT" = workflow_dispatch ] && [ "$(date -u +%s)" -lt "$deadline" ] || break
+              echo "${why} - looking again in 60 s"
+              sleep 60
+            done
+            case "$verdict" in
+              pass) echo "CI passed for ${SHA}: ${why}" ;;
+              wait) echo "::notice::master (${SHA:0:9}) waits for CI: ${why}. A later run mirrors it." ;;
+              fail) echo "master (${SHA:0:9}) held: ${why}" ;;
+            esac
+            if [ "$verdict" = wait ] || [ "$verdict" = fail ]; then
+              printf '%s\t%s\t%s\t%s\t%s\n' "$MAIN_TARGET" "$SHA" "$verdict" "$sig" "$why" >> held.txt
+              grep -v "^${MAIN_SOURCE} ${MAIN_TARGET} " pairs.txt > p2.txt || true; mv p2.txt pairs.txt
+            fi
           fi
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+          echo "ci_url=$ci_url" >> "$GITHUB_OUTPUT"
 
-          # may legitimately be empty the very first time
-          DST="$(git ls-remote "$TARGET_URL" "refs/heads/${TARGET_BRANCH}" | cut -f1 || true)"
-
-          echo "source ${SOURCE_BRANCH} = $SRC"
-          echo "target ${TARGET_BRANCH} = ${DST:-<does not exist yet>}"
-
-          {
-            echo "source_branch=$SOURCE_BRANCH"
-            echo "src=$SRC"
-            echo "dst=$DST"
-            if [ "$SRC" = "$DST" ]; then echo "changed=false"; else echo "changed=true"; fi
-          } >> "$GITHUB_OUTPUT"
-
+      # Runs even when the gate step itself broke, so snapshots still move; master then
+      # goes only on an explicit pass (see the first block).
       - name: Fetch and republish
-        if: steps.check.outputs.changed == 'true'
+        id: publish
+        if: ${{ !cancelled() && steps.plan.outputs.changed == 'true' }}
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          OVERWRITE: ${{ github.event.inputs.overwrite || 'false' }}
+          VERDICT: ${{ steps.gate.outputs.verdict }}
+          GITHUB_TOKEN: ${{ github.token }}
+          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
         run: |
           set -euo pipefail
-
-          SRC="${{ steps.check.outputs.src }}"
-          SOURCE_BRANCH="${{ steps.check.outputs.source_branch }}"
+          SOURCE_URL="https://github.com/${SOURCE_REPO}.git"
           TARGET_URL="https://github.com/${GITHUB_REPOSITORY}.git"
+          WORK="$PWD"
+          : > results.txt     # tab separated: target, sha, what happened
+          hold() {            # hold <target> <sha> <signature> <why>
+            printf '%s\t%s\tfail\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$WORK/held.txt"
+            echo "${1} held: $4"
+          }
 
-          # Bare-ish scratch repo: no work tree, so LFS smudge never runs and no
-          # binary is ever materialised.
+          # Master goes only on the gate's word. If the gate step broke before deciding,
+          # master is still listed here: take it out rather than push it ungated.
+          if grep -q "^${MAIN_SOURCE} ${MAIN_TARGET} " pairs.txt && [ "$VERDICT" != pass ] && [ "$VERDICT" != forced ]; then
+            hold "$MAIN_TARGET" "$(awk -v s="$MAIN_SOURCE" '$1 == s { print $3 }' pairs.txt)" transient \
+              "the CI gate did not decide (its step failed - see its log)"
+            grep -v "^${MAIN_SOURCE} ${MAIN_TARGET} " pairs.txt > p2.txt || true; mv p2.txt pairs.txt
+          fi
+          if [ ! -s pairs.txt ]; then echo "nothing to push this run"; exit 0; fi
+          mapfile -t PAIRS < pairs.txt
+
+          # No work tree, so LFS smudge never runs and no binary is materialised.
           git init -q --bare mirror.git
           cd mirror.git
 
-          echo "==> fetching ${SOURCE_BRANCH} from sunnypilot (pointers only)"
-          git fetch --no-tags --quiet "$SOURCE_URL" "refs/heads/${SOURCE_BRANCH}:refs/heads/${TARGET_BRANCH}"
+          # Fetch exactly the commits Plan saw and the gate judged, by SHA (GitHub serves
+          # any commit reachable from a branch), not the branch tips: anything pushed since
+          # has not been judged and waits for the next run.
+          fetchspecs=()
+          for p in "${PAIRS[@]}"; do read -r src tgt sha old <<< "$p"; fetchspecs+=("${sha}:refs/heads/${tgt}"); done
+          echo "==> fetching ${#fetchspecs[@]} commit(s) from ${SOURCE_REPO} (pointers only)"
+          git fetch --no-tags --quiet "$SOURCE_URL" "${fetchspecs[@]}"
 
-          # Send the token as a header rather than in the URL, and via `git -c`
-          # so it is never written into config. Actions masks the raw secret but
-          # not its base64, so mask that too.
-          AUTH="$(printf 'x-access-token:%s' "${{ github.token }}" | base64 -w0)"
-          echo "::add-mask::$AUTH"
+          # Only fast-forwards (see the top of this file). This fresh repo holds the new
+          # commits' whole history, so a commit here that it lacks is not an ancestor.
+          # (Snapshots that exist here only get this far with overwrite.)
+          PUSH=()
+          for p in "${PAIRS[@]}"; do
+            read -r src tgt sha old <<< "$p"
+            if [ "$old" = - ] || git merge-base --is-ancestor "$old" "$sha" 2>/dev/null; then
+              PUSH+=("$p")
+            elif [ "$OVERWRITE" = "true" ]; then
+              echo "::warning::overwrite: ${tgt} is here at ${old}, not in the history of ${sha}; replacing it"
+              PUSH+=("$p")
+            else
+              hold "$tgt" "$sha" "not-fast-forward ${sha} ${old}" \
+                "is here at ${old:0:9}, which is not in the history of ${src} ${sha:0:9}: pushed by hand, or ${src} was rewound. A manual run with overwrite replaces it."
+            fi
+          done
+          if [ ${#PUSH[@]} -eq 0 ]; then echo "nothing to push this run"; exit 0; fi
 
-          echo "==> force-pushing to ${TARGET_BRANCH}"
-          git -c http.extraheader="AUTHORIZATION: basic ${AUTH}" \
-            push --force "$TARGET_URL" "refs/heads/${TARGET_BRANCH}:refs/heads/${TARGET_BRANCH}"
-
-          # Verify rather than trust the exit code.
-          NOW="$(git ls-remote "$TARGET_URL" "refs/heads/${TARGET_BRANCH}" | cut -f1)"
-          if [ "$NOW" != "$SRC" ]; then
-            echo "::error::verification failed: ${TARGET_BRANCH} is $NOW, expected $SRC"
-            exit 1
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "dry run: would push:"
+            for p in "${PUSH[@]}"; do
+              echo "  $p"; read -r src tgt sha old <<< "$p"; printf '%s\t%s\twould push (dry run)\n' "$tgt" "$sha" >> "$WORK/results.txt"
+            done
+            exit 0
           fi
-          echo "==> verified at $NOW"
+
+          # One ref per push, so one refusal cannot hide what happened to the others. Each
+          # is leased on what Plan saw here ("-" = must not exist yet). The token goes in
+          # as a header via `git -c`, never into config; Actions masks the raw secret but
+          # not its base64, so that is masked too.
+          push() {   # push <GITHUB_TOKEN|MIRROR_TOKEN> <target> <old>; output in push.out
+            local tok auth lease rc
+            if [ "$1" = MIRROR_TOKEN ]; then tok="$MIRROR_TOKEN"; else tok="$GITHUB_TOKEN"; fi
+            auth="$(printf 'x-access-token:%s' "$tok" | base64 -w0)"
+            echo "::add-mask::$auth"
+            lease="refs/heads/$2:"; [ "$3" = - ] || lease="refs/heads/$2:$3"
+            echo "==> $2: pushing with $1"
+            GIT_TERMINAL_PROMPT=0 git -c http.extraheader="AUTHORIZATION: basic ${auth}" \
+                push --force-with-lease="$lease" "$TARGET_URL" "refs/heads/$2:refs/heads/$2" \
+                < /dev/null > "$WORK/push.out" 2>&1 && rc=0 || rc=$?
+            cat "$WORK/push.out"
+            return $rc
+          }
+          # GitHub's wording: "... GitHub App ... without `workflows` permission" for
+          # GITHUB_TOKEN and fine-grained tokens, "... without `workflow` scope" for classic.
+          WF_REFUSED='refusing to allow .* to (create or )?update workflow'
+          : > "$WORK/manual.txt"
+          failed=0
+          for p in "${PUSH[@]}"; do
+            read -r src tgt sha old <<< "$p"
+            if push GITHUB_TOKEN "$tgt" "$old"; then
+              result=mirrored
+            elif ! grep -Eq "$WF_REFUSED" "$WORK/push.out"; then
+              result=failed
+            elif [ -z "${MIRROR_TOKEN:-}" ]; then
+              result=needs-token
+            else
+              echo "::warning::${tgt}: GITHUB_TOKEN may not push .github/workflows changes; retrying with MIRROR_TOKEN. A personal-token push starts any push-triggered workflows in the pushed commit, in this repo."
+              if push MIRROR_TOKEN "$tgt" "$old"; then
+                result="mirrored (MIRROR_TOKEN)"
+              elif grep -Eq "$WF_REFUSED" "$WORK/push.out"; then
+                result=token-refused
+              else
+                result=failed
+                if grep -Eqi '40[13]|denied|authentication failed|bad credentials' "$WORK/push.out"; then
+                  echo "::error::MIRROR_TOKEN was rejected: expired or revoked? Replace the secret."
+                fi
+              fi
+            fi
+            # A refused push may still have landed from elsewhere (an overlapping run, a
+            # hand push of the same commit); the lease makes that the only way.
+            case "$result" in mirrored*) ;; *)
+              now="$(git ls-remote --heads "$TARGET_URL" "refs/heads/${tgt}" | awk '{ print $1 }')" || now=
+              if [ "$now" = "$sha" ]; then result="already there"; fi ;;
+            esac
+            case "$result" in
+              needs-token|token-refused)
+                if [ "$result" = needs-token ]; then
+                  why="changes .github/workflows, which GITHUB_TOKEN may not push. Add MIRROR_TOKEN (see the top of the workflow), or push it by hand - commands below."
+                else
+                  why="changes .github/workflows and MIRROR_TOKEN may not push that either: give it 'Workflows: read and write' (fine-grained) or the 'workflow' scope (classic). Or push it by hand - commands below."
+                fi
+                hold "$tgt" "$sha" "${result} ${tgt} ${sha}" "$why"
+                lease="refs/heads/${tgt}:"; [ "$old" = - ] || lease="refs/heads/${tgt}:${old}"
+                { echo "git fetch ${SOURCE_URL} ${sha}"
+                  echo "git push --no-verify --force-with-lease=${lease} ${TARGET_URL} ${sha}:refs/heads/${tgt}"; } >> "$WORK/manual.txt"
+                ;;
+              failed)
+                if grep -q 'stale info' "$WORK/push.out"; then
+                  echo "::error::${tgt}: changed here while this run was going (${now:-deleted}; Plan saw ${old}) - pushed by hand? Nothing was overwritten; a later run re-plans from what is there."
+                else
+                  echo "::error::${tgt}: push failed (output above); a later run retries"
+                fi
+                failed=1 ;;
+              *)
+                printf '%s\t%s\t%s\n' "$tgt" "$sha" "$result" >> "$WORK/results.txt" ;;
+            esac
+          done
+          if [ -s "$WORK/manual.txt" ]; then
+            echo "To push the held refs by hand, from inside any git clone, in any shell:"; cat "$WORK/manual.txt"
+          fi
+
+          # Verify rather than trust the exit codes.
+          git ls-remote --heads "$TARGET_URL" > "$WORK/after.txt"
+          while IFS=$'\t' read -r tgt sha _; do
+            now="$(awk -v r="refs/heads/${tgt}" '$2 == r { print $1 }' "$WORK/after.txt")"
+            if [ "$now" != "$sha" ]; then echo "::error::verification failed: ${tgt} is ${now:-<missing>}, expected ${sha}"; failed=1
+            else echo "==> ${tgt} verified at ${sha}"; fi
+          done < "$WORK/results.txt"
+          [ "$failed" = 0 ]
 
       - name: Summary
         if: always()
+        env:
+          PLAN: ${{ steps.plan.outcome }}
+          GATE: ${{ steps.gate.outcome }}
+          PUBLISH: ${{ steps.publish.outcome }}
+          VERDICT: ${{ steps.gate.outputs.verdict }}
+          CI_URL: ${{ steps.gate.outputs.ci_url }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
           {
-            if [ "${{ steps.check.outputs.changed }}" = "true" ]; then
-              echo "### Mirrored"
+            echo "### mirror sunnypilot"
+            echo
+            if [ "$PLAN" != success ]; then
+              echo "**Plan FAILED - nothing was mirrored.** See the Plan step's log."
+            elif [ ! -s plan.txt ]; then
+              echo "Everything already up to date."
             else
-              echo "### Already up to date"
+              echo "| source branch | here | commit | was | result |"
+              echo "|---|---|---|---|---|"
+              while read -r src tgt sha old; do
+                r="$(awk -F'\t' -v t="$tgt" '$1 == t { print $3 }' results.txt 2>/dev/null | tail -n1)"
+                [ -n "$r" ] || r="$(awk -F'\t' -v t="$tgt" '$1 == t { print ($3 == "wait" ? "waiting: " : "**HELD**: ") $5 }' held.txt 2>/dev/null | tail -n1)"
+                echo "| \`${src}\` | \`${tgt}\` | \`${sha:0:9}\` | \`${old:0:9}\` | ${r:-not pushed} |"
+              done < plan.txt
             fi
+            case "$VERDICT" in
+              forced) echo; echo "master: **CI gate skipped** (force)." ;;
+              pass)   echo; echo "master: CI passed - ${CI_URL}" ;;
+            esac
+            if [ "$GATE" = failure ]; then echo; echo "**The CI gate step FAILED** - master was not pushed. See its log."; fi
+            if [ "$PUBLISH" = failure ]; then echo; echo "**Fetch and republish FAILED** - see its log. Rows without a result were not pushed."; fi
+            if [ -s manual.txt ]; then
+              echo; echo "To push the held refs by hand, from inside any git clone, in any shell:"
+              echo; echo '```'; cat manual.txt; echo '```'
+            fi
+            if [ "$DRY_RUN" = "true" ]; then echo; echo "_dry run: nothing was pushed_"; fi
             echo
-            echo "| | |"
-            echo "|---|---|"
-            echo "| source | \`SoRadGaming/sunnypilot@${{ steps.check.outputs.source_branch }}\` |"
-            echo "| commit | \`${{ steps.check.outputs.src }}\` |"
-            echo "| target | \`${{ github.repository }}\` branch \`${TARGET_BRANCH}\` |"
-            echo
-            echo "Install URL: \`install.soradgaming.com/fork/SoRadGaming/${TARGET_BRANCH}\`"
+            echo "Install URL: \`install.soradgaming.com/fork/SoRadGaming/${MAIN_TARGET}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Anything held as 'fail' makes the run red - once. Its signatures name a cache
+      # entry; a scheduled run that finds the very same holds already reported stays
+      # green with a warning instead of mailing again every tick. Anything new (a new
+      # commit, a new CI attempt, another kind of hold) is a new name and goes red.
+      # GitHub drops cache entries unused for 7 days, so a long hold is re-reported
+      # about weekly. Failed steps are red regardless; this is only about holds.
+      - name: Held back?
+        id: held
+        if: always()
+        run: |
+          sigs="$(awk -F'\t' '$3 == "fail" { print $4 }' held.txt 2>/dev/null | sort -u)" || sigs=
+          if [ -z "$sigs" ]; then echo "alarm=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          echo "alarm=true" >> "$GITHUB_OUTPUT"
+          if grep -qx transient <<< "$sigs"; then exit 0; fi   # may clear by itself: always report
+          echo "key=mirror-held-$(sha256sum <<< "$sigs" | cut -c1-40)" >> "$GITHUB_OUTPUT"
+
+      - name: Reported before?
+        id: seen
+        if: always() && steps.held.outputs.key != '' && github.event_name == 'schedule'
+        uses: actions/cache/restore@v6
+        with:
+          path: .mirror-held
+          key: ${{ steps.held.outputs.key }}
+          lookup-only: true
+
+      - name: Report
+        if: always() && steps.held.outputs.alarm == 'true'
+        env:
+          SEEN: ${{ steps.seen.outputs.cache-hit }}
+        run: |
+          if [ "$SEEN" = "true" ]; then
+            awk -F'\t' '$3 == "fail" { print "::warning::still held (already reported): " $1 " " substr($2, 1, 9) " - " $5 }' held.txt
+            exit 0
+          fi
+          awk -F'\t' '$3 == "fail" { print "::error::held: " $1 " " substr($2, 1, 9) " - " $5 }' held.txt
+          mkdir -p .mirror-held; cp held.txt .mirror-held/
+          exit 1
+
+      - name: Remember the report
+        if: always() && steps.held.outputs.key != '' && steps.seen.outputs.cache-hit != 'true' && github.event.inputs.dry_run != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: .mirror-held
+          key: ${{ steps.held.outputs.key }}
