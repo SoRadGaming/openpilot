@@ -15,6 +15,41 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-09-29 — speed limits: no carried limit, no tunnel prompts, a maps page (`2e7866503`)
+
+**The map speed limit was wrong off motorways.** Across 25 drives there were 141
+prompts:
+
+* 43 were the previous road's limit, carried onto a road with no limit in OSM
+  for the rest of the drive.
+* 26 came from the M4 East, M8 and Iron Cove tunnels. GPS drops out there, and
+  mapd matched the streets overhead (40 or 50 while you were doing 80).
+* Behind both, the comma 4's OSM tiles had never been refreshed. It has no OSM
+  screen.
+
+Now, with **Strict Map Speed Limits** (sunnylink, cruise → speed limit; on by
+default):
+
+* **Only a real new limit prompts.** A road with no limit, or the same limit
+  coming back after a junction, is not one. A carried limit is dropped after
+  10 s on a road with no limit and good GPS, and engaging on such a road does
+  not prompt for it.
+* **Tunnels hold the limit you entered with.** It holds until the map has found
+  the road again: the road name changes, or 10 s pass after GPS returns.
+* **Settings → maps** shows when the OSM maps were last updated, and has an
+  update button (parked only; keep the device on until it finishes). With
+  **update weekly** on, which is the default, it refreshes by itself when
+  parked on wi-fi. A phone hotspot counts as wi-fi unless it is marked metered.
+
+Replayed over all 25 drives: 72 prompts instead of 141. Every prompt from the
+road you were actually on is kept, none are carried over and none come from the
+tunnels. Every tunnel exit prompts the correct next limit. With the setting off
+the car behaves exactly as before.
+
+Still coming: NSW's own speed-zone data (every road including local streets,
+plus school zones), replacing OSM in NSW. That is being built and tested
+offline first.
+
 ## 2026-09-27 — upstream sync: sunnypilot `a5f44653d`, opendbc `f95f996f`
 
 **The fork now runs on current upstream sunnypilot (openpilot 0.11.2, sunnypilot

@@ -246,7 +246,9 @@ anything above 0 is where the next merge can conflict.
 * *modify/delete*: upstream deleted the old path; the fork's edits were re-applied to the new one.
 * *added in the merge*: the file carries a fork change for the first time, made during or after the merge.
 
-### sunnypilot: 56 files and the submodule pointer
+### sunnypilot: 67 files and the submodule pointer
+
+Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-specific, gated by `SpeedLimitMapStrict` and `OsmAutoUpdateWeekly`, markers `FORK(SPEED-LIMIT)`.
 
 | St | Path | Area | What the fork changes | Upstream commits | Last merge |
 |---|---|---|---|---|---|
@@ -260,7 +262,7 @@ anything above 0 is where the next merge can conflict.
 | A | `docs/fork/README.md`, `GATEWAY-UPDATE.md`, `LKAS-GATEWAY-PROTOCOL.md`, `CAR-HONDA-ACCORD-9G-AU.md` | — | These documents. | 0 | clean |
 | A | `docs/fork/UPSTREAM-2026-09.md` | — | What the 2026-09 sync brought. | 0 | added in the merge |
 | M | `openpilot/cereal/custom.capnp` | A+B | Adds `CarControlSP.lateralControl @5` (B), `CarStateSP.linbusGateway @1` (fields @0–@18 B, @19–@26 A) and `CarStateSP.driverTorqueStale @2` (B). | 0 | auto |
-| M | `openpilot/common/params_keys.h` | A+C | Adds 7 `EpsLkas*` keys (A) and 9 `HondaDyn*` keys (C). | 0 | auto |
+| M | `openpilot/common/params_keys.h` | A+C+SL | Adds 7 `EpsLkas*` keys (A), 9 `HondaDyn*` keys (C), and `SpeedLimitMapStrict`, `OsmAutoUpdateWeekly`, `OsmLastCompleteDate` (SL). | 0 | auto |
 | M | `openpilot/selfdrive/car/card.py` | A+C | A: `stage_board_firmware()`, `write_board_firmware()` and `log_flash_trace()`, called from `params_thread` (staging from `state_publish`). C: `get_car(..., skip_fw_query=bool(fixed_fingerprint))`. | 0 | auto |
 | M | `openpilot/selfdrive/car/helpers.py` | B | `convert_carControlSP()` rebuilds `lateralControl`. | 0 | auto |
 | A | `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | B (+A) | Every nested `CarControlSP` struct, and the firmware fields, through the capnp→dataclass seam (1 test). | 0 | new→moved |
@@ -278,19 +280,29 @@ anything above 0 is where the next merge can conflict.
 | M | `openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py` | C | Honda dynamic-learning toggle on the Cruise panel. | 0 | moved |
 | M | `openpilot/selfdrive/ui/sunnypilot/layouts/settings/vehicle/brands/honda.py` | C | `HondaSettings`: toggle, learned values and reset (`LEARNED_DEFAULTS`, `PEDAL_GAIN_BP`, `reset_learned_values`). | 0 | moved |
 | A | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/board.py` | A | Settings > gateway page: `BoardLayoutMici`, `UpdateBoardButton`, `board_page_visible`, `bundled_firmware`. | 0 | new→moved |
-| M | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py` | A+C | Adds a "vehicle" row (C) and a "gateway" row (A) with `items.insert(2, ...)` and `items.insert(3, ...)`, a form two tests pin. | 0 | CONFLICT |
+| A | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/maps.py` | SL | Settings > maps: `MapsLayoutMici`, `MapDataInfo` (one card per data set), `UpdateOsmButton` (parked only; writes `OsmDbUpdatesCheck`), the "update weekly" toggle. | 0 | new |
+| M | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py` | A+C+SL | Adds a "vehicle" row (C) and a "gateway" row (A) with `items.insert(2, ...)` and `items.insert(3, ...)`, a form two tests pin, and a "maps" row (SL) with `items.insert(4, ...)`. | 0 | CONFLICT |
 | A | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/vehicle.py` | C | mici vehicle page: `VehicleLayoutMici`, `car_brand()`, `HondaLearnedInfo`. | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/tests/test_eps_lkas_flasher.py` | A | Flasher protocol, image checks and trace (26 tests). | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/tests/test_eps_lkas_hook.py` | A | pandad hook ordering, the onroad refusal and param registration (10 tests). | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/tests/test_gateway_board_settings.py` | A (+B) | DBC, capnp, params, page and button gates (25 tests), including `test_lat_ready_means_lateral_is_enabled_not_merely_possible` (B). | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py` | C | Params, UI and sunnylink in sync with the tuner (11 tests). | 0 | new→moved |
+| A | `openpilot/selfdrive/ui/tests/test_maps_settings.py` | SL | The maps page contract: gates, confirm flow, dates, glyphs (source-parsing tests). | 0 | new |
 | M | `openpilot/sunnypilot/mads/mads.py` | B | Pauses on a gateway driver override (`LINBUS_REASON_DRIVER_OVERRIDE`, `_gw_paused`), holds the pause in `should_silent_lkas_enable()`, and also fires on the frame MADS is turned on. Adds the fast-wheel disable (`EMERGENCY_STEER_RATE` 200, `EMERGENCY_STEER_FRAMES` 2), which applies to **every** car. | 0 | CONFLICT |
 | M | `openpilot/sunnypilot/mads/state.py` | B | DISABLED branch: an ENABLE that arrives with `silentLkasDisable` goes to `paused`. | 0 | added in the merge |
 | A | `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | B | The gateway pause, resume, brake modes, emergency and enable-frame cases (18 tests). | 0 | new→moved |
+| M | `openpilot/sunnypilot/mapd/mapd_manager.py` | SL | Three marked lines: runs `OsmAutoUpdater` each tick and clears `OsmLastCompleteDate` with the maps. | 0 | new |
+| A | `openpilot/sunnypilot/mapd/osm_auto_update.py` | SL | `auto_update_due()` (pure) and `OsmAutoUpdater`: weekly refresh when parked (no ignition on any panda) on unmetered wi-fi/ethernet, once per boot; `record_completion()` writes `OsmLastCompleteDate`. | 0 | new |
+| A | `openpilot/sunnypilot/mapd/tests/test_osm_auto_update.py` | SL | The refresh decision and the completion recorder. | 0 | new |
 | M | `openpilot/sunnypilot/modeld_v2/modeld.py` | B+C | The same three edits as `modeld.py`. | 0 | CONFLICT |
 | M | `openpilot/sunnypilot/selfdrive/controls/controlsd_ext.py` | B | Fills `CC_SP.lateralControl` from `lac_log` and `LaC`. | 0 | auto |
 | M | `openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_ext_base.py` | B | `update_output_torque()` also freezes on the owning controller's `integrator_frozen`. | 0 | added in the merge |
 | M | `openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py` | B | The same integrator hold as `latcontrol_torque.py`. | 0 | auto |
+| M | `openpilot/sunnypilot/selfdrive/controls/lib/longitudinal_planner.py` | SL | Passes `resolver.map_limit_frozen` into `SpeedLimitAssist.update()`. | 0 | new |
+| M | `openpilot/sunnypilot/selfdrive/controls/lib/speed_limit/speed_limit_assist.py` | SL | With `SpeedLimitMapStrict`: prompts only for a real new limit (`_last_nonzero_limit`), no prompt when engaging on a carried or frozen limit, PCM ADAPTING with no limit goes ACTIVE. | 0 | new |
+| M | `openpilot/sunnypilot/selfdrive/controls/lib/speed_limit/speed_limit_resolver.py` | SL | With `SpeedLimitMapStrict`: `MAP_HOLD_TIMEOUT` (drop a carried map limit after 10 s untagged with good GPS), GPS-loss freeze held until the road name changes or `MAP_GPS_SETTLE_TIME` after GPS returns, `map_limit_frozen`. `sm.valid` is read only in strict mode. | 0 | new |
+| M | `openpilot/sunnypilot/selfdrive/controls/lib/speed_limit/tests/test_speed_limit_assist.py`, `test_speed_limit_resolver.py` | SL | The existing suites run with strict on (base) and off (subclasses). | 0 | new |
+| A | `openpilot/sunnypilot/selfdrive/controls/lib/speed_limit/tests/test_speed_limit_map_strict.py` | SL | Resolver + SLA + cruise on the non-PCM path: carried limit, junction gap, engage untagged, tunnels, PCM contrast. | 0 | new |
 | A | `openpilot/sunnypilot/selfdrive/controls/lib/stopping_tune.py` | C | `STOPPING_SPEED` and `STOPPING_DECEL_RATE`, keyed by fingerprint. | 0 | added in the merge |
 | A | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | C (+B) | `NUDGE_FIRM` rules; a stale torque confirms nothing; `driver_torque_stale` comes after the road edges (9 tests). | 0 | new→moved |
 | A | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` | B | The hold through the torque-controller extension with Lateral Jerk on (4 tests). | 0 | added in the merge |
@@ -298,7 +310,7 @@ anything above 0 is where the next merge can conflict.
 | A | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_flasher.py` | A | Portable bootloader protocol, `PandaTransport` (ELM327), `BenchTransport`, and the steering/vibration trace. | 0 | new→moved |
 | A | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_hook.py` | A | pandad glue: `flash_if_requested()`, `watch_for_request()`. | 0 | new→moved |
 | M | `openpilot/sunnypilot/sunnylink/settings_ui.json` | C | Compiled output of the two YAML files below. | 0 | auto, then recompiled |
-| M | `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/cruise.yaml` | C | `honda_dynamic_learning` read-only info section. | 0 | moved |
+| M | `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/cruise.yaml` | C+SL | `honda_dynamic_learning` read-only info section (C); the "Strict Map Speed Limits" toggle in the speed limit settings (SL). | 0 | moved |
 | M | `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/vehicle.yaml` | C | `honda` section with the toggle. | 0 | auto |
 | M | `openpilot/sunnypilot/sunnylink/statsd.py` | C | Reports `HondaDynamicTuningEnabled` and the 8 learned values. | 0 | auto |
 | M | `openpilot/sunnypilot/sunnylink/tools/compile_settings_ui.py` | C (Other) | Reads and writes UTF-8 with an LF newline, so compiling on Windows matches CI. | 0 | moved |
