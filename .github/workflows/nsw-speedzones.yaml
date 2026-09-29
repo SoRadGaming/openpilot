@@ -1,0 +1,1073 @@
+name: nsw speed zones
+
+# Lives in SoRadGaming/openpilot, on the DEFAULT branch (master), next to
+# mirror-sunnypilot.yaml. It is NOT in SoRadGaming/sunnypilot: a workflow file there
+# would ride the mirror into this repo's `sunnypilot` branch, and GitHub's Actions
+# token may not push workflow files (see mirror-sunnypilot.yaml).
+#
+# Builds the NSW speed-zone index for the fork's speed-limit source and publishes it
+# as release assets here:
+#
+#     nswzones-latest        moved to the newest data; the comma downloads from it
+#     nswzones-YYYY-MM-DD    one per published data version, kept (rollback, history)
+#
+#   assets:  nsw_zones.npz    the index (about 22 MB)
+#            manifest.json    read by the device FIRST: format version, sha256, size
+#            ATTRIBUTION.txt  the CC BY 4.0 attribution
+#
+#   device URL base:  https://github.com/SoRadGaming/openpilot/releases/download/nswzones-latest/
+#
+# The device downloads a new index only when the manifest's sha256 is new and its
+# format version is one the car's code reads, then checks the sha256 again before
+# it uses the file. Docs: docs/fork/NSW-SPEED-ZONES.md in SoRadGaming/sunnypilot.
+#
+# WHAT A RUN DOES
+#   1. Sparse checkout of SoRadGaming/sunnypilot@master: only the builder package
+#      openpilot/sunnypilot/mapd/nsw_zones/ (build_index.py plus the index.py,
+#      school_days.py and matcher.py it loads by path) and openpilot/common/ (the
+#      package's unit tests import openpilot.sunnypilot.mapd, which needs basedir.py).
+#      numpy is pinned to that repo's uv.lock, the same version as on the device.
+#   2. Runs the builder's unit tests: every test module in the package that needs no
+#      more of openpilot than the checkout holds. The device downloader's tests need
+#      cereal and are left to sunnypilot's CI. A failing builder never publishes.
+#   3. Finds the previous release: nswzones-latest, or, if that is missing or has no
+#      manifest, the newest dated release. Its manifest feeds the builder's +-5 %
+#      feature-count gate. With no release at all this is the first build and that
+#      gate is skipped (the builder says so).
+#   4. Downloads TfNSW's Speed Zones GeoJSON (~369 MB) and schoolzones.zip (~3.7 MB).
+#      The current resource URLs come from the Open Data Hub's CKAN package_show,
+#      looked up by resource id. If that lookup fails, the known direct URLs are used.
+#      The downloads are anonymous; nothing about any car is sent.
+#   5. build_index.py. It exits 2 if a gate fails (value sets, sizes, feature count,
+#      school calendar covers today + 30 days, self-test, and the REVIEW gates below).
+#      A failed gate makes a red run, the gate failures go into the run summary, and
+#      nothing is published.
+#      REVIEW gates - changes that could RAISE a limit the car publishes (SLA follows a
+#      new limit >= 80 by itself) or drop school zones: school zones or School lines
+#      more than +-5 % from the previous release; any change in the number of Variable
+#      lines (the fork publishes a Variable line's higher value over the static zone
+#      below it); base lines whose limit went up by more than 20 km in total, or any to
+#      90+ km/h; more than 50 km of new or re-drawn 90+ km/h lines. They never pass on
+#      the weekly run. A person looks at the build report, and if the change is right,
+#      runs it by hand with force=true (which passes --allow-review; the manifest
+#      records that it was allowed by hand).
+#   6. Compares the new index with the previous release's. The file's sha256 changes
+#      with every build (it embeds the data version and the calendar's build time),
+#      so the arrays are compared with those two fields left out. Unchanged content
+#      is NOT published: the release stays as it is, devices download nothing, and
+#      the run is green.
+#   7. In a SECOND job, with the write token and none of sunnypilot's code: checks the
+#      three files with a verifier kept in this file (size, sha256, format, members'
+#      CRCs, the metadata inside the index, attribution), then publishes: first the
+#      dated release, then nswzones-latest. An existing release is updated in place,
+#      and its assets are replaced in this order: the index, then ATTRIBUTION.txt,
+#      then the manifest. A device that reads the manifest part way through therefore
+#      sees the old sha256, or a pair that fails its sha256 check. Either way it keeps
+#      the file it has and tries again later.
+#   8. Downloads nswzones-latest anonymously, exactly as the device does, and
+#      verifies the pair again with the same verifier.
+#
+# RUN IT BY HAND
+#     gh workflow run nsw-speedzones.yaml -R SoRadGaming/openpilot
+#     gh workflow run nsw-speedzones.yaml -R SoRadGaming/openpilot -f dry_run=true
+#     gh workflow run nsw-speedzones.yaml -R SoRadGaming/openpilot -f force=true
+#   force            publish even if the content has not changed (devices download it again),
+#                    and let REVIEW gate findings through (after a person checked them)
+#   dry_run          build and run every gate, publish nothing
+#   skip_count_gate  build without the +-5 % feature-count gate. Use it only after checking
+#                    that TfNSW's data really changed that much, e.g. after a long pause.
+#
+# PAUSE:   gh workflow disable nsw-speedzones.yaml -R SoRadGaming/openpilot
+# RESUME:  gh workflow enable  nsw-speedzones.yaml -R SoRadGaming/openpilot
+# (GitHub also disables schedules in public repos after 60 days without activity.)
+#
+# CREDENTIALS: none. The automatic GITHUB_TOKEN creates and edits this repo's releases.
+# TWO JOBS, so that no code from sunnypilot ever runs next to a write token (a step can
+# change the environment of every later step in its job - $GITHUB_ENV, $GITHUB_PATH -
+# so "only the gh steps get the token" is no boundary inside one job):
+#   build    contents: read. Checks out sunnypilot, runs its tests and builder, and
+#            uploads the three files (and the release notes) as an artifact.
+#   publish  contents: write. No checkout, no pip, no sunnypilot code: downloads the
+#            artifact (digest-checked), verifies it with the stdlib verifier in this
+#            file, and publishes with gh.
+# Actions are pinned by commit SHA; numpy is installed with --require-hashes, the hashes
+# taken from sunnypilot's uv.lock. Repo setting to leave OFF: "immutable releases". It
+# would stop nswzones-latest from being updated.
+#
+# LICENSE: TfNSW Open Data Hub data, CC BY 4.0. The release notes, the manifest and
+# ATTRIBUTION.txt carry the attribution. No TfNSW logos. The Hub's terms want its
+# users registered; the owner is the registered user (see the doc).
+#
+# Tags are never release/* (sunnypilot-build-prebuilt.yaml triggers on that). They
+# point at this repo's master, never into the `sunnypilot` branch the device fetches.
+
+on:
+  schedule:
+    # Weekly, Sunday 09:23 UTC (19:23 AEST / 20:23 AEDT). It is off the hour because
+    # GitHub delays and drops scheduled runs most at :00. It is also well clear of
+    # TfNSW's daily rebuild of the data at about 18:40 UTC.
+    - cron: '23 9 * * 0'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "publish even if the index content has not changed, and let REVIEW gate findings through (check the build report first)"
+        type: boolean
+        default: false
+      dry_run:
+        description: "build and run every gate, but publish nothing"
+        type: boolean
+        default: false
+      skip_count_gate:
+        description: "skip the +-5 % feature-count gate against the previous release (only after checking TfNSW's data really changed that much)"
+        type: boolean
+        default: false
+
+permissions: {}           # none by default; each job asks for its own (build: read, publish: write)
+
+concurrency:
+  # One queue. Two runs publishing at once would race on the same releases. GitHub
+  # keeps one PENDING run per group, and a newer one replaces it; for a weekly job
+  # that only matters if a manual run is queued behind a running one.
+  group: nsw-speedzones
+  cancel-in-progress: false   # never stop a publish half way
+
+env:
+  SOURCE_REPO: SoRadGaming/sunnypilot
+  SOURCE_REF: master
+  # Where the package lives in SOURCE_REPO (the first that exists is used). The fork
+  # has the nested layout; the flat one is kept as a fallback.
+  PKG_DIRS: 'openpilot/sunnypilot/mapd/nsw_zones sunnypilot/mapd/nsw_zones'
+
+  # TfNSW Open Data Hub (CKAN), dataset "Speed Zones". Resources are looked up by id;
+  # the URLs below are used only when package_show fails or no longer lists the id.
+  CKAN_API: https://opendata.transport.nsw.gov.au/data/api/3/action/package_show
+  CKAN_PACKAGE: 4253a054-b377-4b5b-83d1-71385bb6ff33
+  RES_SPEEDZONES: bc2da977-65d2-4caa-a73a-48d0c8bf1100    # "Speed Zones - GeoJSON Format"
+  RES_SCHOOLZONES: b6d7d02c-5625-461c-8b44-bba1a6ef3e0f   # "School Zones data"
+  URL_SPEEDZONES: https://opendata.transport.nsw.gov.au/data/dataset/4253a054-b377-4b5b-83d1-71385bb6ff33/resource/bc2da977-65d2-4caa-a73a-48d0c8bf1100/download/speed_zones.geojson
+  URL_SCHOOLZONES: https://opendata.transport.nsw.gov.au/data/dataset/4253a054-b377-4b5b-83d1-71385bb6ff33/resource/b6d7d02c-5625-461c-8b44-bba1a6ef3e0f/download/schoolzones.zip
+  DATASET_PAGE: https://opendata.transport.nsw.gov.au/data/dataset/4253a054-b377-4b5b-83d1-71385bb6ff33
+  USER_AGENT: 'SoRadGaming-openpilot-nswzones/1 (+https://github.com/SoRadGaming/openpilot)'
+
+  LATEST_TAG: nswzones-latest
+  DATED_PREFIX: nswzones-          # + YYYY-MM-DD (the data version)
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: build the NSW speed-zone index
+    runs-on: ubuntu-latest       # 4 vCPU / 16 GB for public repos; the build peaks at ~3.2 GB
+    timeout-minutes: 90
+    permissions:
+      contents: read             # reads this repo's releases (the previous index); writes nothing
+    outputs:
+      publish: ${{ steps.cmp.outputs.publish }}
+      dated_tag: ${{ steps.cmp.outputs.dated_tag }}
+      decision: ${{ steps.cmp.outputs.decision }}
+      data_version: ${{ steps.build.outputs.data_version }}
+      sha256: ${{ steps.build.outputs.sha256 }}
+      bytes: ${{ steps.build.outputs.bytes }}
+      format_version: ${{ steps.build.outputs.format_version }}
+
+    steps:
+      - name: Check out the builder (sparse)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ env.SOURCE_REF }}
+          path: sp
+          fetch-depth: 1
+          persist-credentials: false
+          lfs: false
+          submodules: false
+          show-progress: false
+          # Cone mode: these directories, plus the files directly in each of their
+          # parents (the __init__.py chain) and in the repo root (.python-version, uv.lock).
+          sparse-checkout: |
+            openpilot/sunnypilot/mapd/nsw_zones
+            openpilot/common
+            sunnypilot/mapd/nsw_zones
+            common
+
+      - name: Locate the builder
+        id: pkg
+        run: |
+          set -euo pipefail
+          pkg=
+          for d in $PKG_DIRS; do
+            if [ -f "sp/$d/build_index.py" ]; then pkg="$d"; break; fi
+          done
+          if [ -z "$pkg" ]; then
+            echo "::error::build_index.py is not in ${SOURCE_REPO}@${SOURCE_REF} (looked in: ${PKG_DIRS}). Has the nsw_zones package been pushed to ${SOURCE_REF}?"
+            exit 1
+          fi
+          for f in index.py school_days.py matcher.py; do
+            [ -f "sp/$pkg/$f" ] || { echo "::error::sp/$pkg/$f is missing; build_index.py loads it by path"; exit 1; }
+          done
+          commit="$(git -C sp rev-parse HEAD)"
+          echo "NSW_PKG=sp/$pkg" >> "$GITHUB_ENV"
+          { echo "dir=$pkg"; echo "commit=$commit"; } >> "$GITHUB_OUTPUT"
+          echo "builder: ${SOURCE_REPO}@${commit} ${pkg}/build_index.py"
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
+        with:
+          python-version: '3.12'   # the device's Python (see .python-version in SOURCE_REPO)
+
+      - name: Install numpy (the device's version, hash-checked)
+        run: |
+          set -euo pipefail
+          # The builder needs numpy and the standard library only. numpy is pinned to what
+          # SOURCE_REPO's uv.lock gives the device, so CI and car decode alike, and pip
+          # checks the file it installs against the sha256 hashes uv.lock records for it.
+          # No fallback: an unpinned numpy is not installed.
+          python - <<'PY' > numpy-req.txt
+          import sys
+          import tomllib
+
+          with open('sp/uv.lock', 'rb') as f:
+            lock = tomllib.load(f)
+          pkg = next((p for p in lock.get('package', []) if p.get('name') == 'numpy'), None)
+          if pkg is None:
+            sys.exit('::error::uv.lock has no numpy entry')
+          hashes = [w['hash'] for w in pkg.get('wheels', []) if str(w.get('hash', '')).startswith('sha256:')]
+          if pkg.get('sdist', {}).get('hash', '').startswith('sha256:'):
+            hashes.append(pkg['sdist']['hash'])
+          if not hashes:
+            sys.exit('::error::uv.lock records no sha256 hashes for numpy')
+          print(f"numpy=={pkg['version']} " + ' '.join(f'--hash={h}' for h in hashes))
+          PY
+          python -m pip install --disable-pip-version-check --quiet --only-binary=:all: --require-hashes -r numpy-req.txt
+          python -c 'import sys, numpy; print("python", sys.version.split()[0], "numpy", numpy.__version__, "(uv.lock, hash-checked)")'
+
+      - name: Unit tests of the builder
+        id: tests
+        working-directory: sp
+        run: |
+          set -euo pipefail
+          # The tests of what the builder runs: every tests/test_*.py whose openpilot
+          # imports stay inside build_index, index, school_days, matcher (and the
+          # package's constants, and tests/synth.py). A test that needs more of openpilot
+          # (the device downloader needs cereal, params, ...) cannot run in this sparse
+          # checkout and is left to SOURCE_REPO's own CI. unittest.TestCase only, like the
+          # repo's runner.
+          mapfile -t mods < <(python - <<'PY'
+          import ast
+          import os
+          import sys
+
+          pkg = os.environ['NSW_PKG'][len('sp/'):]
+          base = pkg.replace('/', '.')
+          PURE = {'build_index', 'index', 'school_days', 'matcher', 'tests.synth'}
+          own = {f[:-3] for f in os.listdir(pkg) if f.endswith('.py') and f != '__init__.py'}
+
+
+          def pure(mod, names):
+            if mod != 'openpilot' and not mod.startswith('openpilot.'):
+              return True  # the standard library, numpy
+            if mod == base:  # from <package> import X: its constants, or one of the pure modules
+              return all(n not in own or n in PURE for n in names)
+            return mod.startswith(base + '.') and mod[len(base) + 1:] in PURE
+
+
+          for f in sorted(os.listdir(os.path.join(pkg, 'tests'))):
+            if not (f.startswith('test_') and f.endswith('.py')):
+              continue
+            with open(os.path.join(pkg, 'tests', f), encoding='utf-8') as fh:
+              tree = ast.parse(fh.read())
+            bad = set()
+            for node in ast.walk(tree):
+              if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module and not pure(node.module, [a.name for a in node.names]):
+                bad.add(node.module)
+              elif isinstance(node, ast.Import):
+                bad.update(a.name for a in node.names if not pure(a.name, []))
+            if bad:
+              print(f"left to {os.environ['SOURCE_REPO']}'s CI: {f} (imports {', '.join(sorted(bad))})", file=sys.stderr)
+            else:
+              print(f'{base}.tests.{f[:-3]}')
+          PY
+          )
+          if [ ${#mods[@]} -eq 0 ] || [ -z "${mods[0]}" ]; then
+            echo "::error::no builder tests found in ${NSW_PKG}/tests"
+            exit 1
+          fi
+          echo "running: ${mods[*]##*.}"
+          python -m unittest "${mods[@]}"
+
+      - name: Find the previous release
+        id: prev
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p prev
+          # view <tag>: the release as JSON. Returns 3 if it does not exist, 1 on any other error.
+          view() {
+            local out rc=0
+            out="$(gh release view "$1" --json tagName,isDraft,assets 2> gh.err)" || rc=$?
+            if [ $rc -eq 0 ]; then printf '%s' "$out"; return 0; fi
+            if grep -qi 'release not found' gh.err; then return 3; fi
+            cat gh.err >&2
+            return 1
+          }
+          # usable: published, and it carries manifest.json
+          usable() {
+            python -c 'import json, sys; r = json.load(sys.stdin); sys.exit(0 if not r.get("isDraft") and any(a.get("name") == "manifest.json" for a in r.get("assets") or []) else 1)'
+          }
+
+          tag=; latest_ok=false
+          rc=0; json="$(view "$LATEST_TAG")" || rc=$?
+          if [ $rc -eq 1 ]; then echo "::error::cannot read release ${LATEST_TAG} (see above)"; exit 1; fi
+          if [ $rc -eq 0 ] && usable <<< "$json"; then
+            tag="$LATEST_TAG"; latest_ok=true
+          else
+            [ $rc -eq 3 ] && what=missing || what="a draft or has no manifest.json"
+            echo "${LATEST_TAG} is ${what}; looking for the newest dated release"
+            gh release list --limit 200 --exclude-drafts --json tagName > releases.json
+            mapfile -t dated < <(python - <<'PY'
+          import json
+          import os
+          import re
+
+          pat = re.compile('^' + re.escape(os.environ['DATED_PREFIX']) + r'\d{4}-\d{2}-\d{2}$')
+          with open('releases.json', encoding='utf-8') as f:
+            tags = [r['tagName'] for r in json.load(f) if pat.match(r['tagName'])]
+          print('\n'.join(sorted(tags, reverse=True)))
+          PY
+            )
+            for t in "${dated[@]}"; do
+              [ -n "$t" ] || continue
+              rc=0; json="$(view "$t")" || rc=$?
+              if [ $rc -eq 1 ]; then echo "::error::cannot read release ${t} (see above)"; exit 1; fi
+              if [ $rc -eq 0 ] && usable <<< "$json"; then tag="$t"; break; fi
+            done
+          fi
+
+          if [ -z "$tag" ]; then
+            echo "no previous release: this is the first build"
+            { echo "found=false"; echo "tag="; echo "latest_ok=false"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "previous release: ${tag}"
+          gh release download "$tag" --dir prev --pattern manifest.json
+          # The index is only needed to tell whether the content changed. Without it
+          # the new build counts as changed.
+          if ! gh release download "$tag" --dir prev --pattern nsw_zones.npz; then
+            echo "::warning::could not download nsw_zones.npz from ${tag}; the new index will be treated as changed"
+            rm -f prev/nsw_zones.npz
+          fi
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          try:
+            with open('prev/manifest.json', encoding='utf-8') as f:
+              m = json.load(f)
+          except (OSError, ValueError):
+            m = {}
+          if not isinstance(m, dict):
+            m = {}
+          for k in ('data_version', 'sha256', 'format_version', 'feature_count'):
+            v = m.get(k)
+            print(f"{k}={' '.join(str(v).split()) if v is not None else ''}")
+          PY
+          { echo "found=true"; echo "tag=${tag}"; echo "latest_ok=${latest_ok}"; } >> "$GITHUB_OUTPUT"
+
+      - name: Download TfNSW Speed Zones and School Zones
+        id: src
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          mkdir -p src
+          CURL=(curl --fail --location --silent --show-error --retry 5 --retry-all-errors --retry-delay 15 --connect-timeout 30 -A "$USER_AGENT")
+
+          # 1. Where the resources are now, from the Hub's CKAN API (metadata only).
+          if ! "${CURL[@]}" --max-time 120 -o src/package.json "${CKAN_API}?id=${CKAN_PACKAGE}"; then
+            echo "::warning::CKAN package_show failed; using the known resource URLs"
+            rm -f src/package.json
+          fi
+          python - <<'PY'
+          import json
+          import os
+          from urllib.parse import urlparse
+
+          E = os.environ
+          want = [
+            ('speed_zones', E['RES_SPEEDZONES'], 'speed_zones.geojson', E['URL_SPEEDZONES']),
+            ('school_zones', E['RES_SCHOOLZONES'], 'schoolzones.zip', E['URL_SCHOOLZONES']),
+          ]
+          res, pkg_modified = {}, None
+          try:
+            with open('src/package.json', encoding='utf-8') as f:
+              doc = json.load(f)
+            if not doc.get('success'):
+              raise ValueError('success is not true')
+            pkg_modified = doc['result'].get('metadata_modified')
+            res = {r['id']: r for r in doc['result']['resources']}
+          except FileNotFoundError:
+            pass
+          except (ValueError, KeyError, TypeError, AttributeError) as e:
+            print(f'::warning::package_show answer unusable ({e!r}); using the known resource URLs')
+
+
+          def trusted(url):
+            host = (urlparse(url or '').hostname or '').lower()
+            return str(url).startswith('https://') and (host == 'transport.nsw.gov.au' or host.endswith('.transport.nsw.gov.au'))
+
+
+          plan = {}
+          for key, rid, fname, fallback in want:
+            r = res.get(rid) or {}
+            if r.get('url') and trusted(r['url']):
+              url, how = r['url'], 'package_show'
+            else:
+              if res:
+                print(f'::warning::resource {rid} ({fname}) is not usable in package_show any more; trying the known URL')
+              url, how = fallback, 'known URL'
+            plan[key] = {'file': fname, 'url': url, 'resolved_by': how, 'resource_id': rid,
+                         'ckan_size': r.get('size') if how == 'package_show' else None,
+                         'last_modified': r.get('last_modified') if how == 'package_show' else None}
+          with open('src/plan.json', 'w', encoding='utf-8') as f:
+            json.dump({'package_modified': pkg_modified, 'sources': plan}, f, indent=1)
+          with open('src/plan.tsv', 'w', encoding='utf-8') as f:
+            for key, p in plan.items():
+              f.write(f"{key}\t{p['file']}\t{p['url']}\n")
+          PY
+
+          # 2. The files. --compressed lets the server send them gzipped if it can.
+          while IFS=$'\t' read -r key file url; do
+            echo "==> ${file} <- ${url}"
+            t0=$(date +%s)
+            "${CURL[@]}" --compressed --max-time 2400 -o "src/${file}" "$url"
+            echo "    $(stat -c %s "src/${file}") bytes in $(( $(date +%s) - t0 )) s"
+          done < src/plan.tsv
+
+          # 3. Sanity: sizes against CKAN (warning only - the file may have been
+          # replaced in between; the builder's gates judge the content), and a
+          # record for the release notes.
+          python - <<'PY'
+          import hashlib
+          import json
+          import zipfile
+
+          with open('src/plan.json', encoding='utf-8') as f:
+            doc = json.load(f)
+          for p in doc['sources'].values():
+            path = 'src/' + p['file']
+            h, n = hashlib.sha256(), 0
+            with open(path, 'rb') as f:
+              head = f.read(4096)
+              f.seek(0)
+              for b in iter(lambda: f.read(1 << 22), b''):
+                h.update(b)
+                n += len(b)
+            p['bytes'], p['sha256'] = n, h.hexdigest()
+            if p.get('ckan_size') and int(p['ckan_size']) != n:
+              print(f"::warning::{p['file']}: {n} bytes, CKAN says {p['ckan_size']} (replaced while downloading?)")
+            if p['file'].endswith('.zip'):
+              if not zipfile.is_zipfile(path):
+                raise SystemExit(f"::error::{p['file']} is not a zip file (an error page?)")
+            elif not head.lstrip().startswith(b'{'):
+              raise SystemExit(f"::error::{p['file']} does not start like JSON (an error page?): {head[:120]!r}")
+            print(f"{p['file']}: {n:,} bytes, sha256 {p['sha256'][:16]}..., TfNSW last modified {p.get('last_modified') or '?'} ({p['resolved_by']})")
+          with open('src/sources.json', 'w', encoding='utf-8') as f:
+            json.dump(doc, f, indent=1)
+          PY
+
+      - name: Build the index
+        id: build
+        timeout-minutes: 45
+        env:
+          PREV_FOUND: ${{ steps.prev.outputs.found }}
+          PREV_TAG: ${{ steps.prev.outputs.tag }}
+          SKIP_COUNT_GATE: ${{ github.event.inputs.skip_count_gate || 'false' }}
+          FORCE: ${{ github.event.inputs.force || 'false' }}
+        run: |
+          set -euo pipefail
+          dv="$(date -u +%F)"   # the data version the device shows; also the dated tag
+          args=(--speedzones src/speed_zones.geojson --schoolzones src/schoolzones.zip --out out --data-version "$dv")
+          if [ "$PREV_FOUND" != true ]; then
+            echo "::notice::no previous release: the +-5 % feature-count and review gates are skipped for this first build"
+          elif [ "$SKIP_COUNT_GATE" = true ]; then
+            echo "::warning::skip_count_gate: the feature count, school and Variable counts are not compared with ${PREV_TAG}"
+          else
+            args+=(--previous-manifest prev/manifest.json)
+          fi
+          # the raised-limits review gate needs the previous index itself (skip_count_gate does not skip it)
+          if [ "$PREV_FOUND" = true ] && [ -f prev/nsw_zones.npz ]; then
+            args+=(--previous-index prev/nsw_zones.npz)
+          elif [ "$PREV_FOUND" = true ]; then
+            echo "::warning::no previous index to compare limits with: the raised-limits review gate is skipped"
+          fi
+          if [ "$FORCE" = true ]; then
+            echo "::warning::force: REVIEW gate findings are allowed through; read them in the build report and the summary"
+            args+=(--allow-review)
+          fi
+          rc=0
+          python "$NSW_PKG/build_index.py" "${args[@]}" 2>&1 | tee build.log || rc=$?
+          if [ $rc -ne 0 ]; then
+            if [ -f out/build_report.json ]; then
+              python - <<'PY' || true
+          import json
+          with open('out/build_report.json', encoding='utf-8') as f:
+            g = json.load(f).get('gates', {})
+          for x in g.get('failures', []):
+            print('::error::gate: ' + ' '.join(str(x).split())[:900])
+          PY
+            fi
+            [ $rc -eq 2 ] && echo "::error::build_index.py: a gate failed; nothing is published" || echo "::error::build_index.py exited with ${rc}"
+            exit 1
+          fi
+          for f in nsw_zones.npz manifest.json ATTRIBUTION.txt; do
+            [ -s "out/$f" ] || { echo "::error::out/$f was not written"; exit 1; }
+          done
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          with open('out/manifest.json', encoding='utf-8') as f:
+            m = json.load(f)
+          for k in ('data_version', 'sha256', 'bytes', 'format_version', 'feature_count'):
+            print(f'{k}={m[k]}')
+          PY
+
+      - name: Compare with the previous release
+        id: cmp
+        env:
+          PREV_FOUND: ${{ steps.prev.outputs.found }}
+          PREV_TAG: ${{ steps.prev.outputs.tag }}
+          PREV_LATEST_OK: ${{ steps.prev.outputs.latest_ok }}
+          FORCE: ${{ github.event.inputs.force || 'false' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          BUILDER_COMMIT: ${{ steps.pkg.outputs.commit }}
+          BUILDER_DIR: ${{ steps.pkg.outputs.dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p cmp
+          python - <<'PY'
+          import importlib.util
+          import json
+          import os
+
+          import numpy as np
+
+          E = os.environ
+          spec = importlib.util.spec_from_file_location('nsw_zones_index', os.path.join(E['NSW_PKG'], 'index.py'))
+          nzi = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(nzi)
+
+
+          def load_json(path):
+            try:
+              with open(path, encoding='utf-8') as f:
+                d = json.load(f)
+              return d if isinstance(d, dict) else None
+            except (OSError, ValueError):
+              return None
+
+
+          new = load_json('out/manifest.json')
+          old = load_json('prev/manifest.json') if E['PREV_FOUND'] == 'true' else None
+          src = (load_json('src/sources.json') or {}).get('sources', {})
+          prev_tag, latest = E['PREV_TAG'], E['LATEST_TAG']
+
+          # ---- did the CONTENT change? Leave out what changes with every build.
+          VOLATILE = {'meta_json': ('data_version', 'built_utc'), 'calendar_json': ('generated_utc',)}
+          AREAS = (('b_', 'speed-zone lines'), ('o_', 'School / School Bus / Wet Weather lines'),
+                   ('s_', 'school zones (times, polygons, names)'), ('opcal_', "TfNSW's OP_CAL term dates"),
+                   ('calendar_json', 'school-day calendar'), ('meta_json', 'index metadata'), ('attribution', 'attribution'))
+
+
+          def area(k):
+            return next((name for p, name in AREAS if k.startswith(p)), k)
+
+
+          def jdoc(a, drop):
+            d = json.loads(bytes(np.asarray(a)).decode('utf-8'))
+            for k in drop:
+              d.pop(k, None)
+            return d
+
+
+          def differing(a, b):
+            out = []
+            for k in sorted(set(a) | set(b)):
+              if k not in a or k not in b:
+                out.append(k)
+              elif k in VOLATILE:
+                if jdoc(a[k], VOLATILE[k]) != jdoc(b[k], VOLATILE[k]):
+                  out.append(k)
+              elif a[k].dtype != b[k].dtype or a[k].shape != b[k].shape or not np.array_equal(a[k], b[k]):
+                out.append(k)
+            return out
+
+
+          changed, why, areas = True, 'first release', []
+          if E['PREV_FOUND'] == 'true' and old is None:
+            why = f'the manifest of {prev_tag} is unreadable'
+          elif old is not None:
+            if old.get('sha256') == new['sha256']:
+              changed, why = False, f'same file as {prev_tag}'
+            elif not os.path.exists('prev/nsw_zones.npz'):
+              why = f'{prev_tag} has no index to compare with'
+            else:
+              try:
+                before = nzi.load_index('prev/nsw_zones.npz')
+              except nzi.IndexInvalid as e:
+                why = f"{prev_tag}'s index cannot be read by this builder ({e})"
+              else:
+                keys = differing(before, nzi.load_index('out/nsw_zones.npz'))
+                changed = bool(keys)
+                areas = list(dict.fromkeys(area(k) for k in keys))
+                if keys:
+                  why = 'changed: ' + ', '.join(areas)
+                else:
+                  why = f"same content as {prev_tag}, data version {old.get('data_version')}"
+
+          force, dry, latest_ok = E['FORCE'] == 'true', E['DRY_RUN'] == 'true', E['PREV_LATEST_OK'] == 'true'
+          if changed:
+            publish, decision = True, why
+          elif force:
+            publish, decision = True, f'forced ({why})'
+          elif not latest_ok:
+            publish, decision = True, f'{latest} was missing or incomplete, so it is published again ({why})'
+          else:
+            publish, decision = False, f'nothing to publish: {why}'
+          if dry:
+            decision = f"dry run, nothing published ({'would publish: ' if publish else ''}{decision})"
+            publish = False
+
+          # ---- what changed, in words (from the two manifests)
+          def num(x):
+            return f'{x:,}' if isinstance(x, int) else str(x)
+
+
+          def cov(m):
+            c = m.get('calendar_coverage') or {}
+            return ', '.join(f"{k} {v.get('first')} to {v.get('last')}" for k, v in sorted(c.items())) or 'unknown'
+
+
+          notes_changes = []
+          if old is not None:
+            f_old, f_new = old.get('feature_count'), new.get('feature_count')
+            if isinstance(f_old, int) and f_old > 0 and isinstance(f_new, int):
+              notes_changes.append(f'speed-zone features {num(f_old)} -> {num(f_new)} ({(f_new - f_old) / f_old * 100:+.2f} %)')
+            to = (old.get('counts') or {}).get('types') or {}
+            tn = (new.get('counts') or {}).get('types') or {}
+            d = [f'{t} {tn.get(t, 0) - to.get(t, 0):+,}' for t in sorted(set(to) | set(tn)) if tn.get(t, 0) != to.get(t, 0)]
+            if d:
+              notes_changes.append('features by type: ' + ', '.join(d))
+            for k, label in (('base_parts', 'base line parts'), ('overlay_parts', 'overlay line parts'), ('schools', 'school zones')):
+              o, n = (old.get('counts') or {}).get(k), (new.get('counts') or {}).get(k)
+              if o != n:
+                notes_changes.append(f'{label} {num(o)} -> {num(n)}')
+            if old.get('calendar_coverage') != new.get('calendar_coverage'):
+              notes_changes.append(f'school-day calendar now covers {cov(new)}')
+            if old.get('format_version') != new.get('format_version'):
+              notes_changes.append(f"index format {old.get('format_version')} -> {new.get('format_version')}")
+            for k in ('speed_zones', 'school_zones'):
+              so = ((old.get('sources') or {}).get(k) or {}).get('sha256')
+              sn = ((new.get('sources') or {}).get(k) or {}).get('sha256')
+              if so and sn and so != sn:
+                notes_changes.append(f"new {((new.get('sources') or {}).get(k) or {}).get('file', k)} from TfNSW")
+
+          # ---- release notes (the dated release and nswzones-latest)
+          repo, server = E['GITHUB_REPOSITORY'], E.get('GITHUB_SERVER_URL', 'https://github.com')
+          run_url = f"{server}/{repo}/actions/runs/{E.get('GITHUB_RUN_ID', '')}"
+          commit = E['BUILDER_COMMIT']
+          dv = new['data_version']
+          dated = E['DATED_PREFIX'] + dv
+          with open('out/ATTRIBUTION.txt', encoding='utf-8') as f:
+            attribution_txt = f.read().strip()
+          gates = new.get('gates') or {}
+          st = gates.get('self_test_good_share')
+
+
+          def src_row(k, label):
+            s = (new.get('sources') or {}).get(k) or {}
+            d = src.get(k) or {}
+            extra = []
+            if d.get('last_modified'):
+              extra.append(f"TfNSW updated {str(d['last_modified'])[:16].replace('T', ' ')} UTC")
+            if s.get('generated'):
+              extra.append(f"generated {str(s['generated'])[:16]}")
+            return (f"| {label} | `{s.get('file', '?')}`, {num(s.get('bytes'))} bytes, sha256 `{str(s.get('sha256', ''))[:16]}...`"
+                    + (', ' + ', '.join(extra) if extra else '') + ' |')
+
+
+          counts = new.get('counts') or {}
+          body = [
+            new['attribution'],
+            '',
+            '| file | |',
+            '|---|---|',
+            f"| `nsw_zones.npz` | {num(new['bytes'])} bytes, sha256 `{new['sha256']}`, index format {new['format_version']} |",
+            '| `manifest.json` | what the device reads first: format, sha256, size, counts, calendar coverage, gates |',
+            '| `ATTRIBUTION.txt` | the attribution and license |',
+            '',
+            '| | |',
+            '|---|---|',
+            f'| data version | {dv} |',
+            f"| speed-zone features | {num(new.get('feature_count'))} |",
+            f"| line parts | {num(counts.get('base_parts'))} base, {num(counts.get('overlay_parts'))} overlay (School, School Bus, Wet Weather) |",
+            f"| school zones | {num(counts.get('schools'))} |",
+            f'| school-day calendar | {cov(new)} |',
+            f"| gates | {'all passed' if gates.get('passed') else 'FAILED'}" + (f', self-test {st * 100:.1f} % right' if isinstance(st, (int, float)) else '') + ' |',
+            src_row('speed_zones', 'Speed Zones source'),
+            src_row('school_zones', 'School Zones source'),
+            f"| built by | [{E['SOURCE_REPO']}@{commit[:9]}]({server}/{E['SOURCE_REPO']}/tree/{commit}/{E['BUILDER_DIR']}) `build_index.py`, [run]({run_url}) |",
+            '',
+          ]
+          if old is not None:
+            since = E['DATED_PREFIX'] + str(old.get('data_version'))  # the dated release of the previous data
+            if changed and areas:
+              body.append(f"**Changes since `{since}`:** {', '.join(areas)}.")
+            elif changed:
+              body.append(f'**Published as changed since `{since}`:** {why}.')
+            else:
+              body.append(f"**Same content as `{since}`**, published again ({'forced by hand' if force else latest + ' was missing'}).")
+            body.append('')
+            body += [f'- {c}' for c in notes_changes]
+            body.append('')
+          body += [
+            f"Source: [Transport for NSW Open Data Hub, Speed Zones]({E['DATASET_PAGE']}) (Speed Zones and School Zones resources). "
+            + 'License: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).',
+            '',
+            'Speed limits in this file can be out of date or wrong. The signs on the road always apply.',
+            '',
+            '```text',
+            attribution_txt,
+            '```',
+          ]
+          base_url = f'{server}/{repo}/releases/download/{latest}/'
+          head_dated = [f'NSW speed-zone index for the SoRadGaming sunnypilot fork, **data version {dv}**. '
+                        + f'The car downloads the newest one from `{latest}`; this dated release keeps this version.', '']
+          head_latest = [f'**The newest** NSW speed-zone index for the SoRadGaming sunnypilot fork: data version {dv} '
+                         + f'(also kept as [`{dated}`]({server}/{repo}/releases/tag/{dated})). The car reads '
+                         + f'`{base_url}manifest.json` and downloads `nsw_zones.npz` only when its sha256 is new.', '']
+          with open('cmp/notes-dated.md', 'w', encoding='utf-8') as f:
+            f.write('\n'.join(head_dated + body) + '\n')
+          with open('cmp/notes-latest.md', 'w', encoding='utf-8') as f:
+            f.write('\n'.join(head_latest + body) + '\n')
+          with open('cmp/changes.json', 'w', encoding='utf-8') as f:
+            json.dump({'changed': changed, 'why': why, 'publish': publish, 'decision': decision, 'changes': notes_changes}, f, indent=1)
+
+          def one(s):
+            return ' '.join(str(s).split())
+
+
+          with open(E['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
+            f.write(f"changed={'true' if changed else 'false'}\npublish={'true' if publish else 'false'}\n")
+            f.write(f'why={one(why)}\ndecision={one(decision)}\ndated_tag={dated}\n')
+          print(decision)
+          for c in notes_changes:
+            print('  ' + c)
+          PY
+
+      - name: Hand the files to the publish job
+        if: steps.cmp.outputs.publish == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7.0.1
+        with:
+          name: nsw-release
+          path: |
+            out/nsw_zones.npz
+            out/manifest.json
+            out/ATTRIBUTION.txt
+            cmp/notes-dated.md
+            cmp/notes-latest.md
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0     # the npz is deflated already
+
+      - name: Summary
+        if: always()
+        env:
+          O_PKG: ${{ steps.pkg.outcome }}
+          O_TESTS: ${{ steps.tests.outcome }}
+          O_PREV: ${{ steps.prev.outcome }}
+          O_SRC: ${{ steps.src.outcome }}
+          O_BUILD: ${{ steps.build.outcome }}
+          O_CMP: ${{ steps.cmp.outcome }}
+          BUILDER_COMMIT: ${{ steps.pkg.outputs.commit }}
+          BUILDER_DIR: ${{ steps.pkg.outputs.dir }}
+          PREV_TAG: ${{ steps.prev.outputs.tag }}
+          PREV_DV: ${{ steps.prev.outputs.data_version }}
+          DECISION: ${{ steps.cmp.outputs.decision }}
+        run: |
+          # python3: the system one, so this step works even if setup-python failed.
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY" || echo "### nsw speed zones: the summary step itself failed; see the log" >> "$GITHUB_STEP_SUMMARY"
+          import json
+          import os
+
+          E = os.environ
+
+
+          def load(path):
+            try:
+              with open(path, encoding='utf-8') as f:
+                return json.load(f)
+            except (OSError, ValueError):
+              return None
+
+
+          def cell(s):
+            return ' '.join(str(s).split()).replace('|', '\\|')
+
+
+          O = {k: E.get('O_' + k, '') or 'not run' for k in ('PKG', 'TESTS', 'PREV', 'SRC', 'BUILD', 'CMP')}
+          m = load('out/manifest.json') or {}
+          rep = load('out/build_report.json') or {}
+          srcs = (load('src/sources.json') or {}).get('sources', {})
+          ch = load('cmp/changes.json') or {}
+          print('### NSW speed zones: build')
+          print()
+          print('| step | result |')
+          print('|---|---|')
+          c = E.get('BUILDER_COMMIT', '')
+          print(f"| builder | {O['PKG']}" + (f": `{E['SOURCE_REPO']}@{c[:9]}` `{E.get('BUILDER_DIR', '')}`" if c else '') + ' |')
+          print(f"| unit tests | {O['TESTS']} |")
+          prev = f"`{E['PREV_TAG']}` (data version {E.get('PREV_DV') or '?'})" if E.get('PREV_TAG') else 'none (first build)'
+          print(f"| previous release | {O['PREV']}: {prev} |" if O['PREV'] == 'success' else f"| previous release | {O['PREV']} |")
+          s = '; '.join(f"`{p['file']}` {p['bytes'] / 1e6:.1f} MB (TfNSW {str(p.get('last_modified') or '?')[:16].replace('T', ' ')}, {p['resolved_by']})"
+                        for p in srcs.values() if 'bytes' in p)
+          print(f"| TfNSW download | {O['SRC']}" + (f': {s}' if s else '') + ' |')
+          if m:
+            print(f"| build | {O['BUILD']}: {m['bytes'] / 1e6:.2f} MB, sha256 `{m['sha256'][:16]}...`, data version {m['data_version']}, "
+                  + f"{m.get('feature_count', 0):,} features, {(m.get('counts') or {}).get('schools', '?')} school zones |")
+          else:
+            print(f"| build | {O['BUILD']} |")
+          print(f"| decision | {O['CMP']}" + (f": {cell(E['DECISION'])}" if E.get('DECISION') else '') + ' |')
+          g = rep.get('gates') or {}
+          if g.get('failures'):
+            print()
+            print('**Gate failures** (nothing was published):')
+            print()
+            for x in g['failures'][:30]:
+              print(f'- {cell(x)[:600]}')
+          rv = rep.get('review') or {}
+          ld = rv.get('limit_diff') or {}
+          if rv:
+            print()
+            print('Review (limits that went up, school and Variable counts):' + (' **allowed by hand (force)**' if rv.get('allowed_by_hand') else ''))
+            print()
+            if 'raised_km' in ld:
+              print(f"- {ld['raised_km']} km raised ({ld['raised_fast_km']} km to 90+), {ld['lowered_km']} km lowered, "
+                    + f"{ld['new_km']} km new or re-drawn ({ld['new_fast_km']} km of it 90+)")
+              for x in (ld.get('raised_examples') or [])[:10]:
+                print(f"  - {cell(x.get('type'))} {x.get('from')} -> {x.get('to')} km/h, {x.get('km')} km, at {x.get('lat')}, {x.get('lon')}")
+            for x in (rv.get('failures') or []) + (rv.get('notes') or []):
+              print(f'- {cell(x)[:600]}')
+          if g.get('warnings'):
+            print()
+            print('Builder warnings:')
+            print()
+            for x in g['warnings'][:30]:
+              print(f'- {cell(x)[:600]}')
+          if ch.get('changes'):
+            print()
+            print('Changes against the previous release:')
+            print()
+            for x in ch['changes']:
+              print(f'- {cell(x)}')
+          PY
+
+  publish:
+    name: publish the NSW speed-zone index
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write            # create and edit this repo's releases
+    env:
+      DV: ${{ needs.build.outputs.data_version }}
+      DATED_TAG: ${{ needs.build.outputs.dated_tag }}
+      WANT_SHA: ${{ needs.build.outputs.sha256 }}
+      WANT_BYTES: ${{ needs.build.outputs.bytes }}
+    # No checkout and nothing installed: this job runs only the runner's own gh, curl and python3, and this file.
+
+    steps:
+      - name: Take the files from the build job
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c   # v8.0.1
+        with:
+          name: nsw-release
+          path: rel
+          digest-mismatch: error
+
+      - name: Verify the files (the verifier in this workflow, not the builder's code)
+        id: check
+        run: |
+          set -euo pipefail
+          # The same checks the car makes before it uses a file, done with the standard
+          # library only: nothing from the build job (which ran sunnypilot's code) runs here.
+          cat > verify.py <<'PY'
+          import hashlib
+          import json
+          import os
+          import struct
+          import sys
+          import zipfile
+
+          FORMATS = (1, 2)  # index.SUPPORTED_FORMATS: what the car's code reads
+          REQUIRED = ('format_version', 'sha256', 'bytes', 'data_version', 'attribution')
+          MEMBERS = ('meta_json.npy', 'attribution.npy', 'b_part_speed.npy', 'b_part_len.npy', 'b_vlat_d.npy', 's_zone_id.npy')
+
+
+          def npy_bytes(z, name):
+            d = z.read(name)
+            if d[:6] != b'\x93NUMPY':
+              raise ValueError(f'{name} is not a .npy member')
+            major = d[6]
+            hl = struct.unpack('<H', d[8:10])[0] if major == 1 else struct.unpack('<I', d[8:12])[0]
+            start = (10 if major == 1 else 12) + hl
+            head = d[start - hl:start].decode('latin1')
+            if "'|u1'" not in head:
+              raise ValueError(f'{name}: not a uint8 array ({head.strip()})')
+            return d[start:]
+
+
+          def verify(folder, want_sha=None, want_bytes=None, want_dv=None):
+            with open(os.path.join(folder, 'manifest.json'), encoding='utf-8') as f:
+              m = json.load(f)
+            miss = [k for k in REQUIRED if k not in m]
+            if miss:
+              sys.exit(f'manifest.json lacks {miss}')
+            if m['format_version'] not in FORMATS:
+              sys.exit(f"format {m['format_version']} is not one the car reads {FORMATS}")
+            npz = os.path.join(folder, 'nsw_zones.npz')
+            size = os.path.getsize(npz)
+            h = hashlib.sha256()
+            with open(npz, 'rb') as f:
+              for b in iter(lambda: f.read(1 << 22), b''):
+                h.update(b)
+            sha = h.hexdigest()
+            if size != int(m['bytes']) or sha != str(m['sha256']).lower():
+              sys.exit(f"nsw_zones.npz is {size} bytes / {sha[:16]}..., the manifest says {m['bytes']} / {str(m['sha256'])[:16]}...")
+            if want_sha and sha != want_sha:
+              sys.exit(f'sha256 {sha[:16]}... is not the one the build job made ({want_sha[:16]}...)')
+            if want_bytes and size != int(want_bytes):
+              sys.exit(f'{size} bytes, the build job made {want_bytes}')
+            if want_dv and m['data_version'] != want_dv:
+              sys.exit(f"data version {m['data_version']}, the build job made {want_dv}")
+            if 'Transport for NSW' not in m['attribution']:
+              sys.exit('the manifest lacks the attribution')
+            with zipfile.ZipFile(npz) as z:
+              bad = z.testzip()
+              if bad is not None:
+                sys.exit(f'nsw_zones.npz: member {bad} fails its CRC')
+              names = set(z.namelist())
+              miss = [n for n in MEMBERS if n not in names]
+              if miss:
+                sys.exit(f'nsw_zones.npz lacks {miss}')
+              meta = json.loads(npy_bytes(z, 'meta_json.npy').decode('utf-8'))
+            if meta.get('format_version') != m['format_version'] or meta.get('data_version') != m['data_version']:
+              sys.exit(f"the index says format {meta.get('format_version')} / {meta.get('data_version')}, the manifest "
+                       + f"{m['format_version']} / {m['data_version']}")
+            if 'Transport for NSW' not in str(meta.get('attribution', '')):
+              sys.exit('the index lacks the attribution')
+            with open(os.path.join(folder, 'ATTRIBUTION.txt'), encoding='utf-8') as f:
+              txt = f.read()
+            if 'Transport for NSW' not in txt or 'CC BY 4.0' not in txt:
+              sys.exit('ATTRIBUTION.txt lacks the attribution')
+            print(f"verified: {size:,} bytes, sha256 {sha[:16]}..., format {m['format_version']}, data version {m['data_version']}")
+
+
+          if __name__ == '__main__':
+            E = os.environ
+            verify(sys.argv[1], E.get('WANT_SHA'), E.get('WANT_BYTES'), E.get('DV'))
+          PY
+          mkdir -p out cmp
+          for f in nsw_zones.npz manifest.json ATTRIBUTION.txt; do cp "rel/out/$f" out/; done
+          for f in notes-dated.md notes-latest.md; do cp "rel/cmp/$f" cmp/; done
+          python3 verify.py out
+
+      - name: Publish the releases
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # publish <tag> <title> <notes file>: create the release, or update it in place.
+          # The index goes first and the manifest last (see the top of this file).
+          publish() {
+            local tag="$1" title="$2" notes="$3" rc=0
+            gh release view "$tag" --json tagName > /dev/null 2> gh.err || rc=$?
+            if [ $rc -ne 0 ] && ! grep -qi 'release not found' gh.err; then cat gh.err >&2; return 1; fi
+            if [ $rc -ne 0 ]; then
+              echo "==> ${tag}: creating it"
+              # All assets are uploaded to a draft before it is published, so the new
+              # release never appears without its files. --latest=false: this data
+              # release must not become the repo's "Latest release".
+              gh release create "$tag" out/nsw_zones.npz out/ATTRIBUTION.txt out/manifest.json \
+                --target "$GITHUB_SHA" --title "$title" --notes-file "$notes" --latest=false
+            else
+              echo "==> ${tag}: replacing its assets in place"
+              for f in out/nsw_zones.npz out/ATTRIBUTION.txt out/manifest.json; do
+                gh release upload "$tag" "$f" --clobber
+              done
+              # --draft=false also publishes a draft left behind by a run that died half way
+              gh release edit "$tag" --title "$title" --notes-file "$notes" --draft=false
+            fi
+          }
+          # The dated release first: if the run stops half way, the next run still finds
+          # the newest data there even when nswzones-latest is missing.
+          publish "$DATED_TAG" "NSW speed zones ${DV}" cmp/notes-dated.md
+          publish "$LATEST_TAG" "NSW speed zones: latest (${DV})" cmp/notes-latest.md
+
+          # Move the nswzones-latest tag to this run's commit. It is only cosmetic, since
+          # downloads go by tag name. GitHub can refuse GITHUB_TOKEN a ref update that
+          # spans a change to .github/workflows, so a refusal is only a notice.
+          at="$(gh api "repos/${GH_REPO}/git/ref/tags/${LATEST_TAG}" --jq .object.sha 2> /dev/null || true)"
+          if [ -n "$at" ] && [ "$at" != "$GITHUB_SHA" ]; then
+            if gh api -X PATCH "repos/${GH_REPO}/git/refs/tags/${LATEST_TAG}" -f sha="$GITHUB_SHA" -F force=true > /dev/null 2> gh.err; then
+              echo "${LATEST_TAG} tag moved to ${GITHUB_SHA}"
+            else
+              echo "::notice::${LATEST_TAG} tag left at ${at:0:9} ($(tail -n1 gh.err)); its release and assets are current"
+            fi
+          fi
+          echo "published ${DATED_TAG} and ${LATEST_TAG}"
+
+      - name: Check what the device will download
+        id: verify
+        if: steps.publish.outcome == 'success'
+        run: |
+          set -euo pipefail
+          # Anonymous, from the same URLs as the device, checked with the same verifier.
+          # Assets can take a moment to show.
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${LATEST_TAG}"
+          for attempt in 1 2 3 4 5 6; do
+            rm -rf dl; mkdir dl
+            ok=true
+            for f in manifest.json nsw_zones.npz ATTRIBUTION.txt; do
+              curl --fail --location --silent --show-error --retry 3 --connect-timeout 30 --max-time 600 -o "dl/$f" "$base/$f" || { ok=false; break; }
+            done
+            if $ok && python3 verify.py dl; then
+              exit 0
+            fi
+            echo "attempt ${attempt}: not there yet"
+            sleep 20
+          done
+          echo "::error::${base}/ does not serve what this run published; check the ${LATEST_TAG} release by hand"
+          exit 1
+
+      - name: Summary
+        if: always()
+        env:
+          O_CHECK: ${{ steps.check.outcome }}
+          O_PUBLISH: ${{ steps.publish.outcome }}
+          O_VERIFY: ${{ steps.verify.outcome }}
+          DECISION: ${{ needs.build.outputs.decision }}
+        run: |
+          {
+            echo "### NSW speed zones: publish"
+            echo
+            echo "| step | result |"
+            echo "|---|---|"
+            echo "| decision | ${DECISION//|/\|} |"
+            echo "| files checked | ${O_CHECK:-not run} |"
+            echo "| publish | ${O_PUBLISH:-not run}: \`${DATED_TAG}\` and \`${LATEST_TAG}\` |"
+            echo "| device download check | ${O_VERIFY:-not run}: \`${LATEST_TAG}\` as the car downloads it |"
+            echo
+            echo "Device URL: \`https://github.com/${GITHUB_REPOSITORY}/releases/download/${LATEST_TAG}/manifest.json\`"
+          } >> "$GITHUB_STEP_SUMMARY"
