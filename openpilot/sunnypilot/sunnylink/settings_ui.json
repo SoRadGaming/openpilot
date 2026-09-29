@@ -212,6 +212,45 @@
                       "type": "offroad_only"
                     }
                   ]
+                },
+                {
+                  "key": "MadsEmergencySteerDisable",
+                  "widget": "toggle",
+                  "title": "Turn Off Steering on a Fast Wheel",
+                  "description": "Turn MADS steering off, not pause it, when you turn the wheel fast, as in a swerve. Turn MADS back on the usual way (the LKAS button on most cars). Applies to every car. When off, a fast wheel alone never turns steering off.",
+                  "sub_items": [
+                    {
+                      "key": "MadsEmergencySteerRate",
+                      "widget": "option",
+                      "title": "Fast Wheel Threshold",
+                      "description": "How fast the wheel must turn, held for two frames (20 ms). In two hours of logged lane keeping on the Accord the wheel never went above 151\u00b0/s, so 150 can turn steering off on a hard curve.",
+                      "options": [
+                        {
+                          "value": 150,
+                          "label": "150\u00b0/s"
+                        },
+                        {
+                          "value": 200,
+                          "label": "200\u00b0/s (default)"
+                        },
+                        {
+                          "value": 250,
+                          "label": "250\u00b0/s"
+                        },
+                        {
+                          "value": 300,
+                          "label": "300\u00b0/s"
+                        }
+                      ],
+                      "enablement": [
+                        {
+                          "type": "param",
+                          "key": "MadsEmergencySteerDisable",
+                          "equals": true
+                        }
+                      ]
+                    }
+                  ]
                 }
               ]
             }

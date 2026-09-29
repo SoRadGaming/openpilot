@@ -263,7 +263,7 @@ Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-sp
 | A | `docs/fork/README.md`, `GATEWAY-UPDATE.md`, `LKAS-GATEWAY-PROTOCOL.md`, `CAR-HONDA-ACCORD-9G-AU.md` | — | These documents. | 0 | clean |
 | A | `docs/fork/UPSTREAM-2026-09.md` | — | What the 2026-09 sync brought. | 0 | added in the merge |
 | M | `openpilot/cereal/custom.capnp` | A+B | Adds `CarControlSP.lateralControl @5` (B), `CarStateSP.linbusGateway @1` (fields @0–@18 B, @19–@26 A) and `CarStateSP.driverTorqueStale @2` (B). | 0 | auto |
-| M | `openpilot/common/params_keys.h` | A+C+SL | Adds 7 `EpsLkas*` keys (A), 9 `HondaDyn*` keys (C), and `SpeedLimitMapStrict`, `OsmAutoUpdateWeekly`, `OsmLastCompleteDate` (SL). | 0 | auto |
+| M | `openpilot/common/params_keys.h` | A+B+C+SL | Adds 7 `EpsLkas*` keys (A), 9 `HondaDyn*` keys (C), and `SpeedLimitMapStrict`, `OsmAutoUpdateWeekly`, `OsmLastCompleteDate` (SL), and `MadsEmergencySteerDisable`, `MadsEmergencySteerRate` (B, the fast-wheel takeover's settings). | 0 | auto |
 | M | `openpilot/selfdrive/car/card.py` | A+C | A: `stage_board_firmware()`, `write_board_firmware()` and `log_flash_trace()`, called from `params_thread` (staging from `state_publish`). C: `get_car(..., skip_fw_query=bool(fixed_fingerprint))`. | 0 | auto |
 | M | `openpilot/selfdrive/car/helpers.py` | B | `convert_carControlSP()` rebuilds `lateralControl`. | 0 | auto |
 | A | `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | B (+A) | Every nested `CarControlSP` struct, and the firmware fields, through the capnp→dataclass seam (1 test). | 0 | new→moved |
@@ -283,15 +283,16 @@ Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-sp
 | A | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/board.py` | A | Settings > gateway page: `BoardLayoutMici`, `UpdateBoardButton`, `board_page_visible`, `bundled_firmware`. | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/maps.py` | SL | Settings > maps: `MapsLayoutMici`, `MapDataInfo` (one card per data set), `UpdateOsmButton` (parked only; writes `OsmDbUpdatesCheck`), the "update weekly" toggle. | 0 | new |
 | M | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py` | A+C+SL | Adds a "vehicle" row (C) and a "gateway" row (A) with `items.insert(2, ...)` and `items.insert(3, ...)`, a form two tests pin, and a "maps" row (SL) with `items.insert(4, ...)`. | 0 | CONFLICT |
-| A | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/vehicle.py` | C | mici vehicle page: `VehicleLayoutMici`, `car_brand()`, `HondaLearnedInfo`. | 0 | new→moved |
+| A | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/vehicle.py` | C (+B) | mici vehicle page: `VehicleLayoutMici`, `car_brand()`, `HondaLearnedInfo`; and (B) the fast-wheel rows, "off on swerve" and "swerve at", the rate (`FastWheelRateToggle`). | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/tests/test_eps_lkas_flasher.py` | A | Flasher protocol, image checks and trace (26 tests). | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/tests/test_eps_lkas_hook.py` | A | pandad hook ordering, the onroad refusal and param registration (10 tests). | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/tests/test_gateway_board_settings.py` | A (+B) | DBC, capnp, params, page and button gates (25 tests), including `test_lat_ready_means_lateral_is_enabled_not_merely_possible` (B). | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py` | C | Params, UI and sunnylink in sync with the tuner (11 tests). | 0 | new→moved |
+| A | `openpilot/selfdrive/ui/tests/test_mads_fast_wheel_settings.py` | B | The fast-wheel settings in agreement across `params_keys.h`, `mads.py`, the mici page and sunnylink (15 tests). | 0 | new |
 | A | `openpilot/selfdrive/ui/tests/test_maps_settings.py` | SL | The maps page contract: gates, confirm flow, dates, glyphs (source-parsing tests). | 0 | new |
-| M | `openpilot/sunnypilot/mads/mads.py` | B | Pauses on a gateway driver override (`LINBUS_REASON_DRIVER_OVERRIDE`, `_gw_paused`), holds the pause in `should_silent_lkas_enable()`, and also fires on the frame MADS is turned on. Adds the fast-wheel disable (`EMERGENCY_STEER_RATE` 200, `EMERGENCY_STEER_FRAMES` 2), which applies to **every** car. | 0 | CONFLICT |
+| M | `openpilot/sunnypilot/mads/mads.py` | B | Pauses on a gateway driver override (`LINBUS_REASON_DRIVER_OVERRIDE`, `_gw_paused`), holds the pause in `should_silent_lkas_enable()`, and also fires on the frame MADS is turned on. Adds the fast-wheel disable (`EMERGENCY_STEER_RATE` 200, `EMERGENCY_STEER_FRAMES` 2), which applies to **every** car; since 2026-09-30 a setting (`MadsEmergencySteerDisable`, default on; `MadsEmergencySteerRate` 150/200/250/300, default 200), read in `__init__` and `read_params()`. | 0 | CONFLICT |
 | M | `openpilot/sunnypilot/mads/state.py` | B | DISABLED branch: an ENABLE that arrives with `silentLkasDisable` goes to `paused`. | 0 | added in the merge |
-| A | `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | B | The gateway pause, resume, brake modes, emergency and enable-frame cases (18 tests). | 0 | new→moved |
+| A | `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | B | The gateway pause, resume, brake modes, emergency and enable-frame cases, and the fast-wheel settings (41 tests). | 0 | new→moved |
 | M | `openpilot/sunnypilot/mapd/mapd_manager.py` | SL | Three marked lines: runs `OsmAutoUpdater` each tick and clears `OsmLastCompleteDate` with the maps. | 0 | new |
 | A | `openpilot/sunnypilot/mapd/osm_auto_update.py` | SL | `auto_update_due()` (pure) and `OsmAutoUpdater`: weekly refresh when parked (no ignition on any panda) on unmetered wi-fi/ethernet, once per boot; `record_completion()` writes `OsmLastCompleteDate`. | 0 | new |
 | A | `openpilot/sunnypilot/mapd/tests/test_osm_auto_update.py` | SL | The refresh decision and the completion recorder. | 0 | new |
@@ -310,8 +311,9 @@ Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-sp
 | A | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_appslot.bin` | A | Board app-slot image: 46,540 bytes, marker `APL1`, origin `0x08004000`, commit `d995bc95`, flags `0x04` (INCAR_TEST). | 0 | new→moved |
 | A | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_flasher.py` | A | Portable bootloader protocol, `PandaTransport` (ELM327), `BenchTransport`, and the steering/vibration trace. | 0 | new→moved |
 | A | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_hook.py` | A | pandad glue: `flash_if_requested()`, `watch_for_request()`. | 0 | new→moved |
-| M | `openpilot/sunnypilot/sunnylink/settings_ui.json` | C | Compiled output of the two YAML files below. | 0 | auto, then recompiled |
+| M | `openpilot/sunnypilot/sunnylink/settings_ui.json` | C+B | Compiled output of the YAML files below. | 0 | auto, then recompiled |
 | M | `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/cruise.yaml` | C+SL | `honda_dynamic_learning` read-only info section (C); the "Strict Map Speed Limits" toggle in the speed limit settings (SL). | 0 | moved |
+| M | `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/steering.yaml` | B | MADS Settings: "Turn Off Steering on a Fast Wheel" (`MadsEmergencySteerDisable`) with "Fast Wheel Threshold" (`MadsEmergencySteerRate`) under it. | 0 | new |
 | M | `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/vehicle.yaml` | C | `honda` section with the toggle. | 0 | auto |
 | M | `openpilot/sunnypilot/sunnylink/statsd.py` | C | Reports `HondaDynamicTuningEnabled` and the 8 learned values. | 0 | auto |
 | M | `openpilot/sunnypilot/sunnylink/tools/compile_settings_ui.py` | C (Other) | Reads and writes UTF-8 with an LF newline, so compiling on Windows matches CI. | 0 | moved |
@@ -419,10 +421,15 @@ An end-to-end probe after the merge also pushed a `CarStateSP` with every gatewa
 | `EpsLkasFlashProgress` | CLEAR_ON_MANAGER_START | STRING | – | A |
 | `EpsLkasFlashState` | CLEAR_ON_MANAGER_START | STRING | – | A |
 | `EpsLkasFlashTrace` | PERSISTENT | JSON | – | A |
+| `MadsEmergencySteerDisable` | PERSISTENT, BACKUP | BOOL | "1" | B |
+| `MadsEmergencySteerRate` | PERSISTENT, BACKUP | INT | "200" | B |
 
-Upstream's file at `a5f44653d` has 264 entries and none of these 16 names; the merged file has 280. The fork's two
+Upstream's file at `a5f44653d` has 264 entries and none of the 16 A and C names; the merged file has 280. The fork's two
 blocks sit between stable neighbours: `HideVEgoUI`/`IntelligentCruiseButtonManagement` and
-`InteractivityTimeout`/`IsDevelopmentBranch`. Upstream still defines the `FLOAT` and `JSON` types.
+`InteractivityTimeout`/`IsDevelopmentBranch`. Upstream still defines the `FLOAT` and `JSON` types. The two B keys came
+after that merge (2026-09-30) and sit inside upstream's `// MADS params` block, between `Mads` and
+`MadsMainCruiseAllowed`. The 3 SL keys are named in the `params_keys.h` row of the file table above; the 5 NSW keys
+are in [NSW-SPEED-ZONES.md](NSW-SPEED-ZONES.md).
 
 **Why a name collision would be silent.** The table is an `std::unordered_map` initializer list. A duplicate key
 compiles without complaint, and only one entry survives. After every merge, check:
@@ -754,7 +761,8 @@ Then the content conflicts, callee before callers. The shape each fork hunk has 
 Then review these auto-merged files by reading the fork hunks, not only the conflict list:
 
 * `openpilot/cereal/custom.capnp`: ordinals as in the table above.
-* `openpilot/common/params_keys.h`: all 16 keys present; the duplicate check above prints nothing.
+* `openpilot/common/params_keys.h`: every key in the params table above present (7 A, 9 C, 2 B), plus the 3 SL keys
+  and the 5 `FORK(NSW-ZONES)` keys; the duplicate check above prints nothing.
 * `openpilot/selfdrive/car/card.py`: `skip_fw_query=`, `stage_board_firmware(CS_SP)` at the end of `state_publish`,
   and `write_board_firmware()` plus `log_flash_trace()` in `params_thread`.
 * `openpilot/selfdrive/car/helpers.py`: the `lateralControl` rebuild.
@@ -855,7 +863,8 @@ First drive:
    (0.25 m/s²), not reset.
 5. **Driver override.** A driver override pauses MADS (not off) and it resumes by itself, and the cluster keeps the
    dashed lanes. Through the whole override `carControl.latActive` stays 0; it must not alternate frame by frame.
-   Turning MADS on during an override starts it paused. A fast wheel of 200 deg/s or more turns MADS off. In Pause
+   Turning MADS on during an override starts it paused. A fast wheel of 200 deg/s or more (the default of
+   `MadsEmergencySteerRate`) turns MADS off, unless `MadsEmergencySteerDisable` is off. In Pause
    mode, with the brake held, a gateway pause does **not** resume until the brake is released.
 6. **Brake.** With lateral active, a brake press walks the command to zero in about 0.2 s.
 7. **Lane change.** A brush with the blinker on does not start a lane change; a firm tug or a held push does.
@@ -938,8 +947,11 @@ write the next `UPSTREAM-<date>.md`.
 
 These are the hunks to look at first when judging whether a merge changed another car.
 
-* **`mads.py` emergency fast-wheel disable** (`EMERGENCY_STEER_RATE`) is **not gated**. It applies to every car with
-  MADS enabled.
+* **`mads.py` emergency fast-wheel disable** (`EMERGENCY_STEER_RATE`) is **not gated** on the car. It applies to every car
+  with MADS enabled, but since 2026-09-30 it is a setting: `MadsEmergencySteerDisable` (default **on**, which is the
+  old behaviour) turns it off, and `MadsEmergencySteerRate` picks 150, 200 (default), 250 or 300 deg/s. Both are in
+  sunnylink (Steering > MADS Settings) and on the mici's Settings > vehicle page, which is shown only on a Honda or an
+  unrecognised car - on another car the switch is in sunnylink only.
 * **`card.py` passes `skip_fw_query=bool(fixed_fingerprint)`.** Every car whose platform the user picked skips the
   VIN/FW query and runs with empty `carFw`/VIN, not just this car.
 * **`longcontrol.py`** reads a Honda parameter (`HondaDynamicTuningEnabled`) in a file every car runs. It is inert
@@ -965,8 +977,8 @@ These are the hunks to look at first when judging whether a merge changed anothe
    * `stage_board_firmware`, `write_board_firmware` and `log_flash_trace`, into a module under
      `openpilot/sunnypilot/selfdrive/car/`;
    * the integrator gate, as a mixin.
-5. Gate the two ungated changes above: `EMERGENCY_STEER_RATE`, and `skip_fw_query` via a per-platform set. Otherwise
-   document them as deliberate all-car behaviour.
+5. Gate the two ungated changes above: `EMERGENCY_STEER_RATE` (now at least a setting an owner can turn off), and
+   `skip_fw_query` via a per-platform set. Otherwise document them as deliberate all-car behaviour.
 6. Write new tests as `unittest.TestCase`, with no work done at import time and no `parents[n]` paths that reach
    outside the tree they test.
 7. Before each merge, check upstream's highest ordinal in `CarControlSP` and `CarStateSP`, and keep the fork's fields

@@ -10,13 +10,18 @@ reach the Honda dynamic longitudinal tuner on a mici device at all.
 
 Same params as the big UI and as the sunnylink schema -- one setting, three
 front ends.
+
+FORK(LKAS-GATEWAY): also the fast-wheel takeover in mads.py (MadsEmergencySteerDisable
+and its threshold, MadsEmergencySteerRate). The mici has no MADS page; this is the
+fork's own page, so it costs no upstream diff. The same two params are in sunnylink
+under Steering > MADS Settings.
 """
 import time
 
 import pyray as rl
 
 from openpilot.common.constants import CV
-from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigParamControl
+from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigMultiToggle, BigParamControl
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.vehicle.brands.honda import (
   PEDAL_GAIN_BP,
@@ -34,6 +39,26 @@ from openpilot.system.ui.widgets.scroller import NavScroller
 
 # params are files: read the learned state on a tick, not every frame
 REFRESH_S = 1.0
+
+# The fast-wheel takeover (mads.py). Spelled out here rather than imported, so the settings
+# page never pulls in selfdrived's MADS; test_mads_fast_wheel_settings.py keeps the copy honest.
+FAST_WHEEL_PARAM = "MadsEmergencySteerDisable"
+FAST_WHEEL_RATE_PARAM = "MadsEmergencySteerRate"
+FAST_WHEEL_RATES = (150, 200, 250, 300)   # deg/s, mads.EMERGENCY_STEER_RATES
+FAST_WHEEL_DEFAULT = 200                  # deg/s, mads.EMERGENCY_STEER_RATE
+
+
+def fast_wheel_rate_label(rate: int) -> str:
+  return f"{rate}°/s"  # the degree sign is in EXTRA_FONT_CHARS
+
+
+def read_fast_wheel_rate() -> int:
+  """The threshold as mads.py reads it: anything outside FAST_WHEEL_RATES is the default."""
+  try:
+    rate = float(ui_state.params.get(FAST_WHEEL_RATE_PARAM, return_default=True))
+  except (TypeError, ValueError):
+    return FAST_WHEEL_DEFAULT
+  return int(rate) if rate in FAST_WHEEL_RATES else FAST_WHEEL_DEFAULT
 
 
 _brand_cache: list = ["", 0.0]
@@ -119,6 +144,23 @@ class HondaLearnedInfo(Widget):
     self.trim_text.render()
 
 
+class FastWheelRateToggle(BigMultiToggle):
+  """Steps through FAST_WHEEL_RATES and writes the rate itself. BigMultiParamToggle would
+  store the option's INDEX, which mads.py would read as 0..3 deg/s and replace with 200."""
+
+  def __init__(self):
+    super().__init__(tr("swerve at"), [fast_wheel_rate_label(r) for r in FAST_WHEEL_RATES],
+                     select_callback=self._on_select)
+    self.refresh()
+
+  def _on_select(self, label: str) -> None:
+    rate = FAST_WHEEL_RATES[self._options.index(label)]
+    ui_state.params.put(FAST_WHEEL_RATE_PARAM, rate, block=True)
+
+  def refresh(self) -> None:
+    self.set_value(fast_wheel_rate_label(read_fast_wheel_rate()))
+
+
 class VehicleLayoutMici(NavScroller):
   # No back_callback: NavWidget pops itself on swipe-down, and a pop_widget
   # callback on top of that popped Settings too (upstream 099143ad9).
@@ -135,7 +177,15 @@ class VehicleLayoutMici(NavScroller):
     # onroad would just be undone
     self._reset_btn.set_enabled(ui_state.is_offroad)
 
-    self._scroller.add_widgets([self._learned_info, self._learning_toggle, self._reset_btn])
+    # the fast-wheel takeover: on/off, then the rate. mads.py re-reads both every 0.1 s, so
+    # neither is gated on offroad. The title names the action, so ON reads as "steering turns
+    # off on a swerve" and cannot be read as "the fast-wheel feature is off"
+    self._fast_wheel_toggle = BigParamControl(tr("off on swerve"), FAST_WHEEL_PARAM,
+                                              toggle_callback=self._on_fast_wheel_toggled)
+    self._fast_wheel_rate = FastWheelRateToggle()
+
+    self._scroller.add_widgets([self._learned_info, self._learning_toggle, self._reset_btn,
+                                self._fast_wheel_toggle, self._fast_wheel_rate])
 
     self._refreshed = 0.0
 
@@ -143,6 +193,10 @@ class VehicleLayoutMici(NavScroller):
     icon = gui_app.texture("../../sunnypilot/selfdrive/assets/offroad/icon_vehicle.png", 110, 110)
     gui_app.push_widget(BigConfirmationDialog(tr("slide to reset what this car has learned"), icon,
                                               confirm_callback=self._on_reset_confirmed, red=True))
+
+  def _on_fast_wheel_toggled(self, checked: bool) -> None:
+    # the rate means nothing with the takeover off
+    self._fast_wheel_rate.set_enabled(checked)
 
   def _on_reset_confirmed(self) -> None:
     reset_learned_values()  # re-checks offroad: the dialog can sit open across an ignition
@@ -158,6 +212,9 @@ class VehicleLayoutMici(NavScroller):
     # sunnylink app, and each toggle only reads its param when it is built
     self._refreshed = time.monotonic()
     self._learning_toggle.refresh()
+    self._fast_wheel_toggle.refresh()
+    self._fast_wheel_rate.refresh()
+    self._fast_wheel_rate.set_enabled(ui_state.params.get_bool(FAST_WHEEL_PARAM))
 
   def _update_state(self):
     super()._update_state()

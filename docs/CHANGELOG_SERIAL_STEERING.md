@@ -15,6 +15,33 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-09-30 — the fast-wheel takeover is now a setting
+
+**Turning the wheel fast turns MADS steering off (not a pause), and you can now
+switch that off or change how fast "fast" is.** Nothing changes unless you
+change it: it is on by default at 200°/s, exactly as before.
+
+* **Where:** sunnylink, Steering → MADS Settings: **Turn Off Steering on a Fast
+  Wheel**, with **Fast Wheel Threshold** under it. On the comma 4, Settings →
+  vehicle: **off on swerve** (ON means a fast wheel turns steering off) and
+  **swerve at** (the threshold; tap to step through).
+* **Thresholds:** 150, 200 (default), 250 or 300°/s, held for two frames
+  (20 ms). In two hours of logged lane keeping on this car the wheel never went
+  above 151°/s, so 150 can turn steering off on a hard curve. Any other stored
+  value reads as 200.
+* **Off:** a fast wheel alone never turns MADS off. The gateway's own pause on
+  driver torque is unchanged - a swerve during an override just pauses and
+  resumes like any other override.
+* **Applies at once,** onroad or off, within 0.1 s; no reboot.
+* It still applies to every car, not just this one (`docs/fork/README.md`,
+  "Where the fork does not follow those conventions").
+* **Tests:** 23 new MADS cases (every threshold, off, a raised threshold
+  during an override, live changes, bad values) and 15 settings-agreement
+  checks. `LKAS-GATEWAY-PROTOCOL.md` section 9 "Other" has the details. This is also the takeover's first changelog entry:
+  it arrived with `35622a994` and had none.
+
+---
+
 ## 2026-09-29 — NSW speed zones: the car's limit from Transport for NSW data
 
 **In NSW the speed limit now comes from Transport for NSW's own speed-zone data**
