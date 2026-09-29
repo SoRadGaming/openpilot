@@ -258,7 +258,7 @@ class TestMapDataControls(OpenpilotTestCase):
   def test_update_now_is_offroad_only_and_says_it_resets(self, schema, key):
     item = _find_item(schema, key)
     assert item is not None
-    assert "offroad_only" in _flatten_rule_types(item.get("enablement")), f"{key}: the app greys it out while driving"
+    assert "offroad_only" in _flatten_rule_types(item.get("enablement")), f"{key}: the app grays it out while driving"
     desc = item.get("description", "")
     assert "offroad" in desc and "switches it back off" in desc, desc
     # the device clears the param without bumping ParamsVersion: the app only sees it on its next load
