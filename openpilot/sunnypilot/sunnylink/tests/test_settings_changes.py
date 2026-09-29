@@ -220,3 +220,72 @@ class TestNotEngagedReplacement(OpenpilotTestCase):
     rule_types = _flatten_rule_types(item.get("enablement"))
     assert "offroad_only" not in rule_types, f"{key} still uses offroad_only"
     assert "not_engaged" in rule_types, f"{key} missing not_engaged"
+
+
+# FORK(NSW-ZONES) ------------------------------------------------------------------------------------------------------
+MAP_DATA_SUB_PANEL = "speed_limit_settings"
+MAP_DATA_NOW = ("NswZonesUpdateCheck", "OsmDbUpdatesCheck")      # requests mapd_manager consumes and clears
+MAP_DATA_WEEKLY = ("NswZonesAutoUpdate", "OsmAutoUpdateWeekly")
+
+
+def _sub_panel_items(schema: dict[str, Any], sub_panel_id: str) -> list[dict[str, Any]]:
+  for panel in schema.get("panels", []):
+    for sp in [*panel.get("sub_panels", []), *(s for sec in panel.get("sections", []) for s in sec.get("sub_panels", []))]:
+      if sp.get("id") == sub_panel_id:
+        return sp.get("items", [])
+  return []
+
+
+class TestMapDataControls(OpenpilotTestCase):
+  """The mici maps page's update buttons and weekly toggles, from the phone. The "Now" items are toggles: nothing in
+  this tree says what the app does for a `button` widget, and the device clears the param once it has the request."""
+
+  def test_they_sit_with_the_nsw_mode(self, schema):
+    keys = [item.get("key") for item in _sub_panel_items(schema, MAP_DATA_SUB_PANEL)]
+    assert "SpeedLimitNswZones" in keys
+    for key in (*MAP_DATA_NOW, *MAP_DATA_WEEKLY):
+      assert key in keys, f"{key} is not in the {MAP_DATA_SUB_PANEL} sub-panel"
+
+  @parameterized.expand([*MAP_DATA_NOW, *MAP_DATA_WEEKLY], names=["key"])
+  def test_they_are_toggles_over_bool_params(self, schema, key):
+    from openpilot.common.params import Params, ParamKeyType
+    item = _find_item(schema, key)
+    assert item is not None and item["widget"] == "toggle", item
+    assert Params().get_type(key) == ParamKeyType.BOOL, "a toggle writes a bool"
+    assert not item.get("blocked"), f"{key} must be writable from the app"
+
+  @parameterized.expand(list(MAP_DATA_NOW), names=["key"])
+  def test_update_now_is_offroad_only_and_says_it_resets(self, schema, key):
+    item = _find_item(schema, key)
+    assert item is not None
+    assert "offroad_only" in _flatten_rule_types(item.get("enablement")), f"{key}: the app greys it out while driving"
+    desc = item.get("description", "")
+    assert "offroad" in desc and "switches it back off" in desc, desc
+    # the device clears the param without bumping ParamsVersion: the app only sees it on its next load
+    assert "next time it loads" in desc, desc
+
+  def test_update_nsw_now_is_dimmed_with_the_mode_off(self, schema):
+    """With NSW zones off a tap would still download ~22 MB for a disabled feature: same rule as its weekly sibling."""
+    now, weekly = _find_item(schema, "NswZonesUpdateCheck"), _find_item(schema, "NswZonesAutoUpdate")
+    assert now is not None and weekly is not None
+    assert now.get("visibility") and now.get("visibility") == weekly.get("visibility"), now.get("visibility")
+
+  def test_update_osm_now_says_driving_off_does_not_stop_it(self, schema):
+    """mapd has no cancel: an OSM download started offroad runs on after the car drives off."""
+    item = _find_item(schema, "OsmDbUpdatesCheck")
+    assert item is not None and "Driving off does not stop" in item.get("description", "")
+
+  @parameterized.expand(list(MAP_DATA_NOW), names=["key"])
+  def test_sunnylink_can_write_the_request_and_sees_it_cleared(self, key):
+    """saveParams writes any key not in BLOCKED_PARAMS whatever its flags: CLEAR_ON_MANAGER_START is no obstacle.
+    Once mapd_manager has cleared it, getParams reports it off."""
+    import base64
+
+    from openpilot.common.params import Params
+    from openpilot.sunnypilot.sunnylink.athena import sunnylinkd
+    assert key not in sunnylinkd.BLOCKED_PARAMS
+    sunnylinkd.saveParams({key: base64.b64encode(b"1").decode()})
+    assert Params().get_bool(key)
+    assert base64.b64decode(sunnylinkd.getParams([key])[key]) in (b"True", b"1")
+    Params().remove(key)  # what the consumer does with a request, taken or refused
+    assert base64.b64decode(sunnylinkd.getParams([key])[key]) in (b"0", b"False")

@@ -73,7 +73,8 @@ class TestMapsSettings(unittest.TestCase):
     sync can find it."""
     for path, needles in ((MICI_SETTINGS, ("maps import", "maps_panel = ", "items.insert(4, maps_btn)")),
                           (MAPD_MANAGER, ("import OsmAutoUpdater", "OsmAutoUpdater(", "auto_updater.update()",
-                                          'params.remove("OsmLastCompleteDate")'))):
+                                          'params.remove("OsmLastCompleteDate")',
+                                          "def update_osm_db(request_allowed", "update_osm_db(auto_updater."))):
       lines = path.read_text().splitlines()
       for needle in needles:
         idx = next((i for i, line in enumerate(lines) if needle in line), None)
@@ -107,14 +108,34 @@ class TestMapsSettings(unittest.TestCase):
     assert "put_bool" in calls, "the confirm callback does not write the request param"
 
   def test_the_gate_is_offroad_and_a_region(self):
+    """Offroad, not parked: OffroadMode with the car on is offroad, and nothing is controlling the car then."""
     panel = MAPS_PANEL.read_text()
     src = ast.get_source_segment(panel, function(ast.parse(panel), "_can_update"))
     assert src is not None
     assert "is_offroad()" in src
-    # OffroadMode reads offroad while driving: the ignition decides
-    assert "ui_state.ignition" in src
+    assert "ignition" not in code_only(src), "the ignition no longer blocks a button press (OffroadMode, car on)"
     assert '"OsmLocationName"' in src
-    assert "no region set" in src and "car must be parked" in src
+    assert "no region set" in src and 'tr("offroad only")' in src
+
+  def test_mapd_manager_refuses_what_the_button_refuses(self):
+    """sunnylink writes OsmDbUpdatesCheck without the page: mapd_manager's gate is the one that counts, and it uses
+    the page's words."""
+    from openpilot.sunnypilot.mapd.osm_auto_update import OFFROAD_ONLY, REQUEST_PARAM
+    assert OFFROAD_ONLY == "offroad only" and REQUEST_PARAM == "OsmDbUpdatesCheck"
+    src = code_only(MAPD_MANAGER.read_text())
+    assert "auto_updater.update()" in src
+    auto = code_only((ROOT / "sunnypilot/mapd/osm_auto_update.py").read_text())
+    update = auto[auto.index("  def update(self)"):auto.index("  def record_completion")]
+    assert "self.answer_request()" in update
+
+  def test_gate_reasons_fit_the_value_line(self):
+    """The button's value line held "car must be parked" (18 chars); a reason no longer than that still fits."""
+    panel = MAPS_PANEL.read_text()
+    tree = ast.parse(panel)
+    for gate in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_can_update"):
+      src = ast.get_source_segment(panel, gate) or ""
+      for reason in re.findall(r'tr\("([^"]*)"\)', src):
+        assert len(reason) <= 18, reason
 
   def test_confirmation_exits_and_warns_to_stay_on(self):
     """OSMDownloadLocations is a /dev/shm param: a reboot drops a download in progress."""
@@ -201,6 +222,8 @@ class TestMapsSettings(unittest.TestCase):
     update_line = next(c.lineno for c in calls if isinstance(c.func, ast.Attribute) and c.func.attr == "update"
                        and isinstance(c.func.value, ast.Name) and c.func.value.id == "auto_updater")
     assert update_line < lines["update_osm_db"]
+    # and update_osm_db() is told whether the request it reads was checked this tick
+    assert "update_osm_db(auto_updater.request_allowed)" in code_only(MAPD_MANAGER.read_text())
 
 
 
@@ -240,7 +263,42 @@ class TestNswZonesSettings(unittest.TestCase):
     assert "_can_update" in calls and "_busy" in calls and "put_bool" in calls
     gate = ast.get_source_segment(panel, next(n for n in ast.walk(cls) if isinstance(n, ast.FunctionDef)
                                               and n.name == "_can_update"))
-    assert gate is not None and "is_offroad()" in gate and "ui_state.ignition" in gate
+    assert gate is not None and "is_offroad()" in gate and 'tr("offroad only")' in gate
+    assert "ignition" not in code_only(gate), "offroad is enough: OffroadMode with the car on"
+
+  def test_the_downloaders_onroad_answer_is_shown_as_it_is(self):
+    """A sunnylink request made onroad is answered "offroad only" in status.json; the button shows it, not "failed"."""
+    from openpilot.sunnypilot.mapd.nsw_zones import MODE_LIVE
+    from openpilot.sunnypilot.mapd.nsw_zones import downloader as dl
+    ok, why = dl.update_due(mode=MODE_LIVE, auto_enabled=True, forced=True, installed=True, last_check=0., now=0.,
+                            time_valid=True, device_state_ok=True, offroad=False, offroad_for=-1., network_up=True,
+                            unmetered=True, busy=False, retry_wait=False)
+    assert not ok and why == "offroad only", why
+    tree = ast.parse(MAPS_PANEL.read_text())
+    short = next(n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id == "NSW_SHORT_RESULTS" for t in n.targets))
+    assert why in ast.literal_eval(short.value)
+    assert dl.CHECK_PARAM == "NswZonesUpdateCheck"
+
+  def test_an_onroad_refusal_is_not_shown_once_offroad(self):
+    """A sunnylink tap while driving is answered "offroad only" and stamps last_attempt. Back offroad the button is
+    enabled, so its value line must not keep saying "offroad only" for the hour the last result is shown."""
+    from openpilot.sunnypilot.mapd.osm_auto_update import OFFROAD_ONLY
+    panel = MAPS_PANEL.read_text()
+    tree = ast.parse(panel)
+    onroad = next(n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                  and any(isinstance(t, ast.Name) and t.id == "NSW_ONROAD_RESULTS" for t in n.targets))
+    # and the refusal's old words, from a status.json written before the update to this rule
+    assert OFFROAD_ONLY in ast.literal_eval(onroad.value) and "car must be parked" in ast.literal_eval(onroad.value)
+    cls = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "UpdateNswButton")
+    refresh = code_only(ast.get_source_segment(panel, next(n for n in ast.walk(cls) if isinstance(n, ast.FunctionDef)
+                                                           and n.name == "refresh")) or "")
+    # onroad the gate's reason is shown first; offroad the last-result branch skips an onroad refusal
+    not_allowed = refresh.index("elif not allowed:")
+    last_result = refresh.index('st.get("last_result")')
+    assert not_allowed < last_result
+    branch = refresh[last_result:refresh.index("self.set_value(self._result_text", last_result)]
+    assert "not in NSW_ONROAD_RESULTS" in branch, branch
 
   def test_mapd_manager_wiring_is_marked(self):
     lines = MAPD_MANAGER.read_text().splitlines()

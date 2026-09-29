@@ -20,10 +20,18 @@ osm_auto_update.record_completion(). With no completion on record (a download
 from before the recorder existed) the header reads "requested" instead of
 "updated", and when a later request never completed the button says "incomplete".
 
-WHEN IT MAY RUN. Offroad is not enough: with OffroadMode on, deviceState says
-offroad while the car is driving, so the button also wants the ignition off.
-The weekly refresh runs parked and on wi-fi, and a phone hotspot IS wi-fi: it
-reads unmetered unless the connection is marked metered. The toggle says so.
+WHEN IT MAY RUN. The buttons work whenever the device is offroad, OffroadMode
+with the car on included: offroad nothing is controlling the car, and pressing
+a button is somebody's choice. mapd_manager enforces the same rule for a
+request that arrives from sunnylink (osm_auto_update.answer_request, the NSW
+downloader), so the page is not the only gate. The weekly refresh is stricter:
+it runs parked (ignition off too) and on wi-fi, and a phone hotspot IS wi-fi:
+it reads unmetered unless the connection is marked metered. The toggle says so.
+
+DRIVING OFF DOES NOT STOP AN OSM DOWNLOAD. mapd has no cancel, so an OSM
+download started in OffroadMode with the car on keeps going after the car
+drives off, on whatever network is up. The NSW check is cancelled on going
+onroad.
 
 ONE DATA SET PER CARD. Each map data set is a MapDataInfo card followed by its
 own update button, appended to the scroller in MapsLayoutMici. A second data set
@@ -208,10 +216,13 @@ class UpdateOsmButton(BigButton):
   mapd downloads it in the background (Australia: ~270 MB, 357 tiles).
 
   OFFROAD ONLY. A download started onroad competes with logging for the
-  network and, on a hotspot, is metered data nobody asked for.
+  network and, on a hotspot, is metered data nobody asked for. Offroad, not
+  parked: OffroadMode with the car on is offroad, and nothing is controlling
+  the car then. Once started it is NOT stopped by driving off (mapd has no
+  cancel): it runs on, on whatever network is up.
 
   THE GATE IS RE-CHECKED INSIDE THE CONFIRM CALLBACK: the slide-to-confirm can
-  sit open across an ignition. The enabled state is set imperatively, every
+  sit open across a start. The enabled state is set imperatively, every
   tick, for the reason board.py gives (one slot, last writer wins).
   """
 
@@ -230,9 +241,9 @@ class UpdateOsmButton(BigButton):
     with no explanation is the worst of both."""
     if not ui_state.params.get("OsmLocationName"):
       return False, tr("no region set")
-    # is_offroad() is True while driving in OffroadMode; the panda's ignition is not
-    if not ui_state.is_offroad() or ui_state.ignition:
-      return False, tr("car must be parked")
+    # offroad, OffroadMode with the car on included; the same words mapd_manager gives a request it refuses
+    if not ui_state.is_offroad():
+      return False, tr("offroad only")
     return True, ""
 
   @staticmethod
@@ -319,9 +330,14 @@ class UpdateOsmButton(BigButton):
 NSW_BUSY_STATES = ("checking", "downloading", "installing")
 NSW_STATUS_STALE_S = 120.
 # results the downloader writes that are short enough for the sub-label as they are; anything else reads "failed"
-NSW_SHORT_RESULTS = ("updated", "up to date", "cancelled", "car must be parked", "no network", "retry later")
+NSW_SHORT_RESULTS = ("updated", "up to date", "cancelled", "offroad only", "no network", "retry later")
 # refusals that were not an attempt: the downloader had not heard deviceState yet (just after boot)
 NSW_NOT_ATTEMPTED = {"no deviceState": "starting up"}
+# refusals that stop applying once the button is allowed: an onroad request (sunnylink while driving, a press racing
+# the start) must not leave the enabled button saying "offroad only" offroad for the next hour. "car must be parked" is
+# the downloader's word for a refusal up to d81c50e38: a status.json written just before a software update would
+# otherwise read "failed" for an hour
+NSW_ONROAD_RESULTS = ("offroad only", "car must be parked")
 
 
 def nsw_date() -> tuple[str, str]:
@@ -363,8 +379,9 @@ class UpdateNswButton(BigButton):
   """Check for a new NSW zones data set now (the weekly check does the same by itself).
 
   Writes NswZonesUpdateCheck. mapd_manager's downloader consumes it within a second whether or not it can run, and
-  says why in status.json. Parked only, re-checked in the confirm callback, enabled state set on the tick - all for
-  the reasons UpdateOsmButton gives. A phone hotspot is fine here: pressing it is the choice of ~22 MB.
+  says why in status.json. Offroad only (OffroadMode with the car on is offroad), re-checked in the confirm callback,
+  enabled state set on the tick - all for the reasons UpdateOsmButton gives. A phone hotspot is fine here: pressing it
+  is the choice of ~22 MB.
   """
 
   def __init__(self):
@@ -377,9 +394,9 @@ class UpdateNswButton(BigButton):
 
   @staticmethod
   def _can_update() -> tuple[bool, str]:
-    # is_offroad() is True while driving in OffroadMode; the panda's ignition is not
-    if not ui_state.is_offroad() or ui_state.ignition:
-      return False, tr("car must be parked")
+    # offroad, OffroadMode with the car on included; the downloader answers an onroad request with the same words
+    if not ui_state.is_offroad():
+      return False, tr("offroad only")
     return True, ""
 
   def _busy(self, st: dict | None = None) -> bool:
@@ -420,7 +437,8 @@ class UpdateNswButton(BigButton):
     return int(100 * min(max(f, 0.), 1.))
 
   def refresh(self) -> None:
-    """In flight, then just asked, then why not (parked), then the last result (for an hour), then the mode."""
+    """In flight, then just asked, then why not (offroad), then the last result (for an hour; an onroad refusal is
+    not shown once offroad), then the mode."""
     self._updated = time.monotonic()
     st = nsw_check_status()
     state = st.get("state")
@@ -443,7 +461,8 @@ class UpdateNswButton(BigButton):
         self._asked = False
     elif not allowed:
       self.set_value(why)  # disabled while driving: say why, not an old result (as the OSM button beside it does)
-    elif st.get("last_result") and 0 <= datetime.datetime.now().timestamp() - last_attempt < 3600:
+    elif (st.get("last_result") and str(st["last_result"]) not in NSW_ONROAD_RESULTS
+          and 0 <= datetime.datetime.now().timestamp() - last_attempt < 3600):
       self.set_value(self._result_text(str(st["last_result"])))
     elif not ui_state.params.get(NSW_VERSION_PARAM):
       self.set_value(tr("not downloaded"))

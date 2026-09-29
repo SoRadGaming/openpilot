@@ -54,6 +54,28 @@ running, and deviceState.started is False for the first few seconds, until the
 panda reports ignition. With home wifi in range that window looked exactly like
 "parked, unmetered, stale maps", and the download would start as the car was
 pulling out of the garage.
+
+A REQUEST SOMEONE MADE is not held to any of that. OsmDbUpdatesCheck set by the
+mici maps button, the comma 3/3X OSM panel or sunnylink runs whenever the device
+is OFFROAD (deviceState heard, alive, started False) - OffroadMode with the
+ignition on included, because offroad nothing is controlling the car - on any
+network: the person asked for it. answer_request() clears a request that cannot
+run (onroad, no region chosen, a download already running) before
+update_osm_db() sees it, so a request made onroad does not fire later, and
+request_allowed tells mapd_manager whether the request update_osm_db() is about
+to read is one that was checked: a sunnylink write that lands between the two
+reads waits for the next tick's check instead of starting a download unchecked.
+
+GOING ONROAD DOES NOT CANCEL AN OSM DOWNLOAD. mapd has no cancel (upstream's
+"TODO-SP: introduce CANCEL database download with mapd"), so a download started
+offroad - OffroadMode with the car on, say - runs on after the car drives off,
+on whatever network is up. Only the NSW zones downloader cancels on started.
+
+ONE SubMaster UPDATE PER TICK, ALWAYS. deviceState is a conflated queue at 2 Hz:
+a SubMaster left unread for minutes is lapped, and its next update() reports
+nothing and alive False. So update() reads it at the top of every tick, also
+after the weekly latch, or a request after a weekly refresh would be refused
+"no deviceState".
 """
 import time
 from datetime import datetime
@@ -65,6 +87,9 @@ from openpilot.common.time_helpers import system_time_valid
 
 AUTO_UPDATE_PARAM = "OsmAutoUpdateWeekly"
 COMPLETE_PARAM = "OsmLastCompleteDate"
+REQUEST_PARAM = "OsmDbUpdatesCheck"  # upstream's; mapd_manager.update_osm_db() consumes it
+# the reason a request made onroad is refused; the NSW downloader and the maps page say the same
+OFFROAD_ONLY = "offroad only"
 MAX_MAP_AGE_S = 7 * 24 * 3600
 OFFROAD_SETTLE_S = 60.
 # mapd drops the download list and writes its last progress in no promised order
@@ -138,14 +163,36 @@ def auto_update_due(*, enabled: bool, location: str, requested_at: float, comple
   return True, ""
 
 
+def request_refusal(*, device_state_ok: bool, offroad: bool, location: str, downloading: bool) -> str:
+  """Why a request someone made (OsmDbUpdatesCheck) cannot run now; "" when it can. Pure."""
+  if not device_state_ok:
+    return "no deviceState"
+  if not offroad:
+    return OFFROAD_ONLY
+  if not location:
+    return "no region"
+  if downloading:
+    return "already downloading"  # a second request would delete the tiles and start again
+  return ""
+
+
+def is_offroad(sm) -> bool:
+  """Offroad, by a SubMaster over deviceState: heard, alive and not started. Nothing controls the car offroad, so this
+  is the rule for a request someone made (a button, sunnylink). OffroadMode with the ignition on IS offroad.
+
+  A default-constructed deviceState reads started=False: unheard or stale must not count as offroad.
+  """
+  return bool(sm.seen['deviceState'] and sm.alive['deviceState']) and not sm['deviceState'].started
+
+
 def is_parked(sm) -> bool:
-  """Parked, by a SubMaster over deviceState and pandaStates. Shared with the NSW zones downloader (FORK(NSW-ZONES)).
+  """Parked, by a SubMaster over deviceState and pandaStates: offroad AND no ignition on any panda. The rule for
+  AUTOMATIC downloads. Shared with the NSW zones downloader (FORK(NSW-ZONES)).
 
   A default-constructed deviceState reads started=False, networkMetered=False:
   exactly the "go" answer. Unheard or stale must not count as parked.
   """
-  ds = sm['deviceState']
-  if not (sm.seen['deviceState'] and sm.alive['deviceState']) or ds.started:
+  if not is_offroad(sm):
     return False
   # started is False while driving in OffroadMode: ignition decides
   if not (sm.seen['pandaStates'] and sm.alive['pandaStates']):
@@ -155,7 +202,8 @@ def is_parked(sm) -> bool:
 
 
 class OsmAutoUpdater:
-  """The stateful half: watches deviceState and pandaStates, records completions, keeps the once-per-boot latch."""
+  """The stateful half: watches deviceState and pandaStates, records completions, keeps the once-per-boot latch, and
+  answers requests someone made (answer_request)."""
 
   def __init__(self, params, mem_params):
     self.params = params
@@ -165,6 +213,10 @@ class OsmAutoUpdater:
     self._offroad_since: float | None = None
     self._completion_until: float | None = None  # a download just ended: look for "all files" until then
     self._completion_failed = False
+    self._request_gate_failed = False
+    self._sm_failed = False
+    # this tick: the OsmDbUpdatesCheck update_osm_db() may act on was checked (answer_request) or set here (_update)
+    self.request_allowed = False
 
   def update(self) -> bool:
     """Call once per mapd_manager tick, before update_osm_db(). True when it requested a refresh.
@@ -174,12 +226,15 @@ class OsmAutoUpdater:
     a far worse failure than a missed refresh. On any error the refresh is
     given up for this boot.
     """
+    self.request_allowed = False
+    self._read_sm()
     if not self._completion_failed:
       try:
         self.record_completion()
       except Exception:
         self._completion_failed = True
         cloudlog.exception("mapd: recording the OSM download completion failed, not retrying this boot")
+    self.answer_request()
     if self.done:
       return False
     try:
@@ -188,6 +243,16 @@ class OsmAutoUpdater:
       self.done = True
       cloudlog.exception("mapd: weekly OSM refresh check failed, not retrying this boot")
       return False
+
+  def _read_sm(self) -> None:
+    """Every tick, whatever else happens (see ONE SubMaster UPDATE PER TICK). A failure leaves deviceState to go
+    stale, which every check here reads as "not offroad": it fails closed."""
+    try:
+      self.sm.update(0)
+    except Exception:
+      if not self._sm_failed:
+        self._sm_failed = True
+        cloudlog.exception("mapd: reading deviceState/pandaStates failed")
 
   def record_completion(self) -> None:
     """Copy the request date into OsmLastCompleteDate once mapd has downloaded every file.
@@ -212,11 +277,46 @@ class OsmAutoUpdater:
       self._completion_until = None
       cloudlog.warning(f"mapd: OSM download ended incomplete ({done}/{total} files)")
 
+  def answer_request(self) -> str:
+    """Clear an OsmDbUpdatesCheck that cannot run now, before update_osm_db() consumes it. -> why it was refused
+    ("" when there was none, or it may run); request_allowed says which. NEVER RAISES. Reads the SubMaster as update()
+    left it this tick.
+
+    Upstream's update_osm_db() starts a download for any request, onroad or not, and sunnylink can write the param
+    from a phone at any time. Offroad (not parked) is the rule: the owner parks in OffroadMode with the car on and
+    presses the button. It fails closed: after an error every request is cleared for the rest of the boot.
+    """
+    try:
+      if not self.params.get_bool(REQUEST_PARAM):
+        return ""
+      if self._request_gate_failed:
+        why = "request check failed earlier"
+      else:
+        why = request_refusal(
+          device_state_ok=bool(self.sm.seen['deviceState'] and self.sm.alive['deviceState']),
+          offroad=is_offroad(self.sm),
+          location=self.params.get("OsmLocationName") or "",
+          downloading=bool(self.mem_params.get("OSMDownloadLocations")),
+        )
+      if why:
+        self.params.remove(REQUEST_PARAM)
+        cloudlog.warning(f"mapd: OSM update request refused: {why}")
+      else:
+        self.request_allowed = True
+      return why
+    except Exception:
+      self._request_gate_failed = True
+      cloudlog.exception("mapd: checking an OSM update request failed, refusing requests this boot")
+      try:
+        self.params.remove(REQUEST_PARAM)
+      except Exception:
+        pass
+      return "request check failed"
+
   def _parked(self) -> bool:
     return is_parked(self.sm)
 
   def _update(self) -> bool:
-    self.sm.update(0)
     now_mono = time.monotonic()
     ds = self.sm['deviceState']
     device_state_ok = self.sm.seen['deviceState'] and self.sm.alive['deviceState']
@@ -247,4 +347,5 @@ class OsmAutoUpdater:
     cloudlog.info("mapd: the last completed OSM download is over a week old, requesting the weekly refresh")
     # block=True: update_osm_db() runs next in the same tick and reads it back
     self.params.put_bool("OsmDbUpdatesCheck", True, block=True)
+    self.request_allowed = True
     return True

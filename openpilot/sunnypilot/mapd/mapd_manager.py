@@ -114,8 +114,10 @@ def filter_nations_and_states(nations: list[str], states: list[str] | None = Non
   return nations, states or []
 
 
-def update_osm_db() -> None:
-  if params.get_bool("OsmDbUpdatesCheck"):
+# FORK(SPEED-LIMIT): request_allowed - False when osm_auto_update did not check a request this tick, so one written
+# (sunnylink) after its check waits for the next tick's instead of starting a download unchecked
+def update_osm_db(request_allowed: bool = True) -> None:
+  if request_allowed and params.get_bool("OsmDbUpdatesCheck"):
     cleanup_old_osm_data(get_files_for_cleanup())
     country = params.get("OsmLocationName", return_default=True)
     state = params.get("OsmStateName", return_default=True)
@@ -170,8 +172,8 @@ def main_thread():
       nsw_map_sp = NswZoneMapData()  # FORK(NSW-ZONES): never raises once it has made the publisher
   live_map_sp: OsmMapData = nsw_map_sp if nsw_map_sp is not None else OsmMapData()
   auto_updater = OsmAutoUpdater(params, mem_params)  # FORK(SPEED-LIMIT): gated by OsmAutoUpdateWeekly, once per boot
-  # FORK(NSW-ZONES): first download automatic, weekly after, the maps page button; parked only. A new index is loaded
-  # into the running matcher at the next park (the updater defers it if the car has started meanwhile).
+  # FORK(NSW-ZONES): first download automatic and weekly after, parked only; the maps page button and sunnylink
+  # whenever offroad. A new index is loaded into the running matcher only offroad (deferred if the car has started).
   try:
     from openpilot.sunnypilot.mapd.nsw_zones.downloader import NswZonesUpdater
     nsw_updater = NswZonesUpdater(params, on_installed=nsw_map_sp.reload if nsw_map_sp is not None else None)
@@ -195,8 +197,10 @@ def main_thread():
       clear_downloaded_maps()
       params.remove("Mapd_ClearCache")
 
-    auto_updater.update()  # FORK(SPEED-LIMIT): may set OsmDbUpdatesCheck; must run before update_osm_db()
-    update_osm_db()
+    # FORK(SPEED-LIMIT): may set OsmDbUpdatesCheck, and clears one that cannot run now (onroad, no region, already
+    # downloading) - so it must run before update_osm_db(), which acts only on a request it checked this tick
+    auto_updater.update()
+    update_osm_db(auto_updater.request_allowed)
     if nsw_updater is not None:
       nsw_updater.update()  # FORK(NSW-ZONES): never raises; the download runs in its own thread
     live_map_sp.tick()

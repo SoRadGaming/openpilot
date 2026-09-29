@@ -30,7 +30,9 @@ can be switched to log-only or off at any time (see [Modes and params](#modes-an
 | `openpilot/common/params_keys.h` | `SpeedLimitNswZones`, `NswZonesAutoUpdate`, `NswZonesUpdateCheck`, `NswZonesVersion`, `Offroad_NswZonesStale`. |
 | `openpilot/selfdrive/selfdrived/alerts_offroad.json` | `Offroad_NswZonesStale`: data over 60 days old, or the school calendar ending within 60 days. |
 | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/maps.py` | The "nsw zones" pair on the maps page. |
-| `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/cruise.yaml` | The mode and the weekly update, in sunnylink. |
+| `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/cruise.yaml` | In sunnylink: the mode, both weekly updates and both "update now" controls (NSW and OSM). |
+| `openpilot/sunnypilot/mapd/osm_auto_update.py` | `is_offroad()` / `is_parked()`, shared with the downloader, and `answer_request()`, the offroad gate on an OSM update request (area **SL**). |
+| `openpilot/sunnypilot/sunnylink/tests/test_settings_changes.py` | `TestMapDataControls`, appended at the end of the file, marked FORK(NSW-ZONES). The file is upstream's (sunnypilot SDUI #1780, #1830): **merge hazard**, keep the block at the end. |
 | **`SoRadGaming/openpilot`**: `.github/workflows/nsw-speedzones.yaml` (master) | The weekly Action that builds the index and publishes it as release assets. |
 
 Every upstream file that was touched carries a `FORK(NSW-ZONES)` marker.
@@ -198,12 +200,21 @@ maps page shows.
 ### The device: `nsw_zones/downloader.py`, run from `mapd_manager`
 
 - **When.** The first download is automatic as soon as the mode is not off; the index is ~22 MB. After that the device
-  checks weekly (`NswZonesAutoUpdate`, default on), counted from the last successful check. The maps page button forces a
-  check (`NswZonesUpdateCheck`).
-- **Where.** Automatic checks run only **parked** (offroad and no panda ignition, settled; the same rule as the OSM
-  auto-update) and only on **unmetered** Wi-Fi or ethernet. The button needs parked and any network: pressing it is the
-  owner's choice of 22 MB. A failed automatic check waits an hour before the next. Turning the ignition on cancels a
-  download in flight, and nothing is installed.
+  checks weekly (`NswZonesAutoUpdate`, default on), counted from the last successful check. The maps page button, or
+  "Update NSW Speed Zones Now" in sunnylink, forces a check (`NswZonesUpdateCheck`).
+- **Where.** Automatic checks (the first download and the weekly one) run only **parked**: offroad and no panda
+  ignition, settled for a minute - the same rule as the OSM auto-update - and only on **unmetered** Wi-Fi or ethernet.
+  A forced check needs only **offroad** (deviceState heard, alive and not started) and any network: pressing it is the
+  owner's choice of 22 MB, and offroad nothing is controlling the car, so **Always Offroad with the car on counts**. A
+  request that arrives onroad is answered `offroad only` in `status.json` and cleared; it does not run later. A failed
+  automatic check waits an hour before the next.
+- **Cancelling.** Going onroad (deviceState started) cancels any check in flight, and nothing is installed. Turning the
+  ignition on also cancels an **automatic** check - automatic stays parked-only - but not one somebody asked for.
+  **OSM is different:** mapd has no cancel, so an OSM download started offroad keeps running after the car drives off,
+  on whatever network is up (see the OSM button below).
+- **Loading.** A new index replaces the running matcher, and with it the matcher's state, so it is loaded only
+  **offroad**: at once when the check ran offroad, or when the device is next offroad if the install finished after it
+  went onroad (its last steps cannot be cancelled).
 - **How.**
   1. It reads `manifest.json` first. Nothing more is downloaded if its sha256 is the installed one, or if its format
      version is not one this code reads. After a format bump, a car on older software keeps the data it has until its
@@ -363,7 +374,7 @@ comma 4 (mici) nothing on screen shows the next limit; it is only logged.
 |---|---|---|
 | `SpeedLimitNswZones` | INT, **2**, PERSISTENT \| BACKUP | 0 off: upstream's `OsmMapData` exactly, and `nswZone` is never set. 1 log only: OSM is published and `nswZone` says what NSW would have published. **2 live**: NSW where it matches, OSM elsewhere. Switching from 0 to 1 or 2 needs a restart; changes between 1 and 2, and to 0, apply live. **The off switch is in sunnylink only** (Cruise → "NSW Speed Zones"); the device has no control for it. |
 | `NswZonesAutoUpdate` | BOOL, 1, PERSISTENT \| BACKUP | The weekly check. The first download happens regardless. |
-| `NswZonesUpdateCheck` | BOOL, CLEAR_ON_MANAGER_START | Set by the maps page button, consumed by the downloader. |
+| `NswZonesUpdateCheck` | BOOL, CLEAR_ON_MANAGER_START | Set by the maps page button or sunnylink, consumed (and cleared, taken or refused) by the downloader. |
 | `NswZonesVersion` | STRING, PERSISTENT | The installed data version. |
 
 **What mode 2 publishes as `liveMapDataSP.speedLimit`:**
@@ -414,13 +425,55 @@ Settings has a **maps** page. Below the OSM pair (fix C) is a second pair, **nsw
 - **The card.** Its first line is the attribution, which scrolls because it is long. It is the license's requirement,
   not a summary. Below it is the data version and its age, for example `2026-09-29 • 3 d ago`, or `none` before the first
   download. This is the data's own date, not the download date.
-- **The update button.** It works parked only and asks for a slide to confirm ("check zones"). A phone hotspot is
-  fine. It shows `checking`, `downloading 40%` and `installing` while running. Afterwards it shows `updated`,
-  `up to date`, `retry later`, `starting up` or `failed` for an hour, or that the check was stopped; while driving it
-  says `car must be parked`. When idle its second line is the feature's mode: `zones live`, `zones log only` or
-  `zones off`. The status comes from `status.json`.
+- **The update button.** It works whenever the device is **offroad** - Always Offroad with the car on included - and
+  asks for a slide to confirm ("check zones"). A phone hotspot is fine. It shows `checking`, `downloading 40%` and
+  `installing` while running. Afterwards it shows `updated`, `up to date`, `retry later`, `starting up`,
+  or `failed` for an hour, or that the check was stopped; onroad it says `offroad only`. When idle its
+  second line is the feature's mode: `zones live`, `zones log only` or `zones off`. The status comes from
+  `status.json`.
+- **The OSM update button** follows the same rule for **starting** (offroad, and a region chosen), and says
+  `offroad only` onroad. It does **not** follow the NSW rule for stopping: mapd has no cancel (upstream's
+  "TODO-SP: introduce CANCEL database download with mapd"), so a ~270 MB download started in Always Offroad with the
+  car on keeps running if you then leave Always Offroad and drive, on whatever network is up, cellular included.
+  Both buttons used to want the ignition off as well, so in Always Offroad with the car on they said
+  `car must be parked`; only the automatic downloads keep that rule now.
+- **A refusal made onroad is not shown offroad.** A sunnylink tap while driving is answered `offroad only` in
+  `status.json`; once the device is offroad again the NSW button is enabled and shows its mode line, not that answer.
 - **The "update weekly" toggle** between the two pairs is the **OSM** weekly update only. NSW's weekly check
   (`NswZonesAutoUpdate`) and the mode are set in sunnylink.
+
+## sunnylink
+
+Cruise → Speed Limits → Speed Limit Settings holds, under "NSW Speed Zones":
+
+| item | param | widget | notes |
+|---|---|---|---|
+| Update NSW Speed Zones Weekly | `NswZonesAutoUpdate` | toggle | Dimmed (unavailable) when the mode is off. |
+| Update NSW Speed Zones Now | `NswZonesUpdateCheck` | toggle, `offroad_only` | The maps page's NSW button. Dimmed (unavailable) when the mode is off, like the weekly toggle: a tap would otherwise fetch ~22 MB for a feature that is off. The device itself still takes a request in any mode (the maps page button works with zones off, to fetch data before turning them on). |
+| Update OSM Maps Weekly | `OsmAutoUpdateWeekly` | toggle | The maps page's "update weekly" toggle. |
+| Update OSM Maps Now | `OsmDbUpdatesCheck` | toggle, `offroad_only` | The maps page's OSM button. Needs a region already chosen. Driving off does not stop a download that has started. |
+
+- **How sunnylink writes them.** `sunnylinkd.saveParams` writes any param that is not in its `BLOCKED_PARAMS`, whatever
+  its flags, converting the value by the param's type (`utils.save_param_from_base64_encoded_string`). Both request
+  params are `CLEAR_ON_MANAGER_START` BOOLs and were already writable; nothing in `params_keys.h` or `sunnylinkd`
+  changed.
+- **Why toggles.** The schema lists a `button` widget with an `action` field, but nothing in this tree uses one or says
+  what the app does with it; a `toggle` is known to write a BOOL. The device clears the param as soon as it has taken
+  the request (the downloader removes it; `update_osm_db()` writes it false), or refused it, within a second or so.
+  That clear does not bump `ParamsVersion` (only `saveParams` does), so **in the app the switch stays on until the app
+  next loads the settings, then reads off.** Switching it off within a second or so of switching it on cancels the
+  request; after that the device has already taken it, and switching it on again asks again.
+- **The same rule as the buttons, enforced on the device.** `offroad_only` greys the items out in the app while
+  driving, but the device does not trust that: the NSW downloader answers an onroad request `offroad only` and clears
+  it, and `osm_auto_update.answer_request()` clears an OSM request that is onroad, has no region, or arrives while a
+  download is running - before upstream's `update_osm_db()`, which would start a download for any request, sees it.
+  `update_osm_db()` then acts only on a request that gate checked in the same tick (`request_allowed`): a sunnylink
+  write that lands between the two reads waits a tick for its check instead of starting a download unchecked.
+- **What that changes upstream.** The gate runs for every user, feature on or off, so it also applies to the comma
+  3/3X OSM panel's "Database Update": pressed onroad (upstream starts a download) the request is now cleared, and the
+  panel shows "Downloading Maps..." for about a second and reverts, with no reason shown. `already downloading` rests on
+  `OSMDownloadLocations` in `/dev/shm`: if mapd died mid-download and left it set, requests are refused until a reboot
+  clears it (upstream would delete the tiles and start again). Both are accepted; the comma 4 has no such panel.
 
 ---
 
@@ -429,10 +482,12 @@ Settings has a **maps** page. Below the OSM pair (fix C) is a second pair, **nsw
 | suite | covers |
 |---|---|
 | `sunnypilot/mapd/nsw_zones/tests/`: `test_matcher`, `test_school_days`, `test_dead_reckoning`, `test_owner_rules`, `test_lookahead`, `test_index`, `test_build_index`, `test_review_fixes` | See the list below. |
-| `nsw_zones/tests/test_downloader.py` | The device side. When a check is due: the first download, the week, the button, parked, unmetered, and waiting after a failure. Only the three fixed URLs are requested. Up to date downloads nothing more, and an incompatible format is not downloaded. Damaged, truncated or oversized files never replace a good install. Ignition cancels a download in flight, and an install between any two of its steps; an install finished while driving is loaded at the next park. A damaged install is set aside and fetched again. It never raises into mapd_manager. |
+| `nsw_zones/tests/test_downloader.py` | The device side. When a check is due: the first download, the week, the button, parked, unmetered, and waiting after a failure. Only the three fixed URLs are requested. Up to date downloads nothing more, and an incompatible format is not downloaded. Damaged, truncated or oversized files never replace a good install. A forced check runs offroad with the ignition on (Always Offroad) and is refused and cleared onroad or before deviceState is heard. Going onroad cancels any download in flight, and an install between any two of its steps; ignition cancels an automatic one but not a forced one. An install finished while driving is loaded when the device is next offroad. A damaged install is set aside and fetched again. It never raises into mapd_manager. |
 | `sunnypilot/mapd/tests/test_nsw_map_data.py` | The publisher. Mode 0 is `OsmMapData` byte for byte, and switching to 0 stops NSW at once. Log only publishes OSM exactly. Live publishes the NSW limit and each state's value (the held value in state 7, never OSM; OSM agreeing with NSW's best guess in state 3; the 3 s no-match hold), and carries the school code. A matcher exception gives OSM plus the error count, and a failed setup leaves a working `OsmMapData`. It also covers a missing or damaged file (set aside), reload after an install, the inputs, the stale-data alert and the capnp field. |
 | `.../speed_limit/tests/test_speed_limit_nsw.py` | The resolver. Dead reckoning (4) and its ended hold (7) pass the freeze and are never re-frozen to an older value, while GPS loss without them is still frozen, and the OSM publisher keeps fix B. The message's mode decides, not the param. An NSW match ends the settle window, stale data is dropped, and there is no early switch. Log-only and off are unchanged, including upstream's age. |
-| `selfdrive/ui/tests/test_maps_settings.py` | The maps page pair. |
+| `selfdrive/ui/tests/test_maps_settings.py` | The maps page pair: both buttons gate on offroad only (no ignition), with a reason that fits the value line and matches what the device answers; an onroad refusal is not shown once offroad; `update_osm_db()` is handed `request_allowed`. |
+| `sunnypilot/mapd/tests/test_osm_auto_update.py` (`TestRequestGate`, `TestUpdateOsmDb`) | An OSM request runs offroad with the ignition on, and is cleared onroad, before deviceState is heard, with no region or during a download; an error refuses every later request. The SubMaster is read on every tick, also after the weekly latch (a double that goes stale when not read, as a lapped conflated queue does). `update_osm_db()` leaves a request it was not told was checked for the next tick. |
+| `sunnypilot/sunnylink/tests/test_settings_changes.py` (`TestMapDataControls`) | The four sunnylink items: where they sit, toggles over BOOL params, `offroad_only` on the "Now" pair, NSW "Now" dimmed with the mode off like its weekly sibling, the descriptions, and a real `saveParams` / `getParams` round trip showing the request written and, once cleared, read back as off. |
 
 What the 132 builder and matcher tests cover:
 

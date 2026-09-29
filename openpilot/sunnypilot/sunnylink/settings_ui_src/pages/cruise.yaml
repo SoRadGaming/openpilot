@@ -220,6 +220,40 @@ sections:
         key: SpeedLimitNswZones
         op: '>'
         value: 0
+    # FORK(NSW-ZONES): the maps page's two update buttons and the OSM weekly toggle. The "Now" items are toggles, not
+    # the schema's `button` widget: nothing in this tree defines what the app does for a `button`, and a toggle is
+    # known to write the BOOL param. mapd_manager clears the param once it has taken the request - or refused it,
+    # onroad - without bumping ParamsVersion, so the switch reads off again only the next time the app loads the
+    # settings. Dimmed with the mode off, like NswZonesAutoUpdate: a download for a feature that is off.
+    - key: NswZonesUpdateCheck
+      widget: toggle
+      title: Update NSW Speed Zones Now
+      description: Check for new NSW speed zone data now, on any network (about 22 MB when there is new data). Works
+        whenever the device is offroad, Always Offroad with the car on included; a request while driving is refused.
+        The device switches it back off within a second, taken or refused; the app shows that the next time it loads
+        the settings. After that, switching it on again asks again.
+      visibility:
+      - type: param_compare
+        key: SpeedLimitNswZones
+        op: '>'
+        value: 0
+      enablement:
+      - $ref: '#/macros/offroad'
+    - key: OsmAutoUpdateWeekly
+      widget: toggle
+      title: Update OSM Maps Weekly
+      description: Download the chosen region's OpenStreetMap data again once it is a week old, only while parked on
+        wi-fi that is not marked metered. A phone hotspot counts as wi-fi unless it is marked metered.
+    - key: OsmDbUpdatesCheck
+      widget: toggle
+      title: Update OSM Maps Now
+      description: Download the chosen region's OpenStreetMap data again now (Australia is about 270 MB), on whatever
+        network the device is on, cellular included. Works whenever the device is offroad, Always Offroad with the car
+        on included, and a region has been chosen; a request while driving is refused. Driving off does not stop a
+        download that has started. Keep the device on until it finishes. The device switches it back off within a
+        second, taken or refused; the app shows that the next time it loads the settings.
+      enablement:
+      - $ref: '#/macros/offroad'
     - key: SpeedLimitOffsetType
       widget: multiple_button
       title: Speed Limit Offset Type

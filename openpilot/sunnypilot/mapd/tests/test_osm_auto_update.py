@@ -129,6 +129,10 @@ class FakeParams:
     self.puts.append((key, val))
     self.values[key] = val
 
+  def remove(self, key):
+    self.puts.append((key, None))
+    self.values.pop(key, None)
+
 
 class FakeSM:
   def __init__(self):
@@ -142,6 +146,35 @@ class FakeSM:
 
   def __getitem__(self, s):
     return self.ds if s == 'deviceState' else [self.panda]
+
+
+class LappedSM(FakeSM):
+  """deviceState is a conflated queue at 2 Hz: a SubMaster not updated for minutes is lapped, and its next update()
+  reports nothing and alive False (cereal SubMaster.update_msgs); the one after that recovers. This double compresses
+  "minutes" to "a tick": alive only when update() ran this tick AND on the tick before, so a reader that skips ticks
+  and then updates once sees what a lapped one would."""
+
+  def __init__(self):
+    super().__init__()
+    self.tick = 0
+    self.last_read: int | None = None
+    self.read_alive = False
+    outer = self
+
+    class _Alive(dict):
+      def __getitem__(self, _s):
+        return outer.read_alive and outer.last_read == outer.tick
+
+    self.alive = _Alive()
+
+  def update(self, _timeout):
+    if self.last_read == self.tick:
+      return  # a second read in the same tick changes nothing
+    self.read_alive = self.last_read is not None and self.last_read >= self.tick - 1
+    self.last_read = self.tick
+
+  def new_tick(self):
+    self.tick += 1
 
 
 class TestOsmAutoUpdater(unittest.TestCase):
@@ -223,6 +256,24 @@ class TestOsmAutoUpdater(unittest.TestCase):
     self.mem.values["OSMDownloadLocations"] = {"nations": ["AU"], "states": []}
     self.assertFalse(any(self.step() for _ in range(200)))
 
+  def test_the_weekly_refresh_reads_the_submaster_every_tick(self):
+    lapped = LappedSM()
+    self.up.sm = lapped  # ty: ignore[invalid-assignment]
+    fired = []
+    for _ in range(int(OFFROAD_SETTLE_S) + 5):
+      lapped.new_tick()
+      fired.append(self.step())
+    self.assertEqual(fired.count(True), 1)
+    self.assertTrue(self.up.request_allowed, "the tick that set the request tells update_osm_db() it may act")
+
+  def test_a_submaster_error_never_raises(self):
+    def boom(_timeout):
+      raise RuntimeError("msgq")
+    self.sm.update = boom  # ty: ignore[invalid-assignment]
+    for _ in range(3):
+      self.step()
+    self.assertTrue(self.up._sm_failed)
+
   def test_never_raises_into_mapd_manager(self):
     def boom(*_a, **_k):
       raise RuntimeError("UnknownKeyName")
@@ -238,6 +289,171 @@ class TestOsmAutoUpdater(unittest.TestCase):
     for _ in range(3):
       self.step()
     self.assertTrue(self.up._completion_failed)
+
+
+class TestRequestGate(unittest.TestCase):
+  """OsmDbUpdatesCheck from a button or sunnylink: runs offroad (OffroadMode with the car on included), refused and
+  cleared before update_osm_db() otherwise. The weekly refresh itself stays parked-only (TestOsmAutoUpdater)."""
+
+  def setUp(self):
+    self.params = FakeParams(OsmAutoUpdateWeekly=False, OsmLocationName="AU", OsmDbUpdatesCheck=True)
+    self.mem = FakeParams()
+    self.up = OsmAutoUpdater(self.params, self.mem)
+    self.sm = FakeSM()
+    self.up.sm = self.sm  # ty: ignore[invalid-assignment]
+
+  def answer(self):
+    return self.up.answer_request()
+
+  def assert_kept(self):
+    self.assertEqual(self.answer(), "")
+    self.assertTrue(self.params.values.get("OsmDbUpdatesCheck"), "a request that may run is left for update_osm_db()")
+
+  def assert_refused(self, why):
+    self.assertEqual(self.answer(), why)
+    self.assertNotIn("OsmDbUpdatesCheck", self.params.values, "a refused request is cleared, not left to fire later")
+
+  def test_the_refusal_is_pure(self):
+    def refusal(device_state_ok=True, offroad=True, location="AU", downloading=False):
+      return oau.request_refusal(device_state_ok=device_state_ok, offroad=offroad, location=location, downloading=downloading)
+
+    self.assertEqual(refusal(), "")
+    self.assertEqual(refusal(device_state_ok=False), "no deviceState")
+    self.assertEqual(refusal(offroad=False), oau.OFFROAD_ONLY)
+    self.assertEqual(refusal(location=""), "no region")
+    self.assertEqual(refusal(downloading=True), "already downloading")
+
+  def test_parked_runs(self):
+    self.assert_kept()
+
+  def test_offroad_mode_with_the_car_on_runs(self):
+    """The owner's complaint: parked in OffroadMode with the ignition on, the button said "car must be parked"."""
+    self.sm.panda.ignitionLine = True
+    self.sm.panda.ignitionCan = True
+    self.assert_kept()
+
+  def test_onroad_is_refused_and_cleared(self):
+    self.sm.ds.started = True
+    self.assert_refused(oau.OFFROAD_ONLY)
+
+  def test_an_unheard_device_state_is_refused(self):
+    """A default deviceState reads started=False: unheard is not offroad."""
+    self.sm.seen['deviceState'] = False
+    self.assert_refused("no deviceState")
+    self.params.values["OsmDbUpdatesCheck"] = True
+    self.sm.seen['deviceState'] = True
+    self.sm.alive['deviceState'] = False
+    self.assert_refused("no deviceState")
+
+  def test_no_region_is_refused(self):
+    """sunnylink can ask on a device that has never had a region: upstream would request nation ""."""
+    self.params.values["OsmLocationName"] = ""
+    self.assert_refused("no region")
+
+  def test_a_download_in_progress_is_not_restarted(self):
+    self.mem.values["OSMDownloadLocations"] = {"nations": ["AU"], "states": []}
+    self.assert_refused("already downloading")
+
+  def test_no_request_touches_nothing(self):
+    self.params.values.pop("OsmDbUpdatesCheck")
+    self.sm.ds.started = True
+    self.assertEqual(self.answer(), "")
+    self.assertEqual(self.params.puts, [])
+
+  def test_a_request_after_the_weekly_latch_is_not_refused_as_unheard(self):
+    """The weekly refresh has fired (or given up) for this boot, then minutes pass: the SubMaster must still have been
+    read on every tick, or the lapped deviceState reads unheard and a button press is refused "no deviceState"."""
+    lapped = LappedSM()
+    self.up.sm = lapped  # ty: ignore[invalid-assignment]
+    self.up.done = True
+    self.params.values.pop("OsmDbUpdatesCheck")
+    for _ in range(300):
+      lapped.new_tick()
+      self.up.update()
+    self.params.values["OsmDbUpdatesCheck"] = True
+    lapped.new_tick()
+    self.up.update()
+    self.assertTrue(self.params.values.get("OsmDbUpdatesCheck"), "an offroad request was thrown away")
+    self.assertTrue(self.up.request_allowed)
+
+  def test_request_allowed_only_for_a_request_checked_this_tick(self):
+    """update_osm_db() acts only when request_allowed: a request written after the check waits a tick."""
+    self.up.update()
+    self.assertTrue(self.up.request_allowed)
+    self.params.values.pop("OsmDbUpdatesCheck")
+    self.up.update()
+    self.assertFalse(self.up.request_allowed, "no request was checked this tick")
+    self.params.values["OsmDbUpdatesCheck"] = True
+    self.sm.ds.started = True
+    self.up.update()
+    self.assertFalse(self.up.request_allowed, "a refused request")
+
+  def test_update_answers_even_after_the_weekly_latch(self):
+    """update() runs the gate every tick, also once the weekly refresh has fired or given up for the boot."""
+    self.up.done = True
+    self.sm.ds.started = True
+    self.assertFalse(self.up.update())
+    self.assertNotIn("OsmDbUpdatesCheck", self.params.values)
+
+  def test_an_error_fails_closed(self):
+    real_get = self.params.get
+
+    def boom(key, **_):
+      if key == "OsmLocationName":
+        raise RuntimeError("UnknownKeyName")
+      return real_get(key)
+
+    self.params.get = boom  # ty: ignore[invalid-assignment]
+    self.assertTrue(self.answer())
+    self.assertNotIn("OsmDbUpdatesCheck", self.params.values)
+    # every later request is refused for the rest of the boot, however offroad the car is
+    self.params.get = real_get  # ty: ignore[invalid-assignment]
+    self.params.values["OsmDbUpdatesCheck"] = True
+    self.assertTrue(self.answer())
+    self.assertNotIn("OsmDbUpdatesCheck", self.params.values)
+
+  def test_is_offroad_and_is_parked(self):
+    self.assertTrue(oau.is_offroad(self.sm) and oau.is_parked(self.sm))
+    self.sm.panda.ignitionCan = True
+    self.assertTrue(oau.is_offroad(self.sm), "OffroadMode with the car on is offroad")
+    self.assertFalse(oau.is_parked(self.sm), "but not parked")
+    self.sm.ds.started = True
+    self.assertFalse(oau.is_offroad(self.sm) or oau.is_parked(self.sm))
+
+
+class TestUpdateOsmDb(unittest.TestCase):
+  """mapd_manager.update_osm_db(request_allowed): upstream's consumer, told whether the request was checked."""
+
+  def setUp(self):
+    from openpilot.sunnypilot.mapd import mapd_manager as mm
+    self.mm = mm
+    self.params = FakeParams(OsmDbUpdatesCheck=True, OsmLocationName="AU", OsmStateName="All")
+    self.mem = FakeParams(OSMDownloadBounds="x", LastGPSPosition="{}")
+    self.started: list = []
+    patches = [
+      mock.patch.object(mm, "params", self.params),
+      mock.patch.object(mm, "mem_params", self.mem),
+      mock.patch.object(mm, "cleanup_old_osm_data", lambda _files: None),
+      mock.patch.object(mm, "get_files_for_cleanup", list),
+      mock.patch.object(mm, "request_refresh_osm_location_data", lambda n, s: self.started.append((n, s))),
+    ]
+    for p in patches:
+      p.start()
+      self.addCleanup(p.stop)
+
+  def test_a_checked_request_starts_the_download(self):
+    self.mm.update_osm_db(True)
+    self.assertEqual(len(self.started), 1)
+
+  def test_an_unchecked_request_waits(self):
+    """A sunnylink write between answer_request() and update_osm_db() is left for the next tick's check."""
+    self.mm.update_osm_db(False)
+    self.assertEqual(self.started, [])
+    self.assertTrue(self.params.values["OsmDbUpdatesCheck"], "left in place for the next tick, not dropped")
+
+  def test_upstreams_call_is_unchanged(self):
+    self.mm.update_osm_db()
+    self.assertEqual(len(self.started), 1)
 
 
 class TestCompletionRecord(unittest.TestCase):

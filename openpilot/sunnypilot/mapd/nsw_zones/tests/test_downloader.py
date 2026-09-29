@@ -41,6 +41,7 @@ def due(**over):
     "now": NOW,
     "time_valid": True,
     "device_state_ok": True,
+    "offroad": True,
     "offroad_for": OFFROAD_SETTLE_S + 1,
     "network_up": True,
     "unmetered": True,
@@ -86,12 +87,25 @@ class TestUpdateDue(unittest.TestCase):
       self.assertFalse(due(installed=False, **over)[0], over)
 
   def test_the_button(self):
-    """Forced: any mode, any age, a metered network, no settle time - but parked and with a network."""
+    """Forced: any mode, any age, a metered network, no settle time, the ignition on - but offroad and with a network."""
     self.assertTrue(due(forced=True, mode=MODE_OFF, auto_enabled=False, last_check=NOW, unmetered=False, offroad_for=0.0, retry_wait=True, time_valid=False)[0])
-    self.assertEqual(due(forced=True, offroad_for=-1.0), (False, "car must be parked"))
+    # OffroadMode with the car on: offroad, not parked (offroad_for is negative) - the owner's case
+    self.assertEqual(due(forced=True, offroad_for=-1.0), (True, ""))
+    self.assertEqual(due(forced=True, offroad=False, offroad_for=-1.0), (False, "offroad only"))
     self.assertEqual(due(forced=True, network_up=False), (False, "no network"))
     self.assertFalse(due(forced=True, busy=True)[0])
     self.assertFalse(due(forced=True, device_state_ok=False)[0])
+
+  def test_automatic_stays_parked_only(self):
+    """Offroad with the ignition on (OffroadMode) is not parked: no automatic check, first download included."""
+    for installed in (True, False):
+      self.assertEqual(due(installed=installed, offroad=True, offroad_for=-1.0), (False, "not parked long enough"))
+
+  def test_the_onroad_reason_is_the_maps_pages(self):
+    """The page shows the downloader's refusal as it is only when it is one of its short results."""
+    from openpilot.sunnypilot.mapd.osm_auto_update import OFFROAD_ONLY
+    self.assertEqual(due(forced=True, offroad=False)[1], OFFROAD_ONLY)
+    self.assertLessEqual(len(OFFROAD_ONLY), 18, "longer than the button's value line held before")
 
 
 # ============================================================================ a fake release
@@ -444,9 +458,68 @@ class TestUpdater(FetchTestBase):
     self.params.values[dl.CHECK_PARAM] = True
     self.assertFalse(self.step())
     self.assertIsNone(self.params.values.get(dl.CHECK_PARAM))
-    self.assertEqual(dl.read_status(self.dir)['last_result'], 'car must be parked')
+    self.assertEqual(dl.read_status(self.dir)['last_result'], 'offroad only')
     self.sm.ds.started = False
     self.assertFalse(any(self.run_until_idle(30)))
+    # an unheard deviceState is not offroad either: answered, not left to fire later
+    self.sm.seen['deviceState'] = False
+    self.params.values[dl.CHECK_PARAM] = True
+    self.assertFalse(self.step())
+    self.assertIsNone(self.params.values.get(dl.CHECK_PARAM))
+    self.assertEqual(dl.read_status(self.dir)['last_result'], 'no deviceState')
+
+  def test_the_button_works_in_offroad_mode_with_the_car_on(self):
+    """The owner's case: OffroadMode, ignition on, deviceState.started False. Nothing is controlled offroad."""
+    self.sm.panda.ignitionLine = True
+    self.params.values[dl.CHECK_PARAM] = True
+    self.assertTrue(self.step(), "a request made offroad with the ignition on runs")
+    self.step()  # collects the result
+    self.step()  # loads the new index
+    self.assertIsNone(self.params.values.get(dl.CHECK_PARAM))
+    self.assertEqual(self.installed, [1], "and the new index is loaded at once: offroad is enough")
+    self.assertEqual(dl.read_status(self.dir)['last_result'], 'updated')
+
+  def request_and_hold(self):
+    """Start a forced check whose index download waits on the returned event."""
+    gate = threading.Event()
+    real_get = self.rel.get
+
+    def slow_get(url, timeout=None):
+      if url.endswith(INDEX_NAME):
+        gate.wait(5)
+      return real_get(url, timeout)
+
+    self.up.get = slow_get
+    self.params.values[dl.CHECK_PARAM] = True
+    self.mono += 1
+    self.assertTrue(self.up.update())
+    return gate
+
+  def test_ignition_does_not_cancel_a_check_somebody_asked_for(self):
+    gate = self.request_and_hold()
+    self.sm.panda.ignitionCan = True  # OffroadMode: the car is switched on, the device stays offroad
+    self.mono += 1
+    self.up.update()
+    self.assertFalse(self.up._cancel.is_set())
+    gate.set()
+    self.up._thread.join(30)
+    self.step()
+    self.step()
+    self.assertIsNotNone(dl.read_current(self.dir))
+    self.assertEqual(self.installed, [1])
+
+  def test_going_onroad_cancels_a_check_somebody_asked_for(self):
+    gate = self.request_and_hold()
+    self.sm.ds.started = True
+    self.mono += 1
+    self.up.update()
+    self.assertTrue(self.up._cancel.is_set())
+    gate.set()
+    self.up._thread.join(30)
+    self.step()
+    self.assertIsNone(dl.read_current(self.dir))
+    self.assertEqual(dl.read_status(self.dir)['last_result'], 'cancelled')
+    self.assertEqual(self.installed, [])
 
   def test_ignition_cancels_a_download_in_flight(self):
     gate = threading.Event()
@@ -474,8 +547,9 @@ class TestUpdater(FetchTestBase):
     self.assertIsNone(dl.read_current(self.dir))
     self.assertEqual(dl.read_status(self.dir)['last_result'], 'cancelled')
 
-  def test_an_install_finished_while_driving_loads_at_the_next_park(self):
-    """The matcher is swapped only parked: an install whose last steps ran as the car started is loaded later."""
+  def test_an_install_finished_while_driving_loads_when_next_offroad(self):
+    """The matcher is swapped only offroad: an install whose last steps ran as the car started is loaded later - as
+    soon as the device is offroad again, ignition on or not."""
     gate = threading.Event()
     real_get = self.rel.get
 
@@ -491,15 +565,16 @@ class TestUpdater(FetchTestBase):
         break
     self.up._cancel = SimpleNamespace(is_set=lambda: False, set=lambda: None)  # ty: ignore[invalid-assignment]  # past where it can stop
     self.sm.ds.started = True
+    self.sm.panda.ignitionLine = True
     gate.set()
     self.up._thread.join(30)
     for _ in range(5):
       self.step()
     self.assertIsNotNone(dl.read_current(self.dir), "installed")
     self.assertEqual(self.installed, [], "not loaded while driving")
-    self.sm.ds.started = False
+    self.sm.ds.started = False  # OffroadMode switched on, or the drive ended; the ignition is still on
     self.step()
-    self.assertEqual(self.installed, [1], "loaded once parked")
+    self.assertEqual(self.installed, [1], "loaded once offroad")
     self.step()
     self.assertEqual(self.installed, [1])
 

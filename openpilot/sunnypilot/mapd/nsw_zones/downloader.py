@@ -14,11 +14,16 @@ Nothing about the car - no position, no route, no identifier - is sent.
 WHEN. update_due() is the whole decision, pure so it can be tested:
   * the FIRST download is automatic (no data installed) whenever the mode is not off,
   * after that, weekly (NswZonesAutoUpdate, default on), measured from the last successful CHECK,
-  * NswZonesUpdateCheck (the maps page button) forces a check now.
+  * NswZonesUpdateCheck (the maps page button, or sunnylink) forces a check now.
   Automatic checks run only PARKED (deviceState offroad AND no panda ignition, settled for OFFROAD_SETTLE_S - the
-  rule and its reasons are osm_auto_update's) on UNMETERED wi-fi or ethernet. The button needs parked and a
-  network, not an unmetered one: pressing it is the owner's choice of 22 MB. A failed automatic check is retried
-  after RETRY_S, not every second.
+  rule and its reasons are osm_auto_update's) on UNMETERED wi-fi or ethernet, and ignition cancels one in flight.
+  A forced check needs only OFFROAD (deviceState heard, alive, started False - OffroadMode with the ignition on
+  included: offroad nothing is controlling the car) and a network, not an unmetered one: pressing it is the owner's
+  choice of 22 MB. Going onroad cancels any check in flight. A failed automatic check is retried after RETRY_S, not
+  every second.
+
+  A newly installed index is loaded into the running matcher only offroad: the swap drops the matcher's state, which
+  must not happen while a drive is using it.
 
 HOW. Manifest first; nothing more is downloaded when its sha256 is the installed one or its format version is not
 one this code reads (index.manifest_compatible). The index is streamed into a staging directory with a byte cap and
@@ -65,7 +70,7 @@ from openpilot.sunnypilot.mapd.nsw_zones.index import (
   verify_index,
   write_stored_aligned,
 )
-from openpilot.sunnypilot.mapd.osm_auto_update import OFFROAD_SETTLE_S, UNMETERED_LINKS, is_parked
+from openpilot.sunnypilot.mapd.osm_auto_update import OFFROAD_ONLY, OFFROAD_SETTLE_S, UNMETERED_LINKS, is_offroad, is_parked
 
 BASE_URL = "https://github.com/SoRadGaming/openpilot/releases/download/nswzones-latest/"
 DEVICE_DIR = "/data/media/0/nswzones"
@@ -178,6 +183,7 @@ def update_due(
   now: float,
   time_valid: bool,
   device_state_ok: bool,
+  offroad: bool,
   offroad_for: float,
   network_up: bool,
   unmetered: bool,
@@ -186,17 +192,18 @@ def update_due(
 ) -> tuple[bool, str]:
   """(due, why not). Pure: every input is handed in.
 
-  offroad_for: seconds parked continuously, negative when not parked or not known to be. network_up: any network;
-  unmetered: wi-fi or ethernet AND not marked metered. last_check: unix time of the last successful check (0 never).
-  retry_wait: an automatic check failed less than RETRY_S ago.
+  offroad: deviceState says not started (the rule for a forced check). offroad_for: seconds PARKED continuously
+  (offroad and no ignition), negative when not parked or not known to be (the rule for an automatic one). network_up:
+  any network; unmetered: wi-fi or ethernet AND not marked metered. last_check: unix time of the last successful check
+  (0 never). retry_wait: an automatic check failed less than RETRY_S ago.
   """
   if busy:
     return False, "in progress"
   if not device_state_ok:
     return False, "no deviceState"
   if forced:
-    if offroad_for < 0.0:
-      return False, "car must be parked"
+    if not offroad:
+      return False, OFFROAD_ONLY
     if not network_up:
       return False, "no network"
     return True, ""
@@ -484,11 +491,12 @@ class NswZonesUpdater:
     (cloudlog.info if r.ok else cloudlog.warning)(f"nsw_zones: update check: {r.why} {r.data_version}".rstrip())
     if r.changed:
       self._sync_version()
-      self._install_pending = True  # loaded by _update, and only parked (see there)
+      self._install_pending = True  # loaded by _update, and only offroad (see there)
 
   def _update(self) -> bool:
     self.sm.update(0)
     now_mono = time.monotonic()
+    offroad = is_offroad(self.sm)
     parked = is_parked(self.sm)
     if parked:
       if self._offroad_since is None:
@@ -497,16 +505,19 @@ class NswZonesUpdater:
       self._offroad_since = None
 
     # A new index replaces the running matcher, and with it every piece of its state (dead-reckoning paths, the line
-    # it is on). An install that finished after the car started - the last steps cannot be cancelled once the new
-    # version is switched in - is loaded at the next park, not mid-drive.
-    if self._install_pending and parked:
+    # it is on). An install that finished after the device went onroad - the last steps cannot be cancelled once the
+    # new version is switched in - is loaded when it is next offroad, not mid-drive. Offroad is enough: nothing is
+    # controlled offroad, so OffroadMode with the car on loads it at once.
+    if self._install_pending and offroad:
       self._install_pending = False
       if self.on_installed is not None:
         self.on_installed()
 
     if self._thread is not None:
-      if not parked:
-        self._cancel.set()  # the car is starting: stop downloading, keep what is installed
+      # Onroad stops any check: keep what is installed. Ignition stops an automatic one too - automatic stays parked
+      # only - but not one somebody asked for in OffroadMode with the car on.
+      if not offroad or (not self._forced and not parked):
+        self._cancel.set()
       if not self._thread.is_alive():
         self._finish()
       return False
@@ -524,6 +535,7 @@ class NswZonesUpdater:
       now=wall_now(),
       time_valid=system_time_valid(),
       device_state_ok=device_state_ok,
+      offroad=offroad,
       offroad_for=now_mono - self._offroad_since if self._offroad_since is not None else -1.0,
       network_up=ds.networkType != log.DeviceState.NetworkType.none,
       unmetered=ds.networkType in UNMETERED_LINKS and not ds.networkMetered,
