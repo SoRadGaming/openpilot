@@ -2246,6 +2246,94 @@
               "type": "offroad_only"
             }
           ]
+        },
+        {
+          "key": "HondaBrakeLampTest",
+          "widget": "option",
+          "title": "Brake Lamp Test (HONDA_ACCORD_9G_AU only)",
+          "description": "Test mode for the Accord 9G AU only; every other car ignores it. Sets one extra bit in openpilot's own brake (0x1FA) or HUD (0x30C) frame, only once openpilot has held the car at a standstill for 1 s with no pedal pressed, to see whether any bit lights the stop lamps. Applies at one stop per setting and is cleared at the end of the drive. Entries 9-17 are CMBS-adjacent unknowns - stop at the first cluster warning, set Off and restart the car before continuing.",
+          "details": "The car re-reads this every 0.2 s, so it works onroad. Nothing else changes - the stock ACC stand-down, SCM_BUTTONS and CMBS are untouched. Every change and the resulting frame are written to the route log. To repeat an entry at another stop, pick a different entry and then the same one again.",
+          "options": [
+            {
+              "value": 0,
+              "label": "Off"
+            },
+            {
+              "value": 1,
+              "label": "1FA bit 23"
+            },
+            {
+              "value": 2,
+              "label": "1FA bit 22"
+            },
+            {
+              "value": 3,
+              "label": "1FA bits 21+22"
+            },
+            {
+              "value": 4,
+              "label": "1FA bits 21+23"
+            },
+            {
+              "value": 5,
+              "label": "1FA bits 22+23"
+            },
+            {
+              "value": 6,
+              "label": "1FA bits 21-23"
+            },
+            {
+              "value": 7,
+              "label": "1FA bit 21"
+            },
+            {
+              "value": 8,
+              "label": "30C bit 42"
+            },
+            {
+              "value": 9,
+              "label": "30C bit 38"
+            },
+            {
+              "value": 10,
+              "label": "1FA bit 44"
+            },
+            {
+              "value": 11,
+              "label": "1FA bit 32"
+            },
+            {
+              "value": 12,
+              "label": "1FA bit 33"
+            },
+            {
+              "value": 13,
+              "label": "1FA bit 34"
+            },
+            {
+              "value": 14,
+              "label": "1FA bit 35"
+            },
+            {
+              "value": 15,
+              "label": "1FA bit 36"
+            },
+            {
+              "value": 16,
+              "label": "1FA bit 37"
+            },
+            {
+              "value": 17,
+              "label": "1FA bit 38"
+            }
+          ],
+          "visibility": [
+            {
+              "type": "capability",
+              "field": "has_longitudinal_control",
+              "equals": true
+            }
+          ]
         }
       ]
     },

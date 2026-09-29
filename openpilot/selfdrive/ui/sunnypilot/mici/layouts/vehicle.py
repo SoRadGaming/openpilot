@@ -35,6 +35,47 @@ from openpilot.system.ui.widgets.scroller import NavScroller
 # params are files: read the learned state on a tick, not every frame
 REFRESH_S = 1.0
 
+# FORK(BRAKE-LAMP-TEST): stop-lamp bit test on HONDA_ACCORD_9G_AU. The car reads the param every
+# 0.2 s and applies entry N only once openpilot has held the car at a standstill for 1 s with no
+# pedal pressed, at one stop per setting; manager clears the param at the end of every drive.
+# Hardcoded rather than imported, like the tuner's names above, so a broken opendbc can never
+# take this page off the screen; selfdrive/ui/tests/test_brake_lamp_test_settings.py keeps the
+# copy honest against CANDIDATES in opendbc/sunnypilot/car/honda/brake_lamp_test.py.
+# ASCII only, <= 14 chars.
+LAMP_TEST_PARAM = "HondaBrakeLampTest"
+LAMP_TEST_PLATFORM = "HONDA_ACCORD_9G_AU"
+LAMP_TEST_LABELS = (
+  "1FA bit 23", "1FA bit 22", "1FA bits 21+22", "1FA bits 21+23", "1FA bits 22+23", "1FA bits 21-23",
+  "1FA bit 21", "30C bit 42",
+  "30C bit 38", "1FA bit 44", "1FA bit 32", "1FA bit 33", "1FA bit 34", "1FA bit 35", "1FA bit 36",
+  "1FA bit 37", "1FA bit 38",
+)
+# entries from here on are CMBS-adjacent unknowns (risky=True on the car side): stepping into one
+# asks for a slide to confirm
+LAMP_TEST_RISKY_FROM = 9
+
+
+def lamp_test_text(entry: int) -> str:
+  if 1 <= entry <= len(LAMP_TEST_LABELS):
+    # "N: label" -- the widest, "4: 1FA bits 21+22", is ~295 px in Inter 36 against the 322 px
+    # a BigButton gives its value; an "N/21" prefix would not fit
+    return f"{entry}: {LAMP_TEST_LABELS[entry - 1]}"
+  return "off"
+
+
+def lamp_test_entry() -> int:
+  try:
+    entry = int(ui_state.params.get(LAMP_TEST_PARAM) or 0)
+  except (TypeError, ValueError):
+    return 0
+  return entry if 0 <= entry <= len(LAMP_TEST_LABELS) else 0
+
+
+def lamp_test_visible() -> bool:
+  # the car ignores the param everywhere else; hidden until the car has been fingerprinted
+  CP = ui_state.CP
+  return CP is not None and CP.carFingerprint == LAMP_TEST_PLATFORM
+
 
 _brand_cache: list = ["", 0.0]
 
@@ -135,9 +176,37 @@ class VehicleLayoutMici(NavScroller):
     # onroad would just be undone
     self._reset_btn.set_enabled(ui_state.is_offroad)
 
-    self._scroller.add_widgets([self._learned_info, self._learning_toggle, self._reset_btn])
+    # FORK(BRAKE-LAMP-TEST): tap "lamp test" to step to the next entry, "lamp test back" to step
+    # back, "lamp test off" to clear it at once. Stepping into a risky entry asks for a slide
+    # first. Usable onroad: this UI keeps settings open at a standstill and pops back to the road
+    # view when the car moves.
+    self._lamp_entry = lamp_test_entry()
+    self._lamp_btn = BigButton(tr("lamp test"), lamp_test_text(self._lamp_entry))
+    self._lamp_btn.set_click_callback(lambda: self._step_lamp_entry((self._lamp_entry + 1) % (len(LAMP_TEST_LABELS) + 1)))
+    self._lamp_back_btn = BigButton(tr("lamp test back"))
+    self._lamp_back_btn.set_click_callback(lambda: self._step_lamp_entry(max(self._lamp_entry - 1, 0)))
+    self._lamp_off_btn = BigButton(tr("lamp test off"))
+    self._lamp_off_btn.set_click_callback(lambda: self._set_lamp_entry(0))
+    for btn in (self._lamp_btn, self._lamp_back_btn, self._lamp_off_btn):
+      btn.set_visible(lamp_test_visible)
+
+    self._scroller.add_widgets([self._learned_info, self._learning_toggle, self._reset_btn,
+                                self._lamp_btn, self._lamp_back_btn, self._lamp_off_btn])
 
     self._refreshed = 0.0
+
+  def _step_lamp_entry(self, entry: int) -> None:
+    if entry < LAMP_TEST_RISKY_FROM or entry == self._lamp_entry:
+      self._set_lamp_entry(entry)
+      return
+    icon = gui_app.texture("../../sunnypilot/selfdrive/assets/offroad/icon_vehicle.png", 110, 110)
+    gui_app.push_widget(BigConfirmationDialog(tr("slide to test") + f" {lamp_test_text(entry)}", icon,
+                                              confirm_callback=lambda: self._set_lamp_entry(entry), red=True))
+
+  def _set_lamp_entry(self, entry: int) -> None:
+    self._lamp_entry = entry
+    ui_state.params.put(LAMP_TEST_PARAM, entry, block=True)  # the 1 s refresh must not read back a stale value
+    self._lamp_btn.set_value(lamp_test_text(entry))
 
   def _on_reset_clicked(self) -> None:
     icon = gui_app.texture("../../sunnypilot/selfdrive/assets/offroad/icon_vehicle.png", 110, 110)
@@ -158,6 +227,11 @@ class VehicleLayoutMici(NavScroller):
     # sunnylink app, and each toggle only reads its param when it is built
     self._refreshed = time.monotonic()
     self._learning_toggle.refresh()
+    # FORK(BRAKE-LAMP-TEST): the entry can also be changed from sunnylink
+    entry = lamp_test_entry()
+    if entry != self._lamp_entry:
+      self._lamp_entry = entry
+      self._lamp_btn.set_value(lamp_test_text(entry))
 
   def _update_state(self):
     super()._update_state()

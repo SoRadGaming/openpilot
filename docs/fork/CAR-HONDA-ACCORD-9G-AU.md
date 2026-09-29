@@ -589,6 +589,75 @@ Two `FORK:` comments in `carcontroller.py` record decisions rather than code:
 - **The pedal/PCM crossfade was removed** (opendbc `aa73e60a`). Across 17 engaged routes, 289,625 `ACC_HUD` frames all had `PCM_GAS = 0` and `PCM_SPEED = 0`; the PCM was never shown to respond, and the interceptor is the easier actuator to control. The interceptor owns the gas at every speed. Integration section 6 pins this by decoding `PCM_GAS` from the frames the controller emits.
 - **MVL's 3x faster brake rise was deliberately not ported.** Combined with the learned brake gain, it would reach full brake from a gentle request in about 0.1 s.
 
+### 7.8 Brake lamp test (branch `brake-lamp-test`, `FORK(BRAKE-LAMP-TEST)`)
+
+The problem: when openpilot brakes, the stop lamps stay dark, although stock ACC braking lights them. openpilot already sets `BRAKE_LIGHTS` (bit 39) on every braking frame, and stock never sets it. On this car the lamp relay line runs to the ACC unit. That unit sits on bus 2 and never receives openpilot's 0x1FA. The log mining over 161 routes found no 0x1FA bit that stock sets on most of its braking frames and openpilot does not. **Expect a negative result.** The realistic fix is a hardware driver on the relay line, keyed from `0x1A4` bit 23 (VSA `COMPUTER_BRAKING`, on bus 0) or from openpilot's `COMPUTER_BRAKE > 0`.
+
+This test mode is cheap to run, so it is worth doing first.
+
+- **Param.** `HondaBrakeLampTest` (INT, `CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION`, deliberately neither `PERSISTENT` nor `BACKUP`). 0 = off. N = entry N of `CANDIDATES` in `opendbc/sunnypilot/car/honda/brake_lamp_test.py`. The car re-reads it every 0.2 s, so it can be changed onroad. manager clears it at boot and at the end of every drive, so it cannot be left on by mistake.
+- **Where to set it.**
+  - On the comma 4: Settings > vehicle. Tap "lamp test" to step forward, "lamp test back" to step back, "lamp test off" to clear it. Stepping into a risky entry (9-17) asks for a slide to confirm. The rows show only once the car has been fingerprinted as `HONDA_ACCORD_9G_AU`.
+  - From the phone: sunnylink, Honda Settings > Brake Lamp Test (HONDA_ACCORD_9G_AU only). sunnylink has no per-platform capability, so the item shows on any Honda with openpilot longitudinal; the car ignores the param everywhere except this platform. sunnylink has no confirmation step.
+- **When it applies.** All of these must hold, otherwise every frame is byte-for-byte unchanged:
+  - openpilot longitudinal is active;
+  - the car is stopped: `CS.out.standstill` (`XMISSION_SPEED` = 0) and vEgo < 0.1 m/s;
+  - `apply_brake > 0`, which is the standstill hold;
+  - the driver is on neither pedal;
+  - all of the above have held for 1 s (50 brake frames) in a row, so nothing is set in the last moments of a stop or while the speed flickers around zero. It stops on the first brake frame that any of them fails.
+- **One stop per setting.** Once the test has been active, the car latches it off as soon as vEgo exceeds 2 m/s. A value left set therefore applies at one stop, not at every traffic light after it. Writing a different value re-arms it: the next entry, or off. To repeat the same entry at another stop, pick a different entry and then the same one again, a second or so apart.
+- **What changes.** Only the entry's bits in openpilot's own frame, with the Honda checksum redone.
+- **Candidates, in order:**
+  1. `0x1FA` bit 23 (`SET_ME_X00` = 4)
+  2. `0x1FA` bit 22
+  3. `0x1FA` bits 21+22
+  4. `0x1FA` bits 21+23
+  5. `0x1FA` bits 22+23
+  6. `0x1FA` bits 21-23 (the `SET_ME_X00` field as an enum)
+  7. `0x1FA` bit 21 (a retest of the 2026-07-18 build; skip it if that result is known)
+  8. `0x30C` bit 42 (`BOH_4`, weak evidence)
+  9. `0x30C` bit 38 (`BRAKE_SYSTEM_ICON`, next to the FCM flags; may light a cluster icon). **Risky.**
+  10. `0x1FA` bit 44 (`SET_ME_X00_3`, never set, between `FCW` and `CHIME`). **Risky.**
+  11. to 17. `0x1FA` bits 32-38, one at a time (`CRUISE_STATES`, never set). **Risky.**
+
+  "Risky" means CMBS-adjacent and unknown. There is no evidence either way, but these are the bits most likely to be unmapped CMBS or fault flags that the VSA or PCM checks. In `0x30C` the same positions 33-38 are `RADAR_OBSTRUCTED`, `FCM_PROBLEM`, `FCM_OFF`, `FCM_OFF_2`, `ACC_PROBLEM` and `BRAKE_SYSTEM_ICON` (FCM = CMBS). They come last. Stop the sweep at the first cluster warning, set off, and restart the car before continuing.
+- **Excluded bits.** `ALLOWED_BITS` allows only `0x1FA` {21, 22, 23, 32-38, 44} and `0x30C` {38, 42}. A unit test pins that set. Excluded are:
+  - the brake value, pump, request, cancel, fault and override bits;
+  - the whole CMBS byte (bits 8-15), including the unnamed bits 9 and 13;
+  - the whole AEB byte (bits 24-31), including the unnamed bits 28 and 30;
+  - `BRAKE_LIGHTS`, `AEB_STATUS`/`FCW`, `CHIME`, the hybrid brake bits, counter and checksum.
+- **Why bit 28 is out.** An earlier draft ranked bit 28 first as "set only while stock brakes". It is AEB-linked, not a plain brake flag. Across all 161 routes, stock set it in exactly 4 episodes of 1-2 s:
+  - route 08 at 2138 s: brake 320, 49.6 to 35.1 km/h;
+  - route 41 at 351 s;
+  - route 5e at 349 s;
+  - route 81 at 1858 s: 90 km/h, brake 231.
+
+  In the first three it was on every frame together with `AEB_REQ_1` (bit 29). On 41 and 5e the panda forwarded those radar frames as stock AEB. These were stock AEB/CMBS interventions during openpilot drives, not ordinary ACC braking. In the fourth, bit 28 was set alone. Setting it on openpilot's own frame would hand the VSA half of an AEB request, so it is not offered at all.
+- **What is not touched.** The stand-down: `SCM_BUTTONS`/`MAIN_ON`, the ELESYS safety modes and the ACC unit's CMBS/AEB path. Nothing new is sent, and nothing goes to bus 2.
+- **Panda.** No safety change. The tx hook reads only `COMPUTER_BRAKE` from 0x1FA and only bytes 0-2 from 0x30C. `ElesysBrakeLampTestMixin` in `opendbc/safety/tests/test_honda.py` checks that every entry gets the same verdict as the plain frame, in both stand-down modes.
+- **Reading the test back from a route.** The lines are tagged `brakelamptest` and logged at ERROR level, so they land in `errorLogMessage` and reach the qlog. A qlog-only upload is enough. They are written:
+  - on each entry change (`entry A->B/17 '<label>' addr=... bits=[...]`);
+  - on each on/off edge, with vEgo, standstill, the brake value and the pedal flags;
+  - on the latch (`latched off: entry=N ...`) and the re-arm (`re-armed: param A->B`);
+  - once per activation or entry change, carrying the first modified frame (`frame entry=N 0x1FA <original> -> <sent>`).
+
+  The frames themselves are in `sendcan`, which the qlog decimates, so the full rlog is needed to see every frame.
+- **How to run it.** Stop at night with openpilot holding the car and your foot hovering over the brake. Wait a second, then step through the entries and watch the lamps in the mirror, or film the high-mount stop lamp with a clock in view. Set it to off the moment anything appears on the cluster.
+- **Tests.**
+  - `opendbc/sunnypilot/car/honda/test_brake_lamp_test.py` covers:
+    - frames identical with the param off or invalid;
+    - bits set only after the 1 s dwell at a real standstill, and never while the car is still rolling, on a short hold or while standstill flickers;
+    - one stop per setting, and the re-arm;
+    - the stand-down and the brake value untouched;
+    - the allowed-bit set and the risky tail;
+    - DBC bit numbering;
+    - logging.
+  - `openpilot/selfdrive/ui/tests/test_brake_lamp_test_settings.py` covers:
+    - the param flags;
+    - the panel and sunnylink labels match `CANDIDATES`;
+    - the panel's risky boundary matches the car side;
+    - the value text fits a `BigButton`.
+
 ---
 
 ## 8. Panda safety (`opendbc/safety/modes/honda.h`)

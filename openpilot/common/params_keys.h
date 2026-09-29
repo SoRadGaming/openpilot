@@ -181,6 +181,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"HondaDynPedalGain5", {PERSISTENT, FLOAT, "1.0"}},
     {"HondaDynWindFactor", {PERSISTENT, FLOAT, "1.0"}},
     {"HondaDynBrakeGain", {PERSISTENT, FLOAT, "0.0"}},
+    // FORK(BRAKE-LAMP-TEST): 0 = off, N = entry N of CANDIDATES in
+    // opendbc/sunnypilot/car/honda/brake_lamp_test.py. A test mode: not PERSISTENT and not
+    // BACKUP -- cleared at boot and at the end of every drive, so it cannot be left on.
+    {"HondaBrakeLampTest", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, INT, "0"}},
     {"IntelligentCruiseButtonManagement", {PERSISTENT | BACKUP , BOOL}},
     {"InteractivityTimeout", {PERSISTENT | BACKUP, INT, "0"}},
     // EPS-LKAS gateway board. PERSISTENT because the settings page is offroad and card,
