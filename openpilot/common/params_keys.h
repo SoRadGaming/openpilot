@@ -231,6 +231,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // MADS params
     {"Mads", {PERSISTENT | BACKUP, BOOL, "1"}},
+    // FORK(LKAS-GATEWAY): the fast-wheel takeover in mads.py. On = a steering rate at or above MadsEmergencySteerRate
+    // deg/s for 2 frames turns MADS off. The rate is 150, 200, 250 or 300; any other value reads as 200.
+    {"MadsEmergencySteerDisable", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"MadsEmergencySteerRate", {PERSISTENT | BACKUP, INT, "200"}},
     {"MadsMainCruiseAllowed", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"MadsSteeringMode", {PERSISTENT | BACKUP, INT, "0"}},
     {"MadsUnifiedEngagementMode", {PERSISTENT | BACKUP, BOOL, "1"}},

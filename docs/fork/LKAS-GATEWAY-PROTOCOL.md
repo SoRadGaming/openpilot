@@ -102,12 +102,12 @@ the hunk. Integration-test sections ("integration §N") refer to
 | sp | `openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_ext_base.py` (added in the 2026-09 merge) | `or getattr(self.lac_torque, "integrator_frozen", False)` in `update_output_torque()`'s `freeze_integrator`. The extension updates the owning controller's PID a second time in the frame when Lateral Jerk (upstream `91a53aa16`) or NNLC is on, and without this that second update wound the integrator open-loop through every hold | 2026-09 merge | `test_latcontrol_gateway_hold.py` (new, same merge) |
 | sp | `openpilot/selfdrive/controls/lib/desire_helper.py` | `update(..., left_edge_detected=False, right_edge_detected=False, driver_torque_stale=False)`: the fork's parameter is last, after upstream's road-edge parameters, and callers pass it by keyword. `not driver_torque_stale` in upstream's rewritten `torque_applied`. `NUDGE_FIRM`, `NUDGE_HOLD_FRAMES`, `nudge_frames` and the `DesireHelper(car_fingerprint)` constructor are area C | `56a404318`, 2026-09 merge | `TestLaneChangeNudge.test_a_stale_torque_still_confirms_nothing` and `test_driver_torque_stale_comes_after_the_road_edges`, integration §15 |
 | sp | `openpilot/selfdrive/modeld/modeld.py`, `openpilot/sunnypilot/modeld_v2/modeld.py` | `"carStateSP"` in upstream's renamed SubMaster, `driver_torque_stale=sm['carStateSP'].driverTorqueStale` passed to `DH.update` by keyword after the edges. `DesireHelper(CP.carFingerprint)` is area C | `56a404318`, 2026-09 merge | none |
-| sp | `openpilot/sunnypilot/mads/mads.py` | `LINBUS_REASON_DRIVER_OVERRIDE`, `self._gw_paused`, the gateway pause block, and `if self._gw_paused: return False` at the top of `should_silent_lkas_enable()` (`2cfcd3c6a`). Also the steer-rate emergency takeover (`EMERGENCY_STEER_RATE`, `EMERGENCY_STEER_FRAMES`, `self._fast_steer`), see "Other" in section 9. Since the 2026-09 merge the gateway block also fires on the frame MADS is being turned on (`self.enabled or ...check_contains(ET.ENABLE)`), so an LKAS press or UEM engagement during an override no longer gives one active frame, and a `KeyError` fallback treats a `SubMaster` without `carStateSP` (upstream's MADS tests) as "no gateway" | `ef4f29432` `4932aa73c` `35622a994` `2cfcd3c6a`, 2026-09 merge | `test_mads_gateway_pause.py` (18 tests) |
+| sp | `openpilot/sunnypilot/mads/mads.py` | `LINBUS_REASON_DRIVER_OVERRIDE`, `self._gw_paused`, the gateway pause block, and `if self._gw_paused: return False` at the top of `should_silent_lkas_enable()` (`2cfcd3c6a`). Also the steer-rate emergency takeover (`EMERGENCY_STEER_RATE`, `EMERGENCY_STEER_RATES`, `EMERGENCY_STEER_FRAMES`, `self._fast_steer`, and since 2026-09-30 its two settings: `read_emergency_steer_rate()`, and `self.emergency_steer_disable`/`self.emergency_steer_rate` read in `__init__` and `read_params()`), see "Other" in section 9. Since the 2026-09 merge the gateway block also fires on the frame MADS is being turned on (`self.enabled or ...check_contains(ET.ENABLE)`), so an LKAS press or UEM engagement during an override no longer gives one active frame, and a `KeyError` fallback treats a `SubMaster` without `carStateSP` (upstream's MADS tests) as "no gateway" | `ef4f29432` `4932aa73c` `35622a994` `2cfcd3c6a`, 2026-09 merge, 2026-09-30 | `test_mads_gateway_pause.py` (41 tests) |
 | sp | `openpilot/sunnypilot/mads/state.py` (added in the 2026-09 merge) | DISABLED branch: an ENABLE that arrives with `silentLkasDisable` goes to `paused`, not `enabled`/`overriding`. Only the gateway block can raise `silentLkasDisable` while MADS is disabled | 2026-09 merge | `test_mads_gateway_pause.py::test_turning_mads_on_during_an_override_starts_paused` |
 | sp | `openpilot/selfdrive/selfdrived/selfdrived.py` | `'carStateSP'` added to upstream's SubMaster, for MADS | `ef4f29432` | `test_mads_gateway_pause.py::test_selfdrived_subscribes_the_gateway_state` |
 | sp | `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | the capnp ↔ dataclass seam for `lateralControl` and `linbusGateway` | `d11d2c9a8` `2dd8827d5` | itself |
 | sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | two tests: `test_a_stale_torque_still_confirms_nothing` and `test_driver_torque_stale_comes_after_the_road_edges` (the rest is area C) | `10e088a2d`, 2026-09 merge | itself |
-| sp | `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | the gateway pause and its resume, every brake mode, the brake and regen guard, the emergency takeover beside an override, no board no pause, `selfdrived`'s subscription, and the enable-frame cases | `2cfcd3c6a`, 2026-09 merge | itself |
+| sp | `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | the gateway pause and its resume, every brake mode, the brake and regen guard, the emergency takeover beside an override, no board no pause, `selfdrived`'s subscription, the enable-frame cases, and (`TestFastWheelSetting`) the takeover's switch and threshold | `2cfcd3c6a`, 2026-09 merge, 2026-09-30 | itself |
 | sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` (added in the 2026-09 merge) | 300 frames on `HONDA_ACCORD_9G_AU` with Lateral Jerk on and the board present but not actuating: `pid.i` stays 0.0 in both torque controllers. Control case: with no gateway the same run winds `abs(i)` above 1e-3, as upstream does | 2026-09 merge | itself |
 
 `openpilot/selfdrive/car/card.py` has no area-B hunk. It already published `carStateSP` before the fork.
@@ -744,29 +744,38 @@ frames against the log's 761.
 
 Keep the gateway block after 2 and 3 and before 5, and the `_gw_paused` check first in
 `should_silent_lkas_enable()`, ahead of upstream's guards. Keep the constants and
-`self._gw_paused = False`, `self._fast_steer = 0` in `__init__`, and the DISABLED branch in
+`self._gw_paused = False`, `self._fast_steer = 0` in `__init__`, the two fast-wheel settings
+read in both `__init__` and `read_params()` ("Other" below), and the DISABLED branch in
 `state.py`. To check on a route: look at `selfdriveStateSP.mads.state` and
 `carControl.latActive` during a stretch where `carStateSP.linbusGateway.grantReason == 4`.
 
-**Tests:** `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py`, 18 tests in the style of
+**Tests:** `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py`, 41 tests in the style of
 upstream's `test_mads_steering_mode.py` (`OpenpilotTestCase`, a mocked car): the pause holds
 through the whole override and in every brake mode; it resumes on its own; a brake or regen
 held in Pause mode outlasts the override; releasing the brake mid-override does not resume; an
 emergency turns MADS off on the first override frame and during a pause; no board, no pause;
 `selfdrived` subscribes the gateway state; an override does not turn MADS on; turning MADS on
 during an override starts paused (LKAS button and unified engagement); and without an override
-the enable is upstream's.
+the enable is upstream's. The other 23 (`TestFastWheelSetting`) are the takeover's settings, see "Other" below.
 
-### Other: the steer-rate emergency takeover (`35622a994`)
+### Other: the steer-rate emergency takeover (`35622a994`, a setting since 2026-09-30)
 
 This is in the same function of `mads.py`, but it is not protocol: it fits none of the three
 areas cleanly and is documented here because it shares `_gw_paused`. It runs before the
 gateway block:
 
 ```python
-EMERGENCY_STEER_RATE = 200.0   # deg/s
-EMERGENCY_STEER_FRAMES = 2
-self._fast_steer = self._fast_steer + 1 if abs(CS.steeringRateDeg) >= EMERGENCY_STEER_RATE else 0
+EMERGENCY_STEER_RATE = 200.0                  # deg/s, the default
+EMERGENCY_STEER_RATES = (150, 200, 250, 300)  # the only values MadsEmergencySteerRate may take
+EMERGENCY_STEER_FRAMES = 2                    # not a setting
+# __init__ and read_params():
+self.emergency_steer_disable = self.params.get_bool("MadsEmergencySteerDisable")
+self.emergency_steer_rate = read_emergency_steer_rate(self.params)   # outside the set -> 200
+# update_events():
+if self.emergency_steer_disable and abs(CS.steeringRateDeg) >= self.emergency_steer_rate:
+    self._fast_steer += 1
+else:
+    self._fast_steer = 0
 emergency = self._fast_steer >= EMERGENCY_STEER_FRAMES and self.enabled
 if emergency:
     self.events_sp.add(EventNameSP.lkasDisable); self._gw_paused = False
@@ -774,10 +783,38 @@ if emergency:
 
 It turns MADS **off** (not paused) on a fast wheel. The evidence is 18 routes and 7,438 s of the
 board steering, where the maximum steering rate was 151 °/s and no frame reached 200. **It is not
-gated on `present` or on the fingerprint, so it applies to every car running this fork.** Keep
-that in mind if the fork is ever used on another car, or if the hunk is proposed upstream. The
-two emergency cases in `test_mads_gateway_pause.py` test it beside a gateway override; nothing
-tests it on another car.
+gated on `present` or on the fingerprint, so it applies to every car running this fork** - but
+since 2026-09-30 it can be switched off. Keep the all-car scope in mind if the fork is ever used
+on another car, or if the hunk is proposed upstream.
+
+**The settings.** Both are `PERSISTENT | BACKUP` in `params_keys.h`:
+
+| param | type, default | meaning |
+|---|---|---|
+| `MadsEmergencySteerDisable` | BOOL, `"1"` | on: the takeover as it always was. Off: the counter never runs, so `emergency` is always False and the gateway block below behaves exactly as if the takeover did not exist - a swerve during an override is just an override (paused, then resumed) |
+| `MadsEmergencySteerRate` | INT, `"200"` | the threshold in °/s. 150, 200, 250 or 300; anything else (a typo in a backup, an index written by a generic widget, a float, garbage) reads as 200, so it can never become hair-trigger or unreachable |
+
+The defaults are the behaviour from before it was a setting, byte for byte. 150 sits on the
+single highest sample ever recorded under assist, so at 150 a hard curve can turn MADS off.
+Both are read in `__init__` and in `read_params()`, which `selfdrived`'s params thread calls
+every 0.1 s, so a change applies within 0.1 s, onroad, without a restart; neither UI locks them
+offroad. Turning it off mid-swerve resets the counter.
+
+Where to set them: sunnylink, Steering > MADS Settings ("Turn Off Steering on a Fast Wheel",
+with "Fast Wheel Threshold" under it, enabled only while the toggle is on); and on the comma 4
+(mici), Settings > vehicle, the rows "off on swerve" (ON = a fast wheel turns steering off) and
+"swerve at" (the rate). The mici has no MADS page, and the vehicle page is the fork's own file,
+so this costs no upstream UI diff - but that page's button is shown only on a Honda or an
+unrecognised car, so on another car the switch is in sunnylink only. The big (tici) UI has no
+row for it.
+
+The two emergency cases in `test_mads_gateway_pause.py` test it beside a gateway override, and
+`TestFastWheelSetting` there tests the switch (off never fires, off leaves the gateway pause
+alone, on and off apply live), every threshold (fires at it in two frames, never just below),
+a swerve below a raised threshold during an override (pauses, then disables once it reaches the
+threshold) and the fallback for out-of-set values. `selfdrive/ui/tests/test_mads_fast_wheel_settings.py`
+keeps the registry, `mads.py`, the mici page and `settings_ui.json` in agreement. Nothing tests
+it on another car.
 
 ---
 
@@ -858,7 +895,8 @@ Run them in the openpilot venv, from the repo root (WSL `~/sp-merge` for the syn
 | `opendbc_repo/opendbc/safety/tests/test_honda.py` `TestHondaElesysScmStanddownSafety`, `TestHondaElesysStanddownGasInterceptorSafety` | `[0x500, 0]` is in `TX_MSGS`; with `common.py`'s exemption, `0x500` is still refused by every other brand's mode | `python -m unittest opendbc.safety.tests.test_honda` (builds libsafety; 942 run, OK) |
 | `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | every nested `CarControlSP` struct is rebuilt by `convert_carControlSP`; `lateralControl` values survive the seam; `linbusGateway` converts to capnp | `python tools/test_runner.py <file>` |
 | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` (`test_a_stale_torque_still_confirms_nothing`, `test_driver_torque_stale_comes_after_the_road_edges`) | stale torque never confirms; the parameter sits after upstream's road-edge parameters | runner |
-| `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | the gateway pause and resume (section 9), 18 tests | runner |
+| `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | the gateway pause and resume (section 9), 41 tests, 23 of them the fast-wheel settings | runner |
+| `openpilot/selfdrive/ui/tests/test_mads_fast_wheel_settings.py` | the fast-wheel settings agree across `params_keys.h`, `mads.py`, the mici page and `settings_ui.json`; what sunnylink writes reads back the way `mads.py` reads it; the FORK markers, 15 tests | runner |
 | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` | the integrator freeze through the torque-controller extension, 4 tests | runner |
 
 After the merge all of these pass: the fork's sunnypilot targets together with upstream's
@@ -901,7 +939,7 @@ do not change behaviour. Board line numbers below are at `d995bc9`.
 | `docs/SP_HUD_STATUS.md` "Required behaviour in the torque controllers"; board `docs/SP-PROTOCOL-V3.md` §1.3 code sample (`self.pid.reset()`) | the PID is reset on takeover | clipped and decayed, as above |
 | `docs/SP_HUD_STATUS.md` `LAT_READY` row; board `docs/SP-PROTOCOL-V3.md` §1.2; board `gw_active.c` lane-graphic comment (line ~1844) | "would steer if the board allowed it" / `steering_available or latActive` | `mads.enabled or latActive` since `43a98b9d` |
 | `docs/SP_HUD_STATUS.md` "Round 1 is telemetry only" | nothing reads `granted`/`grantReason` | `mads.py` reads both since `ef4f29432` |
-| `docs/CHANGELOG_SERIAL_STEERING.md` 2026-09-18 | MADS turns off on a hand-back | it pauses since `4932aa73c`. The steer-rate takeover (`35622a994`) has no changelog entry |
+| `docs/CHANGELOG_SERIAL_STEERING.md` 2026-09-18 | MADS turns off on a hand-back | it pauses since `4932aa73c`. The steer-rate takeover (`35622a994`) had no changelog entry until 2026-09-30, when it became a setting |
 | board `docs/SP-PROTOCOL-V3.md` §1.2 | the board applies `min(MAX_TORQUE, authority)` | reported only, in `0x70B AUTHORITY` |
 | board `docs/SP-PROTOCOL-V3.md` §1.3 | "use item access on `CC_SP.lateralControl['integrator']`" | attribute access, because `convert_carControlSP` rebuilds the dataclass |
 | "0x33D is the camera's" framing: `carcontroller.py` ELESYS HUD comments ("stock camera's HUD is forwarded instead", "The stock camera keeps 0x33D. This is the side channel an in-line module reads to merge"); `hondacan.create_sp_hud_status` docstring ("a module that is already passing the camera's LKAS_HUD through can merge"); `_sunnypilot_linbus_gw.dbc` `CM_ BO_ 1280`; the comment above the ELESYS lists in `honda.h` ("the stock camera keeps it") | the camera owns `0x33D` and the board merges into it | since board `df42a0d` (Stage 6) the Stage 10 image owns `0x33D` and mutes the camera's; the merge runs only on the dry-run and Stage 2a paths. What these comments conclude (openpilot must not send `0x33D`) is still right |

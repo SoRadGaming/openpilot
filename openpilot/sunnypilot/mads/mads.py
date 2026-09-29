@@ -46,8 +46,25 @@ LINBUS_REASON_DRIVER_OVERRIDE = 4
 #
 # Two frames because one sample at 200 deg/s with nothing either side of it is a decode
 # glitch, not a driver. 20 ms costs nothing against a manoeuvre that sustains hundreds.
-EMERGENCY_STEER_RATE = 200.0   # deg/s
+#
+# FORK(LKAS-GATEWAY): a setting since 2026-09-30. MadsEmergencySteerDisable (default on) turns
+# the takeover off entirely; MadsEmergencySteerRate picks the threshold from EMERGENCY_STEER_RATES.
+# 150 sits on the single highest sample ever seen under assist, so it can fire on hard lane
+# keeping; 250 and 300 need a harder yank. Any other stored value reads as the default, so a
+# typo from a backup or the app can never make the takeover hair-trigger or unreachable.
+# The frame count is not a setting.
+EMERGENCY_STEER_RATE = 200.0   # deg/s, the default
+EMERGENCY_STEER_RATES = (150, 200, 250, 300)   # deg/s, the only values MadsEmergencySteerRate may take
 EMERGENCY_STEER_FRAMES = 2
+
+
+def read_emergency_steer_rate(params) -> float:
+  """FORK(LKAS-GATEWAY): MadsEmergencySteerRate in deg/s; anything outside EMERGENCY_STEER_RATES is the default."""
+  try:
+    rate = float(params.get("MadsEmergencySteerRate", return_default=True))
+  except (TypeError, ValueError):
+    return EMERGENCY_STEER_RATE
+  return rate if rate in EMERGENCY_STEER_RATES else EMERGENCY_STEER_RATE
 
 
 class ModularAssistiveDrivingSystem:
@@ -84,10 +101,16 @@ class ModularAssistiveDrivingSystem:
     self.main_enabled_toggle = self.params.get_bool("MadsMainCruiseAllowed")
     self.steering_mode_on_brake = read_steering_mode_param(self.CP, self.CP_SP, self.params)
     self.unified_engagement_mode = self.params.get_bool("MadsUnifiedEngagementMode")
+    # FORK(LKAS-GATEWAY): the fast-wheel takeover's switch and threshold, re-read every 0.1 s below
+    self.emergency_steer_disable = self.params.get_bool("MadsEmergencySteerDisable")
+    self.emergency_steer_rate = read_emergency_steer_rate(self.params)
 
   def read_params(self):
     self.main_enabled_toggle = self.params.get_bool("MadsMainCruiseAllowed")
     self.unified_engagement_mode = self.params.get_bool("MadsUnifiedEngagementMode")
+    # FORK(LKAS-GATEWAY): selfdrived's params thread calls this every 0.1 s, so both apply without a reboot
+    self.emergency_steer_disable = self.params.get_bool("MadsEmergencySteerDisable")
+    self.emergency_steer_rate = read_emergency_steer_rate(self.params)
 
   def pedal_pressed_non_gas_pressed(self, CS: structs.CarState) -> bool:
     # ignore `pedalPressed` events caused by gas presses
@@ -235,7 +258,9 @@ class ModularAssistiveDrivingSystem:
     # EMERGENCY TAKEOVER FIRST: a fast wheel outranks everything below. See
     # EMERGENCY_STEER_RATE. MADS goes OFF here, not paused - a swerve is not something to
     # resume out of 300 ms later, and the driver asked for stock behaviour, which is off.
-    if abs(CS.steeringRateDeg) >= EMERGENCY_STEER_RATE:
+    # FORK(LKAS-GATEWAY): with MadsEmergencySteerDisable off the counter never runs, so
+    # `emergency` stays False and the gateway block below behaves exactly as without it.
+    if self.emergency_steer_disable and abs(CS.steeringRateDeg) >= self.emergency_steer_rate:
       self._fast_steer += 1
     else:
       self._fast_steer = 0

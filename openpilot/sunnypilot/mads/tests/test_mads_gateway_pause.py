@@ -23,7 +23,7 @@ from openpilot.selfdrive.selfdrived.events import Events
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.mads.helpers import MadsSteeringModeOnBrake
 from openpilot.sunnypilot.mads.mads import ModularAssistiveDrivingSystem, LINBUS_REASON_DRIVER_OVERRIDE, \
-  EMERGENCY_STEER_RATE
+  EMERGENCY_STEER_RATE, EMERGENCY_STEER_RATES, EMERGENCY_STEER_FRAMES, read_emergency_steer_rate
 from openpilot.common.test import OpenpilotTestCase
 
 State = custom.ModularAssistiveDrivingSystem.ModularAssistiveDrivingSystemState
@@ -50,14 +50,18 @@ def car_state(brake: bool = False, regen: bool = False, steer_rate: float = 0.0)
   return cs
 
 
-def make_mads(mocker, steering_mode: int = MadsSteeringModeOnBrake.PAUSE):
+def make_mads(mocker, steering_mode: int = MadsSteeringModeOnBrake.PAUSE, fast_wheel: bool = True,
+              fast_wheel_rate=200):
+  """`sd.values` is the params store: change it and call mads.read_params() to change a setting live."""
   sd = mocker.MagicMock()
   sd.CP = structs.CarParams()
   sd.CP.brand = "honda"
   sd.CP_SP = structs.CarParamsSP()
+  sd.values = {"Mads": True, "MadsEmergencySteerDisable": fast_wheel,
+               "MadsSteeringMode": steering_mode, "MadsEmergencySteerRate": fast_wheel_rate}
   sd.params = mocker.MagicMock()
-  sd.params.get_bool = mocker.MagicMock(side_effect=lambda k: {"Mads": True}.get(k, False))
-  sd.params.get = mocker.MagicMock(return_value=steering_mode)
+  sd.params.get_bool = mocker.MagicMock(side_effect=lambda k, *a, **kw: bool(sd.values.get(k, False)))
+  sd.params.get = mocker.MagicMock(side_effect=lambda k, *a, **kw: sd.values.get(k))
   sd.events = Events()
   sd.events_sp = EventsSP()
   sd.enabled = False
@@ -213,3 +217,97 @@ class TestGatewayPause(OpenpilotTestCase):
     press.buttonEvents = [structs.CarState.ButtonEvent(type=ButtonType.lkas, pressed=True)]
     assert step(mads, sd, gw, cs=press) == [State.enabled], label
     assert mads.active and not mads._gw_paused
+
+
+# FORK(LKAS-GATEWAY): the fast-wheel takeover as a setting (MadsEmergencySteerDisable, MadsEmergencySteerRate).
+class TestFastWheelSetting(OpenpilotTestCase):
+  def test_the_default_is_the_behaviour_from_before_it_was_a_setting(self, mocker):
+    """On at 200 deg/s for 2 frames, exactly as the hard-coded takeover did."""
+    assert EMERGENCY_STEER_RATE == 200.0 and EMERGENCY_STEER_FRAMES == 2
+    assert EMERGENCY_STEER_RATE in EMERGENCY_STEER_RATES
+    mads, sd = make_mads(mocker)
+    assert mads.emergency_steer_disable and mads.emergency_steer_rate == 200.0
+    assert step(mads, sd, gateway(override=False), cs=car_state(steer_rate=199.9), n=20) == [State.enabled] * 20
+    fast = car_state(steer_rate=200.0)
+    assert step(mads, sd, gateway(override=False), cs=fast, n=2) == [State.enabled, State.disabled]
+
+  @parameterized.expand([(r,) for r in EMERGENCY_STEER_RATES], names=["rate"], ids=lambda rate: str(rate))
+  def test_each_threshold_fires_at_its_rate_and_not_below(self, mocker, rate):
+    mads, sd = make_mads(mocker, fast_wheel_rate=rate)
+    assert mads.emergency_steer_rate == float(rate)
+    below = car_state(steer_rate=-(rate - 1))
+    assert step(mads, sd, gateway(override=False), cs=below, n=20) == [State.enabled] * 20
+    at = car_state(steer_rate=-rate)
+    # one frame is a decode glitch, the second is a driver - at every threshold
+    assert step(mads, sd, gateway(override=False), cs=at, n=2) == [State.enabled, State.disabled]
+    assert step(mads, sd, gateway(override=False), n=10) == [State.disabled] * 10
+
+  def test_off_never_turns_mads_off(self, mocker):
+    mads, sd = make_mads(mocker, fast_wheel=False)
+    swerve = car_state(steer_rate=1000.0)
+    assert step(mads, sd, gateway(override=False), cs=swerve, n=50) == [State.enabled] * 50
+    assert mads.active and mads._fast_steer == 0
+
+  def test_off_leaves_the_gateway_pause_alone(self, mocker):
+    """With the takeover off a swerve during an override is just an override: paused, then resumed."""
+    mads, sd = make_mads(mocker, fast_wheel=False)
+    swerve = car_state(steer_rate=EMERGENCY_STEER_RATE + 400)
+    assert step(mads, sd, gateway(override=True), cs=swerve, n=30) == [State.paused] * 30
+    assert mads._gw_paused and mads.enabled and not mads.active
+    assert step(mads, sd, gateway(override=False)) == [State.enabled]
+    assert mads.active
+
+  @parameterized.expand([(r,) for r in EMERGENCY_STEER_RATES if r - 25 >= EMERGENCY_STEER_RATE],
+                        names=["rate"], ids=lambda rate: str(rate))
+  def test_a_raised_threshold_holds_during_an_override(self, mocker, rate):
+    """Takeover on, threshold raised: a swerve the default would have caught, but under the set rate, is just an
+    override (paused, not off). Reaching the set rate for two frames still turns MADS off, and clears the pause."""
+    mads, sd = make_mads(mocker, fast_wheel_rate=rate)
+    under = car_state(steer_rate=rate - 25)   # >= the 200 default, < the set rate
+    assert step(mads, sd, gateway(override=True), cs=under, n=30) == [State.paused] * 30
+    assert mads._gw_paused and mads.enabled and not mads.active
+    at = car_state(steer_rate=rate)
+    assert step(mads, sd, gateway(override=True), cs=at, n=2) == [State.paused, State.disabled]
+    assert not mads._gw_paused
+    assert step(mads, sd, gateway(override=False), n=10) == [State.disabled] * 10
+
+  @parameterized.expand([(0,), (1,), (3,), (175,), (199,), (1000,), (-200,), (None,), ("abc",), (float("nan"),)],
+                        names=["stored"], ids=lambda stored: repr(stored))
+  def test_anything_else_reads_as_the_default(self, mocker, stored):
+    mads, sd = make_mads(mocker, fast_wheel_rate=stored)
+    assert read_emergency_steer_rate(sd.params) == EMERGENCY_STEER_RATE
+    assert mads.emergency_steer_rate == EMERGENCY_STEER_RATE
+
+  def test_the_values_sunnylink_and_the_ui_write_are_accepted(self, mocker):
+    """Params.get returns an int for an INT key; a str or float of the same value is accepted too."""
+    _, sd = make_mads(mocker)
+    for stored, expected in ((150, 150.0), ("250", 250.0), (300.0, 300.0), (b"150", 150.0)):
+      sd.values["MadsEmergencySteerRate"] = stored
+      assert read_emergency_steer_rate(sd.params) == expected, stored
+
+  def test_turning_it_on_applies_without_a_restart(self, mocker):
+    """selfdrived's params thread calls read_params() every 0.1 s."""
+    mads, sd = make_mads(mocker, fast_wheel=False)
+    swerve = car_state(steer_rate=300.0)
+    assert step(mads, sd, gateway(override=False), cs=swerve, n=5) == [State.enabled] * 5
+    sd.values["MadsEmergencySteerDisable"] = True
+    mads.read_params()
+    assert step(mads, sd, gateway(override=False), cs=swerve, n=2) == [State.enabled, State.disabled]
+
+  def test_turning_it_off_mid_swerve_does_not_fire(self, mocker):
+    mads, sd = make_mads(mocker)
+    swerve = car_state(steer_rate=300.0)
+    assert step(mads, sd, gateway(override=False), cs=swerve) == [State.enabled]   # 1st fast frame
+    sd.values["MadsEmergencySteerDisable"] = False
+    mads.read_params()
+    assert step(mads, sd, gateway(override=False), cs=swerve, n=20) == [State.enabled] * 20
+
+  def test_changing_the_threshold_applies_without_a_restart(self, mocker):
+    mads, sd = make_mads(mocker)
+    wheel = car_state(steer_rate=220.0)
+    sd.values["MadsEmergencySteerRate"] = 250
+    mads.read_params()
+    assert step(mads, sd, gateway(override=False), cs=wheel, n=20) == [State.enabled] * 20
+    sd.values["MadsEmergencySteerRate"] = 200
+    mads.read_params()
+    assert step(mads, sd, gateway(override=False), cs=wheel, n=2) == [State.enabled, State.disabled]
