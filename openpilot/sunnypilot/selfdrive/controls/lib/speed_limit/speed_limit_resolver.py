@@ -13,6 +13,7 @@ from openpilot.common.gps import get_gps_location_service
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD, get_sanitize_int_param
+from openpilot.sunnypilot.mapd.nsw_zones import MODE_LIVE  # FORK(NSW-ZONES)
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import LIMIT_MAX_MAP_DATA_AGE, LIMIT_ADAPT_ACC
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Policy, OffsetType
 
@@ -24,6 +25,12 @@ ALL_SOURCES = tuple(SpeedLimitSource.schema.enumerants.values())
 MAP_HOLD_TIMEOUT = 10.  # s. Every junction gap in the logs was < 8 s; the median untagged stretch was 20-90 s.
 # FORK(SPEED-LIMIT): after GPS returns, the frozen map limit is kept until mapd's road name changes or this long passes.
 MAP_GPS_SETTLE_TIME = 10.  # s. mapd reported its stale in-tunnel match for 4-8 s after GPS came back at the M4 East exits.
+# FORK(NSW-ZONES): liveMapDataSP.nswZone.state values the resolver acts on (nsw_map_data.py)
+NSW_STATE_OFF = 0
+NSW_STATE_MATCHED = 2
+NSW_STATE_DEAD_RECKONING = 4
+NSW_STATE_DR_ENDED = 7  # dead reckoning gave up, GPS still lost: its last value, held by mapd
+NSW_GPS_LOST_STATES = (NSW_STATE_DEAD_RECKONING, NSW_STATE_DR_ENDED)
 
 
 class SpeedLimitResolver:
@@ -90,6 +97,13 @@ class SpeedLimitResolver:
     self._no_limit_timer = 0.
     self._last_source = SpeedLimitSource.none  # the source that set speed_limit_last
 
+    # FORK(NSW-ZONES): what mapd PUBLISHED decides - liveMapDataSP.nswZone.mode == 2 (live) and state != 0 - not this
+    # process's own copy of SpeedLimitNswZones, which lags it by up to PARAMS_UPDATE_PERIOD (a switch to log-only in a
+    # tunnel would otherwise let OSM's surface-street value through the freeze for up to 3 s). A mapd started in mode 0,
+    # or a log without nswZone (process replay), keeps upstream's behavior exactly.
+    self._nsw_active = False
+    self._nsw_state = NSW_STATE_OFF
+
   def update_speed_limit_states(self) -> None:
     self.speed_limit_final = self.speed_limit + self.speed_limit_offset
 
@@ -155,6 +169,11 @@ class SpeedLimitResolver:
     gps_data = sm[self._gps_location_service]
     map_data = sm['liveMapDataSP']
 
+    # FORK(NSW-ZONES): read before the strict hold, which lets a dead-reckoned NSW limit through
+    nsw = map_data.nswZone
+    self._nsw_state = int(nsw.state) if int(nsw.mode) == MODE_LIVE else NSW_STATE_OFF
+    self._nsw_active = self._nsw_state != NSW_STATE_OFF
+
     # FORK(SPEED-LIMIT): strict only. Upstream never reads sm.valid here (the plant tests hand plannerd a plain dict).
     self._map_frozen_now = self.map_strict and self._map_strict_hold(sm)
     if self._map_frozen_now:
@@ -164,6 +183,10 @@ class SpeedLimitResolver:
       return
 
     gps_fix_age = time.monotonic() - gps_data.unixTimestampMillis * 1e-3
+    # FORK(NSW-ZONES): upstream subtracts a unix time from a monotonic one, so this age is hugely negative and the
+    # check never fires (a dead mapd's last limit is kept). Under NSW live, the age of the liveMapDataSP message.
+    if self._nsw_active:
+      gps_fix_age = self._map_data_age(sm)
     if gps_fix_age > LIMIT_MAX_MAP_DATA_AGE:
       return
 
@@ -191,6 +214,18 @@ class SpeedLimitResolver:
       self._map_settle_road = road_name
     self._map_gps_ok_prev = gps_ok
 
+    # FORK(NSW-ZONES): the freeze exists because mapd matched the streets above an unlocated position. NSW does not:
+    # while it dead-reckons along the tunnel line (state 4) its limit is taken, and so is what it holds once dead
+    # reckoning has ended (state 7: its last value, never above a branch still contending - not a value NSW has given
+    # up on being re-frozen here by accident). Once it has matched a trusted fix after GPS returns (state 2) the settle
+    # window, which waits out OSM's stale match, is over. The carried-limit timer stays paused while GPS is lost.
+    if self._nsw_active:
+      if self._nsw_state in NSW_GPS_LOST_STATES:
+        self._map_gps_ok = False
+        return False
+      if self._nsw_state == NSW_STATE_MATCHED and gps_ok:
+        self._map_settle_timer = 0.
+
     if gps_ok and self._map_settle_timer > 0.:
       self._map_settle_timer -= DT_MDL
       if road_name == self._map_settle_road:
@@ -211,6 +246,14 @@ class SpeedLimitResolver:
     self.limit_solutions[SpeedLimitSource.map] = speed_limit
     self.distance_solutions[SpeedLimitSource.map] = 0.
 
+    # FORK(NSW-ZONES): no early switch to the next limit under NSW live. Upstream's look-ahead below never fires on a car
+    # (distance_since_fix is a monotonic minus a unix time: hugely negative), and making it fire is a behavior change of
+    # its own: replaying the owner's four M4 East / Rozelle passes through mapd and this resolver, NSW's look-ahead
+    # reported lower limits that never came (80 or 60 ahead in the main tunnel while dead reckoning, 80 at the west portal
+    # while matched), and each would have dropped the limit for 1-3 s. The next limit is still published for the UI.
+    if self._nsw_active:
+      return
+
     # FIXME-SP: this is not working as expected
     if 0. < next_speed_limit < self.v_ego:
       adapt_time = (next_speed_limit - self.v_ego) / LIMIT_ADAPT_ACC
@@ -219,6 +262,13 @@ class SpeedLimitResolver:
       if distance_to_speed_limit_ahead <= adapt_distance:
         self.limit_solutions[SpeedLimitSource.map] = next_speed_limit
         self.distance_solutions[SpeedLimitSource.map] = distance_to_speed_limit_ahead
+
+  # FORK(NSW-ZONES)
+  @staticmethod
+  def _map_data_age(sm: messaging.SubMaster) -> float:
+    """Seconds since mapd published the liveMapDataSP message in hand (logMonoTime is time.monotonic() in ns). The GPS
+    fix age is NOT used: a fix is old by design while NSW dead-reckons through a tunnel."""
+    return time.monotonic() - sm.logMonoTime['liveMapDataSP'] * 1e-9
 
   def _get_source_solution_according_to_policy(self) -> custom.LongitudinalPlanSP.SpeedLimit.Source:
     sources_for_policy = self._policy_to_sources_map[Policy(self.policy)]

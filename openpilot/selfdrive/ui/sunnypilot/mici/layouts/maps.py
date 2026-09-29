@@ -29,8 +29,17 @@ ONE DATA SET PER CARD. Each map data set is a MapDataInfo card followed by its
 own update button, appended to the scroller in MapsLayoutMici. A second data set
 is a second (card, button) pair, and nothing about the OSM pair has to change
 for it.
+
+FORK(NSW-ZONES): THE SECOND PAIR, "nsw zones". Transport for NSW's speed zones
+(sunnypilot/mapd/nsw_zones). The card's first line is the attribution the data
+license asks for (CC BY 4.0, modified, not endorsed); it is long, so it scrolls.
+The date is the data's own date (NswZonesVersion, the release it came from),
+not when it was downloaded. The button writes NswZonesUpdateCheck; the
+downloader in mapd_manager answers it and reports in status.json, which is
+where "downloading 40%" and "up to date" come from.
 """
 import datetime
+import os
 import platform
 import time
 from collections.abc import Callable
@@ -46,6 +55,10 @@ from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.system.ui.widgets.scroller import NavScroller
+# FORK(NSW-ZONES)
+from openpilot.sunnypilot.mapd.nsw_zones import ATTRIBUTION as NSW_ATTRIBUTION, MODE_OFF, MODE_LOG_ONLY, read_mode
+from openpilot.sunnypilot.mapd.nsw_zones.downloader import CHECK_PARAM as NSW_CHECK_PARAM, STATUS_NAME as NSW_STATUS_NAME, \
+  VERSION_PARAM as NSW_VERSION_PARAM, data_dir as nsw_data_dir, read_status as nsw_read_status
 
 # params are files: read them on a tick, not every frame
 REFRESH_S = 1.0
@@ -301,6 +314,151 @@ class UpdateOsmButton(BigButton):
       self.refresh()
 
 
+# FORK(NSW-ZONES) ---------------------------------------------------------------
+# status.json 'state' while a check is running; older than this, the process that wrote it has gone
+NSW_BUSY_STATES = ("checking", "downloading", "installing")
+NSW_STATUS_STALE_S = 120.
+# results the downloader writes that are short enough for the sub-label as they are; anything else reads "failed"
+NSW_SHORT_RESULTS = ("updated", "up to date", "cancelled", "car must be parked", "no network", "retry later")
+# refusals that were not an attempt: the downloader had not heard deviceState yet (just after boot)
+NSW_NOT_ATTEMPTED = {"no deviceState": "starting up"}
+
+
+def nsw_date() -> tuple[str, str]:
+  """(header, date line): ("data", "2026-09-29 • 3 d ago"), or ("data", "none") before the first download."""
+  version = ui_state.params.get(NSW_VERSION_PARAM) or ""
+  if not version:
+    return tr("data"), tr("none")
+  try:
+    day = datetime.date.fromisoformat(version[:10])
+  except ValueError:
+    return tr("data"), version
+  days = (datetime.date.today() - day).days
+  if days < 0:
+    return tr("data"), version  # the clock is behind the data: say nothing about its age
+  age = tr("today") if days == 0 else tr("{} d ago").format(days)
+  return tr("data"), f"{version[:10]} • {age}"
+
+
+def nsw_status() -> tuple[str, str, str]:
+  """(attribution line, date header, date line). The attribution scrolls: it is the license's, not a summary."""
+  return (NSW_ATTRIBUTION, *nsw_date())
+
+
+def nsw_check_status() -> dict:
+  """status.json, with an in-flight state that has not moved for NSW_STATUS_STALE_S (mapd_manager restarted
+  mid-check) read as idle."""
+  st = nsw_read_status(nsw_data_dir())
+  if st.get("state") in NSW_BUSY_STATES:
+    try:
+      age = datetime.datetime.now().timestamp() - os.path.getmtime(os.path.join(nsw_data_dir(), NSW_STATUS_NAME))
+    except OSError:
+      age = NSW_STATUS_STALE_S + 1
+    if age > NSW_STATUS_STALE_S:
+      st["state"] = "idle"
+  return st
+
+
+class UpdateNswButton(BigButton):
+  """Check for a new NSW zones data set now (the weekly check does the same by itself).
+
+  Writes NswZonesUpdateCheck. mapd_manager's downloader consumes it within a second whether or not it can run, and
+  says why in status.json. Parked only, re-checked in the confirm callback, enabled state set on the tick - all for
+  the reasons UpdateOsmButton gives. A phone hotspot is fine here: pressing it is the choice of ~22 MB.
+  """
+
+  def __init__(self):
+    super().__init__(tr("update"), "", gui_app.texture(ICON, 70, 70))
+    self.set_click_callback(self._on_click)
+    self._updated = 0.0
+    self._asked = False
+    self._asked_at = 0.0
+    self.refresh()
+
+  @staticmethod
+  def _can_update() -> tuple[bool, str]:
+    # is_offroad() is True while driving in OffroadMode; the panda's ignition is not
+    if not ui_state.is_offroad() or ui_state.ignition:
+      return False, tr("car must be parked")
+    return True, ""
+
+  def _busy(self, st: dict | None = None) -> bool:
+    st = nsw_check_status() if st is None else st
+    return self._asked or ui_state.params.get_bool(NSW_CHECK_PARAM) or st.get("state") in NSW_BUSY_STATES
+
+  def _on_click(self) -> None:
+    allowed, why = self._can_update()
+    if not allowed:
+      gui_app.push_widget(BigDialog("", why))
+      return
+
+    def confirm() -> None:
+      ok, _ = self._can_update()
+      if not ok or self._busy():
+        return
+      ui_state.params.put_bool(NSW_CHECK_PARAM, True)
+      self._asked = True
+      self._asked_at = time.monotonic()
+      self.set_value(tr("starting"))
+
+    gui_app.push_widget(BigConfirmationDialog(
+      tr("slide to\ncheck zones"), gui_app.texture(ICON, ICON_SIZE, ICON_SIZE),
+      confirm, exit_on_confirm=True))
+
+  @staticmethod
+  def _result_text(result: str) -> str:
+    if result in NSW_NOT_ATTEMPTED:
+      return tr(NSW_NOT_ATTEMPTED[result])
+    return tr(result) if result in NSW_SHORT_RESULTS else tr("failed")
+
+  @staticmethod
+  def _progress(st: dict) -> int:
+    try:
+      f = float(st.get("progress") or 0.)
+    except (TypeError, ValueError):
+      f = 0.
+    return int(100 * min(max(f, 0.), 1.))
+
+  def refresh(self) -> None:
+    """In flight, then just asked, then why not (parked), then the last result (for an hour), then the mode."""
+    self._updated = time.monotonic()
+    st = nsw_check_status()
+    state = st.get("state")
+    requested = ui_state.params.get_bool(NSW_CHECK_PARAM)
+    try:
+      last_attempt = float(st.get("last_attempt") or 0.)
+    except (TypeError, ValueError):
+      last_attempt = 0.
+    allowed, why = self._can_update()
+
+    if state in NSW_BUSY_STATES:
+      self._asked = False
+      if state == "downloading":
+        self.set_value(tr("downloading {}%").format(self._progress(st)))
+      else:
+        self.set_value(tr("checking") if state == "checking" else tr("installing"))
+    elif requested or self._asked:
+      self.set_value(tr("starting"))
+      if not requested and time.monotonic() - self._asked_at > 10:
+        self._asked = False
+    elif not allowed:
+      self.set_value(why)  # disabled while driving: say why, not an old result (as the OSM button beside it does)
+    elif st.get("last_result") and 0 <= datetime.datetime.now().timestamp() - last_attempt < 3600:
+      self.set_value(self._result_text(str(st["last_result"])))
+    elif not ui_state.params.get(NSW_VERSION_PARAM):
+      self.set_value(tr("not downloaded"))
+    else:
+      mode = read_mode(ui_state.params)
+      # the feature's mode, not the update's: "zones live", not "update / live"
+      self.set_value(tr("zones off") if mode == MODE_OFF else tr("zones log only") if mode == MODE_LOG_ONLY else tr("zones live"))
+
+    self.set_enabled(allowed and not self._busy(st))
+
+  def _update_state(self):
+    if time.monotonic() - self._updated > REFRESH_S:
+      self.refresh()
+
+
 class MapsLayoutMici(NavScroller):
   # No back_callback: NavWidget pops itself on swipe-down, and a pop_widget
   # callback on top of that popped Settings too (upstream 099143ad9).
@@ -313,9 +471,13 @@ class MapsLayoutMici(NavScroller):
                                                toggle_callback=self._on_auto_update_toggled)
     self._auto_update_toggle.set_value(tr("parked, on wi-fi"))
 
+    # FORK(NSW-ZONES): the second data set, as another (MapDataInfo, its update button) pair
+    self._nsw_info = MapDataInfo(tr("nsw zones"), tr("data"), nsw_status)
+    self._nsw_update_btn = UpdateNswButton()
+
     # add_widgets is on the inner _Scroller; self.add_widgets(...) does not exist.
-    # A second data set goes here as another (MapDataInfo, its update button) pair.
-    self._scroller.add_widgets([self._osm_info, self._osm_update_btn, self._auto_update_toggle])
+    self._scroller.add_widgets([self._osm_info, self._osm_update_btn, self._auto_update_toggle,
+                                self._nsw_info, self._nsw_update_btn])  # FORK(NSW-ZONES)
 
   @staticmethod
   def _on_auto_update_toggled(checked: bool) -> None:
@@ -329,3 +491,5 @@ class MapsLayoutMici(NavScroller):
     self._osm_update_btn.refresh()
     # also set from sunnylink; the toggle only reads its param when built
     self._auto_update_toggle.refresh()
+    self._nsw_info.refresh()  # FORK(NSW-ZONES)
+    self._nsw_update_btn.refresh()

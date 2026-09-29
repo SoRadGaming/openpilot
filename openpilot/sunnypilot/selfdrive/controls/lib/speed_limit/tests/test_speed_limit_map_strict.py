@@ -41,12 +41,14 @@ class FakeSM:
     map_limit = map_limit_kph * CV.KPH_TO_MS
     self._msgs = {
       'liveMapDataSP': SimpleNamespace(speedLimit=map_limit, speedLimitValid=map_limit > 0., speedLimitAhead=0.,
-                                       speedLimitAheadValid=False, speedLimitAheadDistance=0., roadName=road_name),
+                                       speedLimitAheadValid=False, speedLimitAheadDistance=0., roadName=road_name,
+                                       nswZone=SimpleNamespace(state=0, mode=0)),  # FORK(NSW-ZONES): OsmMapData's message
       'carStateSP': SimpleNamespace(speedLimit=car_limit_kph * CV.KPH_TO_MS),
     }
     # the same fresh fix under either GPS service name
     self._gps = SimpleNamespace(unixTimestampMillis=time.monotonic() * 1e3)
     self.valid = {'liveMapDataSP': gps_ok}
+    self.logMonoTime = {'liveMapDataSP': int(time.monotonic() * 1e9)}  # FORK(NSW-ZONES)
 
   def __getitem__(self, key):
     return self._msgs.get(key, self._gps)

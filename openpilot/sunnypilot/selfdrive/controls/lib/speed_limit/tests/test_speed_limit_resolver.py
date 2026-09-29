@@ -80,6 +80,8 @@ class TestSpeedLimitResolverValidation(OpenpilotTestCase):
   # FORK(SPEED-LIMIT)
   def setup_method(self):
     Params().put_bool("SpeedLimitMapStrict", self.map_strict, block=True)
+    # FORK(NSW-ZONES): these are upstream's tests of upstream's resolver; NSW live is test_speed_limit_nsw.py
+    Params().put("SpeedLimitNswZones", 0, block=True)
 
   @parameterized.expand(list(Policy), names=["policy"])
   def test_initial_state(self, resolver_class, policy):

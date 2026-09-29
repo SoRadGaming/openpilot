@@ -555,6 +555,32 @@ struct LiveMapDataSP @0xf416ec09499d9d19 {
   speedLimitAhead @3 :Float32;
   speedLimitAheadDistance @4 :Float32;
   roadName @5 :Text;
+
+  # FORK(NSW-ZONES): the Transport for NSW speed-zone matcher (sunnypilot/mapd/nsw_zones). Filled while
+  # SpeedLimitNswZones is 1 (log only) or 2 (live); left unset when it is 0. Speeds are m/s, like speedLimit.
+  nswZone @6 :NswZone;
+
+  struct NswZone {
+    # 0 off, 1 no match (the OSM value is published), 2 matched, 3 ambiguous (0 is published),
+    # 4 dead reckoning (GPS lost, the tunnel line's limit is published), 5 error (OSM), 6 no data file (OSM)
+    state @0 :UInt8;
+    speedLimit @1 :Float32;               # the NSW limit incl. an active school zone; 0 when NSW has none
+    speedLimitAhead @2 :Float32;          # the next different NSW limit along the road; 0 when none
+    speedLimitAheadDistance @3 :Float32;  # m
+    zoneType @4 :UInt8;                   # index into nsw_zones.matcher.TYPES; 255 none
+    schoolZone @5 :UInt8;                 # 0 none, 1 inactive, 2 active, 3 unknown (clock or calendar)
+    matchDistance @6 :Float32;            # m from the fix to the matched line; -1 unknown (e.g. dead reckoning)
+    headingError @7 :Float32;             # deg; -1 unknown
+    candidates @8 :UInt8;
+    dataVersion @9 :Text;                 # the index's data date, e.g. 2026-09-29; "" when none is loaded
+    osmSpeedLimit @10 :Float32;           # what OSM said this tick (what mode 1 publishes)
+    errors @11 :UInt16;                   # matcher exceptions since mapd_manager started
+    holdDistance @12 :Float32;            # m travelled since the last confident fix while dead reckoning
+    mode @13 :UInt8;                      # SpeedLimitNswZones: 1 log only, 2 live
+    variable @14 :Bool;                   # the value comes from a Variable (gantry) zone: its static maximum
+    confidence @15 :Float32;              # 0..1
+    hypotheses @16 :UInt8;                # dead-reckoning path hypotheses still alive
+  }
 }
 
 struct ModelDataV2SP @0xa1680744031fdb2d {

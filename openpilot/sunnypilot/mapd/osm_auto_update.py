@@ -138,6 +138,22 @@ def auto_update_due(*, enabled: bool, location: str, requested_at: float, comple
   return True, ""
 
 
+def is_parked(sm) -> bool:
+  """Parked, by a SubMaster over deviceState and pandaStates. Shared with the NSW zones downloader (FORK(NSW-ZONES)).
+
+  A default-constructed deviceState reads started=False, networkMetered=False:
+  exactly the "go" answer. Unheard or stale must not count as parked.
+  """
+  ds = sm['deviceState']
+  if not (sm.seen['deviceState'] and sm.alive['deviceState']) or ds.started:
+    return False
+  # started is False while driving in OffroadMode: ignition decides
+  if not (sm.seen['pandaStates'] and sm.alive['pandaStates']):
+    return False
+  panda_states = sm['pandaStates']
+  return len(panda_states) > 0 and not any(ps.ignitionLine or ps.ignitionCan for ps in panda_states)
+
+
 class OsmAutoUpdater:
   """The stateful half: watches deviceState and pandaStates, records completions, keeps the once-per-boot latch."""
 
@@ -197,16 +213,7 @@ class OsmAutoUpdater:
       cloudlog.warning(f"mapd: OSM download ended incomplete ({done}/{total} files)")
 
   def _parked(self) -> bool:
-    ds = self.sm['deviceState']
-    # A default-constructed deviceState reads started=False, networkMetered=False:
-    # exactly the "go" answer. Unheard or stale must not count as parked.
-    if not (self.sm.seen['deviceState'] and self.sm.alive['deviceState']) or ds.started:
-      return False
-    # started is False while driving in OffroadMode: ignition decides
-    if not (self.sm.seen['pandaStates'] and self.sm.alive['pandaStates']):
-      return False
-    panda_states = self.sm['pandaStates']
-    return len(panda_states) > 0 and not any(ps.ignitionLine or ps.ignitionCan for ps in panda_states)
+    return is_parked(self.sm)
 
   def _update(self) -> bool:
     self.sm.update(0)

@@ -21,6 +21,8 @@ from openpilot.common.hardware.hw import Paths
 from openpilot.sunnypilot.mapd import MAPD_PATH
 from openpilot.sunnypilot.mapd.mapd_installer import VERSION, update_installed_version
 from openpilot.sunnypilot.mapd.osm_auto_update import OsmAutoUpdater  # FORK(SPEED-LIMIT): weekly OSM refresh
+# FORK(NSW-ZONES): the NSW zone modules are imported inside main_thread(), not here: the manager imports this module
+# (process_config, for MAPD_PATH), so an error in them must cost the feature, never openpilot's start.
 
 # PFEIFER - MAPD {{
 params = Params()
@@ -127,13 +129,55 @@ def update_osm_db() -> None:
     mem_params.put("LastGPSPosition", "{}", block=True)
 
 
+# FORK(NSW-ZONES)
+def update_nsw_alert(nsw_map_sp, shown: str) -> str:
+  """Offroad_NswZonesStale while the data is over 60 days old or the school calendar ends within 60 days. Set only on a
+  change (it is a param write). Never raises. -> the text now shown ('' none)."""
+  try:
+    from openpilot.common.time_helpers import system_time_valid
+    text = (nsw_map_sp.stale_alert(datetime.now().date()) or "") if system_time_valid() else shown
+    if text != shown:
+      set_offroad_alert("Offroad_NswZonesStale", bool(text), text or None)
+    return text
+  except Exception:
+    cloudlog.exception("mapd: NSW zones alert failed")
+    return shown
+
+
 def main_thread():
   update_installed_version(VERSION, params)
   config_realtime_process([0, 1, 2, 3], 5)
 
   rk = Ratekeeper(1, print_delay_threshold=None)
-  live_map_sp = OsmMapData()
+  # FORK(NSW-ZONES): chosen once, here: liveMapDataSP has one publisher. Off (0) is upstream's OsmMapData exactly;
+  # NswZoneMapData follows later changes between 1 and 2 (and to 0) itself, turning it on from off needs a restart.
+  # Only the IMPORT can fail over to OsmMapData: once NswZoneMapData's constructor has made the publisher it never
+  # raises (a failed NSW setup leaves it publishing OSM), so there is never a second liveMapDataSP PubMaster.
+  nsw_map_sp = None
+  nsw_updater = None
+  try:
+    from openpilot.sunnypilot.mapd.nsw_zones import MODE_OFF, read_mode
+    nsw_on = read_mode(params) != MODE_OFF
+  except Exception:
+    cloudlog.exception("mapd: NSW zones unavailable, publishing OSM only")
+    nsw_on = False
+  if nsw_on:
+    try:
+      from openpilot.sunnypilot.mapd.live_map_data.nsw_map_data import NswZoneMapData  # FORK(NSW-ZONES)
+    except Exception:
+      cloudlog.exception("mapd: NSW zones failed to import, publishing OSM only")
+    else:
+      nsw_map_sp = NswZoneMapData()  # FORK(NSW-ZONES): never raises once it has made the publisher
+  live_map_sp: OsmMapData = nsw_map_sp if nsw_map_sp is not None else OsmMapData()
   auto_updater = OsmAutoUpdater(params, mem_params)  # FORK(SPEED-LIMIT): gated by OsmAutoUpdateWeekly, once per boot
+  # FORK(NSW-ZONES): first download automatic, weekly after, the maps page button; parked only. A new index is loaded
+  # into the running matcher at the next park (the updater defers it if the car has started meanwhile).
+  try:
+    from openpilot.sunnypilot.mapd.nsw_zones.downloader import NswZonesUpdater
+    nsw_updater = NswZonesUpdater(params, on_installed=nsw_map_sp.reload if nsw_map_sp is not None else None)
+  except Exception:
+    cloudlog.exception("mapd: the NSW zones updater failed to start")
+  nsw_alert = ""
 
   # Create folder needed for OSM
   try:
@@ -153,7 +197,11 @@ def main_thread():
 
     auto_updater.update()  # FORK(SPEED-LIMIT): may set OsmDbUpdatesCheck; must run before update_osm_db()
     update_osm_db()
+    if nsw_updater is not None:
+      nsw_updater.update()  # FORK(NSW-ZONES): never raises; the download runs in its own thread
     live_map_sp.tick()
+    if nsw_map_sp is not None and rk.frame % 60 == 0:  # FORK(NSW-ZONES): old data / an expiring school calendar
+      nsw_alert = update_nsw_alert(nsw_map_sp, nsw_alert)
     rk.keep_time()
 
 

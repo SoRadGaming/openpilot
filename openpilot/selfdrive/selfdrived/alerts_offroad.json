@@ -61,6 +61,11 @@
     "text": "OpenStreetMap database is out of date. New maps must be downloaded if you wish to continue using OpenStreetMap data for Enhanced Speed Control and road name display.\n\n%1",
     "severity": 0
   },
+  "Offroad_NswZonesStale": {
+    "text": "NSW speed zones need attention. %1",
+    "severity": 0,
+    "_comment": "FORK(NSW-ZONES): set by mapd_manager. Extra field: why (old data, or the school-day calendar ending)."
+  },
   "Offroad_DriverMonitoringUncertain": {
     "text": "Poor visibility detected for driver monitoring. Ensure the device has a clear view of the driver. This can be checked in the device settings. Extreme lighting conditions and/or unconventional mounting positions may also trigger this alert.",
     "severity": 0

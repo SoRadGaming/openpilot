@@ -56,8 +56,14 @@ class BaseMapData(ABC):
     live_map_data.speedLimitAhead = next_speed_limit
     live_map_data.speedLimitAheadDistance = next_speed_limit_distance
     live_map_data.roadName = self.get_current_road_name()
+    self.fill_extensions(live_map_data)  # FORK(NSW-ZONES): a no-op here; NswZoneMapData fills nswZone
 
     self.pm.send('liveMapDataSP', mapd_sp_send)
+
+  # FORK(NSW-ZONES): lets a subclass add fields without re-implementing publish(). The base leaves the message untouched,
+  # so OsmMapData's liveMapDataSP is exactly upstream's.
+  def fill_extensions(self, live_map_data) -> None:
+    pass
 
   def tick(self) -> None:
     self.sm.update(0)

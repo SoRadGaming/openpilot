@@ -912,6 +912,40 @@
                   "description": "Prompt only for a new speed limit, not when the limit disappears or the same one returns. On a road the map has no limit for, forget the previous road's map limit after 10 seconds instead of keeping it for the rest of the drive. While GPS is lost (tunnels), keep the limit you entered with instead of the streets overhead, until the map has found the road again, and do not prompt for it when engaging."
                 },
                 {
+                  "key": "SpeedLimitNswZones",
+                  "widget": "multiple_button",
+                  "title": "NSW Speed Zones",
+                  "description": "In New South Wales, take the map speed limit from Transport for NSW's speed zones and school zones instead of OpenStreetMap, and keep it through tunnels by following the tunnel's zones. OSM is used where NSW has no zone. Log Only records what NSW would say without using it. Turning it on from Off takes effect after the next reboot. Contains data from Transport for NSW (Speed Zones, School Zones), licensed CC BY 4.0. Modified. Not endorsed by Transport for NSW.",
+                  "options": [
+                    {
+                      "value": 0,
+                      "label": "Off"
+                    },
+                    {
+                      "value": 1,
+                      "label": "Log Only"
+                    },
+                    {
+                      "value": 2,
+                      "label": "Live"
+                    }
+                  ]
+                },
+                {
+                  "key": "NswZonesAutoUpdate",
+                  "widget": "toggle",
+                  "title": "Update NSW Speed Zones Weekly",
+                  "description": "Check for new NSW speed zone data once a week, only while parked on wi-fi that is not marked metered. The first download (about 22 MB) happens by itself.",
+                  "visibility": [
+                    {
+                      "type": "param_compare",
+                      "key": "SpeedLimitNswZones",
+                      "op": ">",
+                      "value": 0
+                    }
+                  ]
+                },
+                {
                   "key": "SpeedLimitOffsetType",
                   "widget": "multiple_button",
                   "title": "Speed Limit Offset Type",

@@ -15,6 +15,34 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-09-29 — NSW speed zones: the car's limit from Transport for NSW data
+
+**In NSW the speed limit now comes from Transport for NSW's own speed-zone data**
+(CC BY 4.0) instead of OpenStreetMap. It covers every public road, local streets
+included, plus school zones with their real times and school days. OSM is still
+used outside NSW and wherever NSW has no match. It is live by default. Switch it
+with **NSW Speed Zones** in sunnylink (Cruise): Live, Log only or Off.
+
+* **Coverage on your 25 drives:** NSW has a limit 96% of the time with GPS,
+  against OSM's 70%. On roads under 60 km/h it is 93% against 46%. Where both
+  have a limit they agree 95% of the time.
+* **Tunnels:** the car follows the tunnel on wheel speed and heading when GPS
+  drops out. City-bound through the M4 East it reads 90, then 80 on the Rozelle
+  ramp. No street limit from above ever reaches the car underground.
+* **Your rules:**
+  * a Variable (peak) limit drawn over a fixed one gives the higher, normal speed;
+  * on-ramps keep the road's own zone until the merge.
+* **Data:** a weekly GitHub Action in `SoRadGaming/openpilot` builds it from
+  TfNSW's files and publishes it as the `nswzones-latest` release (about 22 MB).
+  The comma downloads it by itself, parked on Wi-Fi. Settings → maps shows its
+  date and has an update button.
+* **Checks:** a weekly build that would RAISE limits stops for a human look.
+
+Replayed over all 25 drives: 128 prompts. With OSM only it is 72; the car
+recorded 141. Most of the new prompts are real limits on streets OSM had
+nothing for. The list of things to check on the road is at the end of
+`docs/fork/NSW-SPEED-ZONES.md`.
+
 ## 2026-09-29 — speed limits: no carried limit, no tunnel prompts, a maps page (`2e7866503`)
 
 **The map speed limit was wrong off motorways.** Across 25 drives there were 141

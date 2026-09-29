@@ -92,7 +92,8 @@ class TestMapsSettings(unittest.TestCase):
 
   def test_page_carries_card_button_and_toggle(self):
     code = code_only(MAPS_PANEL.read_text())
-    assert re.search(r"add_widgets\(\[self\._osm_info,\s*self\._osm_update_btn,\s*self\._auto_update_toggle\]\)", code)
+    assert re.search(r"add_widgets\(\[self\._osm_info,\s*self\._osm_update_btn,\s*self\._auto_update_toggle,"
+                     + r"\s*self\._nsw_info,\s*self\._nsw_update_btn\]\)", code)  # FORK(NSW-ZONES): the second pair
     assert re.search(r'AUTO_UPDATE_PARAM\s*=\s*"OsmAutoUpdateWeekly"', code)
     assert re.search(r'BigParamControl\(tr\("[^"]*"\), AUTO_UPDATE_PARAM[,)]', code)
 
@@ -168,10 +169,11 @@ class TestMapsSettings(unittest.TestCase):
     """Headers are 48 pt in a 340 px card ("board firmware", 14 chars, was 343 px);
     the button title shares its box with the sub-label and must stay on one line."""
     panel = MAPS_PANEL.read_text()
-    m = re.search(r'MapDataInfo\(tr\("([^"]*)"\), tr\("([^"]*)"\)', panel)
-    assert m and all(len(h) <= 12 for h in m.groups()), m and m.groups()
-    m = re.search(r'super\(\)\.__init__\(tr\("([^"]*)"\)', panel)
-    assert m and len(m.group(1)) <= 10, "the update button title is long enough to wrap"
+    cards = re.findall(r'MapDataInfo\(tr\("([^"]*)"\), tr\("([^"]*)"\)', panel)
+    assert len(cards) == 2, cards  # FORK(NSW-ZONES): osm maps + nsw zones
+    assert all(len(h) <= 12 for card in cards for h in card), cards
+    titles = re.findall(r'super\(\)\.__init__\(tr\("([^"]*)"\)', panel)
+    assert titles and all(len(t) <= 10 for t in titles), "an update button title is long enough to wrap"
     m = re.search(r'BigParamControl\(tr\("([^"]*)"\)', panel)
     assert m and len(m.group(1)) <= 18, "a toggle title over 18 chars drops to the smaller font"
 
@@ -199,6 +201,64 @@ class TestMapsSettings(unittest.TestCase):
     update_line = next(c.lineno for c in calls if isinstance(c.func, ast.Attribute) and c.func.attr == "update"
                        and isinstance(c.func.value, ast.Name) and c.func.value.id == "auto_updater")
     assert update_line < lines["update_osm_db"]
+
+
+
+# FORK(NSW-ZONES) ------------------------------------------------------------------------------------------------------
+class TestNswZonesSettings(unittest.TestCase):
+  def test_params_are_registered(self):
+    keys = PARAMS_KEYS.read_text()
+
+    def flags(key):
+      m = re.search(r'\{"' + key + r'",\s*\{([^}]*)\}\}', keys)
+      assert m, f"{key} is not in params_keys.h; Params would raise UnknownKeyName"
+      return m.group(1)
+    mode = flags("SpeedLimitNswZones")
+    assert "PERSISTENT" in mode and "BACKUP" in mode and "INT" in mode and '"2"' in mode, "live by default"
+    auto = flags("NswZonesAutoUpdate")
+    assert "PERSISTENT" in auto and "BOOL" in auto and '"1"' in auto
+    assert "CLEAR_ON_MANAGER_START" in flags("NswZonesUpdateCheck"), "a button press must not survive a restart"
+    version = flags("NswZonesVersion")
+    assert "PERSISTENT" in version and "BACKUP" not in version, "the installed version is this device's"
+
+  def test_the_card_carries_the_attribution_and_the_data_date(self):
+    panel = MAPS_PANEL.read_text()
+    assert 'MapDataInfo(tr("nsw zones"), tr("data"), nsw_status)' in panel
+    status = ast.get_source_segment(panel, function(ast.parse(panel), "nsw_status"))
+    assert status is not None and "NSW_ATTRIBUTION" in status
+    from openpilot.sunnypilot.mapd.nsw_zones import ATTRIBUTION
+    assert "Transport for NSW" in ATTRIBUTION and "CC BY 4.0" in ATTRIBUTION and "Not endorsed" in ATTRIBUTION
+
+  def test_the_button_writes_the_downloaders_request(self):
+    panel = MAPS_PANEL.read_text()
+    from openpilot.sunnypilot.mapd.nsw_zones.downloader import CHECK_PARAM
+    assert CHECK_PARAM == "NswZonesUpdateCheck"
+    tree = ast.parse(panel)
+    cls = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "UpdateNswButton")
+    confirm = next(n for n in ast.walk(cls) if isinstance(n, ast.FunctionDef) and n.name == "confirm")
+    calls = attr_calls(confirm)
+    assert "_can_update" in calls and "_busy" in calls and "put_bool" in calls
+    gate = ast.get_source_segment(panel, next(n for n in ast.walk(cls) if isinstance(n, ast.FunctionDef)
+                                              and n.name == "_can_update"))
+    assert gate is not None and "is_offroad()" in gate and "ui_state.ignition" in gate
+
+  def test_mapd_manager_wiring_is_marked(self):
+    lines = MAPD_MANAGER.read_text().splitlines()
+    for needle in ("import NswZoneMapData", "import NswZonesUpdater", "NswZoneMapData()", "NswZonesUpdater(",
+                   "nsw_updater.update()"):
+      idx = next((i for i, line in enumerate(lines) if needle in line), None)
+      assert idx is not None, f"mapd_manager.py: {needle!r} not found"
+      window = lines[max(0, idx - 6):idx + 1]
+      assert any("FORK(NSW-ZONES)" in line for line in window), f"mapd_manager.py:{idx + 1}: {needle!r} is not marked"
+
+  def test_off_is_upstreams_class(self):
+    """Mode 0 constructs OsmMapData itself, not NswZoneMapData in a pass-through mode; the NSW modules are imported
+    lazily (process_config imports mapd_manager at the manager's start)."""
+    src = code_only(MAPD_MANAGER.read_text())
+    assert "nsw_on = read_mode(params) != MODE_OFF" in src
+    assert "nsw_map_sp if nsw_map_sp is not None else OsmMapData()" in src
+    head = src[:src.index("def main_thread")]
+    assert "nsw_zones" not in head and "nsw_map_data" not in head, "no NSW import at module scope"
 
 
 if __name__ == "__main__":

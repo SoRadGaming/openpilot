@@ -293,7 +293,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"MapdVersion", {PERSISTENT, STRING}},
     {"MapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
     {"NextMapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    // FORK(NSW-ZONES): the Transport for NSW speed-zone data set: weekly refresh, the update button, the installed version.
+    {"NswZonesAutoUpdate", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"NswZonesUpdateCheck", {CLEAR_ON_MANAGER_START, BOOL}},
+    {"NswZonesVersion", {PERSISTENT, STRING}},
     {"Offroad_OSMUpdateRequired", {CLEAR_ON_MANAGER_START, JSON}},
+    {"Offroad_NswZonesStale", {CLEAR_ON_MANAGER_START, JSON}},  // FORK(NSW-ZONES): old data / school calendar ending
     // FORK(SPEED-LIMIT): mapd_manager re-requests the OSM tiles once per boot when offroad, unmetered and a week old.
     {"OsmAutoUpdateWeekly", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"OsmDbUpdatesCheck", {CLEAR_ON_MANAGER_START, BOOL}},  // mapd database update happens with device ON, reset on boot
@@ -318,6 +323,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // a carried map limit is dropped after 10 s of 'no limit' with good GPS, the map limit is frozen while GPS is lost.
     {"SpeedLimitMapStrict", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"SpeedLimitMode", {PERSISTENT | BACKUP, INT, "1"}},
+    // FORK(NSW-ZONES): Transport for NSW speed zones as the map speed limit: 0 off, 1 log only (nswZone filled, the
+    // published limit stays OSM), 2 live (the NSW limit is published where it matches, OSM elsewhere).
+    {"SpeedLimitNswZones", {PERSISTENT | BACKUP, INT, "2"}},
     {"SpeedLimitOffsetType", {PERSISTENT | BACKUP, INT, "0"}},
     {"SpeedLimitPolicy", {PERSISTENT | BACKUP, INT, "3"}},
     {"SpeedLimitValueOffset", {PERSISTENT | BACKUP, INT, "0"}},
