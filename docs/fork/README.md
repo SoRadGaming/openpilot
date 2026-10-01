@@ -335,7 +335,7 @@ Area **UPD** is the comma 4 software page of 2026-10-01: the download progress a
 | M | `openpilot/sunnypilot/sunnylink/tests/test_settings_changes.py` | SL | `TestMapDataControls` appended at the end of the file, marked FORK(NSW-ZONES): the four map-data items in the speed limit settings and a real `saveParams` round trip. Upstream file (sunnypilot SDUI #1780, #1830): **merge hazard**. | 0 | new |
 | M | `openpilot/sunnypilot/sunnylink/tools/compile_settings_ui.py` | C (Other) | Reads and writes UTF-8 with an LF newline, so compiling on Windows matches CI. | 0 | moved |
 | A | `openpilot/sunnypilot/system/updated/download_progress.py` | UPD | `DownloadProgress` (writes `UpdaterDownloadProgress`, one write per second within a phase, a failed write never fails the update), `git_fetch_with_progress()` (git's Receiving/Unpacking meter; returns and raises what `run()` did, minus the meter's redraws) and `download_label()` (the page's text). | 0 | new |
-| A | `openpilot/sunnypilot/system/updated/tests/test_download_progress.py` | UPD | Throttle, labels, a fake and a real `git fetch --progress`, the AGNOS weighting and chunk reports through `agnos.py`, and the wiring in `updated.py` (22 tests). | 0 | new |
+| A | `openpilot/sunnypilot/system/updated/tests/test_download_progress.py` | UPD | Throttle, labels, a fake and a real `git fetch --progress`, the AGNOS weighting and chunk reports through `agnos.py`, the wiring in `updated.py`, and a round trip through the built `Params` (23 tests). | 0 | new |
 | M | `openpilot/system/updated/updated.py` | UPD | `self.progress = DownloadProgress(...)`; `fetch_update()` sets the phases "code", "checkout" and "os", fetches with `git_fetch_with_progress(["git", "fetch", "--progress", ...])` and still logs "git fetch success: …", passes `progress_cb` through `handle_agnos_update()`, and clears the param before "finalizing update..." and on every return to idle. | 0 | new |
 | M | `openpilot/tools/joystick/joystickd.py` | C | Passes the car's stopping speed to `should_stop()`. | 0 | added in the merge |
 | M | `openpilot/tools/longitudinal_maneuvers/maneuversd.py` | C | Parses `CarParams` and passes the car's stopping speed to `should_stop()`. | 0 | added in the merge |
@@ -582,7 +582,7 @@ They are listed because the same kind of thing will happen again.
 | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` | 4 |
 
 Added since (2026-10-01): `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_eps_latch_alert.py` (18),
-`openpilot/sunnypilot/system/updated/tests/test_download_progress.py` (22) and
+`openpilot/sunnypilot/system/updated/tests/test_download_progress.py` (23) and
 `openpilot/selfdrive/ui/tests/test_software_update_button.py` (5; it opens a headless raylib window in a child process
 and skips where none opens). The two font-metric tests skip where Pillow or the LFS fonts are missing.
 

@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -267,6 +268,24 @@ class TestWiring(OpenpilotTestCase):
   def test_param_is_registered(self):
     src = PARAMS_KEYS.read_text(encoding="utf-8")
     assert re.search(r'\{"UpdaterDownloadProgress", \{CLEAR_ON_MANAGER_START, JSON\}\}', src)
+
+  def test_real_params_round_trip(self):
+    """Through the built Params (OpenpilotTestCase runs each test under its own params prefix)."""
+    from openpilot.common.params import Params
+    params = Params()
+    assert params.get_type(PARAM) == params.get_type("LiveParameters"), "registered as JSON in the built params"
+    p = DownloadProgress(params)
+    p.set(PHASE_OS, 42.7)
+    params_value = None
+    for _ in range(200):   # the write is non-blocking
+      params_value = Params().get(PARAM)
+      if params_value is not None:
+        break
+      time.sleep(0.01)
+    assert params_value == {"phase": "os", "pct": 42}
+    assert download_label("downloading...", params_value) == "downloading...\nos update 42%"
+    p.clear()
+    assert Params().get(PARAM) is None
 
   def test_updated(self):
     src = UPDATED.read_text(encoding="utf-8")

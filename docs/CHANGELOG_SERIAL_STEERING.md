@@ -68,9 +68,9 @@ calling it a rollback.
 
 * **Tests:** 18 for the alert (debounce, the fc/fd gaps, deferral, reminder,
   warnings only, the text against the comma 4's alert renderer with the real
-  fonts, selfdrived's wiring), 22 for the progress (throttle, labels, a real
-  `git fetch`, the AGNOS weighting through `agnos.py`), 5 that drive the real
-  button in a headless window.
+  fonts, selfdrived's wiring), 23 for the progress (throttle, labels, a real
+  `git fetch`, the AGNOS weighting through `agnos.py`, the real `Params`), 5
+  that drive the real button in a headless window.
 * **New param:** `UpdaterDownloadProgress` (cleared at every manager start).
   The first start after this update rebuilds, as any `params_keys.h` change does.
 
