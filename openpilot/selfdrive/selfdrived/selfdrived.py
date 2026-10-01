@@ -33,6 +33,7 @@ from openpilot.sunnypilot.selfdrive.car.cruise_helpers import CruiseHelper
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.controller import IntelligentCruiseButtonManagement
 from openpilot.sunnypilot.selfdrive.selfdrived.button_state_tracker import ButtonStateTracker
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
+from openpilot.sunnypilot.selfdrive.selfdrived.eps_latch_alert import EpsLatchAlert  # FORK(LKAS-GATEWAY)
 
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
@@ -183,6 +184,7 @@ class SelfdriveD(CruiseHelper):
     self.icbm = IntelligentCruiseButtonManagement(self.CP, self.CP_SP)
 
     self.car_events_sp = CarSpecificEventsSP(self.CP, self.CP_SP)
+    self.eps_latch_alert = EpsLatchAlert()  # FORK(LKAS-GATEWAY): "restart the car" when the EPS latches until key-off
 
     CruiseHelper.__init__(self, self.CP)
     self.button_state_tracker = ButtonStateTracker()
@@ -294,6 +296,11 @@ class SelfdriveD(CruiseHelper):
         (CS.brakePressed and (not self.CS_prev.brakePressed or not CS.standstill)) or \
         (CS.regenBraking and (not self.CS_prev.regenBraking or not CS.standstill)):
         self.events.add(EventName.pedalPressed)
+
+    # FORK(LKAS-GATEWAY): warnings only, so a latched EPS never costs longitudinal or engagement.
+    # can_show is last frame's "a WARNING would be shown"; the helper holds the announcement until it is.
+    for e in self.eps_latch_alert.update(self.sm['carStateSP'].linbusGateway, self.active or self.mads.active):
+      self.events_sp.add(e)
 
     # Create events for temperature, disk space, and memory
     if self.sm['deviceState'].thermalStatus >= ThermalStatus.overheated:

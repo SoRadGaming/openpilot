@@ -260,4 +260,23 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       AlertStatus.normal, AlertSize.small,
       Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 2.),
   },
+
+  # FORK(LKAS-GATEWAY): the EPS latched until key-off. ET.WARNING only - no NO_ENTRY or any disable type,
+  # so longitudinal and engagement are untouched. Raised by eps_latch_alert.py: the first once per latch
+  # with one prompt, then the silent reminder at most every 5 minutes.
+  EventNameSP.lkasGatewayEpsLatched: {
+    ET.WARNING: Alert(
+      "Steering Fault: Restart Car",
+      "Turn the ignition off and on to clear it",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.MID, VisualAlert.none, AudibleAlert.prompt, 6.),
+  },
+
+  EventNameSP.lkasGatewayEpsLatchedReminder: {
+    ET.WARNING: Alert(
+      "Steering Off Until Restart",
+      "",
+      AlertStatus.normal, AlertSize.small,
+      Priority.LOWEST, VisualAlert.none, AudibleAlert.none, 4.),
+  },
 }

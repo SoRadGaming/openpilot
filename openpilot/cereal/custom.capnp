@@ -354,6 +354,11 @@ struct OnroadEventSP @0xda96579883444c35 {
     e2eChime @23;
     laneChangeRoadEdge @24;
     bigModelReady @25;
+    # FORK(LKAS-GATEWAY): the EPS latched until key-off (carStateSP.linbusGateway.latchedUntilKeyOff).
+    # Warnings only, see sunnypilot/selfdrive/selfdrived/eps_latch_alert.py. If upstream takes @26/@27,
+    # give it the ordinals and move these two to the next free ones.
+    lkasGatewayEpsLatched @26;
+    lkasGatewayEpsLatchedReminder @27;
   }
 }
 
