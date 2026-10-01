@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
-from openpilot.cereal import log, custom
+from openpilot.cereal import custom
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.selfdrive.selfdrived.eps_latch_alert import EpsLatchAlert, LATCH_CONFIRM_FRAMES, \
   LATCH_CLEAR_FRAMES, ANNOUNCE_FRAMES, REMINDER_PERIOD_FRAMES, REMINDER_FRAMES
@@ -245,7 +245,7 @@ class TestSelfdrivedWiring(OpenpilotTestCase):
   def test_selfdrived_raises_it_from_the_gateway_state(self):
     src = SELFDRIVED.read_text(encoding="utf-8")
     assert "self.eps_latch_alert = EpsLatchAlert()" in src
-    call = re.search(r"for e in self\.eps_latch_alert\.update\(self\.sm\['carStateSP'\]\.linbusGateway, "
+    call = re.search(r"for e in self\.eps_latch_alert\.update\(self\.sm\['carStateSP'\]\.linbusGateway, " +
                      r"self\.active or self\.mads\.active\):\s*\n\s*self\.events_sp\.add\(e\)", src)
     assert call, "the helper is not fed carStateSP.linbusGateway, or its events do not reach events_sp"
     # carStateSP must stay in selfdrived's SubMaster (mads.py needs it too)
