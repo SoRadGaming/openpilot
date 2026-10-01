@@ -6,17 +6,20 @@ FORK(HONDA_ACCORD_9G_AU): torqued on the Elesys Accord.
   one-time cache reset the new prior forces does not throw away the ~0.43 m/s^2 of crossfall the car carries.
 * A prior that changes is a restore key that changes: the cache learned under the old prior is discarded.
 * CarController reports 0 torque while the gateway board is not actuating, and a 0 never becomes a point.
+* The seed also survives sunnypilot's EnforceTorqueControl / NNLC re-run of configure_torque_tune().
 """
 import numpy as np
 
 from openpilot.cereal import messaging
 from opendbc.car.structs import car
+from opendbc.car.interfaces import CarInterfaceBase
 from opendbc.car.honda.interface import CarInterface
 from opendbc.car.honda.values import CAR as HONDA
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.selfdrive.locationd.torqued import TorqueEstimator, VERSION, MIN_VEL
+from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
 
 ELESYS = HONDA.HONDA_ACCORD_9G_AU
 OLD_PRIOR = (1.6893333799149202, 0.2120497022936265)   # HONDA_ACCORD's factor / friction, the substitute until 2026-10
@@ -144,3 +147,42 @@ class TestTorquedElesysCache(OpenpilotTestCase):
   def test_restore_key_includes_the_prior(self):
     self.assertNotEqual(TorqueEstimator.get_restore_key(_cp(prior=OLD_PRIOR), VERSION),
                         TorqueEstimator.get_restore_key(_cp(), VERSION))
+
+
+class TestTorquedElesysSeedWithTorqueToggles(OpenpilotTestCase):
+  """With EnforceTorqueControl or NNLC on, sunnypilot's setup_interfaces() re-runs configure_torque_tune(), which
+  resets latAccelOffset to 0.0. Its FORK(HONDA_ACCORD_9G_AU) hunk keeps the car's seed across the re-run; every other
+  car ends exactly where upstream's re-run leaves it."""
+
+  @staticmethod
+  def _setup(car_name, enforce, nnlc):
+    params = Params()
+    params.put_bool("EnforceTorqueControl", enforce, block=True)
+    params.put_bool("NeuralNetworkLateralControl", nnlc, block=True)
+    CP = CarInterface.get_non_essential_params(car_name)
+    CI = CarInterface(CP, CarInterface.get_non_essential_params_sp(CP, car_name))
+    sunnypilot_interfaces.setup_interfaces(CI, params)
+    return CI.CP
+
+  def test_the_seed_survives_the_re_run(self):
+    for enforce, nnlc in ((True, False), (False, True), (True, True), (False, False)):
+      with self.subTest(enforce=enforce, nnlc=nnlc):
+        CP = self._setup(ELESYS, enforce, nnlc)
+        self.assertEqual(CP.lateralTuning.which(), 'torque')
+        self.assertAlmostEqual(CP.lateralTuning.torque.latAccelOffset, -0.43, places=6)
+        self.assertAlmostEqual(CP.lateralTuning.torque.latAccelFactor, 1.1, places=6)
+        self.assertAlmostEqual(CP.lateralTuning.torque.friction, 0.18, places=6)
+        ltp = _ltp(TorqueEstimator(CP.as_reader()))
+        self.assertEqual(ltp.totalBucketPoints, 0)
+        self.assertAlmostEqual(ltp.latAccelOffsetFiltered, -0.43, places=6)
+
+  def test_other_cars_end_where_upstream_leaves_them(self):
+    # a torque-tuned and a PID-tuned Honda: upstream's re-run is a bare configure_torque_tune() on the car's CarParams
+    for car_name in (HONDA.HONDA_ACCORD_11G, HONDA.HONDA_CIVIC):
+      with self.subTest(car=car_name):
+        want = CarInterface.get_non_essential_params(car_name)
+        CarInterfaceBase.configure_torque_tune(car_name, want.lateralTuning)
+        CP = self._setup(car_name, enforce=True, nnlc=False)
+        self.assertEqual(CP.lateralTuning.which(), 'torque')
+        self.assertEqual(CP.lateralTuning.to_dict(), want.lateralTuning.to_dict())
+        self.assertEqual(CP.lateralTuning.torque.latAccelOffset, 0.0)

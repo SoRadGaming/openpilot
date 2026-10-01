@@ -66,7 +66,12 @@ def _initialize_intelligent_cruise_button_management(CP: structs.CarParams, CP_S
 
 def _initialize_torque_lateral_control(CI: CarInterfaceBase, CP: structs.CarParams, enforce_torque: bool, nnlc_enabled: bool) -> None:
   if nnlc_enabled or enforce_torque:
+    # FORK(HONDA_ACCORD_9G_AU): the re-run resets latAccelOffset to 0.0; keep the car's own seed across it
+    # (opendbc honda interface.py, -0.43 on HONDA_ELESYS). Every other torque-tuned car carries 0.0 and a PID
+    # car has no torque tune to keep, so both end exactly where upstream leaves them.
+    lat_accel_offset = CP.lateralTuning.torque.latAccelOffset if CP.lateralTuning.which() == 'torque' else 0.0
     CI.configure_torque_tune(CP.carFingerprint, CP.lateralTuning)
+    CP.lateralTuning.torque.latAccelOffset = lat_accel_offset
 
 
 def _cleanup_unsupported_params(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params: Params | None = None) -> None:
