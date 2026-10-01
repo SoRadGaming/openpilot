@@ -704,6 +704,30 @@ both pass.
 
 ---
 
+## 20. Gas law v2 (measured), pedal and aero learners retired, drive-mode plumbing (2026-10)
+
+`elesys_gas.py` (new), `gas_interceptor.py`, `dynamic_tuning.py`, `carstate.py`,
+`params_keys.h`, the Honda settings pages, sunnylink, statsd; opendbc `d2d482ed`, `9e076b33`
+
+Driver-facing summary: `docs/CHANGELOG_SERIAL_STEERING.md`, 2026-10-01. Design and numbers:
+`docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 9.1-9.2. In short:
+
+- **Section 7's curve was raised the wrong way.** Fitting slope and cruise offset separately
+  over 51 routes shows it gave 1.4-1.7x too much pedal per m/s^2 at 6-20 m/s. The section 7 fit
+  regressed on mostly-cruise frames, where the offset and the slope cannot be told apart.
+  `HondaElesysGasLawV2` (default on) uses the measured slope; below 3 m/s and in the gas/brake
+  hand-over window below ~16.9 m/s it is the old law exactly, and off is the old law exactly.
+- **Sections 5 and 12's pedal learner and the aero learner are retired.** The pedal gain could
+  not persist (live reset to persisted at every ignition) and its gate was biased by
+  openpilot's own integrator; the aero scale was a random walk that also moved the brake-on
+  point. `wind_scale()` is 1.0. The brake learner (section 5) is unchanged.
+- **Section 2's ECON and section 1's Sport now have slots** (D/ECON/S) with a multiplier each,
+  all 1.0, and a 2 s crossfade; the tuner counts engaged time and steady-pedal samples per slot
+  for an offline fit. 87 s of engaged ECON and 79 s of engaged S in a month is not enough yet.
+- `GEAR = 26` (section 1's fast path) is now observed: 16,164 frames of S on b1/dd/fc.
+
+---
+
 ## Status
 
 *As of 2026-09-08: two weeks of real driving on the tuner (sections 12-13); the paragraph below

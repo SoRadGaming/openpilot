@@ -15,6 +15,85 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-01 — Longitudinal (pedal): the measured gas law; the pedal and aero learners retired
+
+**The comma pedal now asks for the throttle this car actually needs.** The old
+law gave 1.4-1.7x too much pedal per m/s² at 22-72 km/h, so a request from a
+roll first over-delivered (aEgo 1.34-1.42 against a target of 0.95-1.15 for the
+first 2 s) and then sagged while openpilot's own controller unwound. The new
+law (v2) uses the pedal response measured on 51 of your routes. It is on by
+default; turn it off to get the previous law back exactly.
+
+* **Where:** sunnylink, Vehicle → Honda Settings: **Measured Gas Pedal Law
+  (2013-15 Accord)**. Offroad only; it applies at the next drive (the car reads
+  it once at ignition). The comma 4's Settings → vehicle card shows which law
+  the car will use (`v2`/`v1`), and the `hondadyn` log line says which one ran
+  (`gaslaw=`).
+* **What you will feel:** a softer, steadier pull from a roll at 20-70 km/h:
+  for 1.0 m/s² at 72 km/h the pedal goes 0.742 → 0.467. The lunge-then-sag is
+  what goes away; sunnypilot's controller adds whatever is really missing.
+  Above about 60 km/h the cruise pedal is the measured one, a little lower than
+  before (0.122 against 0.169 at 72 km/h).
+* **What does not change:** every launch below 11 km/h (v2 *is* the old law
+  there, to within float rounding); the hand-over between gas and brake below about 60 km/h
+  (same offset, same slope through the gap - a steeper gap there would risk
+  surging in stop-and-go); the point where the pedal reaches zero and where the
+  brake comes on (the aero change below moves the latter slightly, with the
+  learning toggle on); the brake command itself (identical under both laws); max
+  accel (still 1.6 m/s² - raising it was dropped: the 1.6 clip only bound during
+  launches that were already overshooting). Every other car keeps upstream's
+  pedal law.
+* **The self-learning pedal gain and aero factor are gone** (the "Dynamic
+  Longitudinal Learning" toggle). The pedal gain could not save anything (its
+  progress was reset at every ignition: six weeks moved it by 0.007) and was
+  steered by openpilot's own integrator toward the wrong answer. The aero factor
+  wandered 0.7-1.5 from drive to drive. **With the learning toggle on, this
+  moves the brake-on point slightly:** your saved aero factor was about 0.80
+  and is now 1.0, so light braking at 90 km/h gets about 5 counts less brake
+  (the brake comes on at 0.27 instead of 0.21 m/s² of net decel). The brake
+  learner and the hill term are unchanged.
+* **Drive modes (ECON / D / S):** the car now knows which one it is in (S if
+  the lever is in S, else ECON if ECON is on, else D) and has a per-mode pedal
+  multiplier, all 1.0 today, so nothing changes yet. A change of mode fades the
+  pedal over 2 s instead of stepping. There are only 87 s of engaged ECON and
+  79 s of engaged S in a month of logs - not enough to fit anything - so the car
+  now counts engaged time and steady-pedal samples per mode, in the `hondadyn`
+  line (`slot=`, `modesec=`, `modeadm=`, `modetot=`) and on the comma 4 card
+  (`D / ECON / S`, minutes). **Your part:** drive at least 15 minutes engaged in
+  ECON and 15 in S, including gentle accelerations at 40-80 km/h.
+* **On screen:** the comma 4 card that showed six "learned pedal gain" numbers
+  (which could not move) now shows `gas law` with the brake gain, and the
+  engaged minutes per mode. sunnylink's Cruise page shows engaged seconds per
+  mode instead of the pedal gains and the aero factor.
+* **Params:** new `HondaElesysGasLawV2` (backed up, default on) and
+  `HondaDynModeSecD`/`ECON`/`S`; `HondaDynPedalGain0`-`5` and
+  `HondaDynWindFactor` are no longer registered (the old files stay on the
+  device, unread). `parse_hondadyn.py` needs no change: the line lost `pedal=`,
+  `pedalc=` and `wind=`, and the script skips missing fields.
+* **Also fixed:** a fingerprint without the gearbox's `GEAR` signal made
+  `CarState` raise (found by fuzzing; the real car always has it). And S is now
+  confirmed: the gearbox reports `GEAR = 26` whenever S is selected (16,164
+  frames on b1, dd and fc), so the comments that said it had never been seen
+  are corrected.
+* **Watch on the next drive:** openpilot's integrator (`uiAccelCmd`) at
+  demand above 0.4 m/s² should move toward zero (it was -0.21 to -0.23 at
+  43-79 km/h), and the first 2 s of a request should no longer overshoot the
+  target. At cruise above 60 km/h it should average within about ±0.05; below
+  60 km/h it will stay where it was (+0.06 to +0.19), because that offset was
+  deliberately left alone until the brake-side work. Check that the pedal does
+  not hunt at 15-55 km/h in stop-and-go, and flag any pedal command at or above
+  0.9 (the highest seen was 0.761).
+* **Tests:** 31 new gas-law tests (golden pedal at every breakpoint, continuity,
+  monotonic, nothing below the brake-on point, identical to the old law below
+  11 km/h, the gap never steeper, the 2 s fade bound, the modes, the setting,
+  other cars bit-identical); the real `CarController` under both laws and with
+  NaN/odd inputs (never raises, `0x1FA` every frame it should); the tuner
+  checks rewritten for the retirement; 4 new settings checks. Details:
+  `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 9.1-9.2. Commits: opendbc `d2d482ed`,
+  `9e076b33`; sunnypilot `db3fa190f`.
+
+---
+
 ## 2026-09-30 — the fast-wheel takeover is now a setting
 
 **Turning the wheel fast turns MADS steering off (not a pause), and you can now
