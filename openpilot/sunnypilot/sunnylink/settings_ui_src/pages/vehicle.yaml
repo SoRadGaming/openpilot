@@ -31,7 +31,7 @@ sections:
       for less pedal per m/s^2 above 11 km/h - most at 20-70 km/h, where the old law over-delivered
       (the lunge, then sag, pulling away from a roll) - and holds a lower cruise pedal above 60 km/h.
       Below 11 km/h it is the old law exactly, and the hand-over between gas and brake is unchanged
-      below 60 km/h. Off: the previous law. 2013-15 Accord (Elesys) only.'
+      below 60 km/h. Off: the previous law. 2013-15 Accord (Elesys) only. Applies at the next drive.'
     details: Applies at the next drive - the car reads it once when it goes onroad. Expect gentler
       onset at 20-70 km/h; sunnypilot's own controller adds whatever is really missing.
     enablement:

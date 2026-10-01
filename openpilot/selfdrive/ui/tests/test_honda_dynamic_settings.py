@@ -204,7 +204,7 @@ class TestHondaDynamicSettings(unittest.TestCase):
     assert item["widget"] == "toggle"
     # the car reads it once, at CarController init
     assert item.get("needs_onroad_cycle") is True, f"{GAS_LAW_PARAM} must tell the app it needs an ignition cycle"
-    assert "next drive" in item.get("details", ""), "the details must say it applies at the next drive"
+    assert "next drive" in item.get("description", ""), "the description must say it applies at the next drive"
     assert item.get("title") not in (None, GAS_LAW_PARAM) and item.get("description"), f"{GAS_LAW_PARAM} needs a real title and description"
 
   def test_sunnylink_learned_values_are_read_only_and_on_a_page(self):
