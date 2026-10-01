@@ -20,7 +20,9 @@ and the software page shows it under "downloading...". It reports what it can me
   70-95% scale) and the system image crawled the rest.
 
 There is no ETA: nothing here measures time, and a percentage of objects or bytes is not one.
-Writes are throttled to one per WRITE_INTERVAL within a phase; a phase change is written at once.
+Writes are throttled to one per WRITE_INTERVAL within a phase; a phase change and a phase's 100% are
+written at once, so the label never freezes short of a meter that finished. Writes block: Params'
+non-blocking put is queued to a thread and would land after a remove() that follows it at once.
 """
 import re
 import subprocess
@@ -66,7 +68,7 @@ class DownloadProgress:
     if self._last == (phase, pct_i):
       return
     now = self._clock()
-    if self._last is not None and self._last[0] == phase and now - self._t < WRITE_INTERVAL:
+    if self._last is not None and self._last[0] == phase and now - self._t < WRITE_INTERVAL and pct_i != 100:
       return
     self._last, self._t = (phase, pct_i), now
     self._put({"phase": phase, "pct": pct_i})
@@ -79,9 +81,10 @@ class DownloadProgress:
       self._log_once()
 
   def _put(self, value: dict) -> None:
-    # A progress write must never be what fails an update.
+    # A progress write must never be what fails an update. block=True: a queued write would land after a
+    # clear() straight after it (the "already flashed" AGNOS path) and leave the param set.
     try:
-      self._params.put(PARAM, value)
+      self._params.put(PARAM, value, block=True)
     except Exception:
       self._log_once()
 

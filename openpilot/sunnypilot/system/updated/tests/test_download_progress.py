@@ -34,10 +34,12 @@ class FakeParams:
   def __init__(self):
     self.values: dict = {}
     self.writes: list = []
+    self.blocking: list = []
 
   def put(self, key, value, block=False):
     self.values[key] = value
     self.writes.append((key, value))
+    self.blocking.append(block)
 
   def remove(self, key):
     self.values.pop(key, None)
@@ -71,6 +73,25 @@ class TestDownloadProgress(OpenpilotTestCase):
     expected = 20 / WRITE_INTERVAL
     assert expected - 1 <= n <= expected + 2, f"{n} writes in 20 s"
     assert self.params.values[PARAM]["pct"] >= 95
+
+  def test_a_phases_100_is_never_throttled(self):
+    # "Receiving objects: 100%" lands well inside a second of the last write; dropping it froze the label
+    # at "code 85%" through all of git's "Resolving deltas"
+    self.p.set(PHASE_CODE, 85)
+    self.clock.t += 0.2
+    self.p.set(PHASE_CODE, 99)          # throttled
+    self.clock.t += 0.1
+    self.p.set(PHASE_CODE, 100)         # written
+    assert self.params.writes == [(PARAM, {"phase": "code", "pct": 85}), (PARAM, {"phase": "code", "pct": 100})]
+    self.clock.t += 0.1
+    self.p.set(PHASE_CODE, 100)         # but only once
+    assert len(self.params.writes) == 2
+
+  def test_writes_block(self):
+    # a non-blocking put is queued to a thread and lands after a remove() straight after it
+    self.p.set(PHASE_CODE)
+    self.p.set(PHASE_OS, 7)
+    assert self.params.blocking == [True, True]
 
   def test_an_unchanged_value_is_not_rewritten(self):
     self.p.set(PHASE_OS, 5)
@@ -276,16 +297,76 @@ class TestWiring(OpenpilotTestCase):
     assert params.get_type(PARAM) == params.get_type("LiveParameters"), "registered as JSON in the built params"
     p = DownloadProgress(params)
     p.set(PHASE_OS, 42.7)
-    params_value = None
-    for _ in range(200):   # the write is non-blocking
-      params_value = Params().get(PARAM)
-      if params_value is not None:
-        break
-      time.sleep(0.01)
+    params_value = Params().get(PARAM)   # the write blocks, so it is there at once
     assert params_value == {"phase": "os", "pct": 42}
     assert download_label("downloading...", params_value) == "downloading...\nos update 42%"
     p.clear()
     assert Params().get(PARAM) is None
+
+  def test_real_params_clear_straight_after_set(self):
+    """The "every partition already flashed" path: progress_cb(1.0), then clear() within a millisecond.
+    With a non-blocking put the queued write landed after the remove, every time."""
+    from openpilot.common.params import Params
+    for i in range(50):
+      p = DownloadProgress(Params())
+      p.set(PHASE_OS, 99)
+      p.set(PHASE_OS, 100)
+      p.clear()
+      time.sleep(0.002)   # long enough for a queued write to land
+      assert Params().get(PARAM) is None, f"the param outlived clear() on run {i}"
+
+  def test_fetch_update_through_real_params(self):
+    """Updater.fetch_update() itself, with git, AGNOS and finalize patched out and the built Params under
+    the test prefix: the phases in order, a phase's 100% kept, and the param gone before finalizing."""
+    from openpilot.common.params import Params
+    from openpilot.system.updated import updated
+    seen: list = []
+
+    def snap(where):
+      seen.append((where, Params().get(PARAM)))
+
+    def fake_run(cmd, cwd=None):
+      if cmd[:2] == ["git", "checkout"]:
+        snap("checkout")
+      return ""
+
+    def fake_fetch(cmd, cwd, on_percent):
+      assert cmd == ["git", "fetch", "--progress", "origin", "sunnypilot"] and cwd == updated.OVERLAY_MERGED
+      snap("fetch start")
+      assert Params().get("UpdaterState") == "downloading..."
+      for pct in (10, 55, 100):
+        on_percent(pct)
+      snap("fetch done")
+      return "From https://github.com/SoRadGaming/openpilot\n"
+
+    def fake_agnos(progress_cb=None):
+      progress_cb(0.3)
+      snap("os")
+      progress_cb(1.0)   # the last partition, then straight back to fetch_update's clear()
+
+    def fake_finalize():
+      snap("finalize")
+      seen.append(("state", Params().get("UpdaterState")))
+
+    with mock.patch.object(updated, "run", fake_run), \
+         mock.patch.object(updated, "git_fetch_with_progress", fake_fetch), \
+         mock.patch.object(updated, "handle_agnos_update", fake_agnos), \
+         mock.patch.object(updated, "finalize_update", fake_finalize), \
+         mock.patch.object(updated, "set_consistent_flag", lambda consistent: None), \
+         mock.patch.object(updated, "setup_git_options", lambda cwd: None), \
+         mock.patch.object(updated, "AGNOS", True):
+      u = updated.Updater()
+      u.params.put("UpdaterTargetBranch", "sunnypilot", block=True)
+      u.fetch_update()
+
+    assert seen == [
+      ("fetch start", {"phase": "code", "pct": None}),
+      ("fetch done", {"phase": "code", "pct": 100}),
+      ("checkout", {"phase": "checkout", "pct": None}),
+      ("os", {"phase": "os", "pct": 30}),
+      ("finalize", None),
+      ("state", "finalizing update..."),
+    ], seen
 
   def test_updated(self):
     src = UPDATED.read_text(encoding="utf-8")
