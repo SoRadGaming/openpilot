@@ -6,7 +6,7 @@ import os
 import struct
 import subprocess
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 
 import requests
 
@@ -16,7 +16,7 @@ AGNOS_MANIFEST_FILE = "openpilot/system/hardware/comma/agnos.json"
 
 
 class StreamingDecompressor:
-  def __init__(self, url: str) -> None:
+  def __init__(self, url: str, on_chunk: Callable[[int, int | None], None] | None = None) -> None:
     self.buf = b""
 
     self.req = requests.get(url, stream=True, headers={'Accept-Encoding': 'identity'}, timeout=60)
@@ -24,6 +24,12 @@ class StreamingDecompressor:
     self.decompressor = lzma.LZMADecompressor(format=lzma.FORMAT_AUTO)
     self.eof = False
     self.sha256 = hashlib.sha256()
+
+    # FORK(UPDATER): compressed bytes received, against Content-Length when the server sends one
+    length = self.req.headers.get('Content-Length', '')
+    self.total: int | None = int(length) if str(length).isdigit() and int(length) > 0 else None
+    self.received = 0
+    self.on_chunk = on_chunk
 
   def read(self, length: int) -> bytes:
     while len(self.buf) < length and not self.eof:
@@ -35,6 +41,10 @@ class StreamingDecompressor:
         except StopIteration:
           self.eof = True
           break
+        # FORK(UPDATER): per received chunk, so a 252 MB raw sparse chunk still moves the progress
+        self.received += len(compressed)
+        if self.on_chunk is not None:
+          self.on_chunk(self.received, self.total)
       else:
         compressed = b''
 
@@ -155,9 +165,17 @@ def clear_partition_hash(target_slot_number: int, partition: dict) -> None:
     os.sync()
 
 
-def extract_compressed_image(target_slot_number: int, partition: dict, cloudlog):
+def extract_compressed_image(target_slot_number: int, partition: dict, cloudlog,
+                             progress_cb: Callable[[float], None] | None = None):
   path = get_partition_path(target_slot_number, partition)
-  downloader = StreamingDecompressor(partition['url'])
+
+  # FORK(UPDATER): progress_cb gets this partition's fraction done: compressed bytes received over
+  # Content-Length, or, without one, uncompressed bytes written over the partition size
+  def on_chunk(received: int, total: int | None) -> None:
+    if progress_cb is not None and total:
+      progress_cb(min(received / total, 1.0))
+
+  downloader = StreamingDecompressor(partition['url'], on_chunk=on_chunk)
 
   with open(path, 'wb+') as out:
     # Flash partition
@@ -171,6 +189,8 @@ def extract_compressed_image(target_slot_number: int, partition: dict, cloudlog)
       if p != last_p:
         last_p = p
         print(f"Installing {partition['name']}: {p}", flush=True)
+        if progress_cb is not None and not downloader.total:  # FORK(UPDATER): no Content-Length
+          progress_cb(min(p / 100, 1.0))
 
     if raw_hash.hexdigest().lower() != partition['hash_raw'].lower():
       raise Exception(f"Raw hash mismatch '{raw_hash.hexdigest().lower()}'")
@@ -184,11 +204,14 @@ def extract_compressed_image(target_slot_number: int, partition: dict, cloudlog)
     os.sync()
 
 
-def flash_partition(target_slot_number: int, partition: dict, cloudlog, standalone=False):
+def flash_partition(target_slot_number: int, partition: dict, cloudlog, standalone=False,
+                    progress_cb: Callable[[float], None] | None = None):
   cloudlog.info(f"Downloading and writing {partition['name']}")
 
   if verify_partition(target_slot_number, partition):
     cloudlog.info(f"Already flashed {partition['name']}")
+    if progress_cb is not None:  # FORK(UPDATER)
+      progress_cb(1.0)
     return
 
   # Clear hash before flashing in case we get interrupted
@@ -198,7 +221,7 @@ def flash_partition(target_slot_number: int, partition: dict, cloudlog, standalo
 
   path = get_partition_path(target_slot_number, partition)
 
-  extract_compressed_image(target_slot_number, partition, cloudlog)
+  extract_compressed_image(target_slot_number, partition, cloudlog, progress_cb=progress_cb)  # FORK(UPDATER)
 
   # Write hash after successful flash
   if not full_check:
@@ -222,7 +245,8 @@ def swap(manifest_path: str, target_slot_number: int, cloudlog) -> None:
       cloudlog.error(f"Swap failed {out}")
 
 
-def flash_agnos_update(manifest_path: str, target_slot_number: int, cloudlog, standalone=False) -> None:
+def flash_agnos_update(manifest_path: str, target_slot_number: int, cloudlog, standalone=False,
+                       progress_cb: Callable[[float], None] | None = None) -> None:
   update = json.load(open(manifest_path))
 
   cloudlog.info(f"Target slot {target_slot_number}")
@@ -230,12 +254,21 @@ def flash_agnos_update(manifest_path: str, target_slot_number: int, cloudlog, st
   # set target slot as unbootable
   subprocess.run(f"abctl --set_unbootable {target_slot_number}", shell=True)
 
+  # FORK(UPDATER): progress_cb gets the fraction of the whole update done, each partition weighted
+  # by its size. Weighted equally, the six small partitions read 86% before system (99% of the bytes) began.
+  total_size = sum(p['size'] for p in update) or 1
+  done_size = 0
+
   for partition in update:
     success = False
 
+    def partition_progress(frac: float, done: int = done_size, size: int = partition['size']) -> None:
+      if progress_cb is not None:
+        progress_cb((done + frac * size) / total_size)
+
     for retries in range(10):
       try:
-        flash_partition(target_slot_number, partition, cloudlog, standalone)
+        flash_partition(target_slot_number, partition, cloudlog, standalone, progress_cb=partition_progress)  # FORK(UPDATER)
         success = True
         break
 
@@ -247,6 +280,7 @@ def flash_agnos_update(manifest_path: str, target_slot_number: int, cloudlog, st
     if not success:
       cloudlog.info(f"Failed to flash {partition['name']}, aborting")
       raise Exception("Maximum retries exceeded")
+    done_size += partition['size']  # FORK(UPDATER)
 
   cloudlog.info(f"AGNOS ready on slot {target_slot_number}")
 
