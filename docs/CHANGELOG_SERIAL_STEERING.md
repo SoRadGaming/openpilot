@@ -18,15 +18,18 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 ## 2026-10-01 — "restart the car" when the EPS latches; download progress; the rollback branch is gone
 
 **When the EPS latches until key-off, the comma 4 now says so.** Once per latch,
-with one short sound: **"Steering Fault: Restart Car"** / "Turn the ignition off
-and on to clear it". After that, a silent **"Steering Off Until Restart"** every
-5 minutes for as long as the latch lasts.
+with one short sound: **"Steering Fault"** / "Turn the car off and on to clear
+it". After that, a silent **"Steering Off Until Restart"** every 5 minutes for
+as long as the latch lasts.
 
 * **Only a warning.** It drops nothing and blocks nothing: cruise keeps working,
   you can still engage, MADS stays as it was. It just tells you steering is gone
   until the key cycle.
+* **Never over driver monitoring.** If the EPS latches while the orange "Pay
+  Attention" / "Touch Steering Wheel" is up, that stays on screen with its sound;
+  the steering fault waits its turn.
 * **When it fires:** the board reports the key-cycle latch (`RETRY_IN 255`) for
-  1 s of fresh frames. Not on the 3 s "no acknowledgement" hold, not on a
+  1 s of fresh frames. Not on the 3 s "no acknowledgment" hold, not on a
   transient, not when the board is silent, and never on another car.
 * **Once, not twenty times.** After a real latch the board's `0x70B` frame keeps
   dropping out for 0.1-25 s at a time (fc, fd: about twenty gaps a drive), and a
@@ -38,8 +41,9 @@ and on to clear it". After that, a silent **"Steering Off Until Restart"** every
 * **Checked against your drives:** fd, fc, f2 and ed each announce once, about
   1 s after the latch; 102 and 103 raise nothing.
 
-**Settings > software shows what a download is doing.** Tap "download update"
-and the button reads "downloading..." plus one of:
+**Settings > software shows what a download is doing.** After you tap "download
+update", and also while the comma downloads an update on its own in the
+background, the button reads "downloading..." plus one of:
 
 * **code NN%** - fetching the branch, git's own object count. Usually seconds;
   an update under 100 objects shows no number.
@@ -50,7 +54,8 @@ and the button reads "downloading..." plus one of:
   same, so the six small ones raced it to ~91% in seconds and the system image
   crawled the rest. Still no time estimate - nothing here measures time.
 
-Then "finalizing update..." as before. The git output still goes to the log.
+Each meter's 100% is always shown, and the progress is gone before "finalizing
+update..." as before. The git output still goes to the log.
 
 **"download update" stands out** when an update has been found and is waiting
 for your second tap: a green disc behind the icon, a brighter button and white
@@ -64,13 +69,15 @@ manifest at `openpilot/system/hardware/comma/agnos.json`, and that branch is
 AGNOS 18.4 with the manifest somewhere else, so the update would have failed. The
 upstream sync proved good, so nothing needs it. `pre-*` snapshots still work the
 same way; `docs/fork/README.md` now says to check a snapshot can install before
-calling it a rollback.
+calling it a rollback (a moved `agnos.json` cannot install; a different AGNOS
+version alone installs by downgrading AGNOS).
 
-* **Tests:** 18 for the alert (debounce, the fc/fd gaps, deferral, reminder,
-  warnings only, the text against the comma 4's alert renderer with the real
-  fonts, selfdrived's wiring), 23 for the progress (throttle, labels, a real
-  `git fetch`, the AGNOS weighting through `agnos.py`, the real `Params`), 5
-  that drive the real button in a headless window.
+* **Tests:** 19 for the alert (debounce, the fc/fd gaps, deferral, reminder,
+  warnings only, never over driver monitoring, the text against the comma 4's
+  alert renderer with the real fonts, selfdrived's wiring), 27 for the progress
+  (throttle, labels, a real `git fetch`, the AGNOS weighting through `agnos.py`,
+  the real `Params`, `fetch_update()` itself), 6 that drive the real button in a
+  headless window.
 * **New param:** `UpdaterDownloadProgress` (cleared at every manager start).
   The first start after this update rebuilds, as any `params_keys.h` change does.
 

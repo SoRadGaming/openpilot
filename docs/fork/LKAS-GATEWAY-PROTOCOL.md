@@ -834,7 +834,7 @@ for e in self.eps_latch_alert.update(self.sm['carStateSP'].linbusGateway, self.a
 
 | event | type | alert |
 |---|---|---|
-| `lkasGatewayEpsLatched @26` | `ET.WARNING` only | "Steering Fault: Restart Car" / "Turn the ignition off and on to clear it"; userPrompt, mid, `Priority.MID`, `AudibleAlert.prompt` (one `warning.wav`), 6 s. Once per latch. |
+| `lkasGatewayEpsLatched @26` | `ET.WARNING` only | "Steering Fault" / "Turn the car off and on to clear it"; userPrompt, mid, `Priority.LOW`, `AudibleAlert.prompt` (one `warning.wav`), 6 s. Once per latch. |
 | `lkasGatewayEpsLatchedReminder @27` | `ET.WARNING` only | "Steering Off Until Restart"; normal, small, `Priority.LOWEST`, silent, 4 s. Every 5 minutes while latched. |
 
 **A warning, never a fault.** No `NO_ENTRY`, no disable type, no `steerFaultPermanent`, no
@@ -842,6 +842,13 @@ carState flag: longitudinal, engagement and MADS are untouched. A WARNING is sho
 openpilot or MADS is active (`state.py` adds `ET.WARNING` to the alert types only then), so
 `eps_latch_alert.py` holds the announcement, and each reminder, until it can be shown rather
 than losing it; `can_show` is the previous frame's `self.active or self.mads.active`.
+
+**Below driver monitoring.** The announcement is `Priority.LOW`. Driver monitoring's stage 2
+(`driverDistracted2`, `driverUnresponsive2`) is `Priority.MID`, and `AlertManager` breaks a
+priority tie in favour of the newer alert, so a MID announcement arriving during stage 2 would
+take the screen and silence its repeating sound for 6 s. LOW still wins a tie against other LOW
+warnings by being newer; it can hold DM's small stage-1 "Pay Attention" (also LOW) off the screen
+for those 6 s, which escalates to stage 2 on DM's own timer regardless.
 
 **The debounce, and why it is not an edge detector.** Read back with LogReader from routes fc
 and fd (2026-09-27): after the latch the board says `RETRY_IN 255` on every fresh `0x70B` frame
@@ -864,13 +871,14 @@ question for another day. So:
 fc, f2 and ed each announce once, about 1.0 s after their first `RETRY_IN 255`, with a reminder
 every 5 minutes after (fd one, fc two); `00000102` and `00000103` raise nothing.
 
-`openpilot/sunnypilot/selfdrive/selfdrived/tests/test_eps_latch_alert.py` (18 tests): announced
+`openpilot/sunnypilot/selfdrive/selfdrived/tests/test_eps_latch_alert.py` (19 tests): announced
 once, a 0.9 s transient never, nothing without a board or on stale frames, the fc/fd stale
 pattern announces once, stale frames count towards neither side, only a real clear re-arms, the
 announcement and the reminder wait until they can be shown, a silent reminder every 5 minutes,
 warnings only, shown only while engaged, one sound, both texts fit the mici alert renderer
 (wrapped with the real Inter fonts at the renderer's own sizes, which the test also pins), the
-`AlertManager` path (6 s, then 4 s) and `selfdrived`'s wiring.
+`AlertManager` path (6 s, then 4 s; and a latch during DM stage 2 leaves "Pay Attention" on
+screen throughout) and `selfdrived`'s wiring.
 
 ---
 
