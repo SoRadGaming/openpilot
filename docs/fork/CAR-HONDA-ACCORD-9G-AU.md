@@ -52,15 +52,15 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 |---|---|---|---|
 | `opendbc/car/honda/values.py` | M | `HondaSafetyFlags.ELESYS_SCM_STANDDOWN`, `HondaFlags.ELESYS`, `CAR.HONDA_ACCORD_9G_AU`, `HONDA_ELESYS`, `STEER_THRESHOLD` entry, `FW_QUERY_CONFIG` non-essential ECUs | - |
 | `opendbc/car/honda/fingerprints.py` | M | `FW_VERSIONS[CAR.HONDA_ACCORD_9G_AU]` | - |
-| `opendbc/car/honda/interface.py` | M | transmission detection, longitudinal tuning (no `vEgoStopping` since the 2026-09 merge), `steerActuatorDelay`, `steerAtStandstill`, safety param, `minEnableSpeed`, and its exemption from the gas-interceptor `-1` in `_get_params_sp()` | the two lateral values exist because of the gateway (B) |
+| `opendbc/car/honda/interface.py` | M | transmission detection, longitudinal tuning (no `vEgoStopping` since the 2026-09 merge), `steerActuatorDelay`, `steerAtStandstill`, the `latAccelOffset` seed, safety param, `minEnableSpeed`, and its exemption from the gas-interceptor `-1` in `_get_params_sp()` | the two lateral values exist because of the gateway (B) |
 | `opendbc/car/honda/radar_interface.py` | M | Elesys radar parsing | - |
 | `opendbc/car/honda/carstate.py` | M | gear decode (`update_gear_elesys()`), `LKAS_PROBLEM` bus, `stockAeb`, `scm_buttons`, `econ_on` | B/A: `get_can_parsers()` registration of `GW_*`/`EPS_LIN_RAW`; `CarStateExt.update(..., ret_sp, ...)` |
-| `opendbc/car/honda/carcontroller.py` | M | `compute_gb_honda_elesys()`, `brake_pump_hysteresis_elesys()`, dynamic-tuner hooks, 32-count brake release limit, SCM_BUTTONS re-send, no `LKAS_HUD` | B: `brake_release_scale()`, LDW bits, the `create_sp_hud_status()` block |
+| `opendbc/car/honda/carcontroller.py` | M | `compute_gb_honda_elesys()`, `brake_pump_hysteresis_elesys()`, dynamic-tuner hooks, 32-count brake release limit, SCM_BUTTONS re-send, no `LKAS_HUD` | B: `brake_release_scale()`, LDW bits, the `create_sp_hud_status()` block, the reported torque (`linbus_gateway_actuating()`) |
 | `opendbc/car/honda/hondacan.py` | M | `create_brake_command()` units bit, `create_scm_buttons_no_cruise()` | B: `create_steering_control()` LDW, `create_sp_hud_status()` |
 | `opendbc/car/car_helpers.py` | M | `skip_fw_query` | - |
 | `opendbc/car/structs.py` | M | none of its own; described in 6.5 because of the capnp rule | B (`LateralControl`, `LinbusGateway` 0x704/0x70B fields, `driverTorqueStale`), A (`fw*` fields) |
 | `opendbc/car/tests/routes.py` | M | test route | - |
-| `opendbc/car/torque_data/substitute.toml` | M | torque data substitute | - |
+| `opendbc/car/torque_data/override.toml`, `opendbc/car/torque_data/substitute.toml` | M | the car's own torqued prior; the substitute line is gone (2.4) | - |
 | `opendbc/sunnypilot/car/car_list.json` | M | car list entry | - |
 | `opendbc/dbc/generator/honda/*.dbc`, `opendbc/dbc/honda_accord_2015au_radar.dbc` | A/M | all of them, except the two in the next column | `_sunnypilot_linbus_gw.dbc` (B, A); byte 2 of 0x0E4 in `_steering_control_e.dbc` (B) |
 | `opendbc/safety/modes/honda.h` | M | the stand-down safety mode | 0x500 on its TX list is B's frame |
@@ -81,6 +81,7 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `openpilot/cereal/custom.capnp` | M | none; area C code reads `CarStateSP.driverTorqueStale` | B, A |
 | `openpilot/selfdrive/car/card.py` | M | `skip_fw_query=bool(fixed_fingerprint)` | A: firmware identity staging/writing, flash trace |
 | `openpilot/selfdrive/car/helpers.py` | M | none. The `lateralControl` rebuild in `convert_carControlSP()` is area B; it is described in 10.5 because its failure took down the car's radar path | B |
+| `openpilot/selfdrive/locationd/torqued.py` | M (2026-10) | the initial `latAccelOffset` from `CarParams` (2.4) | - |
 | `openpilot/sunnypilot/selfdrive/controls/lib/stopping_tune.py` | A (2026-09 merge) | `STOPPING_SPEED` and `STOPPING_DECEL_RATE`, keyed by fingerprint (10.1) | - |
 | `openpilot/selfdrive/controls/lib/drive_helpers.py` | M (2026-09 merge) | `should_stop(..., v_ego_stopping=None)` (10.1) | - |
 | `openpilot/selfdrive/controls/lib/longitudinal_planner.py` | M (2026-09 merge) | passes the car's stopping speed to both `should_stop()` calls (10.1) | - |
@@ -98,7 +99,7 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/cruise.yaml`, `.../vehicle.yaml`, `openpilot/sunnypilot/sunnylink/settings_ui.json` | M | sunnylink rows | - |
 | `openpilot/sunnypilot/sunnylink/statsd.py` | M | tuner telemetry | - |
 | `openpilot/sunnypilot/sunnylink/tools/compile_settings_ui.py` | M | UTF-8 fix (Other, 13.2) | - |
-| `openpilot/selfdrive/controls/tests/test_stopping_debounce.py`, `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py`, `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py`, `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | A | see section 12 | - |
+| `openpilot/selfdrive/controls/tests/test_stopping_debounce.py`, `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py`, `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py`, `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py`, `openpilot/selfdrive/locationd/test/test_torqued_elesys.py`, `openpilot/selfdrive/locationd/test/test_lagd_elesys.py` | A | see section 12 | B: `test_latcontrol_reported_torque.py` |
 | `CHANGELOG-elesys.md`, `FEATURES-elesys.md`, `docs/CHANGELOG_SERIAL_STEERING.md` | A | history, listed at the top | - |
 | `docs/fork/UPSTREAM-2026-09.md` | A | what the 2026-09 sync brought, and what it does on this car | all |
 
@@ -166,7 +167,13 @@ Cars without a bundle are unchanged. On this car nothing FW-derived is used, so 
 ### 2.4 `car_list.json`, torque data, test route
 
 - `opendbc/sunnypilot/car/car_list.json`: key `Honda Accord 2013-15`, `platform: HONDA_ACCORD_9G_AU`, make Honda, brand honda, model Accord, years 2013/2014/2015, package `V6L & Tech`. The sunnypilot platform picker shows this entry, and its key must match the `HondaCarDocs` name.
-- `opendbc/car/torque_data/substitute.toml`: `HONDA_ACCORD_9G_AU = HONDA_ACCORD`. The car falls through to the default `else:` branch of the lateral tuning chain in `interface.py` (`torqueBP/V = [[0, 2560], [0, 2560]]`, `configure_torque_tune()`). It therefore runs the torque lateral controller with the 2018+ Accord's `LAT_ACCEL_FACTOR`, `MAX_LAT_ACCEL_MEASURED` and `FRICTION` until torqued has learned its own values.
+- **Torque data (2026-10).** The car falls through to the default `else:` branch of the lateral tuning chain in `interface.py` (`torqueBP/V = [[0, 2560], [0, 2560]]`, `configure_torque_tune()`), so it runs the torque lateral controller from its torque-data prior until torqued has learned its own values.
+  - `override.toml`: `"HONDA_ACCORD_9G_AU" = [1.1, 1.1, 0.18]` (`LAT_ACCEL_FACTOR`, `MAX_LAT_ACCEL_MEASURED`, `FRICTION`), with a `FORK(HONDA_ACCORD_9G_AU)` comment. Until 2026-10 `substitute.toml` mapped the car to `HONDA_ACCORD` (1.689 / 0.325 / 0.212). torqued may learn within ±30% of the prior factor and ±50% of its friction, so that window was 1.18-2.20, and the filtered factor sat on 1.18 on every route from `ed` to `103`. On this car torque 1.0 = 2560 on `0x0E4` = 160 serial counts at board authority 160, a different steering system and scale. Logged raw factors on `fc`/`fd`/`103` were 0.94-1.28; openpilot's own `TorqueEstimator` replayed over nine authority-160 routes learns 0.76 (town, ~60 km/h; the EPS responds less at low speed) to 1.44 (highway), friction 0.16-0.23. Around 1.1 the window is 0.77-1.43, friction 0.09-0.27. `MAX_LAT_ACCEL_MEASURED` repeats the factor, the Honda convention in `override.toml`; it feeds only car docs, angle/curvature cars' torque bar and `test_lateral_limits`.
+  - Live learning stays on. The learned factor moves with the town/highway mix (the outer buckets keep old points for several drives, so it leans toward town).
+  - **The prior is torqued's cache key** (fingerprint, tuning, prior friction, prior factor, `VERSION`). Changing it discarded the cache once, which also dropped points learned while the board's authority went 40 → 80 → 120 → 160 → 200 → 160 → 140 → 160 under one "torque 1.0". Nothing about the board is in that key, so **any future change of `GW_LIN_AUTHORITY` or the full scale must change this prior too**.
+  - `substitute.toml` keeps a `FORK(HONDA_ACCORD_9G_AU)` comment where the line was. A car may be in only one of the three files (the loader raises "defined twice"), and `TestElesysTorquePrior.test_not_substituted` fails if a merge restores the line. sunnypilot's NNLC model lookup (`nnlc/helpers.py`) reads `substitute.toml` as a fallback; without the line it still picks `HONDA_ACCORD.json` (fuzzy, by name), and NNLC is off on this car.
+  - **Offset seed.** `interface.py` sets `lateralTuning.torque.latAccelOffset = -0.43` in the `HONDA_ELESYS` block (5.1), and `torqued.py` (`FORK(HONDA_ACCORD_9G_AU)`) starts its offset from `CP` instead of a hard-coded 0.0 whenever it has no valid cache; every other car's `CP` carries 0.0, so it starts where upstream does. The torque controllers start from the same value. On `f2`/`fc`/`fd`/`103` the logged feedforward is exactly `desired - roll*g - offset`, the learned offset is -0.42 to -0.50, and it cancels about 0.4 m/s^2 of crossfall in the device roll; restarting it at 0 would cost about 60 serial counts of feedforward until torqued is valid again (23-58 min in the replays), more than `LINBUS_I_CARRY_MAX` lets the integrator carry into a takeover. **Not applied when sunnypilot re-runs `configure_torque_tune()`**, which `setup_interfaces()` does with `EnforceTorqueControl` or NNLC on; it then resets the offset to 0.0, as for every car. With `LateralJerkTorqueController` on the offset is not read at all.
+  - Tests: `TestElesysTorquePrior` (opendbc), `test_torqued_elesys.py` (sunnypilot).
 - `opendbc/car/tests/routes.py`: `CarTestRoute("15646e8515eda1a7/00000019--dd0700eac9", HONDA.HONDA_ACCORD_9G_AU)`. I did not check whether this route has been uploaded somewhere `test_routes`/`test_models` can fetch it.
 
 ---
@@ -189,7 +196,7 @@ Cars without a bundle are unchanged. On this car nothing FW-derived is used, so 
 - `minEnableSpeed` (`interface.py`; its gas-interceptor exemption tests the category)
 - `NUDGE_FIRM` (`desire_helper.py`, keyed by the string)
 - `STOPPING_SPEED` and `STOPPING_DECEL_RATE` (`stopping_tune.py`, keyed by the string)
-- `substitute.toml`, `car_list.json` and `routes.py`
+- `override.toml` (torque prior), `car_list.json` and `routes.py`
 
 `interface.py` sets the safety flag:
 
@@ -231,6 +238,9 @@ Two consequences come up throughout this document. `LKAS_PROBLEM` is read from b
 | fuel | not decoded | `fuelGauge` from `FUEL_LEVEL` | 6.4 |
 | `steerActuatorDelay` | 0.15 (default branch) | 0.18, so both lag fallbacks (+0.2) are the measured 0.38 | 5.1 |
 | `steerAtStandstill` | False | True | 5.1 |
+| torqued prior | substitute or fleet value | own `[1.1, 1.1, 0.18]` in `override.toml` | 2.4 |
+| `latAccelOffset` start | 0.0 | -0.43 (CarParams; torqued starts from it) | 2.4 |
+| reported torque (`carOutput.actuatorsOutput.torque`) | `last_torque` | 0.0 while the gateway board is not actuating (area B, LKAS-GATEWAY-PROTOCOL.md 3.6) | B |
 | `minEnableSpeed` | 25.51 mph, or -1 with a gas interceptor (upstream `4455464a`) | 19 mph, pedal or not | 5.1 |
 | stopping speed | `should_stop()`: 0.3 m/s on the measured speed | 0.8 m/s (`stopping_tune.py`) | 10.1 |
 | stopping ramp toward `stopAccel` | 1.0 m/s³ | 0.8 m/s³ (`stopping_tune.py`) | 10.1 |
@@ -378,6 +388,7 @@ All of these are in `CarInterface._get_params()`.
 | `stopAccel = -0.8` | same block | the default -2.0, on top of the creep offset, commanded cb 253 of 255 at a stop and held it for 7.8 min of a 65 min drive. The car does not need that much: 32 frames of motion in 46,815 hold frames (routes `15646e8515eda1a7` 1f and 20). -0.8 puts the hold at about cb 189-192, with about 0.8 m/s^2 of margin, roughly an 8% grade. The code comment says: if a stop ever creeps, raise this back toward -1.2 before touching the creep table | upstream still reads `CP.stopAccel` in `longcontrol.py` |
 | `steerActuatorDelay = 0.18` | `if candidate in HONDA_ELESYS:` after the lateral tuning chain | the command goes to the board and out on 9600-baud serial, and the car's delay is ~0.38 s: lagd measured 0.383 s (route `000000d3`), 0.377 s (`000000d4`) and 0.342 s (12 blocks, by `000000fd`). Nothing reads this value bare. Before lagd has blocks it publishes `initial_lag` = this + 0.2, and with `LagdToggle` off `LagdToggle.update()` returns this + `LagdToggleDelay` (default 0.2; upstream `53e13a7bc`). Until 2026-10 the line was 0.38, so both fallbacks were 0.58 s, and lagd sat at 0.580 "unestimated" from `d7` to partway through `fd` (about 5 h; it learns only above 50 mph) while its own running estimate read 0.36-0.39. 0.18 lands both on 0.38. lagd's cache key is fingerprint + `VERSION`, so the change keeps a learned value. Other readers: the big UI's "Actuator Delay" line with `LagdToggle` off (0.18 + 0.20 = 0.38) and the torque extension's initial jerk time, which the live lag overwrites every frame. This replaces the scoped `lagd.py` hunk UPSTREAM-2026-09.md item 7 held in reserve. Pinned by `TestElesysSteerDelay` (opendbc) and `test_lagd_elesys.py` | the reason is area B |
 | `steerAtStandstill = True` | same block | keeps `latActive`, and with it `STEER_TORQUE_REQUEST`, alive at a stop so the board keeps the cluster's lane graphic up. The board holds its target at 0 below 5 km/h (`GW_STANDSTILL_CPH`) (opendbc `bb0fe222`). Upstream `controlsd.py` still reads `CP.steerAtStandstill` in the same `latActive` expression | the reason is area B |
+| `latAccelOffset = -0.43` | same block, last, guarded by `lateralTuning.which() == 'torque'` | the seed torqued and the torque controllers start from (2.4). Must ship with the `override.toml` prior, whose cache reset would otherwise restart the offset at 0 | keep it after `configure_torque_tune()`; the sunnypilot `torqued.py` hunk reads it |
 | stand-down safety param | see 3.1 | see 8 | - |
 | `minEnableSpeed = 19 mph` | `elif candidate in (CAR.HONDA_ODYSSEY_TWN, CAR.HONDA_ACCORD_9G_AU):`, and in `_get_params_sp()`: `stock_cp.minEnableSpeed = -1. if ret.enableGasInterceptor and candidate not in HONDA_ELESYS else stock_cp.minEnableSpeed` | from the original port (opendbc `04a48a0a`); no measurement recorded. Upstream `4455464a` sets `-1` for every gas-interceptor car; the merge exempts `HONDA_ELESYS` so this car keeps 19 mph (a replay of `CarParams` gives 8.494 m/s). With the pedal `pcmCruise` is False, so the value never gated engagement through `belowEngageSpeed`; what `-1` would have changed is the `manualRestart` warning at a standstill | keep both lines; the exemption is tagged `FORK(HONDA_ACCORD_9G_AU)` |
 
@@ -931,7 +942,7 @@ None of them checks the display inconsistencies in 11.4.
 
 | test | repo | how to run | what it pins |
 |---|---|---|---|
-| `opendbc/car/honda/tests/test_elesys.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys` (52 tests) | category membership and dispatch (`compute_gas_brake(accel, speed, CP)`); the upstream Nidec map untouched; the Elesys gas/brake golden table; the pump (20 cases); the gas curve; the units bit (`create_brake_command(..., is_metric=, elesys=)`); the gear dwell; the stock AEB truth table and DBC signal names (not the `carstate.py` branch, 6.3) |
+| `opendbc/car/honda/tests/test_elesys.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys` (69 tests) | category membership and dispatch (`compute_gas_brake(accel, speed, CP)`); the upstream Nidec map untouched; the Elesys gas/brake golden table; the pump (20 cases); the gas curve; the units bit (`create_brake_command(..., is_metric=, elesys=)`); the gear dwell; the stock AEB truth table and DBC signal names (not the `carstate.py` branch, 6.3). Since 2026-10 also the lateral tune (2.4, 5.1): `TestElesysTorquePrior`, `TestElesysSteerDelay`, and the area-B `TestElesysReportedTorque`, `TestElesysReportedTorqueSeam`, `TestElesysTorqueScale` |
 | `opendbc/safety/tests/test_honda.py` (`TestHondaElesysScmStanddownSafety`, `TestHondaElesysStanddownGasInterceptorSafety`) and `common.py` | opendbc | `python -m unittest opendbc.safety.tests.test_honda`; builds `libsafety` on import (942 run, OK, after the merge) | section 8 |
 | `opendbc/sunnypilot/car/honda/test_dynamic_tuning.py` | opendbc | **standalone script**: `python <file>` with opendbc on `PYTHONPATH` | the tuner on its own, sections 1-5 and 9-16: toggle off is a no-op, pitch, breakpoint weights, pedal, brake, wind, params, importing without openpilot, three rounds of review regressions, drive-mode gating, aero kept apart from pedal and brake |
 | `opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py` | opendbc | **standalone script**, or unittest discovery through its `TestDynamicTuningIntegration` wrapper | the real `CarController`, frame by frame: [1] toggle off matches stock, [2] toggle on, [3] gas and brake never together, [4] the standstill hold is not scaled by the learned gain, [5] a disengage unwinds the brake gain, [6] the interceptor owns the gas at every speed (decodes `PCM_GAS`), [9] fuel and odometer. Sections 7, 8, 10-15 and 14b are area B |
@@ -939,6 +950,8 @@ None of them checks the display inconsistencies in 11.4.
 | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | sunnypilot | runner (9 tests) | 10.2 |
 | `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | sunnypilot | runner (1 test) | 10.5 |
 | `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py` | sunnypilot | runner (11 tests) | section 11 |
+| `openpilot/selfdrive/locationd/test/test_torqued_elesys.py` | sunnypilot | runner (9 tests) | 2.4: prior and seed before any point, a zero offset as upstream, a changed prior discards the cache, a reported 0 adds no point |
+| `openpilot/selfdrive/locationd/test/test_lagd_elesys.py` | sunnypilot | runner (5 tests) | 5.1: the lag fallbacks are 0.38 s, a learned cache survives |
 
 Upstream removed pytest (`98e7c4f98`, `ac4ab9a9b`). Its `tools/test_runner.py` collects only `unittest.TestCase` classes, and in a full run drops plain `def test_*` modules without a word. In the 2026-09 merge every sunnypilot test above became a `TestCase` or `OpenpilotTestCase`. `test_stopping_debounce.py` no longer stubs `cereal` and `openpilot` in `sys.modules`: it imports the real modules, so it can no longer poison a runner process. After the merge all of them pass in WSL, and upstream's whole suite passes with them (1600 passed, 0 failed).
 
@@ -1030,7 +1043,7 @@ File by file:
 
 | kind | identifier |
 |---|---|
-| platform | `CAR.HONDA_ACCORD_9G_AU`. The string `HONDA_ACCORD_9G_AU` is also a key in `desire_helper.NUDGE_FIRM`, `stopping_tune.STOPPING_SPEED` and `STOPPING_DECEL_RATE`, `car_list.json`, `substitute.toml` and the tests |
+| platform | `CAR.HONDA_ACCORD_9G_AU`. The string `HONDA_ACCORD_9G_AU` is also a key in `desire_helper.NUDGE_FIRM`, `stopping_tune.STOPPING_SPEED` and `STOPPING_DECEL_RATE`, `car_list.json`, `override.toml` (and a comment in `substitute.toml`) and the tests |
 | flags | `HondaFlags.ELESYS = 1024`; `HondaSafetyFlags.ELESYS_SCM_STANDDOWN = 32`; `HONDA_PARAM_ELESYS_SCM_STANDDOWN = 32`; `honda_elesys_scm_standdown` |
 | sets | `HONDA_ELESYS` |
 | DBC names | `honda_accord_au_2015_can` (becomes `_generated`), `honda_accord_2015au_radar`, and the fragments in 4.1 |
@@ -1039,7 +1052,7 @@ File by file:
 | signals | `CMBS_BRAKE`, `CMBS_DISABLED`, `AEB_REQ_3`, `CMBS_BUTTON`, `FUEL_LEVEL`, `FUEL_SENDER`, `ODOMETER_KM`, `ECON_ON`, `GEAR_SHIFTER`, `GEAR`, `SET_ME_1` (the units bit on this car) |
 | functions | `compute_gb_honda_elesys`, `brake_pump_hysteresis_elesys`, `create_scm_buttons_no_cruise`, `update_gear_elesys`, `elesys_gas_multiplier`, `HondaDynamicTuner` (`update_state`, `brake_gain`, `wind_scale`, `update_wind`, `pedal_gain_at`, `update_pedal`, `persist`, `log_state`, `debug_values`), `learned_value`, `learned_pedal_gains`, `reset_learned_values`, `car_brand`, `VehicleLayoutMici`; the keyword arguments `should_stop(..., v_ego_stopping=)` and `create_brake_command(..., is_metric=, elesys=)` |
 | constants | `ELESYS_PUMP_*`, `ELESYS_GAS_BP`, `ELESYS_GAS_V`, `SPORT_DWELL`, `FUEL_LEVEL_FULL`, `STEER_THRESHOLD[HONDA_ACCORD_9G_AU] = 600`, `NUDGE_FIRM`, `NUDGE_HOLD_FRAMES`, `STOPPING_SPEED`, `STOPPING_DECEL_RATE` (`float32(0.8)`), `STANDSTILL_SPEED`, `STOPPING_EXIT_DEBOUNCE`, `LINBUS_I_CARRY_MAX`, `LINBUS_I_HOLD_TAU`, and the tuner constants in 9.1 |
-| CarParams values | `transmissionType = automatic`, `longitudinalActuatorDelay 0.6`, `stopAccel -0.8`, `steerActuatorDelay 0.18`, `steerAtStandstill True`, `minEnableSpeed 19 mph` (with the gas-interceptor exemption). No `vEgoStopping`: it is deprecated upstream, and its 0.8 m/s lives in `stopping_tune.py` |
+| CarParams values | `transmissionType = automatic`, `longitudinalActuatorDelay 0.6`, `stopAccel -0.8`, `steerActuatorDelay 0.18`, `steerAtStandstill True`, `lateralTuning.torque` 1.1 / 0.18 with `latAccelOffset -0.43`, `minEnableSpeed 19 mph` (with the gas-interceptor exemption). No `vEgoStopping`: it is deprecated upstream, and its 0.8 m/s lives in `stopping_tune.py` |
 | params | see 11.1 |
 | capnp fields area C code reads | `CarStateSP.driverTorqueStale @2`; `CarControlSP.lateralControl @5` (rebuilt in `helpers.py`) |
 | markers | `FORK(HONDA_ELESYS)`, `FORK(HONDA_ACCORD_9G_AU)`, `FORK(LKAS-GATEWAY)`, `FORK(GATEWAY-UPDATE)`, `FORK:`, and `HONDA_ACCORD_9G_AU` in `honda.h`. Incomplete; see Baseline |

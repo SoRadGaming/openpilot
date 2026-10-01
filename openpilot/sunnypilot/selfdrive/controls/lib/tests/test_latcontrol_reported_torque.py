@@ -123,4 +123,4 @@ class TestReportedTorqueAndSaturation(OpenpilotTestCase):
   def test_controlsd_still_uses_the_reported_torque(self):
     # the closed loop above copies this line; if upstream changes it, revisit the opendbc report
     src = CONTROLSD.read_text()
-    self.assertIn("self.steer_limited_by_safety = abs(CC.actuators.torque - CO.actuatorsOutput.torque) > 1e-2", src)
+    self.assertTrue("self.steer_limited_by_safety = abs(CC.actuators.torque - CO.actuatorsOutput.torque) > 1e-2" in src)

@@ -247,7 +247,7 @@ anything above 0 is where the next merge can conflict.
 * *modify/delete*: upstream deleted the old path; the fork's edits were re-applied to the new one.
 * *added in the merge*: the file carries a fork change for the first time, made during or after the merge.
 
-### sunnypilot: 67 files and the submodule pointer
+### sunnypilot: 71 files and the submodule pointer
 
 Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-specific, gated by `SpeedLimitMapStrict` and `OsmAutoUpdateWeekly`, markers `FORK(SPEED-LIMIT)`.
 
@@ -275,6 +275,9 @@ Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-sp
 | M | `openpilot/selfdrive/controls/lib/longcontrol.py` | C | Stopping-exit debounce (`STANDSTILL_SPEED`, `STOPPING_EXIT_DEBOUNCE`), keyed on `HondaDynamicTuningEnabled`; the stopping ramp from `STOPPING_DECEL_RATE`. | 0 | CONFLICT |
 | M | `openpilot/selfdrive/controls/lib/longitudinal_planner.py` | C | Passes `v_ego_stopping=STOPPING_SPEED.get(CP.carFingerprint)` to both `should_stop()` calls. | 0 | added in the merge |
 | A | `openpilot/selfdrive/controls/tests/test_stopping_debounce.py` | C | The debounce and the stopping tune (17 tests). | 0 | new→moved, then rewritten |
+| M | `openpilot/selfdrive/locationd/torqued.py` | C (+B) | `FORK(HONDA_ACCORD_9G_AU)`: the initial `latAccelOffset` is `CP.lateralTuning.torque.latAccelOffset` when the tuning is torque, else 0.0 (2026-10). `configure_torque_tune()` sets 0.0, so only `HONDA_ELESYS` (-0.43) differs from upstream. | 0 | new |
+| A | `openpilot/selfdrive/locationd/test/test_lagd_elesys.py` | C | The lag fallbacks on this car are 0.38 s (`steerActuatorDelay` 0.18 + 0.2), and a learned cache survives the change (5 tests). | 0 | new |
+| A | `openpilot/selfdrive/locationd/test/test_torqued_elesys.py` | C (+B) | The car's own prior and offset seed in torqued, the cache reset a changed prior forces, a reported 0 adds no point (9 tests). | 0 | new |
 | M | `openpilot/selfdrive/modeld/modeld.py` | B+C | Subscribes `carStateSP`, calls `DesireHelper(CP.carFingerprint)` and passes `driver_torque_stale=` into `DH.update`. | 0 | modify/delete |
 | M | `openpilot/selfdrive/pandad/pandad.py` | A | Adds `flash_if_requested()` before `./pandad`, `watch_for_request()` after it, and `skip_panda_reset`. | 0 | CONFLICT |
 | M | `openpilot/selfdrive/selfdrived/selfdrived.py` | B | Subscribes `carStateSP`, which `mads.py` reads. | 0 | CONFLICT |
@@ -308,6 +311,7 @@ Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-sp
 | A | `openpilot/sunnypilot/selfdrive/controls/lib/stopping_tune.py` | C | `STOPPING_SPEED` and `STOPPING_DECEL_RATE`, keyed by fingerprint. | 0 | added in the merge |
 | A | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | C (+B) | `NUDGE_FIRM` rules; a stale torque confirms nothing; `driver_torque_stale` comes after the road edges (9 tests). | 0 | new→moved |
 | A | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` | B | The hold through the torque-controller extension with Lateral Jerk on (4 tests). | 0 | added in the merge |
+| A | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_reported_torque.py` | B | The zero torque the Honda `CarController` reports while the board is not actuating keeps `_check_saturation` from firing (closed loop through the real `CarController`, both torque controllers), and a real saturation still alerts while actuating (7 tests). | 0 | new |
 | A | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_appslot.bin` | A | Board app-slot image: 46,540 bytes, marker `APL1`, origin `0x08004000`, commit `d995bc95`, flags `0x04` (INCAR_TEST). | 0 | new→moved |
 | A | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_flasher.py` | A | Portable bootloader protocol, `PandaTransport` (ELM327), `BenchTransport`, and the steering/vibration trace. | 0 | new→moved |
 | A | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_hook.py` | A | pandad glue: `flash_if_requested()`, `watch_for_request()`. | 0 | new→moved |
@@ -321,23 +325,24 @@ Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-sp
 | M | `openpilot/tools/joystick/joystickd.py` | C | Passes the car's stopping speed to `should_stop()`. | 0 | added in the merge |
 | M | `openpilot/tools/longitudinal_maneuvers/maneuversd.py` | C | Parses `CarParams` and passes the car's stopping speed to `should_stop()`. | 0 | added in the merge |
 
-### opendbc: 31 files and `FORK.md`
+### opendbc: 32 files and `FORK.md`
 
 | St | Path | Area | What the fork changes | Upstream commits | Last merge |
 |---|---|---|---|---|---|
 | A | `FORK.md` | — | Short fork index. | 0 | clean |
 | M | `opendbc/car/car_helpers.py` | C | `skip_fw_query` argument on `fingerprint()` and `get_car()`. | 0 | auto |
-| M | `opendbc/car/honda/carcontroller.py` | B+C | B: brake-release ceiling (`BRAKE_RELEASE_FRAMES`, `brake_release_scale`), `serial_gateway` LDW bits, `SP_HUD_STATUS` send with `lat_ready` and `op_state`, `LKAS_HUD` not sent. C: `compute_gb_honda_elesys` (dispatched from `compute_gas_brake(accel, speed, CP)`), `brake_pump_hysteresis_elesys` and `ELESYS_PUMP_*`, dynamic-tuner hooks (`hill_accel`/`adjust_accel`, `brake_gain`, `wind_scale`, the 32-count brake release), `SCM_BUTTONS` re-sent on `CAN.camera` every 4th frame when `openpilotLongitudinalControl`, `pcm_accel` computed from `adjust_accel`, and a `FORK:` comment explaining why there is no PCM crossfade. | 0 | CONFLICT |
+| M | `opendbc/car/honda/carcontroller.py` | B+C | B: brake-release ceiling (`BRAKE_RELEASE_FRAMES`, `brake_release_scale`), the reported torque (`linbus_gateway_actuating()`; `new_actuators.torque = 0.0` while the board is not actuating, 2026-10), `serial_gateway` LDW bits, `SP_HUD_STATUS` send with `lat_ready` and `op_state`, `LKAS_HUD` not sent. C: `compute_gb_honda_elesys` (dispatched from `compute_gas_brake(accel, speed, CP)`), `brake_pump_hysteresis_elesys` and `ELESYS_PUMP_*`, dynamic-tuner hooks (`hill_accel`/`adjust_accel`, `brake_gain`, `wind_scale`, the 32-count brake release), `SCM_BUTTONS` re-sent on `CAN.camera` every 4th frame when `openpilotLongitudinalControl`, `pcm_accel` computed from `adjust_accel`, and a `FORK:` comment explaining why there is no PCM crossfade. | 0 | CONFLICT |
 | M | `opendbc/car/honda/carstate.py` | A+B+C | A/B: registers `GW_ACTIVE`, `GW_STEER_GRANT`, `EPS_LIN_RAW`, `GW_VERSION` and `GW_BUILD` liveness-exempt (`nan`), and calls `CarStateExt.update(ret, ret_sp, ...)`. C: `update_gear_elesys` / `SPORT_DWELL`, ELESYS `stockAeb` (and `carFaultedNonCritical = True` when stock AEB fires with `ACC_HUD.ACC_ON == 0`), `LKAS_PROBLEM` read from bus 0 inside upstream's `if not (self.CP.flags & HondaFlags.BOSCH):`, `scm_buttons`, `econ_on`. | 0 | CONFLICT |
 | M | `opendbc/car/honda/fingerprints.py` | C | `FW_VERSIONS[HONDA_ACCORD_9G_AU]`: fwdRadar `36707-T2M-Q640`, srs `77959-T2A-B110`. | 0 | auto |
 | M | `opendbc/car/honda/hondacan.py` | B+C | B: `create_steering_control(serial_gateway, ldw_left, ldw_right)`, `SP_HUD_PROTOCOL_VERSION`=3, `SP_OP_STATE_*`, `SP_HUD_MAX_TORQUE`=0, `create_sp_hud_status()`. C: `create_brake_command(..., is_metric=True, elesys=False)` units bit, `create_scm_buttons_no_cruise()`. | 0 | CONFLICT |
-| M | `opendbc/car/honda/interface.py` | C (+B) | Gearbox `0x188` → automatic. Long tuning: `longitudinalActuatorDelay` 0.6, `stopAccel` -0.8 (the stopping speed lives in sunnypilot's `stopping_tune.py`). `steerActuatorDelay` 0.18 (both lag fallbacks add 0.2, giving the measured 0.38), `steerAtStandstill` True, `ELESYS_SCM_STANDDOWN` safety parameter, `minEnableSpeed` 19 mph, and its exemption from the gas-interceptor -1 in `_get_params_sp()`. | 0 | CONFLICT |
+| M | `opendbc/car/honda/interface.py` | C (+B) | Gearbox `0x188` → automatic. Long tuning: `longitudinalActuatorDelay` 0.6, `stopAccel` -0.8 (the stopping speed lives in sunnypilot's `stopping_tune.py`). `steerActuatorDelay` 0.18 (both lag fallbacks add 0.2, giving the measured 0.38), `steerAtStandstill` True, `latAccelOffset` seed -0.43 (2026-10), `ELESYS_SCM_STANDDOWN` safety parameter, `minEnableSpeed` 19 mph, and its exemption from the gas-interceptor -1 in `_get_params_sp()`. | 0 | CONFLICT |
 | M | `opendbc/car/honda/radar_interface.py` | C | Elesys radar parser (`0x400`, `0x410`–`0x417`, `0x420`–`0x424` at 10 Hz), trigger `0x423`, `RADAR_STATE` ok in (104, 111, 125). | 0 | auto |
-| A | `opendbc/car/honda/tests/test_elesys.py` | C | 52 unittest tests: gas/brake map, pump, gas curve, units bit, gear, AEB. | 0 | clean |
+| A | `opendbc/car/honda/tests/test_elesys.py` | C (+B) | 69 unittest tests: gas/brake map, pump, gas curve, units bit, gear, AEB; since 2026-10 also the torque prior and offset seed, the reported torque (fake CS and `0x704` through the real `CarInterface`), the 2560 scale and the steering delay. | 0 | clean |
 | M | `opendbc/car/honda/values.py` | C | `HondaSafetyFlags.ELESYS_SCM_STANDDOWN`=32, `HondaFlags.ELESYS`=1024, `CAR.HONDA_ACCORD_9G_AU`, `HONDA_ELESYS` (a frozenset), `STEER_THRESHOLD` 600, `non_essential_ecus`. | 0 | CONFLICT |
 | M | `opendbc/car/structs.py` | A+B | `CarControlSP.LateralControl`, `CarStateSP.driverTorqueStale`, `CarStateSP.LinbusGateway` (control fields and `fw*` fields). | 0 | auto |
 | M | `opendbc/car/tests/routes.py` | C | `CarTestRoute("15646e8515eda1a7/00000019--dd0700eac9", HONDA_ACCORD_9G_AU)`. | 0 | auto |
-| M | `opendbc/car/torque_data/substitute.toml` | C | `HONDA_ACCORD_9G_AU = HONDA_ACCORD`. | 0 | clean |
+| M | `opendbc/car/torque_data/override.toml` | C | `"HONDA_ACCORD_9G_AU" = [1.1, 1.1, 0.18]`, the car's own torqued prior, with a `FORK(HONDA_ACCORD_9G_AU)` comment (2026-10). **Any change of the board's authority or full scale must change it.** | 0 | new |
+| M | `opendbc/car/torque_data/substitute.toml` | C | A `FORK(HONDA_ACCORD_9G_AU)` comment where `HONDA_ACCORD_9G_AU = HONDA_ACCORD` was (removed 2026-10; it held torqued at its 1.18 floor). A merge must not bring the line back: `test_elesys.py` fails if it does. | 0 | clean |
 | A | `opendbc/dbc/generator/honda/_gearbox_legacy.dbc` | C | `GEARBOX_AUTO` `0x188`, `GEARBOX_CVT`. | 0 | clean |
 | A | `opendbc/dbc/generator/honda/_honda_elesys_base.dbc` | C | This car's modified copy of `_honda_common.dbc` (differences listed under [DBC generator includes](#dbc-generator-includes-and-can-ids)). | 0 | clean |
 | A | `opendbc/dbc/generator/honda/_lkas_hud_4byte.dbc` | C | 4-byte `LKAS_HUD` `0x33D`. | 0 | clean |
@@ -558,6 +563,10 @@ They are listed because the same kind of thing will happen again.
 | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | 9 |
 | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` | 4 |
 
+The 2026-10 lateral batch added three more: `openpilot/selfdrive/locationd/test/test_torqued_elesys.py` (9),
+`openpilot/selfdrive/locationd/test/test_lagd_elesys.py` (5) and
+`openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_reported_torque.py` (7).
+
 `test_stopping_debounce.py` no longer stubs `sys.modules`; it imports the real `longcontrol`, `drive_helpers` and
 `stopping_tune`.
 
@@ -681,7 +690,7 @@ Resolve conflicts in this order, because each file supplies names to the next. T
 Then run these checks:
 
 ```bash
-git grep -n -E "FORK(\(|:)" -- opendbc | wc -l                           # 31 after the 2026-09 merge (18 before it)
+git grep -n -E "FORK(\(|:)" -- opendbc | wc -l                           # 36 since the 2026-10 lateral batch (31 after the 2026-09 merge)
 ruff check opendbc/car/honda opendbc/sunnypilot/car/honda                # F821 catches a leftover fingerprint / adjust_accel
 PYTHONPATH=. python -c "import opendbc.car.honda.interface, opendbc.car.honda.carcontroller, opendbc.car.honda.radar_interface, opendbc.sunnypilot.car.honda.gas_interceptor, opendbc.sunnypilot.car.honda.carstate_ext"
 PYTHONPATH=. python opendbc/sunnypilot/car/platform_list.py && git diff --exit-code opendbc/sunnypilot/car/car_list.json
@@ -801,8 +810,8 @@ git grep -n -E "FORK(\(|:)|linbus|LIN-bus|EpsLkas|eps_lkas|HondaDyn|driverTorque
 
 It prints 235 at the merged tree with the review fixes (194 at `2cfcd3c6a` over the old paths, 191 at `10e088a2d`).
 Compare it with the same pattern on `fork/pre-merge-$D`; a large drop means a hunk was lost. For opendbc,
-`git grep -n -E "FORK(\(|:)|linbus|LIN-bus|HONDA_ELESYS|HondaDyn|driverTorqueStale" -- opendbc | wc -l` prints 210
-(199 at `c61cfd9b`).
+`git grep -n -E "FORK(\(|:)|linbus|LIN-bus|HONDA_ELESYS|HondaDyn|driverTorqueStale" -- opendbc | wc -l` prints 224
+since the 2026-10 lateral batch (210 after the merge, 199 at `c61cfd9b`).
 
 `git grep -n -E "FORK(\(|:)" -- openpilot | wc -l` prints 37. `git grep -n IsOnroad -- openpilot` must print nothing in
 fork code (today it hits only a comment and a docstring in `test_eps_lkas_hook.py`, and a binary).
@@ -830,7 +839,7 @@ reports 22 findings, all older than the merge (see [Pre-existing issues](#pre-ex
 **opendbc**, from `opendbc_repo` in the same venv:
 
 ```bash
-python -m unittest opendbc.car.honda.tests.test_honda opendbc.car.honda.tests.test_elesys   # 53 tests (52 in test_elesys)
+python -m unittest opendbc.car.honda.tests.test_honda opendbc.car.honda.tests.test_elesys   # 70 tests (69 in test_elesys)
 python -m unittest opendbc.safety.tests.test_honda                                          # builds libsafety; 942 run, OK (skipped=69)
 python -m unittest opendbc.car.tests.test_car_interfaces -k HONDA_ACCORD_9G_AU
 python -m unittest discover -s opendbc/sunnypilot/car -t .                                  # 23 tests, including the integration script
@@ -902,8 +911,9 @@ write the next `UPSTREAM-<date>.md`.
 ### What the fork already does
 
 * **Markers.**
-  * opendbc: `FORK(HONDA_ACCORD_9G_AU)` ×14, `FORK(HONDA_ELESYS)` ×10, `FORK(LKAS-GATEWAY)` ×1, bare `FORK:` ×6 (31
-    lines).
+  * opendbc: `FORK(HONDA_ACCORD_9G_AU)` ×16, `FORK(HONDA_ELESYS)` ×13, `FORK(LKAS-GATEWAY)` ×1, bare `FORK:` ×6 (36
+    lines since the 2026-10 lateral batch, which added the two `torque_data` comments, the `latAccelOffset` seed and the
+    two reported-torque hunks; 31 after the 2026-09 merge).
   * sunnypilot: `FORK(HONDA_ACCORD_9G_AU)` ×18, `FORK(LKAS-GATEWAY)` ×13, `FORK(GATEWAY-UPDATE)` ×3, bare `FORK:` ×3
     (37 lines), in `drive_helpers.py`, `longitudinal_planner.py`, `longcontrol.py`, `desire_helper.py`, both
     `modeld.py`, `controlsd.py`, `selfdrived.py`, `pandad.py`, mici `settings.py`, `mads.py`, `state.py`,

@@ -19,7 +19,7 @@ from openpilot.common.test import OpenpilotTestCase
 from openpilot.selfdrive.locationd.torqued import TorqueEstimator, VERSION, MIN_VEL
 
 ELESYS = HONDA.HONDA_ACCORD_9G_AU
-OLD_PRIOR = (1.6893333799149202, 0.2120497022936265)   # HONDA_ACCORD's LAF / friction, the substitute until 2026-10
+OLD_PRIOR = (1.6893333799149202, 0.2120497022936265)   # HONDA_ACCORD's factor / friction, the substitute until 2026-10
 
 
 def _cp(car_name=ELESYS, offset=None, prior=None):
@@ -63,7 +63,7 @@ class TestTorquedElesysPrior(OpenpilotTestCase):
     self.assertAlmostEqual(ltp.latAccelOffsetFiltered, -0.43, places=6)
     self.assertAlmostEqual(ltp.latAccelFactorFiltered, 1.1, places=6)
     self.assertAlmostEqual(ltp.frictionCoefficientFiltered, 0.18, places=6)
-    # the learnable window is centred on the car's own prior, not on HONDA_ACCORD's 1.18-2.20
+    # the learnable window is centered on the car's own prior, not on HONDA_ACCORD's 1.18-2.20
     self.assertAlmostEqual(est.min_lataccel_factor, 0.77, places=5)
     self.assertAlmostEqual(est.max_lataccel_factor, 1.43, places=5)
 
