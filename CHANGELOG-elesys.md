@@ -704,6 +704,58 @@ both pass.
 
 ---
 
+## 20. Gas law v2 (measured), pedal and aero learners retired, drive-mode plumbing (2026-10)
+
+`elesys_gas.py` (new), `gas_interceptor.py`, `dynamic_tuning.py`, `carstate.py`,
+`params_keys.h`, the Honda settings pages, sunnylink, statsd; opendbc `d2d482ed`, `9e076b33`
+
+Driver-facing summary: `docs/CHANGELOG_SERIAL_STEERING.md`, 2026-10-01. Design and numbers:
+`docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 9.1-9.2. In short:
+
+- **Section 7's curve was raised the wrong way.** Fitting slope and cruise offset separately
+  over 51 routes shows it gave 1.4-1.7x too much pedal per m/s^2 at 6-20 m/s. The section 7 fit
+  regressed on mostly-cruise frames, where the offset and the slope cannot be told apart.
+  `HondaElesysGasLawV2` (default on) uses the measured slope; below 3 m/s and in the gas/brake
+  hand-over window below ~16.9 m/s it is the old law exactly, and off is the old law exactly.
+- **Sections 5 and 12's pedal learner and the aero learner are retired.** The pedal gain could
+  not persist (live reset to persisted at every ignition) and its gate was biased by
+  openpilot's own integrator; the aero scale was a random walk that also moved the brake-on
+  point. `wind_scale()` is 1.0. The brake learner (section 5) is unchanged.
+- **Section 2's ECON and section 1's Sport now have slots** (D/ECON/S) with a multiplier each,
+  all 1.0, and a 2 s crossfade; the tuner counts engaged time and steady-pedal samples per slot
+  for an offline fit. 87 s of engaged ECON and 79 s of engaged S in a month is not enough yet.
+- `GEAR = 26` (section 1's fast path) is now observed: 16,164 frames of S on b1/dd/fc.
+- After review: the settings readouts show the gas law only on `HONDA_ELESYS` (another Honda runs upstream's law
+  whatever the setting says), the comma 4 card says it applies from the next drive, RESET puts back the brake
+  gain only and keeps the mode times, and sunnylink says the mode times are counted only with the tuner on
+  (sunnypilot `d93559f21`).
+
+---
+
+## 21. The soft final stop; CRUISE_OVERRIDE stays 1; a NaN vEgo no longer raises (2026-10)
+
+`elesys_stop.py` (new), `carcontroller.py`, `dynamic_tuning.py` (`filtered_pitch()`); opendbc `cf9ad7ad` (the NaN-`vEgo` guard), `c65d5033` (`CRUISE_OVERRIDE`), `8b00f3cc` (the soft final stop), `66de8d56` (`FORK.md`)
+
+Driver-facing summary: `docs/CHANGELOG_SERIAL_STEERING.md`, 2026-10-01 "Longitudinal (braking)". Design and numbers:
+`docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 7.7-7.8. In short:
+
+- **Section 4's lighter hold (189) is reached too early.** On the 45 stops openpilot completed alone, the stopping
+  ramp and the creep table put the brake at 185 counts when the wheels stop, while the planner asks for -0.16:
+  0.92 m/s^2 at the stop. With the tuner on, a ceiling of 125 counts (+~17 per degree downhill) now holds while the
+  car still rolls in the stopping state, and rises to the hold 0.55 s after the wheels read zero. The hold itself is
+  unchanged. The audit's simulator was never validated, so the expected ~0.5-0.6 m/s^2 is a hypothesis for the next
+  drive.
+- **Section 6's pump: not overused.** 28% duty while a brake command exists, against stock ACC's 53%. The pump floor
+  that was proposed was dropped (light commands do brake; the floor would bypass the quiet period).
+- **CRUISE_OVERRIDE stays 1**, now as a recorded decision: no measured effect, never tested at 0 under sustained
+  braking, and every BRAKE_ERROR since June was a ~1 s 0x1FA gap (`S:/OP/FAULT_root_cause_drive84.md` corrected).
+- A NaN `vEgo` made the brake block raise (no 0x1FA, then BRAKE_ERROR); it now holds the brake.
+- After review (opendbc `3a131bf3`): `MAX_ROLL` 1.9 s counts from entry, so the ceiling is gone 2.42 s after
+  entry at the latest (it was rolling time, about 2.97 s); and no ceiling when stopping is entered above 1.2 m/s
+  (measured entries reach 1.08), logged as `hondastop skip=speed`. Neither changes a replayed stop.
+
+---
+
 ## Status
 
 *As of 2026-09-08: two weeks of real driving on the tuner (sections 12-13); the paragraph below

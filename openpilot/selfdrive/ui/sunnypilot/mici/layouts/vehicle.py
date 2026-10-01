@@ -20,14 +20,15 @@ import time
 
 import pyray as rl
 
-from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigMultiToggle, BigParamControl
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.vehicle.brands.honda import (
-  PEDAL_GAIN_BP,
   TUNING_PARAM,
-  learned_pedal_gains,
+  MODE_SLOTS,
+  gas_law_applies,
+  gas_law_label,
   learned_value,
+  mode_minutes,
   reset_learned_values,
 )
 from openpilot.selfdrive.ui.ui_state import ui_state
@@ -86,14 +87,19 @@ def car_brand() -> str:
 
 
 class HondaLearnedInfo(Widget):
-  """Two header/value pairs, laid out like SunnylinkInfo and CurrentModelInfo.
+  """Two header/value pairs, laid out like SunnylinkInfo and CurrentModelInfo:
+  the gas law the car will run from the next drive (HondaElesysGasLawV2) with the
+  learned brake gain -- on the Accord AU only; another Honda gets just the brake --
+  and the engaged minutes saved per drive mode (D / ECON / S).
+
+  These replaced the six "learned pedal gain" numbers, which could not move: that
+  learner never persisted anything and was retired in 2026-10, along with the aero
+  factor shown next to the brake.
 
   wrap_text=False ON EVERY LABEL, because these are hand-positioned at fixed
   offsets in a 180 px card and a wrapped header silently overprints the value
-  under it. "learned pedal gain" measures ~410 px against a 340 px max_width,
-  so it wraps - and the four labels then need 236 px of a 180 px card. The card
-  this was copied from (DeviceInfoLayoutMici) passes the flag on all four; the
-  copy dropped it.
+  under it ("learned pedal gain" measured ~410 px against the 340 px max_width).
+  Keep the headers short; the values scroll instead of wrapping.
   """
 
   def __init__(self):
@@ -104,44 +110,50 @@ class HondaLearnedInfo(Widget):
     value_color = rl.Color(255, 255, 255, int(255 * 0.9 * 0.65))
     max_width = int(self._rect.width - 20)
 
-    self.gain_header = UnifiedLabel(tr("learned pedal gain"), 48, max_width=max_width, text_color=header_color,
-                                    font_weight=FontWeight.DISPLAY, wrap_text=False)
-    self.gain_text = UnifiedLabel("", 32, max_width=max_width, text_color=value_color,
-                                  font_weight=FontWeight.ROMAN, scroll=True, wrap_text=False)
+    self.law_header = UnifiedLabel(tr("gas law"), 48, max_width=max_width, text_color=header_color,
+                                   font_weight=FontWeight.DISPLAY, wrap_text=False)
+    self.law_text = UnifiedLabel("", 32, max_width=max_width, text_color=value_color,
+                                 font_weight=FontWeight.ROMAN, scroll=True, wrap_text=False)
 
-    self.trim_header = UnifiedLabel(tr("brake / aero"), 48, max_width=max_width, text_color=header_color,
+    self.mode_header = UnifiedLabel(" / ".join(MODE_SLOTS), 48, max_width=max_width, text_color=header_color,
                                     font_weight=FontWeight.DISPLAY, wrap_text=False)
-    self.trim_text = UnifiedLabel("", 32, max_width=max_width, text_color=value_color, font_weight=FontWeight.ROMAN, wrap_text=False)
+    self.mode_text = UnifiedLabel("", 32, max_width=max_width, text_color=value_color,
+                                  font_weight=FontWeight.ROMAN, scroll=True, wrap_text=False)
 
     self._updated = 0.0
     self.refresh()
 
   def refresh(self) -> None:
     self._updated = time.monotonic()
-    speed_factor = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
-    unit = tr("km/h") if ui_state.is_metric else tr("mph")
-    gains = " ".join(f"{gain:.2f}" for gain in learned_pedal_gains())
-    bands = " ".join(f"{round(bp * speed_factor):d}" for bp in PEDAL_GAIN_BP)
-    self.gain_text.set_text(f"{gains}  ({bands} {unit})")
-    self.trim_text.set_text(f"{learned_value('HondaDynBrakeGain'):+.2f}   " +
-                            f"x{learned_value('HondaDynWindFactor'):.2f}")
+    # brake stored as an offset, shown as a gain
+    brake = f"x{1.0 + learned_value('HondaDynBrakeGain'):.2f}"
+    if gas_law_applies():
+      # the setting, i.e. what the car runs from the NEXT ignition, not necessarily what runs now.
+      # Short forms: "v2 next drive   brake x1.02" scrolls in 340 px; "412 / 1.4 / 1.3 min" fits
+      self.law_header.set_text(tr("gas law"))
+      self.law_text.set_text(f"{gas_law_label(short=True)} {tr('next drive')}   {tr('brake')} {brake}")
+    else:
+      # another Honda runs upstream's pedal law whatever the setting says: show only the brake
+      self.law_header.set_text(tr("brake"))
+      self.law_text.set_text(brake)
+    self.mode_text.set_text(" / ".join(mode_minutes().values()) + " " + tr("min"))
 
   def _update_state(self):
     if time.monotonic() - self._updated > REFRESH_S:
       self.refresh()
 
   def _render(self, _):
-    self.gain_header.set_position(self._rect.x + 20, self._rect.y - 10)
-    self.gain_header.render()
+    self.law_header.set_position(self._rect.x + 20, self._rect.y - 10)
+    self.law_header.render()
 
-    self.gain_text.set_position(self._rect.x + 20, self._rect.y + 68 - 25)
-    self.gain_text.render()
+    self.law_text.set_position(self._rect.x + 20, self._rect.y + 68 - 25)
+    self.law_text.render()
 
-    self.trim_header.set_position(self._rect.x + 20, self._rect.y + 114 - 30)
-    self.trim_header.render()
+    self.mode_header.set_position(self._rect.x + 20, self._rect.y + 114 - 30)
+    self.mode_header.render()
 
-    self.trim_text.set_position(self._rect.x + 20, self._rect.y + 161 - 25)
-    self.trim_text.render()
+    self.mode_text.set_position(self._rect.x + 20, self._rect.y + 161 - 25)
+    self.mode_text.render()
 
 
 class FastWheelRateToggle(BigMultiToggle):

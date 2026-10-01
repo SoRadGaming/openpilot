@@ -81,16 +81,15 @@ def sp_stats(end_event):
     # real float/bool here and they land as numeric influx fields rather than
     # strings. The toggle comes along because a gain of 1.000 means either
     # "converged, no correction needed" or "the feature was never on", and the
-    # graph cannot tell those apart on its own.
+    # graph cannot tell those apart on its own. FORK(HONDA_ELESYS): the pedal
+    # gains and the aero factor were retired in 2026-10; the engaged seconds per
+    # drive mode and the gas-law setting took their place.
     'HondaDynamicTuningEnabled',
-    'HondaDynPedalGain0',
-    'HondaDynPedalGain1',
-    'HondaDynPedalGain2',
-    'HondaDynPedalGain3',
-    'HondaDynPedalGain4',
-    'HondaDynPedalGain5',
     'HondaDynBrakeGain',
-    'HondaDynWindFactor',
+    'HondaDynModeSecD',
+    'HondaDynModeSecECON',
+    'HondaDynModeSecS',
+    'HondaElesysGasLawV2',
   ]
 
   while not end_event.is_set():

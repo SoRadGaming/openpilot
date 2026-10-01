@@ -15,6 +15,198 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-01 — Longitudinal (braking): a softer final stop; CRUISE_OVERRIDE stays 1
+
+**The last moment of an openpilot stop should no longer grab.** Measured on the
+45 stops openpilot completed by itself (routes 3e-103): the brake was already at
+the full standstill hold (185 of the hold's 189 counts) when the wheels stopped,
+while openpilot was asking for almost nothing (-0.16 m/s²). That is the jolt at
+the end: 0.92 m/s² at the stop on average, 1.02 behind a stopped car. Now, while
+the car is still rolling in the stopping phase, the brake is held at 125 counts
+instead, plus about 17 per degree of downhill; 0.55 s after the wheels read zero
+it rises to the usual hold in about a quarter of a second.
+
+* **Where:** it rides on **Dynamic Longitudinal Learning** (the same toggle as
+  the stop-release debounce and the gentle brake release), so with the toggle
+  off nothing changes. No new setting.
+* **What you will feel:** a gentler settle at the end of a stop, and a slightly
+  longer final roll: about 0.1-0.2 m and 0.3-0.4 s more. That is an estimate,
+  not a measurement - the next drive measures it.
+* **What does not change:** the hold itself (189, byte for byte once it has
+  risen), launches, all braking before the stopping phase, the brake pump (it
+  still runs continuously on the final approach), the learners, and stock
+  emergency braking (a lower openpilot brake can only let the car's own AEB
+  through earlier). A stop that starts at a standstill gets no ceiling, and
+  neither does one that starts faster than 1.2 m/s (about 4 km/h; your 45
+  logged stops, and the 32 in the review replay, started at 1.08 m/s at most).
+* **When it gives way early** (back to today's brake, rising 5 counts per frame):
+  the wheels start turning again after reading zero; the car is not slowing
+  (weaker than 0.25 m/s² for 0.4 s, counted only once the brake has sat at the
+  ceiling for 0.3 s, so a stop that is still building pressure is not handed
+  back); or 1.9 s after the stopping phase began, whatever the wheels are doing.
+  So in the worst case it is gone 2.4 s after the stopping phase began (every
+  replayed stop rose on `settle`, at most 1.82 s in). The brake pedal, the gas
+  pedal and a disengage remove it at once, and the brake is 0 on the first frame
+  after a disengage. If openpilot leaves the stopping phase before the car stops
+  (to brake harder, say), the ceiling goes at once: it never limits that braking.
+* **On your 45 logged stops** (the recorded signals replayed through the new
+  code): 44 would have had the ceiling; the brake when the wheels read zero
+  drops from 170 to 137 counts (median); 29 of the 44 are on a downhill, and the
+  pitch the code uses matches the pitch once stopped (it is the road, not the
+  car nosing down under braking); the wheel-zero signal never flickered.
+* **New log line:** one per stop, `hondastop rise=<why> t= roll= still= entry=
+  cap= ceil=` (`why` = `settle` normally; `moving`, `weak` or `max_roll` when it
+  gave way early) or `hondastop end=left` when the stop ended first, or
+  `hondastop skip=speed v=` when it started too fast to get a ceiling.
+* **The pump question - answered, no change:** the pump is not overused. It runs
+  28% of the time a brake command exists; stock ACC ran it 53%. Runs are short
+  (median 0.66 s). A suggested "no pump below 30 counts" was dropped: light
+  commands do brake the car, and it would have restarted the pump through its
+  quiet period.
+* **CRUISE_OVERRIDE stays 1 (you asked to remove it).** MVL *does* use it
+  (`CC.longActive or CS.out.stockAeb`), and you drove that version in
+  June-July. In the logs the bit makes no measurable difference to the VSA's
+  braking or to BRAKE_ERROR - but sending 0 has only ever happened in short
+  tails after a disengage, never during sustained braking, so removing it would
+  be an untested change with nothing to gain. Every BRAKE_ERROR since June was a
+  ~1 s silence on 0x1FA, not this bit: on drive 84 the panda was dropping a
+  forced minimum brake (so nothing reached the car for a second); on b5-b8
+  nothing was sent. The bit is now documented in the code, and a test pins it.
+  (The other override bit you tried, `ACC_OVERRIDE_STOP`, was removed earlier,
+  in `d9498a1a`; nothing of it is left.)
+* **Also fixed:** a speed reading of NaN made the brake code raise, which would
+  have meant no brake message and a BRAKE_ERROR a second later. It now holds the
+  brake instead. Never seen on the road; found by tests.
+* **Not in this update:** the "no coasting in the last meter" change for stops
+  without a lead car waits until this one is measured, so each drive tests one
+  thing.
+* **Your part:** when stopping or stopped, take over with the brake or the gas,
+  not the cancel button. Cancel drops the brake at once (the panda insists), and
+  the car then creeps - that is the "rolls" in two of your logged cases.
+* **Watch on the next drive:** deceleration at the moment the car actually stops
+  (camera/IMU, not wheel speed) - target a median of 0.6 m/s² or less and 1.0
+  for the worst tenth (today 0.92 and 1.53); no jerk spike in the 0.8 s after the wheels read zero; at
+  least 3.5 m to a stopped car ahead (4.1 today); one `hondastop` line per stop,
+  nearly all `settle`, and every `weak`/`max_roll` on a downhill or a slow brake,
+  and any `skip=speed` a stop that really did start fast;
+  no creep while held and no rollback at launch; no 0x1FA gap over 0.1 s; and
+  BRAKE_ERROR only in the first frame after power-up. The first drive also
+  carries the upstream sync's change to when the stopping phase starts (behind
+  a stopped car it should now start at 0.80 m/s, about 3 km/h); no stop since
+  the sync is in the logs yet.
+* **Tests:** 28 new soft-stop tests (every timer, the hill term, the gate, the
+  entry-speed bound, the 1.9 s bound counted from entry, random inputs, never
+  raising); through the real controller it only ever lowers the brake, the hold
+  is byte-for-byte today's, the learners never see it, other cars, the toggle
+  off and a stop started at 1.5 m/s are bit-identical; CRUISE_OVERRIDE is 1
+  on every brake message, the brake is 0 after a disengage, and at most one
+  nonzero brake message follows a brake or gas press. Details:
+  `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 7.7-7.8. Commits: opendbc `cf9ad7ad`
+  (the NaN-`vEgo` guard), `c65d5033` (`CRUISE_OVERRIDE`), `8b00f3cc` (the soft
+  final stop), `66de8d56` (`FORK.md`), `3a131bf3` (after review: the 1.9 s bound
+  counted from entry, the entry-speed bound).
+* **Review replay** (the real controller driven from 14 logged routes, 300 min,
+  144 min engaged): no exception, no 0x1FA gap, CRUISE_OVERRIDE 1 throughout,
+  brake 0 after every one of 453 disengages; the brake when the wheels read zero
+  136 counts median with the ceiling against 173 without; the hold 2 s later
+  189 in every stop, as today. Re-run after the review fixes: every CAN frame
+  identical to the reviewed code in all five set-ups (1.8 million control
+  steps), and the same 33 `hondastop` lines - no stop started above 1.2 m/s
+  and none reached the 1.9 s bound.
+
+---
+
+## 2026-10-01 — Longitudinal (pedal): the measured gas law; the pedal and aero learners retired
+
+**The comma pedal now asks for the throttle this car actually needs.** The old
+law gave 1.4-1.7x too much pedal per m/s² at 22-72 km/h, so a request from a
+roll first over-delivered (aEgo 1.34-1.42 against a target of 0.95-1.15 for the
+first 2 s) and then sagged while openpilot's own controller unwound. The new
+law (v2) uses the pedal response measured on 51 of your routes. It is on by
+default; turn it off to get the previous law back exactly.
+
+* **Where:** sunnylink, Vehicle → Honda Settings: **Measured Gas Pedal Law
+  (2013-15 Accord)**. Offroad only; it applies at the next drive (the car reads
+  it once at ignition). The comma 4's Settings → vehicle card shows which law
+  the car will use (`v2`/`v1`), and the `hondadyn` log line says which one ran
+  (`gaslaw=`).
+* **What you will feel:** a softer, steadier pull from a roll at 20-70 km/h:
+  for 1.0 m/s² at 72 km/h the pedal goes 0.742 → 0.467. The lunge-then-sag is
+  what goes away; sunnypilot's controller adds whatever is really missing.
+  Above about 60 km/h the cruise pedal is the measured one, a little lower than
+  before (0.122 against 0.169 at 72 km/h).
+* **What does not change:** every launch below 11 km/h (v2 *is* the old law
+  there, to within float rounding); the hand-over between gas and brake below about 60 km/h
+  (same offset, same slope through the gap - a steeper gap there would risk
+  surging in stop-and-go); the point where the pedal reaches zero and where the
+  brake comes on (the aero change below moves the latter slightly, with the
+  learning toggle on); the brake command itself (identical under both laws); max
+  accel (still 1.6 m/s² - raising it was dropped: the 1.6 clip only bound during
+  launches that were already overshooting). Every other car keeps upstream's
+  pedal law.
+* **The self-learning pedal gain and aero factor are gone** (the "Dynamic
+  Longitudinal Learning" toggle). The pedal gain could not save anything (its
+  progress was reset at every ignition: six weeks moved it by 0.007) and was
+  steered by openpilot's own integrator toward the wrong answer. The aero factor
+  wandered 0.7-1.5 from drive to drive. **With the learning toggle on, this
+  moves the brake-on point slightly:** your saved aero factor was about 0.80
+  and is now 1.0, so light braking at 90 km/h gets about 5 counts less brake
+  (the brake comes on at 0.27 instead of 0.21 m/s² of net decel). The brake
+  learner and the hill term are unchanged.
+* **Drive modes (ECON / D / S):** the car now knows which one it is in (S if
+  the lever is in S, else ECON if ECON is on, else D) and has a per-mode pedal
+  multiplier, all 1.0 today, so nothing changes yet. A change of mode fades the
+  pedal over 2 s instead of stepping. There are only 87 s of engaged ECON and
+  79 s of engaged S in a month of logs - not enough to fit anything - so the car
+  now counts engaged time and steady-pedal samples per mode, in the `hondadyn`
+  line (`slot=`, `modesec=`, `modeadm=`, `modetot=`) and on the comma 4 card
+  (`D / ECON / S`, minutes). These are counted only while **Dynamic
+  Longitudinal Learning** is on (the gas law itself runs either way). **Your
+  part:** with that toggle on, drive at least 15 minutes engaged in ECON and 15
+  in S, including gentle accelerations at 40-80 km/h.
+* **On screen:** the comma 4 card that showed six "learned pedal gain" numbers
+  (which could not move) now shows `gas law` - the law the car will use from
+  the next drive, e.g. `v2 next drive` - with the brake gain, and the engaged
+  minutes per mode. Another Honda (the law does nothing there) sees only the
+  brake gain. sunnylink's Cruise page shows engaged seconds per mode instead of
+  the pedal gains and the aero factor. **RESET** puts back the brake correction
+  only; the minutes per mode are kept (they are a tally of the data, not a tune).
+* **Params:** new `HondaElesysGasLawV2` (backed up, default on) and
+  `HondaDynModeSecD`/`ECON`/`S`; `HondaDynPedalGain0`-`5` and
+  `HondaDynWindFactor` are no longer registered (the old files stay on the
+  device, unread). `parse_hondadyn.py` needs no change: the line lost `pedal=`,
+  `pedalc=` and `wind=`, and the script skips missing fields.
+* **Also fixed:** a fingerprint without the gearbox's `GEAR` signal made
+  `CarState` raise (found by fuzzing; the real car always has it). And S is now
+  confirmed: the gearbox reports `GEAR = 26` whenever S is selected (16,164
+  frames on b1, dd and fc), so the comments that said it had never been seen
+  are corrected.
+* **Watch on the next drive:** openpilot's integrator (`uiAccelCmd`) at
+  demand above 0.4 m/s² should move toward zero (it was -0.21 to -0.23 at
+  43-79 km/h), and the first 2 s of a request should no longer overshoot the
+  target. At cruise above 60 km/h it should average within about ±0.05; below
+  60 km/h it will stay where it was (+0.06 to +0.19), because that offset was
+  deliberately left alone until the brake-side work. Check that the pedal does
+  not hunt at 15-55 km/h in stop-and-go, and flag any pedal command at or above
+  0.9 (the highest seen was 0.761).
+* **Tests:** 31 new gas-law tests (golden pedal at every breakpoint, continuity,
+  monotonic, nothing below the brake-on point, identical to the old law below
+  11 km/h, the gap never steeper, the 2 s fade bound, the modes, the setting,
+  other cars bit-identical); the real `CarController` under both laws and with
+  NaN/odd inputs (never raises, `0x1FA` every frame it should); the tuner
+  checks rewritten for the retirement; 7 new settings checks. Details:
+  `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 9.1-9.2. Commits: opendbc `d2d482ed`,
+  `9e076b33`; sunnypilot `db3fa190f`, `d93559f21` (after review: the readout only on
+  this car, "next drive" on the card, RESET keeps the minutes, `FORK(...)`
+  markers).
+* **Review replay** (same inputs through both laws, engaged pedal frames): below
+  11 km/h identical (51,742 frames, largest difference 0); 11-22 km/h 0.75x the
+  old law's mean pedal, 22-36 km/h 0.69x, 36-108 km/h 0.71-0.84x, above 108
+  km/h 0.80x; the brake identical under both laws on every route. Open loop: what
+  sunnypilot's own controller then adds is for the next drive to show.
+
+---
+
 ## 2026-09-30 — the fast-wheel takeover is now a setting
 
 **Turning the wheel fast turns MADS steering off (not a pause), and you can now

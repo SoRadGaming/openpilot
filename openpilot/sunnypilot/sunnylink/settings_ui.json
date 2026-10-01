@@ -1170,7 +1170,7 @@
         {
           "id": "honda_dynamic_learning",
           "title": "Honda Nidec Dynamic Learning",
-          "description": "What the dynamic longitudinal tuner has learned on this car. Read-only -- the toggle itself is on the Vehicle page. 1.00 means the stock request was right at that speed.",
+          "description": "What the dynamic longitudinal tuner has learned and counted on this car. Read-only -- the toggles are on the Vehicle page.",
           "visibility": [
             {
               "type": "capability",
@@ -1180,46 +1180,26 @@
           ],
           "items": [
             {
-              "key": "HondaDynPedalGain0",
-              "widget": "info",
-              "title": "Learned pedal gain at 0 km/h",
-              "description": "1.00 means the stock pedal request was right; 1.30 means this car needs 30% more pedal than stock asked for at that speed."
-            },
-            {
-              "key": "HondaDynPedalGain1",
-              "widget": "info",
-              "title": "Learned pedal gain at 11 km/h"
-            },
-            {
-              "key": "HondaDynPedalGain2",
-              "widget": "info",
-              "title": "Learned pedal gain at 22 km/h"
-            },
-            {
-              "key": "HondaDynPedalGain3",
-              "widget": "info",
-              "title": "Learned pedal gain at 36 km/h"
-            },
-            {
-              "key": "HondaDynPedalGain4",
-              "widget": "info",
-              "title": "Learned pedal gain at 54 km/h"
-            },
-            {
-              "key": "HondaDynPedalGain5",
-              "widget": "info",
-              "title": "Learned pedal gain at 72 km/h"
-            },
-            {
               "key": "HondaDynBrakeGain",
               "widget": "info",
               "title": "Learned brake gain",
               "description": "0.00 until it has learned anything. Positive adds brake, negative trims it."
             },
             {
-              "key": "HondaDynWindFactor",
+              "key": "HondaDynModeSecD",
               "widget": "info",
-              "title": "Learned aero factor"
+              "title": "Engaged seconds in D",
+              "description": "Time driven with sunnypilot longitudinal engaged in each drive mode, saved once a minute, and counted only while Dynamic Longitudinal Learning is on. Per-mode pedal tables need about 15 minutes each of ECON and S."
+            },
+            {
+              "key": "HondaDynModeSecECON",
+              "widget": "info",
+              "title": "Engaged seconds in ECON"
+            },
+            {
+              "key": "HondaDynModeSecS",
+              "widget": "info",
+              "title": "Engaged seconds in S"
             }
           ]
         }
@@ -2348,8 +2328,21 @@
           "widget": "toggle",
           "needs_onroad_cycle": true,
           "title": "Dynamic Longitudinal Learning (Alpha)",
-          "description": "Learn this car's throttle and brake response while you drive, and correct for it. Also compensates the accel target for road grade. Honda Nidec with sunnypilot longitudinal only; has no effect on other platforms. Learned values are saved roughly once a minute and reloaded on the next drive.",
-          "details": "The car reads this toggle once when it goes onroad, so a change only takes effect at the next ignition - set it, then key off and on. What it has learned so far is on the read-only rows below.",
+          "description": "Learn this car's brake response while you drive, and correct for it. Also compensates the accel target for road grade, and counts driving time in each drive mode (D, ECON, S). Honda Nidec with sunnypilot longitudinal only; has no effect on other platforms. Learned values are saved roughly once a minute and reloaded on the next drive.",
+          "details": "The car reads this toggle once when it goes onroad, so a change only takes effect at the next ignition - set it, then key off and on. What it has learned so far is on the read-only rows on the Cruise page.",
+          "enablement": [
+            {
+              "type": "offroad_only"
+            }
+          ]
+        },
+        {
+          "key": "HondaElesysGasLawV2",
+          "widget": "toggle",
+          "needs_onroad_cycle": true,
+          "title": "Measured Gas Pedal Law (2013-15 Accord)",
+          "description": "On: the comma pedal follows the throttle response measured on this car. It asks for less pedal per m/s^2 above 11 km/h - most at 20-70 km/h, where the old law over-delivered (the lunge, then sag, pulling away from a roll) - and holds a lower cruise pedal above 60 km/h. Below 11 km/h it is the old law exactly, and the hand-over between gas and brake is unchanged below 60 km/h. Off: the previous law. 2013-15 Accord (Elesys) only. Applies at the next drive.",
+          "details": "Applies at the next drive - the car reads it once when it goes onroad. Expect gentler onset at 20-70 km/h; sunnypilot's own controller adds whatever is really missing. The law runs with Dynamic Longitudinal Learning on or off, but the engaged time per drive mode (what future ECON and S tables will be fitted from) is only counted while that toggle is on.",
           "enablement": [
             {
               "type": "offroad_only"

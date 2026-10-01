@@ -31,98 +31,95 @@ drive, and only ever re-reads the notebook next time you start.
 
 ---
 
-## The two toggles
-
-They are in **three places, and all three drive the same setting** — flip it wherever you find
-it first.
+## The two settings
 
 **On a comma 4** (the small screen — this is the one you have): **Settings → vehicle**. That
 page is new. The comma 4 runs a different UI to the comma 3/3X, and that UI has no Cruise page
 and no Vehicle page at all — which is exactly why the toggle never showed up for you no matter
-what was in the Cruise panel. The page has both toggles, what the car has learned, and the
-reset.
+what was in the Cruise panel. The page has the learning toggle, what the car has learned, and
+the reset.
 
 **On a comma 3 / 3X** (the big screen): **Settings → Vehicle**, on the Honda page, or
 **Settings → Cruise** near the bottom of the list.
 
-**In the sunnylink app**, on any device: under Vehicle → Honda Settings, with the learned
-values listed read-only. The app renders whatever settings list the *device* publishes, so if
-the Honda section shows up in the app, that is proof the device is running this code.
+**In the sunnylink app**, on any device: under Vehicle → Honda Settings — both settings are
+there. The app renders whatever settings list the *device* publishes, so if the Honda section
+shows up in the app, that is proof the device is running this code.
 
-Both toggles are **off** by default.
+### 1. "Dynamic Longitudinal Learning (Alpha)" — off by default
 
-### 1. "Dynamic Longitudinal Learning (Alpha)"
-
-The main one. Turns on the self-learning. It reads as "Honda Nidec Dynamic Longitudinal
-Learning (Alpha)" on the Cruise page, since that page is shared with every other car.
+Turns on the self-learning: the brake correction and the hill term (it no longer learns the
+throttle — see "The gas pedal" below). It also switches on the stop smoothing: the gentle brake
+release, the release debounce and, since October 2026, the softer last moment of a stop. It reads as "Honda Nidec Dynamic Longitudinal Learning
+(Alpha)" on the Cruise page, since that page is shared with every other car.
 
 Remember: **flipping it does nothing until the next ignition.** Turn it on while parked, key
 off, key on.
 
-### 2. "...also blend the PCM gas above 30 km/h (Experimental)"
+### 2. "Measured Gas Pedal Law (2013-15 Accord)" — ON by default
 
-**Leave this off.** It hands part of the throttle over to the car's own cruise computer above
-30 km/h. We have never confirmed that computer even responds — openpilot has sent it 250,334
-"give me throttle" messages with the value set to zero, so it has literally never been asked.
-Until that's tested standing still, this stays off.
+In sunnylink only. On: the pedal uses the throttle response measured on your car. Off: the
+previous pedal law, exactly. Also read once at ignition. The comma 4 card shows which one the
+car will use from the next drive (`v2 next drive` = measured, `v1 next drive` = previous).
+It runs whether or not the learning toggle is on.
 
-It can't be switched on unless the first toggle is on, and turning the first one off clears
-it automatically.
+(The old "blend the PCM gas above 30 km/h" toggle is gone — the car's cruise computer was never
+shown to respond to it.)
 
 ---
 
 ## Seeing what it has learned
 
-On the comma 4 it is the card at the front of **Settings → vehicle**: the six pedal gains in
-speed order, then the brake and aero trims. On the big screen it is **Settings → Vehicle →
-Learned Values**, and in the app it is the read-only rows under Honda Settings. Same numbers
-either way:
+On the comma 4 it is the card at the front of **Settings → vehicle**:
 
-- **Pedal gain by speed** — one number per speed band (0, 11, 22, 36, 54, 72 km/h). `1.00`
-  means "openpilot's original pedal request was right"; `1.30` means "this car needs 30% more
-  pedal than stock asked for at that speed". This is the row to watch: it should drift away
-  from 1.00 over your first few drives and then settle.
-- **Gas** — the PCM gas factor, which only moves if the PCM blend toggle is on.
-- **Aero** — the wind/drag term.
-- **Brake** — the learned brake correction, `+0.00` when it has learned nothing yet.
+- **gas law** — `v2` (measured) or `v1` (previous), the law the car will use from the next
+  drive, then the learned brake correction as `brake x1.00` (`x1.00` until it has learned
+  anything). On another Honda the gas law does nothing, so the card shows only **brake**.
+- **D / ECON / S** — minutes driven with sunnypilot's longitudinal engaged in each drive mode,
+  e.g. `412 / 1.4 / 1.3 min`. This is the data a future per-mode pedal table needs. It is
+  counted only while the learning toggle is on.
+
+On the big screen it is **Settings → Vehicle → Learned Values**, and in the app the read-only
+rows on the Cruise page (the mode times there are in seconds).
+
+The six "pedal gain by speed" numbers and the "aero" number that used to be here are gone:
+they could not move (see below), so they were showing nothing.
 
 The numbers refresh about once a second on screen, and the car itself saves them roughly once
-a minute while you drive, so open the page after a drive to see the day's learning.
+a minute while you drive, so open the page after a drive to see the day's numbers.
 
-**RESET** (slide to confirm on the comma 4) puts all of it back to the factory numbers and
-starts the learning from scratch. It asks for confirmation first, and it is only available
-with the car off — the tuner keeps the
-learned values in memory while driving and would just write them back over the top a minute
+**RESET** (slide to confirm on the comma 4) puts the brake correction back to zero. The mode
+times are kept: they are a tally of the data collected, not something learned. It asks for
+confirmation first, and it is only available with the car off — the
+tuner keeps it in memory while driving and would just write it back over the top a minute
 later.
 
 ---
 
-## The big one: it learns your car's throttle
+## The gas pedal: now the measured law (October 2026)
 
-**The problem.** Your car doesn't accelerate as hard as openpilot asks it to. We measured this
-properly across your logs: to get the acceleration the planner wanted, the pedal needed to be
-pushed **1.3 to 1.75 times harder** than it actually was. That gap is why the car felt slow
-and lagged the speed it was aiming for.
+**The old problem was the opposite of what it looked like.** An earlier fit said the car needed
+1.3-1.75x *more* pedal, so the pedal curve was raised and a learner was added on top. Fitting
+the pedal's response properly — slope and cruise offset separately, over 51 of your drives —
+says that at 20-70 km/h the raised curve gave **1.4-1.7x too much** pedal per m/s² of request.
+That is the "lunge, then sag" pulling away from a roll: the car shot past what the planner
+asked for in the first two seconds, then openpilot's own controller backed off.
 
-**Two fixes, both in.**
+**The new law uses the measured response.** What you'd notice: a softer, steadier pull from a
+roll at 20-70 km/h — for the same 1 m/s² request at 72 km/h the pedal is about 0.47 instead of
+0.74. Pulling away from a stop (below 11 km/h) is **exactly** the old law, and so is the
+hand-over between gas and brake below about 60 km/h. If you don't like it, switch "Measured
+Gas Pedal Law" off in sunnylink and the next drive is the old law exactly.
 
-*First*, the baseline pedal curve was raised by about 25% at 6 m/s and above (roughly 20 km/h
-and up). This is a fixed change — it happens whether or not you turn any toggle on. Below
-about 10 km/h nothing changed, so pulling away from a stop feels the same.
+**The throttle learner is gone.** It could never keep what it learned (every ignition threw
+the drive's progress away; in six weeks it moved by less than 1%), and it was reading
+openpilot's own correction as a car problem, so it would have pushed the wrong way. The "aero"
+learner went with it — it wandered all over its range from drive to drive. With the learning
+toggle on, that makes light braking at highway speed very slightly gentler (about 5 counts
+less brake at 90 km/h).
 
-*Second*, with the toggle on, the car now **learns the remaining gap itself and remembers it**.
-It keeps six separate numbers, one for each speed band — 0, 3, 6, 10, 15 and 20 m/s — because
-the shortfall isn't the same at every speed. It nudges each one based on how much
-acceleration it actually got versus what it asked for.
-
-**What you'd notice:** more responsive pull-away and merging, and over a few drives it should
-keep getting closer to what the planner wants rather than always running slightly behind.
-
-**One thing to watch.** There's a safety cap — it will never push the pedal more than 1.8×
-harder than the baseline. In testing against your old logs, it hit that cap and stayed there.
-That's exactly why the baseline was raised: with a better starting point, it shouldn't need
-to go near the cap. **If your next log shows it sitting at 1.800, tell me — the baseline needs
-another step up.**
+**Max acceleration was not raised.** The 1.6 m/s² limit only ever bit during launches that
+were already overshooting, so raising it would only add lunge.
 
 ---
 
@@ -163,6 +160,26 @@ hill, the fix is to raise this back toward the middle. **Don't touch the creep t
 
 ---
 
+## A softer last moment of the stop (October 2026)
+
+At the end of an openpilot stop the brake used to reach the full standing hold (189) **before** the car had actually
+stopped - on your logged stops it was already at 185 when the wheels stopped, while openpilot was asking for almost
+nothing. That is the little jolt at the very end.
+
+Now, with the learning toggle on, the brake is held lower (125, a little more on a downhill) for as long as the car is
+still rolling in the stopping phase. About half a second after the wheels stop it rises to the usual hold in a quarter of
+a second, so **how the car holds at a light does not change**.
+
+It gives way early - back to the old behavior - if the car is not slowing, if the wheels start turning again, or
+1.9 s after the stopping phase began. A stop that starts faster than about 4 km/h (1.2 m/s) does not get it at all:
+none of your logged stops did. Your brake or gas pedal removes it at once.
+
+Each stop writes one `hondastop` line to the log, saying what happened.
+
+**This has not been on the road yet.** Watch the last half-second of each stop, and how close you stop to the car ahead.
+
+---
+
 ## The brake pump is quieter
 
 You said the stock behaviour sounds like a machine gun, your fix cured that but replaced it
@@ -194,6 +211,9 @@ I also checked and rejected the obvious alternative of just running the pump les
 timer. It saves almost nothing and nearly doubles the longest gap with no pump at road speed.
 That's now written into the code as a "don't do this".
 
+**Is it overused now? No** (measured October 2026 on 57 drives): the pump runs 28% of the time
+the brake is being asked for. The car's own cruise control ran it 53%.
+
 ---
 
 ## It knows what gear you're in now (it didn't before)
@@ -212,9 +232,11 @@ Now Park, Reverse, Neutral, Drive and Sport all read correctly.
    the same on every other Honda that reports Sport.
 
 **Why Sport was tricky.** The gear signal uses one value, 0, for *both* Sport *and* the moment
-the lever is between positions. There's no way to tell them apart instantly. So it waits **1
-second** — a real Sport selection lasts, a lever passing through doesn't. The longest
-in-between moment ever seen in your logs was half a second, so a full second is comfortable.
+the lever is between positions. So it waits **1 second** — a real Sport selection lasts, a
+lever passing through doesn't. The longest in-between moment ever seen in your logs was half a
+second, so a full second is comfortable. Since then you've driven in S, and a second signal
+turns out to say "Sport" outright (`GEAR = 26`, every time), so in practice it switches
+instantly; the 1 second wait is the backup.
 
 ---
 
@@ -222,12 +244,20 @@ in-between moment ever seen in your logs was half a second, so a full second is 
 
 You found the bit, and it checks out against your logs perfectly.
 
-**Why this matters:** ECON changes how the throttle responds. If the car learned in ECON and
-in normal mode and mixed the two together, it would end up with an average that's wrong in
-both. So now the learning **pauses whenever ECON is on**, and pauses again for a moment
-whenever you switch it.
+**Why this matters:** ECON changes how the throttle responds — your logs show it delivering
+about 0.4 m/s² less for the same pedal — and Sport holds lower gears. If the car learned in
+ECON or Sport and in normal mode and mixed them together, it would end up with an average
+that's wrong in all of them. So the brake learning **pauses whenever ECON is on or the lever
+is in S**, and pauses again for a moment whenever you switch.
 
-Same thing for gear — it only learns in **Drive**. In Sport it pauses.
+The pedal now knows which mode it is in (S, else ECON, else D) and has a separate multiplier
+for each — all set to "no change" for now, because there are only about 1.5 minutes of engaged
+driving in ECON and in S in a month of logs, far too little to set them from. The car now
+counts that time for you (the `D / ECON / S` minutes on the comma 4 card). **To make per-mode
+tuning possible, drive at least 15 minutes engaged in ECON and 15 in S**, with some gentle
+accelerations at 40-80 km/h, and with the learning toggle on (the minutes are only counted
+then). A change of mode fades the pedal over 2 seconds rather than
+stepping it.
 
 The reason ECON looked "dead" in the old logs is simply that you never turned it on during
 those 7 hours. The bit was there, just always zero.
@@ -293,4 +323,5 @@ judge on their own, and each shows up differently so you can tell them apart:
 **Then turn on the learning as a separate drive**, so if something feels off you know which
 change caused it.
 
-**Leave the PCM blend off** until the standing-still test.
+(Since then: the PCM blend toggle was removed, and the raised throttle curve was replaced by
+the measured gas law — see "The gas pedal" above.)

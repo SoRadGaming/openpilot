@@ -11,7 +11,7 @@ History and specs already exist in these files. This document does not repeat th
 
 | document | what it is |
 |---|---|
-| `CHANGELOG-elesys.md` | the longitudinal work on this car, sections 1-19, with measurements |
+| `CHANGELOG-elesys.md` | the longitudinal work on this car, sections 1-21, with measurements |
 | `FEATURES-elesys.md` | plain-English feature notes for the owner. **Its PCM-blend material is stale throughout.** The toggle was removed in sunnypilot `cb4e0c34b` / opendbc `aa73e60a`, but the file still has a `The two toggles` section, its subsection 2 (`...also blend the PCM gas above 30 km/h`), a `Gas - the PCM gas factor` line under `Seeing what it has learned`, and `Leave the PCM blend off` in `The honest summary` |
 | `docs/CHANGELOG_SERIAL_STEERING.md` | the serial-steering changelog, including `Things about this car worth not rediscovering` |
 | `docs/SP_GATEWAY_FIRMWARE.md`, `docs/SP_HUD_STATUS.md` | area B specs |
@@ -54,8 +54,8 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `opendbc/car/honda/fingerprints.py` | M | `FW_VERSIONS[CAR.HONDA_ACCORD_9G_AU]` | - |
 | `opendbc/car/honda/interface.py` | M | transmission detection, longitudinal tuning (no `vEgoStopping` since the 2026-09 merge), `steerActuatorDelay`, `steerAtStandstill`, safety param, `minEnableSpeed`, and its exemption from the gas-interceptor `-1` in `_get_params_sp()` | the two lateral values exist because of the gateway (B) |
 | `opendbc/car/honda/radar_interface.py` | M | Elesys radar parsing | - |
-| `opendbc/car/honda/carstate.py` | M | gear decode (`update_gear_elesys()`), `LKAS_PROBLEM` bus, `stockAeb`, `scm_buttons`, `econ_on` | B/A: `get_can_parsers()` registration of `GW_*`/`EPS_LIN_RAW`; `CarStateExt.update(..., ret_sp, ...)` |
-| `opendbc/car/honda/carcontroller.py` | M | `compute_gb_honda_elesys()`, `brake_pump_hysteresis_elesys()`, dynamic-tuner hooks, 32-count brake release limit, SCM_BUTTONS re-send, no `LKAS_HUD` | B: `brake_release_scale()`, LDW bits, the `create_sp_hud_status()` block |
+| `opendbc/car/honda/carstate.py` | M | gear decode (`update_gear_elesys()`, taken only when the gearbox frame has `GEAR`), `LKAS_PROBLEM` bus, `stockAeb`, `scm_buttons`, `econ_on` | B/A: `get_can_parsers()` registration of `GW_*`/`EPS_LIN_RAW`; `CarStateExt.update(..., ret_sp, ...)` |
+| `opendbc/car/honda/carcontroller.py` | M | `compute_gb_honda_elesys()`, `brake_pump_hysteresis_elesys()`, dynamic-tuner hooks, 32-count brake release limit, the soft final stop's call (7.8), the NaN-`vEgo` guard in the brake block (7.8), the `CRUISE_OVERRIDE` decision comment (7.7), SCM_BUTTONS re-send, no `LKAS_HUD` | B: `brake_release_scale()`, LDW bits, the `create_sp_hud_status()` block |
 | `opendbc/car/honda/hondacan.py` | M | `create_brake_command()` units bit, `create_scm_buttons_no_cruise()` | B: `create_steering_control()` LDW, `create_sp_hud_status()` |
 | `opendbc/car/car_helpers.py` | M | `skip_fw_query` | - |
 | `opendbc/car/structs.py` | M | none of its own; described in 6.5 because of the capnp rule | B (`LateralControl`, `LinbusGateway` 0x704/0x70B fields, `driverTorqueStale`), A (`fw*` fields) |
@@ -66,18 +66,22 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `opendbc/safety/modes/honda.h` | M | the stand-down safety mode | 0x500 on its TX list is B's frame |
 | `opendbc/safety/tests/common.py`, `opendbc/safety/tests/test_honda.py` | M | safety tests | B: the Elesys-only `0x500` exemption in `common.py` |
 | `opendbc/sunnypilot/car/honda/carstate_ext.py` | M | `fuelGauge` | B (gateway decode, driver torque), A (`_update_linbus_firmware`) |
-| `opendbc/sunnypilot/car/honda/dynamic_tuning.py` | A | all | - |
-| `opendbc/sunnypilot/car/honda/gas_interceptor.py` | M | all | - |
+| `opendbc/sunnypilot/car/honda/dynamic_tuning.py` | A | all (since 2026-10 also `filtered_pitch()`, read by the soft final stop) | - |
+| `opendbc/sunnypilot/car/honda/elesys_gas.py` | A (2026-10) | the gas law v1/v2, `HondaElesysGasLawV2`, drive-mode slots and crossfade (9.2) | - |
+| `opendbc/sunnypilot/car/honda/elesys_stop.py` | A (2026-10) | the soft final stop: `soft_stop_ceiling()`, `ElesysSoftStop`, `SOFT_STOP_*` (7.8) | - |
+| `opendbc/sunnypilot/car/honda/gas_interceptor.py` | M | the import and the one call into `elesys_gas.py`, and the tuner's `observe_pedal` hook | - |
 | `opendbc/car/honda/tests/test_elesys.py` | A | all | - |
 | `opendbc/sunnypilot/car/honda/test_dynamic_tuning.py` | A | all | - |
-| `opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py` | A | sections 1-6 and 9 | B: sections 7, 8, 10-15 (including 14b) |
+| `opendbc/sunnypilot/car/honda/test_elesys_gas.py` | A (2026-10) | all (9.2) | - |
+| `opendbc/sunnypilot/car/honda/test_elesys_stop.py` | A (2026-10) | all (7.8) | - |
+| `opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py` | A | sections 1-6, 9, 16, 17, 17b, 18 and 19 | B: sections 7, 8, 10-15 (including 14b) |
 
 ### 1.2 sunnypilot fork
 
 | file | status | area C content | other areas |
 |---|---|---|---|
 | `.gitmodules`, `opendbc_repo` (gitlink) | M | points the submodule at the opendbc fork (Other, 13.1) | - |
-| `openpilot/common/params_keys.h` | M | 9 `HondaDyn*` keys | A: `EpsLkas*` keys |
+| `openpilot/common/params_keys.h` | M | 5 `HondaDyn*` keys and `HondaElesysGasLawV2` (11.1) | A: `EpsLkas*` keys |
 | `openpilot/cereal/custom.capnp` | M | none; area C code reads `CarStateSP.driverTorqueStale` | B, A |
 | `openpilot/selfdrive/car/card.py` | M | `skip_fw_query=bool(fixed_fingerprint)` | A: firmware identity staging/writing, flash trace |
 | `openpilot/selfdrive/car/helpers.py` | M | none. The `lateralControl` rebuild in `convert_carControlSP()` is area B; it is described in 10.5 because its failure took down the car's radar path | B |
@@ -227,7 +231,7 @@ Two consequences come up throughout this document. `LKAS_PROBLEM` is read from b
 | gear | `GEARBOX_AUTO` 0x1A3, or the `manual` fallback | legacy `GEARBOX_AUTO` 0x188, with a Sport dwell | 4.7, 5.1, 6.1 |
 | radar tracks | 0x430-0x439 and 0x440-0x445 at 20 Hz, trigger 0x445 | 0x410-0x417 and 0x420-0x424 at 10 Hz, trigger 0x423 | 4.8, 5.2 |
 | `BRAKE_COMMAND.SET_ME_1` | constant 1 | cluster units flag | 7.3 |
-| gas interceptor curve | `interp(v, [0, 10], [0.4, 1.0])` | `elesys_gas_multiplier()` | 9.2 |
+| gas interceptor law | `interp(v, [0, 10], [0.4, 1.0])` | `elesys_gas.py`: v2, the measured pedal response (default), or v1, `elesys_gas_multiplier()` | 9.2 |
 | fuel | not decoded | `fuelGauge` from `FUEL_LEVEL` | 6.4 |
 | `steerActuatorDelay` | 0.15 (default branch) | 0.38 | 5.1 |
 | `steerAtStandstill` | False | True | 5.1 |
@@ -412,9 +416,11 @@ def update_gear_elesys(self, raw: int, gear_raw: int):
   return self.gear_shifter_last
 ```
 
-The state is set in `__init__`: `self.gear_shifter_last = GearShifter.unknown`, `self.gear_zero_frames = 0` and `self.SPORT_DWELL = 100`, which is 1.0 s at 100 Hz, about twice the longest transient ever observed. `update()` calls the function from an `elif self.CP.carFingerprint in HONDA_ELESYS:` placed between upstream's `manual` branch and the generic branch.
+The state is set in `__init__`: `self.gear_shifter_last = GearShifter.unknown`, `self.gear_zero_frames = 0` and `self.SPORT_DWELL = 100`, which is 1.0 s at 100 Hz, about twice the longest transient ever observed. `update()` calls the function from an `elif self.CP.carFingerprint in HONDA_ELESYS and "GEAR" in cp.vl[self.gearbox_msg]:` placed between upstream's `manual` branch and the generic branch. The `GEAR` guard (2026-10) is for fingerprints, not the car: one with 0x191 and no 0x188 makes this car's gearbox message `GEARBOX_CVT`, which has no `GEAR`, and `update()` raised `KeyError('GEAR')` (fuzz seed 7944551990633456218, example 21 of `test_car_interfaces_69_HONDA_ACCORD_9G_AU`). Such a message now takes upstream's decode.
 
-Why: without the dwell every shift would emit a phantom `GearShifter.sport`. That trips `wrongGear`, suppresses always-on DM and freezes the dynamic tuner. The logic is a separate function so it can be tested without a CAN stream. Tests: `TestElesysGearDecode` in `test_elesys.py`. It builds a real `CarState` through `CarInterface.get_params()`/`get_params_sp()` (helper `_cs()`) and covers the detents, a transient holding the last gear, a sustained zero becoming Sport, the GEAR 26 fast path, leaving Sport re-arming the dwell, and the dwell staying clear of 520 ms. It calls the function directly, so the `elif` dispatch in `update()` is not exercised.
+**`GEAR == 26` is measured now.** Across 86 routes (1406 min logged to 2026-09) S was selected on b1, dd and fc (148 s moving, 79 s engaged); the frames with `GEAR_SHIFTER = 0` read `GEAR = 26` on 16,164 frames (the S selections) and `GEAR = 0` on 2,975 (the shift transients). So the fast path is what fires; the dwell is the fallback. The comments in `carstate.py` and `_gearbox_legacy.dbc` that said 26 had never been seen were corrected.
+
+Why: without the dwell every shift would emit a phantom `GearShifter.sport`. That trips `wrongGear`, suppresses always-on DM and freezes the dynamic tuner. The logic is a separate function so it can be tested without a CAN stream. Tests: `TestElesysGearDecode` in `test_elesys.py`. It builds a real `CarState` through `CarInterface.get_params()`/`get_params_sp()` (helper `_cs()`) and covers the detents, a transient holding the last gear, a sustained zero becoming Sport, the GEAR 26 fast path, leaving Sport re-arming the dwell, and the dwell staying clear of 520 ms. It calls the function directly, so the `elif` dispatch in `update()` is exercised only by `test_a_gearbox_message_without_gear_does_not_raise` (the fuzz case, through `CarInterface.update()`) and `test_the_real_gearbox_still_takes_the_elesys_decode`.
 
 ### 6.2 `LKAS_PROBLEM` from bus 0
 
@@ -445,7 +451,7 @@ This is a different definition from the one the panda uses to forward the stock 
 ### 6.4 Other car state
 
 - `self.scm_buttons = cp.vl["SCM_BUTTONS"]` (Elesys only, inside the non-Bosch block). It is kept for the re-send (7.5).
-- `self.econ_on`: `None` by default, meaning not observable. On Elesys it is `bool(cp.vl["ECON_STATUS"]["ECON_ON"])`. It is not a `CarState` field; `HondaDynamicTuner._econ_state()` reads it straight off the `CarState` object.
+- `self.econ_on`: `None` by default, meaning not observable. On Elesys it is `bool(cp.vl["ECON_STATUS"]["ECON_ON"])`. It is not a `CarState` field; `elesys_gas.econ_state()` (which `HondaDynamicTuner._econ_state()` calls) reads it straight off the `CarState` object, for the brake learner's gate and the drive-mode slot.
 - `ret.fuelGauge = min(cp.vl["SCM_BUTTONS"]["FUEL_LEVEL"] / FUEL_LEVEL_FULL, 1.0)` with `FUEL_LEVEL_FULL = 105.0`, set in `CarStateExt.update()` (`carstate_ext.py`). It is a fraction of the gauge, not of the tank. Test: integration section 9.
 - `CarStateExt.update()` now takes `(ret, ret_sp, can_parsers)`, and on Elesys `get_can_parsers()` registers `GW_ACTIVE`, `GW_STEER_GRANT`, `EPS_LIN_RAW`, `GW_VERSION` and `GW_BUILD` with `float("nan")`. Both changes belong to areas B and A, but the call site in `carstate.py` must keep passing `ret_sp`.
 
@@ -564,30 +570,87 @@ def create_scm_buttons_no_cruise(packer, bus, scm_buttons):
 
 Why: while the stock ACC believes the main switch is off it stays in standby. It then stops issuing comfort-braking commands that openpilot would block, which is what tripped the brake system (the code says it stops the blocked ACC brake that trips TSA; background in `S:/OP/TSA_acc_disengage_approach.md` and the other `TSA_*.md`). CMBS does not depend on MAIN, so collision braking and FCW keep working. The PCM on bus 0 still sees the real buttons, so openpilot engages normally.
 
-**Failure mode:** if card stops running, nothing re-sends 0x1A6, the radar stops hearing the buttons at all, and the car throws ACC and CMBS faults. This is what happened on routes b5-b8 (sunnypilot `d11d2c9a8`).
+**Failure mode:** if card stops running, nothing re-sends 0x1A6, the radar stops hearing the buttons at all, and the car throws ACC and CMBS faults; and no 0x1FA reaches the VSA, which latches `BRAKE_ERROR` about 1.0 s later (b5-b8: 1.02-1.07 s after the last 0x1FA). This is what happened on routes b5-b8 (sunnypilot `d11d2c9a8`). An exception in `CarController.update()` does the same, which is why everything that runs in it must never raise (integration sections 17, 17b and 19).
 
 ### 7.6 Dynamic tuner hooks in `CarController`
 
-All of these do nothing while `HondaDynamicTuningEnabled` is off. Integration section 1 pins bit-identical output with the toggle off.
+All of these do nothing while `HondaDynamicTuningEnabled` is off. Integration section 1 pins bit-identical output with the toggle off. The gas law (9.2) is not a tuner hook: `HondaElesysGasLawV2` picks it whatever the toggle says.
 
 | hook | code | effect with the tuner on |
 |---|---|---|
 | construct | `self.dynamic_tuner = HondaDynamicTuner(CP, CP_SP)` | reads the params once, when the controller is built, which is at ignition |
 | pitch feedforward | `hill_accel = self.dynamic_tuner.update_state(CC, CS)`; `adjust_accel = accel + hill_accel` feeds `compute_gas_brake()` and, without an interceptor, `pcm_accel` | compensates for road grade |
-| aero | `wind_brake * self.dynamic_tuner.wind_scale()` on the brake side, also passed to the interceptor; `self.dynamic_tuner.update_wind(CC, CS, float(wind_brake_ms2))` with `wind_brake_ms2 = interp(vEgo, [0, 13.4, 22.4, 31.3, 40.2], [0, 0.049, 0.136, 0.267, 0.441])` | learned aero scale |
+| aero | `wind_brake * self.dynamic_tuner.wind_scale()` on the brake side, also passed to the interceptor; `self.dynamic_tuner.update_wind(CC, CS, float(wind_brake_ms2))` | **none since 2026-10**: `wind_scale()` returns 1.0 and `update_wind()` does nothing (9.1, retired channels). The calls stay so this upstream file needs no edit. With the tuner on that moved the brake-on point slightly: the persisted scale was about 0.80, so light braking at 25 m/s now gets about 5 counts less brake |
 | brake gain | `brake_gain = self.dynamic_tuner.brake_gain(CC, CS, float(apply_brake))` multiplies `apply_brake` before it is scaled to counts | learned brake scale |
 | brake release limit | `if self.dynamic_tuner.enabled and CC.longActive and not CS.out.gasPressed and not CS.out.brakePressed: apply_brake = max(self.apply_brake_last - 32, apply_brake)` | the brake command can fall by at most 32 counts per 50 Hz frame, to match factory. This stops the lurch as the car lets go at a stop. It is bypassed on disengage and on driver override, and it runs before the pump logic so the Elesys anchor sees exactly what goes on the wire |
-| pedal | `GasInterceptorCarController.update(..., self.dynamic_tuner)` | see 9.2 |
+| soft final stop | `self.soft_stop = ElesysSoftStop() if (CP.carFingerprint in HONDA_ELESYS and self.dynamic_tuner.enabled) else None`; `apply_brake = self.soft_stop.update(CC, CS, apply_brake, self.dynamic_tuner)` after the brake gain, before the release limit | a brake ceiling while still rolling in the stopping state (7.8). Unlike the other hooks it is `HONDA_ELESYS`-only: built for this car with the toggle on, never for another Nidec car |
+| pedal | `GasInterceptorCarController.update(..., self.dynamic_tuner)` | the tuner only observes the pedal (`observe_pedal`, per-mode data counts); see 9.2 |
 | persist / log | `self.dynamic_tuner.persist(self.frame)` and `self.dynamic_tuner.log_state(self.frame)` at the end of `update()` | see 9.1 |
 
-**Scope:** `HondaDynamicTuner._is_applicable()` accepts every Nidec car with openpilot longitudinal, not only this one. With the toggle on, another Nidec car would get the pitch term, the aero and brake gains and the 32-count release limit. The pedal learner also needs a gas interceptor.
+**Scope:** `HondaDynamicTuner._is_applicable()` accepts every Nidec car with openpilot longitudinal, not only this one. With the toggle on, another Nidec car would get the pitch term, the brake gain and the 32-count release limit. Its interceptor command is upstream's, bit for bit (the retired pedal gain used to reach it too), and it never gets the soft final stop, which is built only on `HONDA_ELESYS` (7.8).
 
 ### 7.7 Comments that record decisions
 
-Two `FORK:` comments in `carcontroller.py` record decisions rather than code:
+Three `FORK` comments in `carcontroller.py` record decisions rather than code:
 
 - **The pedal/PCM crossfade was removed** (opendbc `aa73e60a`). Across 17 engaged routes, 289,625 `ACC_HUD` frames all had `PCM_GAS = 0` and `PCM_SPEED = 0`; the PCM was never shown to respond, and the interceptor is the easier actuator to control. The interceptor owns the gas at every speed. Integration section 6 pins this by decoding `PCM_GAS` from the frames the controller emits.
 - **MVL's 3x faster brake rise was deliberately not ported.** Combined with the learned brake gain, it would reach full brake from a gentle request in about 0.1 s.
+- **`CRUISE_OVERRIDE` (0x1FA bit 20, byte 2 bit 4) stays the constant 1** (`FORK(HONDA_ACCORD_9G_AU)` above `pcm_override = True`, 2026-10). Upstream has sent 1 on every Nidec since openpilot v0.2 (`53bccc437`, moved to the constant in `cb1cd01bd`); panda never reads the bit. The owner asked to remove it because "MVL doesn't use it": MVL does (`pcm_override = CC.longActive or CS.out.stockAeb`, MVL `e3595346`, also on `origin/accordau`), and that ran on this car in June-July 2026. Measured:
+  - every openpilot 0x1FA on 81 current routes carries 1; the stock Elesys radar sets it on 6,130 of its 6,465 braking frames (94.8%), and clears it only in 9 release ramps of 0.2-1.6 s after the driver overrides;
+  - VSA `COMPUTER_BRAKING` follows the command with the bit at 0 or 1 (stock frames at CB >= 50: 0.997 against 0.998);
+  - 184 openpilot frames with brake and the bit at 0 reached the VSA, over 12 routes, with no `BRAKE_ERROR` within 5 s; but that is CB 4 for at most 1.74 s (route 86) and higher commands only in release ramps of 4 frames or fewer;
+  - all 8 `BRAKE_ERROR` onsets since June (comma 76, 77, 7b, 84; sunny b5-b8) began 1.02-1.07 s after the last 0x1FA on bus 0: in 76, 77, 7b and 84 panda dropped openpilot's forced minimum brake (nonzero while longitudinal was not allowed), in b5-b8 nothing was sent. The VSA timeout is about 0.96-1.02 s (route 85: 0.96 s without a fault).
+
+  So: **no measured effect on VSA braking or `BRAKE_ERROR` in the short post-disengage tails we have**, and every `BRAKE_ERROR` since June was a ~1 s 0x1FA gap. It has never been tested at 0 during sustained braking; the comment says so, so nobody reads it as permission to send 0. There is no other override bit left to remove: the owner's `ACC_OVERRIDE_STOP` (bit 21, inside `SET_ME_X00`) was added and later removed (`81b64063`, then `d9498a1a` "Removed AOC Bit"), and nothing of it remains. The owner's June notes (`S:/OP/OP_bit_construction_spec.md`, `S:/OP/ACC_HUD_BRAKE_COMMAND_stock_bitmap.md`) call this bit the one engaged-time divergence from stock (stock sets it in ~37% of engaged frames); that recommendation is closed because no consumer was found and no fault traces to it. Integration section 18 pins the bit on every `BRAKE_COMMAND`, brake 0 on the first one after `longActive` drops, and at most one nonzero `BRAKE_COMMAND` after a rising edge of `brakePressed` or `gasPressed` (panda drops every one of them, so a second would start a hole).
+
+### 7.8 The soft final stop (`elesys_stop.py`), and a brake block that never raises
+
+**Where.** The fork-owned `opendbc/sunnypilot/car/honda/elesys_stop.py`. `CarController.__init__` builds `self.soft_stop = ElesysSoftStop()` only for `HONDA_ELESYS` with `HondaDynamicTuningEnabled` on (the toggle of the stopping debounce and the 32-count release limit), and the Nidec brake block calls `apply_brake = self.soft_stop.update(CC, CS, apply_brake, self.dynamic_tuner)` after the learned brake gain and before the release limit. Every other car, and this car with the toggle off, never builds it: integration section 19 checks that the `BRAKE_COMMAND` bytes are identical for this car with the toggle off and for `ACURA_ILX` with it on or off.
+
+**Why** (braking audit and skeptic review, 2026-10; 45 stops openpilot completed with no driver input, routes `3e`..`103`). The harsh final jerk is the stopping ramp reaching the full standstill hold before the car has stopped. Stopping is entered a median 0.90 s before the stop at 0.62 m/s with a near-zero command; longcontrol then ramps toward `stopAccel` -0.8 at 0.8 m/s³ and the creep table (7.1) adds +35 counts as the speed falls, so the brake is at the hold level when the wheels stop (median 185 counts against the hold's 189) while the planner asks for -0.16. Deceleration at the stop: median 0.92 m/s² (lead stops 1.02, no lead 0.48), jerk on settling a median 7.4 m/s³.
+
+**What.** A ceiling on the brake while the car is still rolling in the stopping state. It only ever lowers the command.
+
+| | |
+|---|---|
+| gate | `CC.longActive and longControlState == stopping and not gasPressed and not brakePressed`; anything else returns the command untouched and resets the state |
+| entry | ceiling = `max(cap, apply_brake at entry)`, so never below what entry was commanding. Entered with the wheels already at zero: no ceiling at all. Entered faster than `SOFT_STOP_MAX_ENTRY_V` 1.2 m/s (`vEgo` on the entry frame; unknown counts as faster): no ceiling either, and one `hondastop skip=speed` line |
+| cap | `SOFT_STOP_ROLL_CB` 125 + `max(0, -sin(pitch)) * 9.81 / 2.6 * 256` counts, about 17 per degree of downhill. `pitch` is the tuner's filtered pitch (`HondaDynamicTuner.filtered_pitch()`, `PITCH_RC` 0.5 s); no grade term when there is none (no pose yet, stale for `PITCH_STALE_FRAMES`, NaN). While rolling the ceiling is `max(ceiling, cap)`: a steeper downhill raises it, nothing lowers it |
+| rise | `SOFT_STOP_RISE` 250 counts/s (5 per 50 Hz frame: 125 to 189 in ~0.26 s), monotone, from the first of: **settle**, `SOFT_STOP_SETTLE` 0.55 s after the wheels first read zero (`CarState.standstill`, or `vEgoRaw` at zero; below 1 m/s `vEgoRaw` is `XMISSION_SPEED`, which reads 0 below ~0.3 m/s); **moving**, the wheels turning again after reading zero; **weak**, `aEgo > -0.25` for 0.4 s, counted only once the command has sat at the ceiling for `SOFT_STOP_AT_CEILING` 0.3 s; **max_roll**, `SOFT_STOP_MAX_ROLL` 1.9 s since entry, absolute: rolling or settling, whatever the wheels do |
+| done | at 255 counts the ceiling is out of the way: the hold is today's 189, byte for byte (pump bit and checksum included, from 1.5 s after wheel-zero; integration 19) |
+| bound | the rise starts 1.9 s after entry at the latest and the ceiling is gone 0.52 s later: nothing of it is left 2.42 s after the stopping state began |
+
+The skeptic review made four changes to the audit's version. The settle timer starts at wheel-zero, not at `vEgo < 0.15` (which fires 0.05 s before the wheels read zero, while the camera still sees 0.17 m/s), and lasts 0.55 s, not 0.25. Weak deceleration only counts at the ceiling: the plain 0.4 s escape fired in 6 of the 45 stops, always 0.38 s after entry, in stops still building pressure from 9-53 counts, three of them among the harshest (`ad` 394.3 at 2.74 m/s², `b0` 391.0, `d3` 829.4). The cap is grade-aware: below 2 m/s and in stopping the pitch feedforward is 0, so a flat 125 on a 2.5° downhill leaves ~0.1 m/s² of net deceleration. And moving again rises at once, with `MAX_ROLL` at 1.9 s instead of 2.5.
+
+**After the review (2026-10), two bounds and one decision.**
+
+- `MAX_ROLL` counts from entry. It was first written against the rolling time only, which let the ceiling bind until 1.9 + 0.55 s after entry and last to about 2.97 s; the decision was an absolute bound. On the replayed stops it changes nothing: every rise was `settle`, at most 1.82 s after entry.
+- The entry-speed bound. The weak-decel escape cannot fire while the car decelerates harder than 0.25 m/s², so a stop entered fast with the brake still building would sit at the cap until `MAX_ROLL`. Measured entries reach 1.08 m/s, in the 45 audited stops and in the 32 of the review replay (median 0.58); above 1.2 m/s the stop is today's, bit for bit (integration 19 enters at 1.5 m/s).
+- Re-replayed through the real `CarInterface` on the review's 14 routes (300 min, 144 min engaged; scratch `batch1/long-fix/`): every CAN frame of all five set-ups (tuner on/off, law v1/v2, ceiling on/off) is identical to the code before these two bounds, 1.8 million control steps, with the same 33 `hondastop` lines (26 `settle`, 7 `end=left`) and no `skip=speed`.
+- Leaving the stopping state for the PID drops the ceiling in one frame, by decision: the gate is the stopping state, and carrying a ceiling into the PID would cap braking the planner asked for. In the review replay the largest upward step on that frame, across the stopping/PID flickers on `9e` and `a0`, was 6 counts.
+
+**Replayed on the 45 stops** (open loop: the recorded signals through the real `soft_stop_ceiling()`; scratch `batch1/long/b2_replay/`):
+
+- 44 entered the stopping state rolling. `9f` 303.9 reached standstill in the PID state (cb 228) and gets no ceiling. In `ad` 394.3 the driver pressed the gas 0.33 s after wheel-zero, which ends the ceiling (`end=left`).
+- `standstill` and `vEgoRaw == 0` agreed on every stopping frame, and `vEgoRaw` never read nonzero again within a stop: the "moving" rule had no false trigger.
+- The wheels read zero a median 0.84 s after entry (at most 1.26 s, inside `MAX_ROLL`), 0.06 s before `vEgo` < 0.02.
+- Command at wheel-zero: median 170 as recorded, 137 with the ceiling (grade term included).
+- 29 of the 44 are on a downhill (the grade term's median over all 45 stops is +11.5 counts; the largest cap is 164). It is grade, not brake dive: the filtered pitch at entry matches the pitch in the settled hold (r = 0.97, median difference -0.02°), and the route-mean pitch above 5 m/s is -0.18°.
+- With the recorded `aEgo` (today's stronger braking) every rise was `settle`. Whether `weak` fires under the softer brake cannot be known from these logs.
+
+**Expected, inferred and unvalidated:** deceleration at the stop ~0.5-0.6 m/s² instead of 0.92, and about +0.1-0.2 m and +0.3-0.4 s per stop. The audit's simulator failed its own validation (correlation 0.22, -0.05 and -0.05 for time, distance and deceleration), and 125 counts at the stop is outside the data (most stops sat at 170-188), so this is a hypothesis to measure. Measure it at the camera/IMU-confirmed stop: the count at wheel-zero is 125 by construction and proves nothing, and the old IMU window, 50-150 ms before wheel-zero, lands before the ceiling rises. Targets: deceleration at the stop median <= 0.6 and p90 <= 1.0 m/s²; the peak jerk in the 0-0.8 s after wheel-zero; distance to a stopped lead median >= 3.5 m (4.1 today); holds with 0 creep frames and no rollback. The first drive also carries the 2026-09 merge's stop latch (`should_stop()` on the measured `vEgo`, 10.1), and no post-merge stop exists in the logs yet.
+
+**Log.** One `carlog` line per stop, which comes back in the route as a `logMessage`: `hondastop rise=<settle|moving|weak|max_roll> t= roll= still= entry= cap= ceil=` when the ceiling starts to rise, `hondastop end=left ...` when the stop ended first (the stopping state left, a pedal, a disengage), or `hondastop skip=speed v= entry=` when it was entered too fast for a ceiling. A stopping/PID flicker adds a line per re-entry. Each `weak` or `max_roll` should show a downhill or a weak brake.
+
+**What it leaves alone.** The pump: 125 > 100, so `brake_pump_hysteresis_elesys()`'s continuous final-approach branch still runs. The learners: the brake learner needs the PID state and `vEgo` > 1 m/s, the per-mode counter needs the PID state, and both read the command before the ceiling (integration 19 compares the tuner's state with that of a controller without the ceiling). Stock AEB: panda forwards it whenever its brake is >= openpilot's, so a lower command can only start the forwarding earlier. Disengage: brake 0 on the first `BRAKE_COMMAND` after `longActive` drops, also while the ceiling binds. Pedals: at most one nonzero `BRAKE_COMMAND` after a `brakePressed` or `gasPressed` edge (integration 18).
+
+**Not in this change, by decision.** The audit's P2, no coasting in the last meter (`longcontrol.py`), waits until this has been measured on its own; if it comes, it must bleed the positive integrator toward `g·sin(pitch)`, not 0, and only below 0.8 m/s. P3, a pump floor of 30 counts, was dropped: 15-29 counts do decelerate the car against a coasting baseline (0.05-0.18 m/s²), 12.9% of the brake learner's frames are below 30, and floor crossings would restart the pump through its 3 s quiet period. The owner's pump question is answered by measurement: the pump runs 28% of the time a brake command exists, against the stock ACC's 53%, with a median run of 0.66 s.
+
+**Never raises.** `ElesysSoftStop.update()` wraps everything; on any exception it resets and returns the command untouched, and it refuses an answer above the command or below 0. A missing or non-finite `vEgoRaw` reads as the wheels at zero (today's behavior: no ceiling at entry, the settle timer after it); an unknown `aEgo` counts as not slowing (toward today's ramp, never a longer cap).
+
+**The NaN-`vEgo` guard** (same change, `FORK(HONDA_ACCORD_9G_AU)` in the brake block). A non-finite `vEgo` made `wind_brake` NaN, and `int(np.clip(apply_brake * brake_gain * ...))` raised "cannot convert float NaN to integer": no 0x1FA, and the VSA's `BRAKE_ERROR` a second later. The block now falls back to the brake without the aero credit. Finite values are untouched, so nothing changes on any car where the old code did not raise. Upstream's `actuator_hysteresis()` already holds its last steady value through a NaN request, so mid-braking the command holds, a little firmer; with the tuner on the learned gain also fades to 1.0, because the tuner reads an unknown speed as 0 (integration 17b).
+
+Tests: `test_elesys_stop.py` (28: every timer, the grade term, the gate and the reset, the bound from entry, the entry-speed bound on `vEgo`, random-input invariants, the wrapper never raising, one log line per stop) and integration sections 17b, 18 and 19 (19 also enters at 1.5 m/s, bit-identical to the controller without the ceiling, and at 1.15 m/s, capped).
 
 ---
 
@@ -656,10 +719,20 @@ This is self-learning longitudinal tuning, ported from MVL's `ACURA_MDX_3G` dyna
 
 | channel | what it learns | how it is applied | limits |
 |---|---|---|---|
-| pedal | a multiplicative correction per speed breakpoint on `elesys_gas_multiplier()`, on the grid `PEDAL_GAIN_BP = ELESYS_GAS_BP = [0, 3, 6, 10, 15, 20]` m/s | `pedal_gain_at(v)` in the interceptor path | `PEDAL_GAIN_MIN = 0.5`, `PEDAL_GAIN_MAX = 1.8`, `PEDAL_LEARN_RATE = 2e-4` |
+| pedal | **retired (2026-10).** Nothing. `observe_pedal()` counts, per drive-mode slot, the steady-pedal samples an offline plant fit could use | logged only | - |
 | brake | a gain on the brake command, stored as an offset | `brake_gain()` in `CarController` | a PID with `BRAKE_KI = 0.5`, `BRAKE_POS_LIMIT = 0.6`, `BRAKE_NEG_LIMIT = 0.15` (so 0.85x to 1.60x). Frozen below `BRAKE_LEARN_MIN_SPEED = 1.0` m/s, and faded linearly to 1.0 below that speed |
-| aero | a scale on `wind_brake` | `wind_scale()` | `WIND_FACTOR_MIN/MAX = 0.7/1.5`, `WIND_ERR_DEADBAND = 0.05`. Learns only while `abs(accel_target) < LEARN_MIN_CMD` |
-| pitch | nothing learned. A feedforward of `sin(pitch) * g`, from `CC.orientationNED[1]` through `PITCH_RC = 0.5` s | added to the accel target | `PITCH_ACCEL_LIMIT = 1.5`. Faded out between 5 and 2 m/s, active only in `LongControlState.pid`, and decays out after `PITCH_STALE_FRAMES = 100` frames without a pose |
+| aero | **retired (2026-10).** Nothing | `wind_scale()` returns 1.0 | - |
+| pitch | nothing learned. A feedforward of `sin(pitch) * g`, from `CC.orientationNED[1]` through `PITCH_RC = 0.5` s | added to the accel target; the filtered pitch also sets the soft final stop's grade-aware cap, through `filtered_pitch()` (7.8) | `PITCH_ACCEL_LIMIT = 1.5`. Faded out between 5 and 2 m/s, active only in `LongControlState.pid`, and decays out after `PITCH_STALE_FRAMES = 100` frames without a pose |
+
+**Why the pedal and aero learners were retired** (2026-10, routes 9f..103, replaying the unmodified tuner over the logs):
+
+- The pedal learner could not persist anything. The live gain moved `2e-4 * err` per admitted sample, the persisted estimate `3e-4` of the difference per sample, and each ignition reset live to persisted, so each drive's progress was thrown away. Admitted pedal time was about 1.6% of engaged time; six weeks moved the persisted gains from `[1,1,1,1.004,1.004,1]` to `[1,1,.996,.996,.999,.993]`.
+- It would have learned the wrong way anyway. Its gate read `actuators.accel`, which includes openpilot's own integrator, so at 12-30 m/s it admitted frames where the integrator had lifted a ~0.36 target over the 0.4 gate and read under-delivery (+0.04 to +0.12) where the car over-delivers (-0.19 to -0.33 gated on the planner's target).
+- The aero scale was a random walk: median 0.37 of its 0.7-1.5 range inside a drive, rails hit on b0/c8/ce (1.5) and de/fd (0.7), drift uncorrelated with speed mix, and it also scaled the brake-side credit. Under the v2 gas law it would lose its lever on the cruise pedal and rail.
+
+The fix for the gas side is the measured law in 9.2, not a better learner. `HondaDynPedalGain0`-`5` and `HondaDynWindFactor` are no longer registered, read or written; a device keeps the old files on disk, unread.
+
+**Per-mode data.** `update_state()` counts engaged seconds above `MODE_MOVING_SPEED = 1.0` m/s per slot (D, ECON, S; `elesys_gas.drive_mode_slot`), and `observe_pedal()` counts samples that pass `_learn_ok()` without the reference-mode gate plus the audit's steady-pedal rule: speed at least `ADMIT_MIN_SPEED = 3.0` m/s, a fresh pose with `|pitch| < 0.08` rad, and the last `ADMIT_WINDOW = 50` interceptor commands (1 s) all inside 0.02-0.9 with a standard deviation under 0.008. The seconds persist as running totals, `HondaDynModeSecD`/`ECON`/`S`. All of it runs only with `HondaDynamicTuningEnabled` on, while the gas law runs either way; the sunnylink texts say so, so an owner who turns the tuner off knows the ECON/S tally stops. In a month there were 87 s of engaged ECON and 79 s of engaged S, about 11 s and 28 s of it admissible: too little to fit anything, so this only collects.
 
 **Rules that must not be relaxed.** The module header lists four:
 
@@ -670,50 +743,66 @@ This is self-learning longitudinal tuning, ported from MVL's `ACURA_MDX_3G` dyna
 
 **Admission.** Each learner accepts a sample only when these conditions hold:
 
-- **Plant-lag model (pedal and aero).** These learners compare `aEgo` against a first-order model of the plant's lag (`PLANT_TAU = 0.30` s). They reset whenever the filtered ramp rate exceeds `LEARN_MAX_JERK = 0.5` m/s^3, and wait `SETTLE_FRAMES = 100`. This replaced a steady-target dwell that let in only 0.7-19.6 s per route and left the pedal gains at 1.000 after two weeks (opendbc `16b9ff5f`, `CHANGELOG-elesys.md` section 12).
+- **Plant-lag model (now only the per-mode data counter).** The retired pedal and aero learners compared `aEgo` against a first-order model of the plant's lag (`PLANT_TAU = 0.30` s), resetting whenever the filtered ramp rate exceeds `LEARN_MAX_JERK = 0.5` m/s^3 and waiting `SETTLE_FRAMES = 100`. That dwell now gates only `observe_pedal()`; `accel_ref`/`accel_error` are still logged.
 - **Steady-target dwell (brake).** The brake channel keeps the old dwell (`STEADY_SETTLE_FRAMES = 150`, `STEADY_SETTLE_TOLERANCE = 0.20`). It is an integrator, and ramp samples rail it.
 - **Minimum command.** Below `LEARN_MIN_CMD = 0.4` m/s^2 the gain cannot be identified.
 - **Driver and state.** Learning is off while gas or brake is pressed, during `stockAeb`, and outside the PID state.
-- **Drive mode.** Learning happens only in the reference mode: `LEARN_GEARS = ("drive",)`, `LEARN_ECON = (False,)`. An unknown gear still learns, so other Nidec cars are not locked out.
+- **Drive mode.** The brake learner learns only in the reference mode: `LEARN_GEARS = ("drive",)`, `LEARN_ECON = (False,)`. An unknown gear still learns, so other Nidec cars are not locked out.
 
 **Params** (`_PARAM_SPEC`, re-clamped on load):
 
-- `HondaDynPedalGain0` to `HondaDynPedalGain5`: default 1.0, range 0.5-1.8.
-- `HondaDynWindFactor`: default 1.0, range 0.7-1.5.
 - `HondaDynBrakeGain`: default **0.0**, range -0.15 to 0.6. It is an offset, so turning the toggle on changes nothing until something has been learned.
+- `HondaDynModeSecD`, `HondaDynModeSecECON`, `HondaDynModeSecS`: default 0.0, range 0 to 1e9. Running totals of engaged seconds, written as loaded + this drive; counters, so rule 2 does not apply to them.
 
 The enable key is `HondaDynamicTuningEnabled`. The values are read once in `__init__`. A background `_ParamWriter` thread writes them every `PERSIST_INTERVAL = 6000` frames (60 s), so the control loop never waits on disk. `Params` is imported lazily, so opendbc still imports without openpilot.
 
-**Telemetry.** Every `LOG_INTERVAL = 500` frames (5 s) it writes one `carlog.info` line tagged `hondadyn`, with these fields: `pedal=`, `pedalc=`, `brake=` and `brakec=` (both shown as gains, `1.0 + offset`, since opendbc `ff9f3211`), `wind=`, `pitch=`, `settle=`, `settles=`, `eng=`, `aref=`, `aerr=`, `stale=`, `werr=`, `gear=`, `econ=`, `modeok=`. card forwards `carlog` to cloudlog, so the lines come back in a route's `logMessage`. The owner parses them with `S:/OP/sunny_logs/parse_hondadyn.py`, which is outside the repo.
+**Telemetry.** Every `LOG_INTERVAL = 500` frames (5 s) it writes one `carlog.info` line tagged `hondadyn`, with these fields: `gaslaw=` (`v1`/`v2` on this car, `nidec` on another), `slot=` (`D`/`ECON`/`S`), `modesec=[D,ECON,S]` (engaged moving seconds this drive), `modeadm=[D,ECON,S]` (admitted steady-pedal samples this drive, 50 Hz), `modetot=[D,ECON,S]` (the persisted running totals), `brake=` and `brakec=` (both shown as gains, `1.0 + offset`, since opendbc `ff9f3211`), `pitch=`, `settle=`, `settles=`, `eng=`, `aref=`, `aerr=`, `stale=`, `werr=`, `gear=`, `econ=`, `modeok=`. `pedal=`, `pedalc=` and `wind=` went with their learners (2026-10). card forwards `carlog` to cloudlog, so the lines come back in a route's `logMessage`. The owner parses them with `S:/OP/sunny_logs/parse_hondadyn.py`, which is outside the repo.
 
 **Known issues recorded in the code:**
 
 - The pitch fade band (2-5 m/s) lies inside the PID state. On a stop approach the grade term is handed back to openpilot's integrator faster than the integrator can follow: modelled shortfall 0.115 m/s^2 on a 4% downhill, 0.249 on a 10% one. This was left alone on purpose until there is road data.
-- Two comments contradict each other about ECON. An older paragraph says ECON is not gated because it is not observable yet; a later one says it is mapped and live. The later one is correct, and `LEARN_ECON = (False,)` is in force.
 - Two comments give 0.8 m/s as the speed where stopping begins: the pitch-fade `KNOWN ISSUE` paragraph and the brake-fade comment above `brake_gain()`'s return. They used to cite `vEgoStopping`; since the 2026-09 merge they cite `stopping_tune.py`, where the value now lives (10.1).
 
 **Removed history**, noted here so nobody restores it by accident: the PCM blend was deleted in opendbc `aa73e60a` / sunnypilot `cb4e0c34b`. That covered `HondaDynamicPcmBlendEnabled` and the learned `HondaDynGasFactor`, `HondaDynGasAlpha`, `HondaDynAverageFactor`, `HondaDynSpeedFactor` and `HondaDynSpeedAlpha`.
 
-Tests: `test_dynamic_tuning.py` (sections 1-5 and 9-16; sections 6-8 were removed with the PCM blend) and sections 1-6 of `test_dynamic_tuning_integration.py` (see 12).
+Tests: `test_dynamic_tuning.py` (sections 1-5 and 10-16; 6-8 went with the PCM blend, 9 with the aero learner) and sections 1-6, 16, 17 and 19 of `test_dynamic_tuning_integration.py` (see 12).
 
-### 9.2 `opendbc/sunnypilot/car/honda/gas_interceptor.py`
+### 9.2 The gas law: `elesys_gas.py` and `gas_interceptor.py`
 
-**The curve.** New `ELESYS_GAS_BP = [0., 3., 6., 10., 15., 20.]`, `ELESYS_GAS_V = [0.55, 0.85, 1.20, 1.55, 1.95, 2.75]` and `elesys_gas_multiplier(v_ego)`. On `HONDA_ELESYS` these replace upstream's `interp(vEgo, [0, 10], [0.4, 1.0])`.
+`gas_interceptor.py` is upstream sunnypilot's. The fork adds the `HONDA_ELESYS` import, constructs `self.elesys_gas = ElesysGasLaw()` in `__init__` for this car with an interceptor, calls `self.elesys_gas.update(CC, CS, gas, brake, wind_brake)` in place of upstream's line on this car, and calls `tuner.observe_pedal(CC, CS, self.gas, law)` when a tuner is passed. Every other car runs upstream's line bit for bit, with or without a tuner. Everything else is in the fork-owned `opendbc/sunnypilot/car/honda/elesys_gas.py`, and `gas_interceptor.py` re-exports `ELESYS_GAS_BP`, `ELESYS_GAS_V` and `elesys_gas_multiplier`.
 
-Why:
+**Which law.** `HondaElesysGasLawV2` (`PERSISTENT | BACKUP`, BOOL, default `"1"`) is read once, when `CarController` is built (ignition). Anything unreadable gives the default. The `hondadyn` line says which law ran (`gaslaw=`).
 
-- On this car the pedal-to-accel gain falls with speed.
-- July drives delivered only 50-65% of the commanded accel at 3-14 m/s.
-- August plant identification, over about 200k settled frames, said 1.30-1.75x more command was needed, while the interceptor command never went above 0.9.
-- The top three breakpoints were raised by about 1.25x: one measured step, not the full ratio.
+**v1** is the law that shipped before, bit for bit: `pedal = clip(gm1(v) * (gas - brake + 0.75 * wb), 0, 1)`, with `gm1 = elesys_gas_multiplier(v)` = `interp(v, [0, 3, 6, 10, 15, 20], [0.55, 0.85, 1.20, 1.55, 1.95, 2.75])` and the retired learned gain at exactly 1.0. The history of that curve: route `ac35d9891f`; opendbc `2905e73d`, `2bc5c4db`; `CHANGELOG-elesys.md` section 7.
 
-Sources: route `ac35d9891f`; opendbc `2905e73d`, `2bc5c4db`; `CHANGELOG-elesys.md` section 7. The code comment says what to expect in the next logs and when to take a second step.
+**v2** (`elesys_pedal_v2`), with `gas = net/4.8` and `brake = -net/2.6` from `compute_gb_honda_elesys()` and `wb` the aero term:
 
-**The tuner hook.** `GasInterceptorCarController.update()` gains a `tuner=None` argument. When a tuner is passed, the gas multiplier is multiplied by `tuner.pedal_gain_at(v)`, and afterwards `tuner.update_pedal(CC, CS, self.gas)` is called.
+- net >= 0: `pedal = off(v) + gas * gm2(v) / MODE_K[slot]`
+- net < 0: `pedal = off(v) * (1 - brake / (0.75 * wb))`, which is zero at net = -1.95 wb, v1's pedal-zero point
+- `gm2(v) = 4.8 / k(v)` with the measured `k` at `ELESYS_FF_BP = [0, 3, 6, 10, 15, 20, 25, 30]` m/s = `[8.73, 5.65, 6.8, 4.7, 3.4, 2.9, 2.0, 2.0]` m/s^2 per unit pedal. 0 and 3 m/s are v1's values exactly (4.8/0.55 and 4.8/0.85), and the table is interpolated in the same quantity v1 interpolates (`ELESYS_FF_GM`), so 0-3 m/s is v1's law: the same gain bit for bit, and the same pedal to within float rounding (the sum is grouped differently; tested to 1e-12).
+- `off(v) = min(G0(v), 0.75 * wb * gm1(v))` with the measured cruise pedal `ELESYS_FF_G0 = [0.045, 0.045, 0.080, 0.102, 0.110, 0.122, 0.150, 0.211]`. Below about 16.9 m/s v1's offset is the smaller, so the offset, and the whole zero-crossing window, is v1's; above it the measured G0 takes over and the window is gentler (0.76 against 1.06 pedal per m/s^2 at 20 m/s).
 
-**The shared grid.** `ELESYS_GAS_BP` is the single source for the tuner's grid. The UI hard-codes the same breakpoints, and a test checks they agree (section 11).
+| speed (m/s) | 3 | 6 | 10 | 15 | 20 | 25 | 30 |
+|---|---|---|---|---|---|---|---|
+| measured k | 8.7±0.6 | 6.8±0.5 | 4.7±0.4 | 3.39±0.09 | 2.89±0.09 | 2.03±0.21 | 1.98±0.15 |
+| v1's k = 4.8/gm1 | 5.65 | 4.00 | 3.10 | 2.46 | 1.75 | 1.75 | 1.75 |
+| measured cruise pedal G0 | 0.045 | 0.080 | 0.102 | 0.110 | 0.122 | 0.150 | 0.211 |
+| v1's offset 0.75·wb·gm1 | 0.003 | 0.017 | 0.043 | 0.087 | 0.169 | 0.216 | 0.263 |
 
-Tests: `TestElesysGasMultiplier` checks the golden curve, that it is monotonic, and that the mid band sits above the old curve.
+Fit: 51 routes (99..103), engaged, D, pedal steady for 1 s and lagged 0.4 s, response `aEgo + g·sin(pitch)`, route-jackknife errors; re-derived independently to within 0.01. Out of sample (fitted on 99..d9, tested on da..103) the refit law cut the integrator-load RMS from 0.214 to 0.123 m/s^2.
+
+**Why these choices** (the skeptic review, which overrode the audit):
+
+- v1 gave 1.4-1.7x too much pedal per m/s^2 at 6-20 m/s, and the car showed it: in demand episodes aEgo ran 1.34-1.42 against aTarget 0.95-1.15 for the first 2 s, then openpilot's integrator fell to -0.1 to -0.3. The pedal for 1.0 m/s^2 at 20 m/s goes 0.742 -> 0.467.
+- The measured G0 is NOT used below ~16.9 m/s. It is 2-6x v1's there, and raising only the offset squeezes the pedal's fall to 0 into a 0.04-0.12 m/s^2 window, 1.3-4.8x steeper than today: a likely surge or limit cycle in stop-and-go. Raise it only together with moving the brake-on point to the measured coast deceleration (the brake work).
+- The k table covers pedal up to about 0.25-0.28. Above that the car delivers more than the line (kickdown), so high-pedal predictions are extrapolations.
+- It will feel softer pulling away from a roll at 6-20 m/s, because it removes v1's onset over-delivery. Max accel was not raised: the 1.6 m/s^2 clip only bound during launches that were already overshooting.
+
+**Drive modes.** `mode_slot(CS)`: `S` if the gear is sport, else `ECON` if `CS.econ_on`, else `D` (unknown, P, R and N count as D). `MODE_K = {"D": 1.0, "ECON": 1.0, "S": 1.0}` multiplies k in v2, so nothing changes yet; ECON's evidence (0.61x achieved, slope 0.72-0.84x) is 70 s of mostly manual driving, and the review's advice for any prior is >= 0.85, not 1/1.3. A slot change crossfades the pedal linearly over `CROSSFADE_FRAMES = 100` interceptor frames (2 s), starting from the current blend if it changes again mid-fade, and while every multiplier is equal the output is exactly the single-slot law.
+
+**Never raises.** `ElesysGasLaw.update()` runs inside `CarController.update()`. NaN, None and missing inputs fall back to v1 and then to 0.0; the result is always a finite float in [0, 1], and 0.0 when not `longActive`.
+
+Tests: `test_elesys_gas.py` (31 tests: golden pedal per breakpoint for net in {-0.5, -0.1, 0, 0.5, 1, 2}; continuity at 0 and at the pedal-zero point; monotonic in net; zero at and below the brake-on point; v2 equal to v1 at or below 3 m/s; the negative-branch slope never steeper than v1's and equal below 16.8 m/s; the crossfade bound; the slot rule; the param read; non-Elesys bit identity); integration sections 16 (both laws through the real `CarController`, the brake command identical under both) and 17 (`update()` never raises, 0x1FA on every even frame); `TestElesysGasMultiplier` in `test_elesys.py` for the v1 curve.
 
 ---
 
@@ -854,18 +943,18 @@ Area B owns this file. One rule in it, though, is gated neither on the car nor o
 
 ## 11. UI, sunnylink and statsd
 
-There is one setting, `HondaDynamicTuningEnabled`, which can be reached from four places, plus read-only views of the eight learned values. The toggle takes effect at the next ignition, because both the tuner and `LongControl` read it only once.
+There are two settings. `HondaDynamicTuningEnabled` can be reached from four places; `HondaElesysGasLawV2` (the gas law, 9.2) from sunnylink, and the mici and big UI show its value. Both take effect at the next ignition, because they are read only once. There are read-only views of the learned brake gain and the engaged time per drive mode.
 
 ### 11.1 Params (`openpilot/common/params_keys.h`)
 
 | key | flags | type | default |
 |---|---|---|---|
 | `HondaDynamicTuningEnabled` | `PERSISTENT`, `BACKUP` | BOOL | `0` |
-| `HondaDynPedalGain0` .. `HondaDynPedalGain5` | `PERSISTENT` | FLOAT | `1.0` |
-| `HondaDynWindFactor` | `PERSISTENT` | FLOAT | `1.0` |
 | `HondaDynBrakeGain` | `PERSISTENT` | FLOAT | `0.0` |
+| `HondaDynModeSecD`, `HondaDynModeSecECON`, `HondaDynModeSecS` | `PERSISTENT` | FLOAT | `0.0` |
+| `HondaElesysGasLawV2` | `PERSISTENT`, `BACKUP` | BOOL | `1` |
 
-The learned values are not `BACKUP`. They change every 60 s and belong to one car, and a restored backup could bring back a tune learned on different hardware. The type must stay FLOAT: statsd depends on it to send numeric fields, and `_ParamWriter` counts write errors if a key is missing. The `EpsLkas*` keys in the same hunk belong to area A.
+`HondaDynPedalGain0`-`5` and `HondaDynWindFactor` were removed in 2026-10 with their learners. The learned values are not `BACKUP`. They change every 60 s and belong to one car, and a restored backup could bring back a tune learned on different hardware. The type must stay FLOAT: statsd depends on it to send numeric fields, and `_ParamWriter` counts write errors if a key is missing. The `EpsLkas*` keys in the same hunk belong to area A.
 
 ### 11.2 Big UI (comma 3/3X)
 
@@ -878,34 +967,31 @@ The learned values are not `BACKUP`. They change every 60 s and belong to one ca
 
 **`openpilot/selfdrive/ui/sunnypilot/layouts/settings/vehicle/brands/honda.py`**
 
-- `HondaSettings` was empty upstream. It now has the toggle and a `Learned Values` row with a RESET button. Reset is offroad only, sits behind a confirmation dialog, and re-checks offroad when the dialog is confirmed.
+- `HondaSettings` was empty upstream. It now has the toggle and a `Learned Values` row with a RESET button. Reset is offroad only, sits behind a confirmation dialog, and re-checks offroad when the dialog is confirmed. It writes `RESET_KEYS` only, which is `HondaDynBrakeGain`: the `HondaDynModeSec*` totals are a tally of the data for per-mode tables, not a tune, so a brake-learner reset keeps them.
 - `update_settings()` rebuilds the toggle description each frame from `DYN_DESC` and `DYN_IGNITION_NOTE`. When `ui_state.has_longitudinal_control` is false it prefixes `DYN_NO_LONG_DESC` in bold (`This feature is unavailable because sunnypilot Longitudinal Control is not enabled on this car.`). It only changes the text; the toggle itself stays settable.
-- Module-level API used by the mici page: `PEDAL_GAIN_BP`, `LEARNED_DEFAULTS`, `TUNING_PARAM`, `learned_value()`, `learned_pedal_gains()`, `reset_learned_values()`.
-- The readout refreshes once a second (`LEARNED_REFRESH_S`), shows speeds in the `IsMetric` units, and shows the brake value as a gain (`x` followed by `1.0 + HondaDynBrakeGain`, sunnypilot `2b2d8e0a7`).
+- Module-level API used by the mici page: `LEARNED_DEFAULTS`, `RESET_KEYS`, `MODE_SLOTS`, `TUNING_PARAM`, `GAS_LAW_PARAM`, `GAS_LAW_DEFAULT`, `GAS_LAW_PLATFORMS`, `learned_value()`, `car_platform()`, `gas_law_applies()`, `gas_law_v2()`, `gas_law_label()`, `mode_minutes()`, `mode_time_text()`, `reset_learned_values()`.
+- The readout refreshes once a second (`LEARNED_REFRESH_S`). It shows the gas law the car will run from the next drive, the engaged minutes per drive mode, and the brake value as a gain (`x` followed by `1.0 + HondaDynBrakeGain`, sunnypilot `2b2d8e0a7`). The six pedal gains and the aero factor it used to show could not move and are gone (2026-10). The gas-law line shows only when `gas_law_applies()`: the platform (`CarPlatformBundle` first, `CP.carFingerprint` second) is in `GAS_LAW_PLATFORMS`, a copy of opendbc's `HONDA_ELESYS` (`HONDA_ACCORD_9G_AU`) that a test keeps in sync. Another Honda runs upstream's pedal law whatever the setting says, so it is not shown the setting.
 - The key names and defaults are duplicated here on purpose instead of importing the tuner, so a failing opendbc import cannot blank the settings screen. A test keeps the copies in sync.
 
 ### 11.3 Small UI (comma 4, mici)
 
 The comma 4 runs the small UI. It has no Cruise or Vehicle panel, so neither page above can be reached on it (sunnypilot `d8863e59e`).
 
-- `openpilot/selfdrive/ui/sunnypilot/mici/layouts/vehicle.py` (new): `VehicleLayoutMici(NavScroller)`, with `HondaLearnedInfo`, the toggle as a `BigParamControl`, and reset behind `BigConfirmationDialog`. `car_brand()` gets the brand from `CarPlatformBundle` first and `CP.brand` second, cached on a 1 s tick. `HondaLearnedInfo` shows the pedal gains with their speeds in the user's units, then the brake value as a **signed offset** (`+0.12`, not a gain) and the aero factor as `x1.00`.
+- `openpilot/selfdrive/ui/sunnypilot/mici/layouts/vehicle.py` (new): `VehicleLayoutMici(NavScroller)`, with `HondaLearnedInfo`, the toggle as a `BigParamControl`, and reset behind `BigConfirmationDialog`. `car_brand()` gets the brand from `CarPlatformBundle` first and `CP.brand` second, cached on a 1 s tick. `HondaLearnedInfo` shows two pairs: `gas law` with `v2 next drive   brake x1.02` (the gas-law setting the car reads at the next ignition, and the brake value as a gain; the value scrolls in the 340 px card), and `D / ECON / S` with the engaged minutes (`412 / 1.4 / 1.3 min`, which fits). On a car the gas law does not apply to (`gas_law_applies()` above) the first pair is `brake` with `x1.02`. Rendered headless; they used to be the six pedal gains, which could not move, and the brake offset with the aero factor.
 - `openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py`: a `vehicle` `SettingsBigButton` (icon `icon_vehicle.png`) inserted with `items.insert(2, vehicle_btn)`, right after upstream's models row (index 3 before the 2026-09 merge, when sunnylink came first). It is visible when `car_brand() in ("", "honda")`, so a fingerprint that has not resolved yet never hides it. The `gateway` button at index 3 in the same hunk belongs to area A. `VehicleLayoutMici` is built without `back_callback`, following upstream `099143ad9`; `NavWidget` pops itself on swipe-down.
 
 ### 11.4 sunnylink
 
-- `settings_ui_src/pages/vehicle.yaml`: a section with `id: honda` (it compiles to `vehicle_settings.honda` in `settings_ui.json`) holding the toggle, with `needs_onroad_cycle: true` and offroad-only enablement.
-- `settings_ui_src/pages/cruise.yaml`: a section `honda_dynamic_learning`, visible when the capability `brand == honda`. It shows the eight learned keys as `widget: info` rows. They carry no `step`: the `step: 0.001` display hint that `d11d2c9a8` added is not an info-widget field, and on its own, without `min`/`max`, it failed upstream's `test_settings_schema` `test_numeric_constraints`, so it was removed in the 2026-09 merge. The labels are in km/h (0, 11, 22, 36, 54, 72), converted from the m/s breakpoints.
+- `settings_ui_src/pages/vehicle.yaml`: a section with `id: honda` (it compiles to `vehicle_settings.honda` in `settings_ui.json`) holding the two toggles, `HondaDynamicTuningEnabled` and `HondaElesysGasLawV2` ("Measured Gas Pedal Law (2013-15 Accord)", whose description says what it does and that it applies at the next drive, and whose details say the per-mode time is counted only with the learning toggle on), each with `needs_onroad_cycle: true` and offroad-only enablement. The 2026-10 hunks there, in `cruise.yaml`, `params_keys.h` and `statsd.py` carry `FORK(HONDA_ELESYS)`.
+- `settings_ui_src/pages/cruise.yaml`: a section `honda_dynamic_learning`, visible when the capability `brand == honda`. It shows `HondaDynBrakeGain` and the three `HondaDynModeSec*` keys as `widget: info` rows. They carry no `step`: the `step: 0.001` display hint that `d11d2c9a8` added is not an info-widget field, and on its own, without `min`/`max`, it failed upstream's `test_settings_schema` `test_numeric_constraints`, so it was removed in the 2026-09 merge.
 - Two lessons, both now pinned by tests. First, `blocked: true` means DEVICE_ONLY and the dashboard hides the row, so it must not be used to mean read-only (`d033e3dbd`). Second, info rows did not render inside a brand's vehicle section, only on a page, so they live on the Cruise page (`4131c8778`). A key may appear in only one place.
 - `settings_ui.json` is generated by `openpilot/sunnypilot/sunnylink/tools/compile_settings_ui.py`. Recompile it; never merge it by hand.
 
-**Two stale or inconsistent texts** (not fixed; fix them the next time these files are touched):
-
-- The toggle's `details` in `vehicle.yaml` still says what it has learned is `on the read-only rows below`. Those rows moved to the Cruise page in `4131c8778`.
-- The brake value is shown three different ways. The `hondadyn` log and the big UI show a gain (`1.0 + offset`); the mici page shows a signed offset; sunnylink's `cruise.yaml` shows the raw param with the description `0.00 until it has learned anything. Positive adds brake, negative trims it`. The param itself stays an offset (9.1).
+**One inconsistent text left:** sunnylink's `cruise.yaml` shows the brake value as the raw param (an offset, described as `0.00 until it has learned anything. Positive adds brake, negative trims it`), while the `hondadyn` log, the big UI and (since 2026-10) the mici page show it as a gain. The toggle's `details` no longer points at rows "below"; they are on the Cruise page.
 
 ### 11.5 `openpilot/sunnypilot/sunnylink/statsd.py`
 
-Adds `HondaDynamicTuningEnabled` and the eight learned keys to the `sp_stats` device-params list, so convergence can be watched without pulling a route. The toggle is included because a gain of 1.000 could mean either converged or never switched on.
+Adds `HondaDynamicTuningEnabled`, `HondaDynBrakeGain`, the three `HondaDynModeSec*` totals and `HondaElesysGasLawV2` to the `sp_stats` device-params list, so they can be watched without pulling a route. The toggle is included because a gain of 1.000 could mean either converged or never switched on.
 
 ### 11.6 Test
 
@@ -913,17 +999,21 @@ Adds `HondaDynamicTuningEnabled` and the eight learned keys to the `sp_stats` de
 
 - `test_learned_params_are_registered_as_floats`
 - `test_toggles_are_registered_and_backed_up`
-- `test_pedal_gain_breakpoints_match_the_learned_gains`
+- `test_mode_time_keys_cover_every_slot`
+- `test_gas_law_param_is_registered_on_by_default_and_backed_up`
+- `test_retired_keys_are_gone_everywhere`
+- `test_statsd_reports_only_registered_honda_keys`
 - `test_both_panels_drive_the_same_params`
 - `test_honda_panel_publishes_its_items`
 - `test_mici_page_shares_the_panel_params`
 - `test_mici_settings_registers_the_vehicle_page`
 - `test_sunnylink_exposes_the_same_toggles`
+- `test_sunnylink_exposes_the_gas_law_toggle`
 - `test_sunnylink_learned_values_are_read_only_and_on_a_page`
 - `test_sunnylink_keys_are_registered_and_unique`
 - `test_panel_defaults_match_the_tuner`
 
-None of them checks the display inconsistencies in 11.4.
+`test_panel_defaults_match_the_tuner` also checks the panel's `MODE_SLOTS`, `GAS_LAW_PARAM` and `GAS_LAW_DEFAULT` against `elesys_gas.py`. None of them checks the display inconsistency in 11.4.
 
 ---
 
@@ -931,10 +1021,12 @@ None of them checks the display inconsistencies in 11.4.
 
 | test | repo | how to run | what it pins |
 |---|---|---|---|
-| `opendbc/car/honda/tests/test_elesys.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys` (52 tests) | category membership and dispatch (`compute_gas_brake(accel, speed, CP)`); the upstream Nidec map untouched; the Elesys gas/brake golden table; the pump (20 cases); the gas curve; the units bit (`create_brake_command(..., is_metric=, elesys=)`); the gear dwell; the stock AEB truth table and DBC signal names (not the `carstate.py` branch, 6.3) |
+| `opendbc/car/honda/tests/test_elesys.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys` (55 tests) | category membership and dispatch (`compute_gas_brake(accel, speed, CP)`); the upstream Nidec map untouched; the Elesys gas/brake golden table; the pump (20 cases); the v1 gas curve, and that v2's slope deliberately is not it; the units bit (`create_brake_command(..., is_metric=, elesys=)`); the gear dwell, and a gearbox frame without `GEAR` (the fuzz case); the stock AEB truth table and DBC signal names (not the `carstate.py` branch, 6.3) |
+| `opendbc/sunnypilot/car/honda/test_elesys_gas.py` | opendbc | `python -m unittest opendbc.sunnypilot.car.honda.test_elesys_gas` (31 tests) | the gas law, 9.2 |
+| `opendbc/sunnypilot/car/honda/test_elesys_stop.py` | opendbc | `python -m unittest opendbc.sunnypilot.car.honda.test_elesys_stop` (25 tests) | the soft final stop, 7.8 |
 | `opendbc/safety/tests/test_honda.py` (`TestHondaElesysScmStanddownSafety`, `TestHondaElesysStanddownGasInterceptorSafety`) and `common.py` | opendbc | `python -m unittest opendbc.safety.tests.test_honda`; builds `libsafety` on import (942 run, OK, after the merge) | section 8 |
-| `opendbc/sunnypilot/car/honda/test_dynamic_tuning.py` | opendbc | **standalone script**: `python <file>` with opendbc on `PYTHONPATH` | the tuner on its own, sections 1-5 and 9-16: toggle off is a no-op, pitch, breakpoint weights, pedal, brake, wind, params, importing without openpilot, three rounds of review regressions, drive-mode gating, aero kept apart from pedal and brake |
-| `opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py` | opendbc | **standalone script**, or unittest discovery through its `TestDynamicTuningIntegration` wrapper | the real `CarController`, frame by frame: [1] toggle off matches stock, [2] toggle on, [3] gas and brake never together, [4] the standstill hold is not scaled by the learned gain, [5] a disengage unwinds the brake gain, [6] the interceptor owns the gas at every speed (decodes `PCM_GAS`), [9] fuel and odometer. Sections 7, 8, 10-15 and 14b are area B |
+| `opendbc/sunnypilot/car/honda/test_dynamic_tuning.py` | opendbc | **standalone script**: `python <file>` with opendbc on `PYTHONPATH` | the tuner on its own, sections 1-5 and 10-16: toggle off is a no-op, pitch, the retired pedal and aero learners stay retired, the per-mode data counter, brake, params, importing without openpilot, three rounds of review regressions, drive-mode gating, the `hondadyn` line |
+| `opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py` | opendbc | **standalone script**, or unittest discovery through its `TestDynamicTuningIntegration` wrapper | the real `CarController`, frame by frame: [1] toggle off matches stock, [2] toggle on, [3] gas and brake never together, [4] the standstill hold is not scaled by the learned gain, [5] a disengage unwinds the brake gain, [6] the interceptor owns the gas at every speed (decodes `PCM_GAS`), [9] fuel and odometer, [16] the gas law v1/v2 through `CarController` with the brake command identical under both, [17] `update()` never raises on odd inputs and 0x1FA goes out every even frame, [17b] a NaN `vEgo` in the brake block, [18] `CRUISE_OVERRIDE` on every `BRAKE_COMMAND`, brake 0 when `longActive` drops and at most one nonzero `BRAKE_COMMAND` after a pedal edge, [19] the soft final stop through `CarController` (only lowers, the hold byte for byte, the gate, the learners untouched, never raises). Sections 7, 8, 10-15 and 14b are area B |
 | `openpilot/selfdrive/controls/tests/test_stopping_debounce.py` | sunnypilot | `python tools/test_runner.py <file>` (17 tests) | 10.1 |
 | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | sunnypilot | runner (9 tests) | 10.2 |
 | `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | sunnypilot | runner (1 test) | 10.5 |
@@ -1037,20 +1129,20 @@ File by file:
 | CAN IDs openpilot sends on this car | 0x0E4 on bus 0 (5 bytes), 0x1FA on bus 0, 0x30C on bus 0, 0x1A6 on **bus 2**, 0x200 on bus 0 (pedal), 0x500 on bus 0 (area B). Never 0x33D. The panda TX list also allows `{0x194, 0, 4}`, but this car's DBC has no 0x194 (it imports `_steering_control_e.dbc`, whose `STEERING_CONTROL` is 0x0E4) and openpilot does not send it |
 | CAN IDs read | 0x188 `GEARBOX_AUTO`; 0x1A6 `SCM_BUTTONS` (including `FUEL_LEVEL`); 0x221 `ECON_STATUS`; 0x294 `SCM_FEEDBACK`; 0x33D `LKAS_HUD` on bus 0; 0x1FA and 0x30C from bus 2; 0x18F `STEER_STATUS` with `STEER_CONTROL_ACTIVE 32:1`; radar 0x400, 0x410-0x417 and 0x420-0x424 on bus 1 |
 | signals | `CMBS_BRAKE`, `CMBS_DISABLED`, `AEB_REQ_3`, `CMBS_BUTTON`, `FUEL_LEVEL`, `FUEL_SENDER`, `ODOMETER_KM`, `ECON_ON`, `GEAR_SHIFTER`, `GEAR`, `SET_ME_1` (the units bit on this car) |
-| functions | `compute_gb_honda_elesys`, `brake_pump_hysteresis_elesys`, `create_scm_buttons_no_cruise`, `update_gear_elesys`, `elesys_gas_multiplier`, `HondaDynamicTuner` (`update_state`, `brake_gain`, `wind_scale`, `update_wind`, `pedal_gain_at`, `update_pedal`, `persist`, `log_state`, `debug_values`), `learned_value`, `learned_pedal_gains`, `reset_learned_values`, `car_brand`, `VehicleLayoutMici`; the keyword arguments `should_stop(..., v_ego_stopping=)` and `create_brake_command(..., is_metric=, elesys=)` |
-| constants | `ELESYS_PUMP_*`, `ELESYS_GAS_BP`, `ELESYS_GAS_V`, `SPORT_DWELL`, `FUEL_LEVEL_FULL`, `STEER_THRESHOLD[HONDA_ACCORD_9G_AU] = 600`, `NUDGE_FIRM`, `NUDGE_HOLD_FRAMES`, `STOPPING_SPEED`, `STOPPING_DECEL_RATE` (`float32(0.8)`), `STANDSTILL_SPEED`, `STOPPING_EXIT_DEBOUNCE`, `LINBUS_I_CARRY_MAX`, `LINBUS_I_HOLD_TAU`, and the tuner constants in 9.1 |
+| functions | `compute_gb_honda_elesys`, `brake_pump_hysteresis_elesys`, `create_scm_buttons_no_cruise`, `update_gear_elesys`, `elesys_gas_multiplier`, `elesys_pedal_v1`, `elesys_pedal_v2`, `ElesysGasLaw`, `ModeCrossfade`, `mode_slot`, `read_gas_law_v2`, `soft_stop_ceiling`, `soft_stop_cap`, `wheels_read_zero`, `ElesysSoftStop`, `SoftStopState`, `HondaDynamicTuner` (`update_state`, `brake_gain`, `wind_scale`, `update_wind`, `observe_pedal`, `filtered_pitch`, `persist`, `log_state`, `debug_values`), `learned_value`, `car_platform`, `gas_law_applies`, `gas_law_v2`, `gas_law_label`, `mode_minutes`, `mode_time_text`, `reset_learned_values`, `car_brand`, `VehicleLayoutMici`; the keyword arguments `should_stop(..., v_ego_stopping=)` and `create_brake_command(..., is_metric=, elesys=)` |
+| constants | `ELESYS_PUMP_*`, `ELESYS_GAS_BP`, `ELESYS_GAS_V`, `ELESYS_FF_BP`, `ELESYS_FF_K`, `ELESYS_FF_GM`, `ELESYS_FF_G0`, `MODE_K`, `CROSSFADE_FRAMES`, `GAS_LAW_PARAM`, `SOFT_STOP_*`, `WHEELS_ZERO_SPEED`, `SPORT_DWELL`, `FUEL_LEVEL_FULL`, `STEER_THRESHOLD[HONDA_ACCORD_9G_AU] = 600`, `NUDGE_FIRM`, `NUDGE_HOLD_FRAMES`, `STOPPING_SPEED`, `STOPPING_DECEL_RATE` (`float32(0.8)`), `STANDSTILL_SPEED`, `STOPPING_EXIT_DEBOUNCE`, `LINBUS_I_CARRY_MAX`, `LINBUS_I_HOLD_TAU`, and the tuner constants in 9.1 |
 | CarParams values | `transmissionType = automatic`, `longitudinalActuatorDelay 0.6`, `stopAccel -0.8`, `steerActuatorDelay 0.38`, `steerAtStandstill True`, `minEnableSpeed 19 mph` (with the gas-interceptor exemption). No `vEgoStopping`: it is deprecated upstream, and its 0.8 m/s lives in `stopping_tune.py` |
 | params | see 11.1 |
 | capnp fields area C code reads | `CarStateSP.driverTorqueStale @2`; `CarControlSP.lateralControl @5` (rebuilt in `helpers.py`) |
 | markers | `FORK(HONDA_ELESYS)`, `FORK(HONDA_ACCORD_9G_AU)`, `FORK(LKAS-GATEWAY)`, `FORK(GATEWAY-UPDATE)`, `FORK:`, and `HONDA_ACCORD_9G_AU` in `honda.h`. Incomplete; see Baseline |
-| log tag | `hondadyn` |
+| log tags | `hondadyn`, `hondastop` |
 
 ### 14.5 After every merge
 
 1. Run `git diff refs/upstream/master HEAD --stat` in both repos and compare the file list with section 1. Every file in the inventory must still differ from upstream, and in the way this document says. As a secondary check only, `git grep -n -e 'FORK(' -e 'FORK:' -e HONDA_ELESYS -e HONDA_ACCORD_9G_AU` finds the marked hunks; it will not find the unmarked ones listed in the Baseline.
 2. Build, regenerate the DBCs, and load `honda_accord_au_2015_can_generated.dbc` through the parser.
 3. Safety: run the two `TestHondaElesys*` classes, the whole of `test_honda.py`, and MISRA.
-4. Run `test_elesys.py`, the two standalone tuner scripts (directly, and the integration script with the sunnypilot tree on `PYTHONPATH` so §15 runs), and, under `tools/test_runner.py`, `test_stopping_debounce.py`, `test_lane_change_nudge.py`, `test_car_control_sp_seam.py` and `test_honda_dynamic_settings.py`. Check the runner's counts (17, 9, 1, 11). Also run opendbc's `test_car_interfaces`, `test_platform_configs` and `test_docs` against the platform.
+4. Run `test_elesys.py`, `test_elesys_gas.py`, `test_elesys_stop.py`, the two standalone tuner scripts (directly, and the integration script with the sunnypilot tree on `PYTHONPATH` so §15 runs), and, under `tools/test_runner.py`, `test_stopping_debounce.py`, `test_lane_change_nudge.py`, `test_car_control_sp_seam.py` and `test_honda_dynamic_settings.py`. Check the runner's counts (17, 9, 1, 15). Also run opendbc's `test_car_interfaces`, `test_platform_configs` and `test_docs` against the platform.
 5. If upstream has changed `should_stop()`, `LongControl` or the planner, check that this car still gets 0.8 m/s and 0.8 m/s³ and every other car upstream's values (`TestStoppingTune`), and grep for new `should_stop(` callers.
 6. Recompile `settings_ui.json` and run `compile_settings_ui.py --check`.
 7. On the first drive, check that:
@@ -1059,5 +1151,6 @@ File by file:
    - the gear reads P while parked
    - the fuel gauge is sane
    - `shouldStop` latches at about 0.8 m/s approaching a red light, and the car holds at `stopAccel` without crawling
+   - with the tuner on, each stop logs one `hondastop` line, and the brake reaches the hold (189) about 0.8 s after the wheels read zero (7.8)
    - the car does not engage below 19 mph
-   - `hondadyn` lines appear if the tuner is on
+   - `hondadyn` lines appear if the tuner is on, with `gaslaw=v2` (or `v1` if the setting is off) and `modesec` growing in the slot being driven
