@@ -20,10 +20,10 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 **openpilot's learned steering strength was stuck on a floor borrowed from
 another car.** torqued started from the 2018+ Accord's values (via
 `substitute.toml`), so it could only learn a lateral-accel factor between
-1.18 and 2.20, and it sat on 1.18 on every route from ed to 103. On this
-car torqued's own estimator sees a raw factor of 0.67 in town to 1.47 on the
-highway, and settles at 0.79-1.35 filtered: torque 1.0 = 2560 on `0x0E4` =
-160 serial counts at board authority 160, a different steering system.
+1.18 and 2.20, and it sat on 1.18 on every route from ed to 103. This car
+is a different steering system (torque 1.0 = 2560 on `0x0E4` = 160 serial
+counts at board authority 160), and torqued's own estimator sees a raw
+factor of 0.67 in town to 1.47 on the highway, 0.79-1.35 filtered.
 
 * **Its own prior:** `[1.1, 1.1, 0.18]` in opendbc `override.toml`. torqued
   can now learn 0.77-1.43 (friction 0.09-0.27). Live learning stays on.
