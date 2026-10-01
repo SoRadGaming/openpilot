@@ -728,6 +728,27 @@ Driver-facing summary: `docs/CHANGELOG_SERIAL_STEERING.md`, 2026-10-01. Design a
 
 ---
 
+## 21. The soft final stop; CRUISE_OVERRIDE stays 1; a NaN vEgo no longer raises (2026-10)
+
+`elesys_stop.py` (new), `carcontroller.py`, `dynamic_tuning.py` (`filtered_pitch()`); opendbc `cf9ad7ad` (the NaN-`vEgo` guard), `c65d5033` (`CRUISE_OVERRIDE`), `8b00f3cc` (the soft final stop), `66de8d56` (`FORK.md`)
+
+Driver-facing summary: `docs/CHANGELOG_SERIAL_STEERING.md`, 2026-10-01 "Longitudinal (braking)". Design and numbers:
+`docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 7.7-7.8. In short:
+
+- **Section 4's lighter hold (189) is reached too early.** On the 45 stops openpilot completed alone, the stopping
+  ramp and the creep table put the brake at 185 counts when the wheels stop, while the planner asks for -0.16:
+  0.92 m/s^2 at the stop. With the tuner on, a ceiling of 125 counts (+~17 per degree downhill) now holds while the
+  car still rolls in the stopping state, and rises to the hold 0.55 s after the wheels read zero. The hold itself is
+  unchanged. The audit's simulator was never validated, so the expected ~0.5-0.6 m/s^2 is a hypothesis for the next
+  drive.
+- **Section 6's pump: not overused.** 28% duty while a brake command exists, against stock ACC's 53%. The pump floor
+  that was proposed was dropped (light commands do brake; the floor would bypass the quiet period).
+- **CRUISE_OVERRIDE stays 1**, now as a recorded decision: no measured effect, never tested at 0 under sustained
+  braking, and every BRAKE_ERROR since June was a ~1 s 0x1FA gap (`S:/OP/FAULT_root_cause_drive84.md` corrected).
+- A NaN `vEgo` made the brake block raise (no 0x1FA, then BRAKE_ERROR); it now holds the brake.
+
+---
+
 ## Status
 
 *As of 2026-09-08: two weeks of real driving on the tuner (sections 12-13); the paragraph below

@@ -15,6 +15,90 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-01 — Longitudinal (braking): a softer final stop; CRUISE_OVERRIDE stays 1
+
+**The last moment of an openpilot stop should no longer grab.** Measured on the
+45 stops openpilot completed by itself (routes 3e-103): the brake was already at
+the full standstill hold (185 of the hold's 189 counts) when the wheels stopped,
+while openpilot was asking for almost nothing (-0.16 m/s²). That is the jolt at
+the end: 0.92 m/s² at the stop on average, 1.02 behind a stopped car. Now, while
+the car is still rolling in the stopping phase, the brake is held at 125 counts
+instead, plus about 17 per degree of downhill; 0.55 s after the wheels read zero
+it rises to the usual hold in about a quarter of a second.
+
+* **Where:** it rides on **Dynamic Longitudinal Learning** (the same toggle as
+  the stop-release debounce and the gentle brake release), so with the toggle
+  off nothing changes. No new setting.
+* **What you will feel:** a gentler settle at the end of a stop, and a slightly
+  longer final roll: about 0.1-0.2 m and 0.3-0.4 s more. That is an estimate,
+  not a measurement - the next drive measures it.
+* **What does not change:** the hold itself (189, byte for byte once it has
+  risen), launches, all braking before the stopping phase, the brake pump (it
+  still runs continuously on the final approach), the learners, and stock
+  emergency braking (a lower openpilot brake can only let the car's own AEB
+  through earlier). A stop that starts at a standstill gets no ceiling.
+* **When it gives way early** (back to today's brake, rising 5 counts per frame):
+  the wheels start turning again after reading zero; the car is not slowing
+  (weaker than 0.25 m/s² for 0.4 s, counted only once the brake has sat at the
+  ceiling for 0.3 s, so a stop that is still building pressure is not handed
+  back); or 1.9 s of rolling. In the worst case it is gone 3 s after the
+  stopping phase began. The brake pedal, the gas pedal and a disengage remove it
+  at once, and the brake is 0 on the first frame after a disengage.
+* **On your 45 logged stops** (the recorded signals replayed through the new
+  code): 44 would have had the ceiling; the brake when the wheels read zero
+  drops from 170 to 137 counts (median); 29 of the 44 are on a downhill, and the
+  pitch the code uses matches the pitch once stopped (it is the road, not the
+  car nosing down under braking); the wheel-zero signal never flickered.
+* **New log line:** one per stop, `hondastop rise=<why> t= roll= still= entry=
+  cap= ceil=` (`why` = `settle` normally; `moving`, `weak` or `max_roll` when it
+  gave way early) or `hondastop end=left` when the stop ended first.
+* **The pump question - answered, no change:** the pump is not overused. It runs
+  28% of the time a brake command exists; stock ACC ran it 53%. Runs are short
+  (median 0.66 s). A suggested "no pump below 30 counts" was dropped: light
+  commands do brake the car, and it would have restarted the pump through its
+  quiet period.
+* **CRUISE_OVERRIDE stays 1 (you asked to remove it).** MVL *does* use it
+  (`CC.longActive or CS.out.stockAeb`), and you drove that version in
+  June-July. In the logs the bit makes no measurable difference to the VSA's
+  braking or to BRAKE_ERROR - but sending 0 has only ever happened in short
+  tails after a disengage, never during sustained braking, so removing it would
+  be an untested change with nothing to gain. Every BRAKE_ERROR since June was a
+  ~1 s silence on 0x1FA, not this bit: on drive 84 the panda was dropping a
+  forced minimum brake (so nothing reached the car for a second); on b5-b8
+  nothing was sent. The bit is now documented in the code, and a test pins it.
+  (The other override bit you tried, `ACC_OVERRIDE_STOP`, was removed earlier,
+  in `d9498a1a`; nothing of it is left.)
+* **Also fixed:** a speed reading of NaN made the brake code raise, which would
+  have meant no brake message and a BRAKE_ERROR a second later. It now holds the
+  brake instead. Never seen on the road; found by tests.
+* **Not in this update:** the "no coasting in the last meter" change for stops
+  without a lead car waits until this one is measured, so each drive tests one
+  thing.
+* **Your part:** when stopping or stopped, take over with the brake or the gas,
+  not the cancel button. Cancel drops the brake at once (the panda insists), and
+  the car then creeps - that is the "rolls" in two of your logged cases.
+* **Watch on the next drive:** deceleration at the moment the car actually stops
+  (camera/IMU, not wheel speed) - target a median of 0.6 m/s² or less and 1.0
+  for the worst tenth (today 0.92 and 1.53); no jerk spike in the 0.8 s after the wheels read zero; at
+  least 3.5 m to a stopped car ahead (4.1 today); one `hondastop` line per stop,
+  nearly all `settle`, and every `weak`/`max_roll` on a downhill or a slow brake;
+  no creep while held and no rollback at launch; no 0x1FA gap over 0.1 s; and
+  BRAKE_ERROR only in the first frame after power-up. The first drive also
+  carries the upstream sync's change to when the stopping phase starts (behind
+  a stopped car it should now start at 0.80 m/s, about 3 km/h); no stop since
+  the sync is in the logs yet.
+* **Tests:** 25 new soft-stop tests (every timer, the hill term, the gate, the
+  bound, random inputs, never raising); through the real controller it only
+  ever lowers the brake, the hold is byte-for-byte today's, the learners never
+  see it, other cars and the toggle off are bit-identical; CRUISE_OVERRIDE is 1
+  on every brake message, the brake is 0 after a disengage, and at most one
+  nonzero brake message follows a brake or gas press. Details:
+  `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 7.7-7.8. Commits: opendbc `cf9ad7ad`
+  (the NaN-`vEgo` guard), `c65d5033` (`CRUISE_OVERRIDE`), `8b00f3cc` (the soft
+  final stop), `66de8d56` (`FORK.md`).
+
+---
+
 ## 2026-10-01 — Longitudinal (pedal): the measured gas law; the pedal and aero learners retired
 
 **The comma pedal now asks for the throttle this car actually needs.** The old

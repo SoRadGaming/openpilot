@@ -49,7 +49,8 @@ shows up in the app, that is proof the device is running this code.
 ### 1. "Dynamic Longitudinal Learning (Alpha)" — off by default
 
 Turns on the self-learning: the brake correction and the hill term (it no longer learns the
-throttle — see "The gas pedal" below). It reads as "Honda Nidec Dynamic Longitudinal Learning
+throttle — see "The gas pedal" below). It also switches on the stop smoothing: the gentle brake
+release, the release debounce and, since October 2026, the softer last moment of a stop. It reads as "Honda Nidec Dynamic Longitudinal Learning
 (Alpha)" on the Cruise page, since that page is shared with every other car.
 
 Remember: **flipping it does nothing until the next ignition.** Turn it on while parked, key
@@ -155,6 +156,25 @@ hill, the fix is to raise this back toward the middle. **Don't touch the creep t
 
 ---
 
+## A softer last moment of the stop (October 2026)
+
+At the end of an openpilot stop the brake used to reach the full standing hold (189) **before** the car had actually
+stopped - on your logged stops it was already at 185 when the wheels stopped, while openpilot was asking for almost
+nothing. That is the little jolt at the very end.
+
+Now, with the learning toggle on, the brake is held lower (125, a little more on a downhill) for as long as the car is
+still rolling in the stopping phase. About half a second after the wheels stop it rises to the usual hold in a quarter of
+a second, so **how the car holds at a light does not change**.
+
+It gives way early - back to the old behavior - if the car is not slowing, if the wheels start turning again, or after
+1.9 s. Your brake or gas pedal removes it at once.
+
+Each stop writes one `hondastop` line to the log, saying what happened.
+
+**This has not been on the road yet.** Watch the last half-second of each stop, and how close you stop to the car ahead.
+
+---
+
 ## The brake pump is quieter
 
 You said the stock behaviour sounds like a machine gun, your fix cured that but replaced it
@@ -185,6 +205,9 @@ a third less pump running overall than before.
 I also checked and rejected the obvious alternative of just running the pump less often on a
 timer. It saves almost nothing and nearly doubles the longest gap with no pump at road speed.
 That's now written into the code as a "don't do this".
+
+**Is it overused now? No** (measured October 2026 on 57 drives): the pump runs 28% of the time
+the brake is being asked for. The car's own cruise control ran it 53%.
 
 ---
 

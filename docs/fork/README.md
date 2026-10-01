@@ -321,15 +321,15 @@ Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-sp
 | M | `openpilot/tools/joystick/joystickd.py` | C | Passes the car's stopping speed to `should_stop()`. | 0 | added in the merge |
 | M | `openpilot/tools/longitudinal_maneuvers/maneuversd.py` | C | Parses `CarParams` and passes the car's stopping speed to `should_stop()`. | 0 | added in the merge |
 
-### opendbc: 33 files and `FORK.md`
+### opendbc: 35 files and `FORK.md`
 
-Two of them arrived after the 2026-09 sync, with the 2026-10 gas-law work: `elesys_gas.py` and `test_elesys_gas.py`.
+Four of them arrived after the 2026-09 sync, with the 2026-10 longitudinal work: `elesys_gas.py` and `test_elesys_gas.py` (the gas law), `elesys_stop.py` and `test_elesys_stop.py` (the soft final stop).
 
 | St | Path | Area | What the fork changes | Upstream commits | Last merge |
 |---|---|---|---|---|---|
 | A | `FORK.md` | — | Short fork index. | 0 | clean |
 | M | `opendbc/car/car_helpers.py` | C | `skip_fw_query` argument on `fingerprint()` and `get_car()`. | 0 | auto |
-| M | `opendbc/car/honda/carcontroller.py` | B+C | B: brake-release ceiling (`BRAKE_RELEASE_FRAMES`, `brake_release_scale`), `serial_gateway` LDW bits, `SP_HUD_STATUS` send with `lat_ready` and `op_state`, `LKAS_HUD` not sent. C: `compute_gb_honda_elesys` (dispatched from `compute_gas_brake(accel, speed, CP)`), `brake_pump_hysteresis_elesys` and `ELESYS_PUMP_*`, dynamic-tuner hooks (`hill_accel`/`adjust_accel`, `brake_gain`, `wind_scale`, the 32-count brake release), `SCM_BUTTONS` re-sent on `CAN.camera` every 4th frame when `openpilotLongitudinalControl`, `pcm_accel` computed from `adjust_accel`, and a `FORK:` comment explaining why there is no PCM crossfade. | 0 | CONFLICT |
+| M | `opendbc/car/honda/carcontroller.py` | B+C | B: brake-release ceiling (`BRAKE_RELEASE_FRAMES`, `brake_release_scale`), `serial_gateway` LDW bits, `SP_HUD_STATUS` send with `lat_ready` and `op_state`, `LKAS_HUD` not sent. C: `compute_gb_honda_elesys` (dispatched from `compute_gas_brake(accel, speed, CP)`), `brake_pump_hysteresis_elesys` and `ELESYS_PUMP_*`, dynamic-tuner hooks (`hill_accel`/`adjust_accel`, `brake_gain`, `wind_scale`, the 32-count brake release), the soft final stop's construction and call (`ElesysSoftStop`, `HONDA_ELESYS` with the tuner on only), the NaN-`vEgo` guard in the brake block, the `CRUISE_OVERRIDE` decision comment (kept at 1), `SCM_BUTTONS` re-sent on `CAN.camera` every 4th frame when `openpilotLongitudinalControl`, `pcm_accel` computed from `adjust_accel`, and a `FORK:` comment explaining why there is no PCM crossfade. | 0 | CONFLICT |
 | M | `opendbc/car/honda/carstate.py` | A+B+C | A/B: registers `GW_ACTIVE`, `GW_STEER_GRANT`, `EPS_LIN_RAW`, `GW_VERSION` and `GW_BUILD` liveness-exempt (`nan`), and calls `CarStateExt.update(ret, ret_sp, ...)`. C: `update_gear_elesys` / `SPORT_DWELL` (taken only when the gearbox frame has `GEAR`; the fuzz fix of 2026-10), ELESYS `stockAeb` (and `carFaultedNonCritical = True` when stock AEB fires with `ACC_HUD.ACC_ON == 0`), `LKAS_PROBLEM` read from bus 0 inside upstream's `if not (self.CP.flags & HondaFlags.BOSCH):`, `scm_buttons`, `econ_on`. | 0 | CONFLICT |
 | M | `opendbc/car/honda/fingerprints.py` | C | `FW_VERSIONS[HONDA_ACCORD_9G_AU]`: fwdRadar `36707-T2M-Q640`, srs `77959-T2A-B110`. | 0 | auto |
 | M | `opendbc/car/honda/hondacan.py` | B+C | B: `create_steering_control(serial_gateway, ldw_left, ldw_right)`, `SP_HUD_PROTOCOL_VERSION`=3, `SP_OP_STATE_*`, `SP_HUD_MAX_TORQUE`=0, `create_sp_hud_status()`. C: `create_brake_command(..., is_metric=True, elesys=False)` units bit, `create_scm_buttons_no_cruise()`. | 0 | CONFLICT |
@@ -355,12 +355,14 @@ Two of them arrived after the 2026-09 sync, with the 2026-10 gas-law work: `eles
 | M | `opendbc/safety/tests/test_honda.py` | C | `TestHondaElesysScmStanddownSafety`, `TestHondaElesysStanddownGasInterceptorSafety`. | 0 | clean |
 | M | `opendbc/sunnypilot/car/car_list.json` | C | `"Honda Accord 2013-15"` → `HONDA_ACCORD_9G_AU`. | 0 | auto |
 | M | `opendbc/sunnypilot/car/honda/carstate_ext.py` | A+B+C | A: `_update_linbus_firmware`. B: `_update_linbus_gateway`, `_update_linbus_grant`, `_update_driver_torque_validity`, `_eps_lin_driver_torque_valid`. C: `fuelGauge`. | 0 | auto |
-| A | `opendbc/sunnypilot/car/honda/dynamic_tuning.py` | C | `HondaDynamicTuner` (self-learning longitudinal: the brake gain and the pitch term; the pedal and aero learners were retired in 2026-10), and the per-drive-mode data counter (`observe_pedal`). | 0 | clean |
+| A | `opendbc/sunnypilot/car/honda/dynamic_tuning.py` | C | `HondaDynamicTuner` (self-learning longitudinal: the brake gain and the pitch term; the pedal and aero learners were retired in 2026-10), the per-drive-mode data counter (`observe_pedal`), and `filtered_pitch()` for the soft final stop. | 0 | clean |
 | A | `opendbc/sunnypilot/car/honda/elesys_gas.py` | C | This car's gas law: v1 (`elesys_gas_multiplier`, `ELESYS_GAS_BP`/`ELESYS_GAS_V`) and v2 (`ELESYS_FF_*`, `elesys_pedal_v2`), picked by `HondaElesysGasLawV2`; drive-mode slots, `MODE_K` and the crossfade (`ElesysGasLaw`). | - | new (2026-10) |
+| A | `opendbc/sunnypilot/car/honda/elesys_stop.py` | C | The soft final stop: a brake ceiling while still rolling in the stopping state (`soft_stop_ceiling`, `SOFT_STOP_*`), wrapped for `CarController` by `ElesysSoftStop` (the `hondastop` log line, never raises). | - | new (2026-10) |
 | M | `opendbc/sunnypilot/car/honda/gas_interceptor.py` | C | Imports `HONDA_ELESYS` and `elesys_gas` (re-exporting the v1 names); on `HONDA_ELESYS` builds `ElesysGasLaw` and calls it instead of upstream's line; the `tuner` hook `observe_pedal`. Every other car runs upstream's line. All hunks `FORK(HONDA_ELESYS)`/`FORK:`. | 0 | clean |
 | A | `opendbc/sunnypilot/car/honda/test_dynamic_tuning.py` | C | Script-style tests of the tuner. | 0 | clean |
 | A | `opendbc/sunnypilot/car/honda/test_elesys_gas.py` | C | The gas law, its shape conditions, the crossfade, the slots and the param (31 tests). | - | new (2026-10) |
-| A | `opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py` | C+B | Script-style checks through `CarController`, with a `TestCase` wrapper. Sections [7], [8] and [10]–[15] are B; [16] and [17] (2026-10) are the gas law and the never-raise checks. | 0 | clean, then edited for the new signatures |
+| A | `opendbc/sunnypilot/car/honda/test_elesys_stop.py` | C | The soft final stop: every timer, the grade term, the gate, the bound, random-input invariants, never raising (25 tests). | - | new (2026-10) |
+| A | `opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py` | C+B | Script-style checks through `CarController`, with a `TestCase` wrapper. Sections [7], [8] and [10]–[15] are B; [16], [17], [17b], [18] and [19] (2026-10) are the gas law, the never-raise checks, the NaN-`vEgo` brake block, `CRUISE_OVERRIDE` with brake 0 after a disengage or a pedal, and the soft final stop. | 0 | clean, then edited for the new signatures |
 
 **2026-09 merge summary.**
 
@@ -685,7 +687,7 @@ Resolve conflicts in this order, because each file supplies names to the next. T
 Then run these checks:
 
 ```bash
-git grep -n -E "FORK(\(|:)" -- opendbc | wc -l                           # 37 since the 2026-10 gas law (31 after the 2026-09 merge, 18 before it)
+git grep -n -E "FORK(\(|:)" -- opendbc | wc -l                           # 44 since the 2026-10 soft final stop (37 after the gas law, 31 after the 2026-09 merge, 18 before it)
 ruff check opendbc/car/honda opendbc/sunnypilot/car/honda                # F821 catches a leftover fingerprint / adjust_accel
 PYTHONPATH=. python -c "import opendbc.car.honda.interface, opendbc.car.honda.carcontroller, opendbc.car.honda.radar_interface, opendbc.sunnypilot.car.honda.gas_interceptor, opendbc.sunnypilot.car.honda.carstate_ext"
 PYTHONPATH=. python opendbc/sunnypilot/car/platform_list.py && git diff --exit-code opendbc/sunnypilot/car/car_list.json
@@ -805,7 +807,7 @@ git grep -n -E "FORK(\(|:)|linbus|LIN-bus|EpsLkas|eps_lkas|HondaDyn|driverTorque
 
 It prints 235 at the merged tree with the review fixes (194 at `2cfcd3c6a` over the old paths, 191 at `10e088a2d`).
 Compare it with the same pattern on `fork/pre-merge-$D`; a large drop means a hunk was lost. For opendbc,
-`git grep -n -E "FORK(\(|:)|linbus|LIN-bus|HONDA_ELESYS|HondaDyn|driverTorqueStale" -- opendbc | wc -l` prints 216 (210 before the 2026-10 gas law)
+`git grep -n -E "FORK(\(|:)|linbus|LIN-bus|HONDA_ELESYS|HondaDyn|driverTorqueStale" -- opendbc | wc -l` prints 231 (216 after the 2026-10 gas law, 210 before it)
 (199 at `c61cfd9b`).
 
 `git grep -n -E "FORK(\(|:)" -- openpilot | wc -l` prints 37. `git grep -n IsOnroad -- openpilot` must print nothing in
@@ -836,13 +838,14 @@ reports 22 findings, all older than the merge (see [Pre-existing issues](#pre-ex
 ```bash
 python -m unittest opendbc.car.honda.tests.test_honda opendbc.car.honda.tests.test_elesys   # 56 tests (55 in test_elesys)
 python -m unittest opendbc.sunnypilot.car.honda.test_elesys_gas                            # 31 tests: the gas law
+python -m unittest opendbc.sunnypilot.car.honda.test_elesys_stop                           # 25 tests: the soft final stop
 python -m unittest opendbc.safety.tests.test_honda                                          # builds libsafety; 942 run, OK (skipped=69)
 python -m unittest opendbc.car.tests.test_car_interfaces -k HONDA_ACCORD_9G_AU
-python -m unittest discover -s opendbc/sunnypilot/car -t .                                  # 54 tests, including the integration script
+python -m unittest discover -s opendbc/sunnypilot/car -t .                                  # 79 tests, including the integration script
 python opendbc/sunnypilot/car/honda/test_dynamic_tuning.py                                  # ALL CHECKS PASSED
 python opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py                      # ALL CHECKS PASSED; §15 SKIPs without openpilot
 PYTHONPATH=$HOME/sp-merge python opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py   # §15 runs
-python -m unittest discover                                                                 # 9493 run, OK (skipped=1268)
+python -m unittest discover                                                                 # 9552 run, OK (skipped=1268) with the 2026-10 work
 ./test.sh                                                                                   # everything, as lefthook runs it
 ```
 
@@ -877,6 +880,9 @@ First drive:
 8. **Longitudinal.**
    * Stock ACC stays stood down.
    * `shouldStop` asserts at about 0.8 m/s approaching a stop, and stops hold at `stopAccel` without rolling.
+   * With the tuner on, each openpilot stop logs one `hondastop` line, the brake stays at the soft-stop ceiling until
+     the wheels read zero and reaches the hold (189) about 0.8 s later (`CAR-HONDA-ACCORD-9G-AU.md` 7.8). No 0x1FA gap
+     over 0.1 s, and `BRAKE_ERROR` only in the first `0x1B0` frame.
    * It does not engage below 19 mph.
    * Gear reads P/R/N/D.
    * The `HondaDyn*` values change after 60 s when the tuner is on.
@@ -907,8 +913,10 @@ write the next `UPSTREAM-<date>.md`.
 ### What the fork already does
 
 * **Markers.**
-  * opendbc: `FORK(HONDA_ACCORD_9G_AU)` ×14, `FORK(HONDA_ELESYS)` ×16, `FORK(LKAS-GATEWAY)` ×1, bare `FORK:` ×6 (37
-    lines; the 2026-10 gas law added six, in `gas_interceptor.py` and the headers of `elesys_gas.py` and its test).
+  * opendbc: `FORK(HONDA_ACCORD_9G_AU)` ×21, `FORK(HONDA_ELESYS)` ×16, `FORK(LKAS-GATEWAY)` ×1, bare `FORK:` ×6 (44
+    lines; the 2026-10 gas law added six, in `gas_interceptor.py` and the headers of `elesys_gas.py` and its test, and
+    the braking work seven: five in `carcontroller.py` (the soft final stop's import, construction and call, the
+    NaN-`vEgo` guard, the `CRUISE_OVERRIDE` decision) and the headers of `elesys_stop.py` and its test).
   * sunnypilot: `FORK(HONDA_ACCORD_9G_AU)` ×18, `FORK(LKAS-GATEWAY)` ×13, `FORK(GATEWAY-UPDATE)` ×3, bare `FORK:` ×3
     (37 lines), in `drive_helpers.py`, `longitudinal_planner.py`, `longcontrol.py`, `desire_helper.py`, both
     `modeld.py`, `controlsd.py`, `selfdrived.py`, `pandad.py`, mici `settings.py`, `mads.py`, `state.py`,
@@ -924,6 +932,8 @@ write the next `UPSTREAM-<date>.md`.
     `gas_interceptor.py` (`observe_pedal`, which only counts) they are gated by the tuner itself: `HondaDynamicTuningEnabled`, and
     `HondaDynamicTuner._is_applicable()` = `openpilotLongitudinalControl and carFingerprint not in HONDA_BOSCH`. So they
     reach any Nidec Honda with openpilot longitudinal once the toggle is on. With the toggle off they are no-ops.
+  * The soft final stop (`elesys_stop.py`) is gated both ways: `CarController` builds it only on `HONDA_ELESYS`, and only
+    with the tuner toggle on. Another Nidec car never gets it, toggle or not.
   * Per-fingerprint tables: `STEER_THRESHOLD`, `NUDGE_FIRM`, `STOPPING_SPEED`, `STOPPING_DECEL_RATE`.
   * `carStateSP.linbusGateway.present` gates the integrator hold (in both torque controllers and the extension) and the
     MADS pause. It is False on every platform outside `HONDA_ELESYS`. On `HONDA_ELESYS` it is True every frame, with or
@@ -943,7 +953,8 @@ write the next `UPSTREAM-<date>.md`.
   than edits to shared fragments.
 * **New code lives in new files and on sunnypilot's extension points.**
   * New files: `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_*.py`, `stopping_tune.py`,
-    `opendbc/sunnypilot/car/honda/dynamic_tuning.py`, `opendbc/sunnypilot/car/honda/elesys_gas.py`, and the mici
+    `opendbc/sunnypilot/car/honda/dynamic_tuning.py`, `opendbc/sunnypilot/car/honda/elesys_gas.py`,
+    `opendbc/sunnypilot/car/honda/elesys_stop.py`, and the mici
     `board.py` / `vehicle.py`.
   * Extension points: `CarStateExt` (`carstate_ext.py`), `GasInterceptorCarController`, `ControlsExt`
     (`controlsd_ext.py`).
