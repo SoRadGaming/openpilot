@@ -172,15 +172,15 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // only -- they are per-car state that changes every 60 s, so backing them up
     // would keep a sunnylink backup permanently dirty and could restore a tune
     // learned on different hardware.
-    // HondaDynPedalGain0-5 and HondaDynWindFactor were retired in 2026-10 with the learners
-    // that wrote them; a device that had them keeps the files, unread. HondaDynModeSec* are
-    // running totals of engaged seconds per drive mode (D/ECON/S), counters rather than tune.
+    // FORK(HONDA_ELESYS): HondaDynPedalGain0-5 and HondaDynWindFactor were retired in 2026-10 with
+    // the learners that wrote them; a device that had them keeps the files, unread. HondaDynModeSec*
+    // are running totals of engaged seconds per drive mode (D/ECON/S), counters rather than tune.
     {"HondaDynamicTuningEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"HondaDynBrakeGain", {PERSISTENT, FLOAT, "0.0"}},
     {"HondaDynModeSecD", {PERSISTENT, FLOAT, "0.0"}},
     {"HondaDynModeSecECON", {PERSISTENT, FLOAT, "0.0"}},
     {"HondaDynModeSecS", {PERSISTENT, FLOAT, "0.0"}},
-    // HONDA_ELESYS gas law: 1 = v2, the measured pedal response; 0 = v1, the law before it.
+    // FORK(HONDA_ELESYS): the gas law. 1 = v2, the measured pedal response; 0 = v1, the law before it.
     // A setting, so BACKUP; read once at ignition (elesys_gas.py).
     {"HondaElesysGasLawV2", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"IntelligentCruiseButtonManagement", {PERSISTENT | BACKUP , BOOL}},

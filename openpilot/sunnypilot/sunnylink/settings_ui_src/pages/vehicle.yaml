@@ -10,6 +10,8 @@ sections:
   title: Honda Settings
   description: ''
   items:
+  # FORK(HONDA_ELESYS): the dynamic tuner's toggle (its description lost the pedal and aero learners
+  # in 2026-10 and gained the drive-mode counting), and the gas-law setting below it.
   - key: HondaDynamicTuningEnabled
     widget: toggle
     needs_onroad_cycle: true
@@ -23,6 +25,7 @@ sections:
       rows on the Cruise page.
     enablement:
     - $ref: '#/macros/offroad'
+  # FORK(HONDA_ELESYS): HondaElesysGasLawV2, read once at ignition by elesys_gas.py.
   - key: HondaElesysGasLawV2
     widget: toggle
     needs_onroad_cycle: true
@@ -33,7 +36,9 @@ sections:
       Below 11 km/h it is the old law exactly, and the hand-over between gas and brake is unchanged
       below 60 km/h. Off: the previous law. 2013-15 Accord (Elesys) only. Applies at the next drive.'
     details: Applies at the next drive - the car reads it once when it goes onroad. Expect gentler
-      onset at 20-70 km/h; sunnypilot's own controller adds whatever is really missing.
+      onset at 20-70 km/h; sunnypilot's own controller adds whatever is really missing. The law runs
+      with Dynamic Longitudinal Learning on or off, but the engaged time per drive mode (what future
+      ECON and S tables will be fitted from) is only counted while that toggle is on.
     enablement:
     - $ref: '#/macros/offroad'
 - id: hyundai

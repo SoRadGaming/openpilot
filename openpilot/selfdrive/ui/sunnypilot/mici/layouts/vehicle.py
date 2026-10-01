@@ -25,6 +25,7 @@ from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.vehicle.brands.honda import (
   TUNING_PARAM,
   MODE_SLOTS,
+  gas_law_applies,
   gas_law_label,
   learned_value,
   mode_minutes,
@@ -87,7 +88,8 @@ def car_brand() -> str:
 
 class HondaLearnedInfo(Widget):
   """Two header/value pairs, laid out like SunnylinkInfo and CurrentModelInfo:
-  the gas law the car will run (HondaElesysGasLawV2) with the learned brake gain,
+  the gas law the car will run from the next drive (HondaElesysGasLawV2) with the
+  learned brake gain -- on the Accord AU only; another Honda gets just the brake --
   and the engaged minutes saved per drive mode (D / ECON / S).
 
   These replaced the six "learned pedal gain" numbers, which could not move: that
@@ -123,9 +125,17 @@ class HondaLearnedInfo(Widget):
 
   def refresh(self) -> None:
     self._updated = time.monotonic()
-    # the setting, i.e. what the car runs from the next ignition; brake stored as an offset, shown as a gain.
-    # Short forms, because both values have to fit 340 px: "v2   brake x1.02", "412 / 1.4 / 1.3 min"
-    self.law_text.set_text(f"{gas_law_label(short=True)}   {tr('brake')} x{1.0 + learned_value('HondaDynBrakeGain'):.2f}")
+    # brake stored as an offset, shown as a gain
+    brake = f"x{1.0 + learned_value('HondaDynBrakeGain'):.2f}"
+    if gas_law_applies():
+      # the setting, i.e. what the car runs from the NEXT ignition, not necessarily what runs now.
+      # Short forms: "v2 next drive   brake x1.02" scrolls in 340 px; "412 / 1.4 / 1.3 min" fits
+      self.law_header.set_text(tr("gas law"))
+      self.law_text.set_text(f"{gas_law_label(short=True)} {tr('next drive')}   {tr('brake')} {brake}")
+    else:
+      # another Honda runs upstream's pedal law whatever the setting says: show only the brake
+      self.law_header.set_text(tr("brake"))
+      self.law_text.set_text(brake)
     self.mode_text.set_text(" / ".join(mode_minutes().values()) + " " + tr("min"))
 
   def _update_state(self):

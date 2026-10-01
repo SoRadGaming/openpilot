@@ -37,12 +37,22 @@ LEARNED_DEFAULTS: dict[str, float] = {
 # running engaged seconds of each are HondaDynModeSec<slot>.
 MODE_SLOTS = ("D", "ECON", "S")
 
+# What RESET puts back: the learned brake correction only. The HondaDynModeSec*
+# totals are a tally of the data collected for per-mode pedal tables, not a tune,
+# so resetting the brake learner (after a brake job, say) keeps them.
+RESET_KEYS = ("HondaDynBrakeGain",)
+
 TUNING_PARAM = "HondaDynamicTuningEnabled"
 # Which gas law the car runs, read once at ignition. Mirrors GAS_LAW_PARAM and
 # GAS_LAW_DEFAULT in opendbc/sunnypilot/car/honda/elesys_gas.py; the setting itself
 # is in sunnylink (Vehicle > Honda Settings).
 GAS_LAW_PARAM = "HondaElesysGasLawV2"
 GAS_LAW_DEFAULT = True
+# The platforms the gas law applies to: HONDA_ELESYS in opendbc/car/honda/values.py
+# (the 2013-15 Accord AU). Every other Honda runs upstream's pedal law whatever the
+# setting says, so the readout is not shown there. Spelled out for the same reason as
+# LEARNED_DEFAULTS; test_honda_dynamic_settings.py keeps it in sync with opendbc.
+GAS_LAW_PLATFORMS = ("HONDA_ACCORD_9G_AU",)
 
 # reading 13 params at 60 fps would be 13 file reads a frame; once a second is
 # plenty for a readout that only changes once a minute anyway
@@ -57,8 +67,8 @@ DYN_IGNITION_NOTE = tr_noop("Takes effect at the next ignition: the car reads th
 DYN_NO_LONG_DESC = tr_noop("This feature is unavailable because sunnypilot Longitudinal Control is not enabled on this car.")
 LEARNED_TITLE = tr_noop("Learned Values")
 LEARNED_ONROAD_NOTE = tr_noop("Resetting is only available while the car is off.")
-RESET_CONFIRM = tr_noop("Reset what this car has learned about its brakes, and its drive-mode times, back " +
-                        "to the defaults? It starts again from scratch on the next drive.")
+RESET_CONFIRM = tr_noop("Reset what this car has learned about its brakes back to the default? It starts " +
+                        "again from scratch on the next drive. The engaged time per drive mode is kept.")
 
 
 def learned_value(key: str) -> float:
@@ -86,6 +96,24 @@ def gas_law_v2() -> bool:
     return GAS_LAW_DEFAULT
 
 
+def car_platform() -> str:
+  """The platform the car runs as: the selected platform first, the fingerprint second
+  (as hyundai.py and subaru.py resolve it). '' when neither is known."""
+  try:
+    if bundle := ui_state.params.get("CarPlatformBundle"):
+      return str(bundle.get("platform", "") or "")
+    if ui_state.CP is not None:
+      return str(ui_state.CP.carFingerprint)
+  except Exception:
+    pass
+  return ""
+
+
+def gas_law_applies() -> bool:
+  """True on a car the gas-law setting does something on (GAS_LAW_PLATFORMS)."""
+  return car_platform() in GAS_LAW_PLATFORMS
+
+
 def gas_law_label(short: bool = False) -> str:
   if short:
     return "v2" if gas_law_v2() else "v1"
@@ -108,14 +136,15 @@ def mode_time_text() -> str:
 
 
 def reset_learned_values() -> None:
-  """Put every learned param back to its default. Offroad only -- the tuner
-  holds the learned state in memory and rewrites it every 60 s, so a reset
-  while driving would be undone a minute later."""
+  """Put the learned brake correction (RESET_KEYS) back to its default; the
+  drive-mode totals are kept. Offroad only -- the tuner holds the learned state
+  in memory and rewrites it every 60 s, so a reset while driving would be undone
+  a minute later."""
   if not ui_state.is_offroad():
     return
   try:
-    for key, default in LEARNED_DEFAULTS.items():
-      ui_state.params.put(key, float(default))
+    for key in RESET_KEYS:
+      ui_state.params.put(key, float(LEARNED_DEFAULTS[key]))
   except UnknownKeyName:
     # params registry predates the tuner: there is nothing learned to reset,
     # and raising out of a button callback would take the UI down
@@ -161,10 +190,12 @@ class HondaSettings(BrandSettings):
     # the description renderer collapses every run of whitespace, newlines
     # included -- a line break is <br>, and a tag boundary is what starts a new
     # block, so the separators here are load bearing
-    text = (f"<b>{tr('Gas law')}</b>" + gas_law_label() + " " + tr("(from the next drive)") + "<br>" +
-            f"<b>{tr('Engaged time by drive mode')}</b>" + mode_time_text() + "<br>" +
-            # stored as an offset (0.0 = no correction), shown as a gain
-            f"{tr('Brake')} x{1.0 + learned_value('HondaDynBrakeGain'):.2f}")
+    # the gas law only exists on GAS_LAW_PLATFORMS; another Honda would be shown a setting it ignores
+    text = (f"<b>{tr('Gas law')}</b>" + gas_law_label() + " " + tr("(from the next drive)") + "<br>"
+            if gas_law_applies() else "")
+    text += (f"<b>{tr('Engaged time by drive mode')}</b>" + mode_time_text() + "<br>" +
+             # stored as an offset (0.0 = no correction), shown as a gain
+             f"{tr('Brake')} x{1.0 + learned_value('HondaDynBrakeGain'):.2f}")
     if not ui_state.is_offroad():
       text += "<br>" + tr(LEARNED_ONROAD_NOTE)
     return text

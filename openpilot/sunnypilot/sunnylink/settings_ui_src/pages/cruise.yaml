@@ -351,11 +351,14 @@ sections:
     widget: info
     title: Learned brake gain
     description: 0.00 until it has learned anything. Positive adds brake, negative trims it.
+  # FORK(HONDA_ELESYS): the engaged seconds per drive mode replaced the retired pedal gains and aero
+  # factor in 2026-10.
   - key: HondaDynModeSecD
     widget: info
     title: Engaged seconds in D
     description: Time driven with sunnypilot longitudinal engaged in each drive mode, saved once a
-      minute. Per-mode pedal tables need about 15 minutes each of ECON and S.
+      minute, and counted only while Dynamic Longitudinal Learning is on. Per-mode pedal tables need
+      about 15 minutes each of ECON and S.
   - key: HondaDynModeSecECON
     widget: info
     title: Engaged seconds in ECON

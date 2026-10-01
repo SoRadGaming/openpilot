@@ -121,6 +121,45 @@ class TestHondaDynamicSettings(unittest.TestCase):
     assert _panel_constant("GAS_LAW_PARAM") == GAS_LAW_PARAM
     assert _panel_constant("GAS_LAW_DEFAULT") is True
 
+  def test_reset_puts_back_the_brake_and_keeps_the_mode_times(self):
+    # RESET is the brake learner's; the HondaDynModeSec* totals are a data tally, not a tune
+    reset = _panel_constant("RESET_KEYS")
+    learned = _panel_constant("LEARNED_DEFAULTS")
+    assert "HondaDynBrakeGain" in reset
+    assert set(reset) <= set(learned), f"RESET_KEYS names a key that is not learned: {set(reset) - set(learned)}"
+    assert not [k for k in reset if k.startswith("HondaDynModeSec")], "RESET must keep the drive-mode times"
+    tree = ast.parse(HONDA_PANEL.read_text())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "reset_learned_values")
+    loops = [n for n in ast.walk(fn) if isinstance(n, ast.For)]
+    assert loops and all(isinstance(n.iter, ast.Name) and n.iter.id == "RESET_KEYS" for n in loops), \
+      "reset_learned_values() must write RESET_KEYS only"
+
+  def test_gas_law_readout_is_gated_to_the_platforms_it_applies_to(self):
+    platforms = _panel_constant("GAS_LAW_PLATFORMS")
+    assert platforms, "GAS_LAW_PLATFORMS is empty"
+    try:
+      from opendbc.car.honda.values import HONDA_ELESYS
+    except ImportError:
+      self.skipTest("opendbc is not importable here")
+    assert {str(p) for p in HONDA_ELESYS} == set(platforms), \
+      f"GAS_LAW_PLATFORMS {platforms} is not opendbc's HONDA_ELESYS {sorted(str(p) for p in HONDA_ELESYS)}"
+
+  def test_both_panels_show_the_gas_law_only_where_it_applies(self):
+    # the big panel's readout and the mici card call gas_law_applies() before naming the law,
+    # and the mici card says the setting is for the next drive, as the big panel does
+    tree = ast.parse(HONDA_PANEL.read_text())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "HondaSettings")
+    build = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "_build_learned_text")
+    calls = {n.func.id for n in ast.walk(build) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert {"gas_law_applies", "gas_law_label"} <= calls, "the big panel must gate the gas-law line"
+    mici = MICI_PANEL.read_text()
+    tree = ast.parse(mici)
+    info = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "HondaLearnedInfo")
+    refresh = next(n for n in info.body if isinstance(n, ast.FunctionDef) and n.name == "refresh")
+    calls = {n.func.id for n in ast.walk(refresh) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert {"gas_law_applies", "gas_law_label"} <= calls, "the mici card must gate the gas-law line"
+    assert "next drive" in ast.get_source_segment(mici, refresh), "the mici card must say the law applies at the next drive"
+
   def test_retired_keys_are_gone_everywhere(self):
     # Gone from the registry, so the mici and big panels, sunnylink and statsd must not name
     # them either: Params would raise UnknownKeyName on every read.
