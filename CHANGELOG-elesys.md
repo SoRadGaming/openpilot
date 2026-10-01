@@ -725,6 +725,10 @@ Driver-facing summary: `docs/CHANGELOG_SERIAL_STEERING.md`, 2026-10-01. Design a
   all 1.0, and a 2 s crossfade; the tuner counts engaged time and steady-pedal samples per slot
   for an offline fit. 87 s of engaged ECON and 79 s of engaged S in a month is not enough yet.
 - `GEAR = 26` (section 1's fast path) is now observed: 16,164 frames of S on b1/dd/fc.
+- After review: the settings readouts show the gas law only on `HONDA_ELESYS` (another Honda runs upstream's law
+  whatever the setting says), the comma 4 card says it applies from the next drive, RESET puts back the brake
+  gain only and keeps the mode times, and sunnylink says the mode times are counted only with the tuner on
+  (sunnypilot `d93559f21`).
 
 ---
 
@@ -746,6 +750,9 @@ Driver-facing summary: `docs/CHANGELOG_SERIAL_STEERING.md`, 2026-10-01 "Longitud
 - **CRUISE_OVERRIDE stays 1**, now as a recorded decision: no measured effect, never tested at 0 under sustained
   braking, and every BRAKE_ERROR since June was a ~1 s 0x1FA gap (`S:/OP/FAULT_root_cause_drive84.md` corrected).
 - A NaN `vEgo` made the brake block raise (no 0x1FA, then BRAKE_ERROR); it now holds the brake.
+- After review (opendbc `3a131bf3`): `MAX_ROLL` 1.9 s counts from entry, so the ceiling is gone 2.42 s after
+  entry at the latest (it was rolling time, about 2.97 s); and no ceiling when stopping is entered above 1.2 m/s
+  (measured entries reach 1.08), logged as `hondastop skip=speed`. Neither changes a replayed stop.
 
 ---
 

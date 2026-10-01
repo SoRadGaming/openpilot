@@ -279,15 +279,15 @@ Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-sp
 | M | `openpilot/selfdrive/pandad/pandad.py` | A | Adds `flash_if_requested()` before `./pandad`, `watch_for_request()` after it, and `skip_panda_reset`. | 0 | CONFLICT |
 | M | `openpilot/selfdrive/selfdrived/selfdrived.py` | B | Subscribes `carStateSP`, which `mads.py` reads. | 0 | CONFLICT |
 | M | `openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py` | C | Honda dynamic-learning toggle on the Cruise panel. | 0 | moved |
-| M | `openpilot/selfdrive/ui/sunnypilot/layouts/settings/vehicle/brands/honda.py` | C | `HondaSettings`: toggle, learned values (gas law, engaged time per drive mode, brake gain) and reset (`LEARNED_DEFAULTS`, `MODE_SLOTS`, `GAS_LAW_PARAM`, `gas_law_label`, `mode_minutes`, `reset_learned_values`). | 0 | moved |
+| M | `openpilot/selfdrive/ui/sunnypilot/layouts/settings/vehicle/brands/honda.py` | C | `HondaSettings`: toggle, learned values (gas law on the Accord AU only, engaged time per drive mode, brake gain) and reset of the brake gain only (`LEARNED_DEFAULTS`, `RESET_KEYS`, `MODE_SLOTS`, `GAS_LAW_PARAM`, `GAS_LAW_PLATFORMS`, `car_platform`, `gas_law_applies`, `gas_law_label`, `mode_minutes`, `reset_learned_values`). | 0 | moved |
 | A | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/board.py` | A | Settings > gateway page: `BoardLayoutMici`, `UpdateBoardButton`, `board_page_visible`, `bundled_firmware`. | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/maps.py` | SL | Settings > maps: `MapsLayoutMici`, `MapDataInfo` (one card per data set), `UpdateOsmButton` (offroad only, Always Offroad with the car on included; writes `OsmDbUpdatesCheck`), the "update weekly" toggle. | 0 | new |
 | M | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py` | A+C+SL | Adds a "vehicle" row (C) and a "gateway" row (A) with `items.insert(2, ...)` and `items.insert(3, ...)`, a form two tests pin, and a "maps" row (SL) with `items.insert(4, ...)`. | 0 | CONFLICT |
-| A | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/vehicle.py` | C (+B) | mici vehicle page: `VehicleLayoutMici`, `car_brand()`, `HondaLearnedInfo` (gas law with the brake gain, and engaged minutes per drive mode, since 2026-10); and (B) the fast-wheel rows, "off on swerve" and "swerve at", the rate (`FastWheelRateToggle`). | 0 | new→moved |
+| A | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/vehicle.py` | C (+B) | mici vehicle page: `VehicleLayoutMici`, `car_brand()`, `HondaLearnedInfo` (the gas law from the next drive with the brake gain - only the brake on another Honda - and engaged minutes per drive mode, since 2026-10); and (B) the fast-wheel rows, "off on swerve" and "swerve at", the rate (`FastWheelRateToggle`). | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/tests/test_eps_lkas_flasher.py` | A | Flasher protocol, image checks and trace (26 tests). | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/tests/test_eps_lkas_hook.py` | A | pandad hook ordering, the onroad refusal and param registration (10 tests). | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/tests/test_gateway_board_settings.py` | A (+B) | DBC, capnp, params, page and button gates (25 tests), including `test_lat_ready_means_lateral_is_enabled_not_merely_possible` (B). | 0 | new→moved |
-| A | `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py` | C | Params, UI, sunnylink and statsd in sync with the tuner and the gas law; no retired key named anywhere (15 tests). | 0 | new→moved |
+| A | `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py` | C | Params, UI, sunnylink and statsd in sync with the tuner and the gas law; no retired key named anywhere; RESET keeps the mode times; the gas-law readout gated to `HONDA_ELESYS` (18 tests). | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/tests/test_mads_fast_wheel_settings.py` | B | The fast-wheel settings in agreement across `params_keys.h`, `mads.py`, the mici page and sunnylink (15 tests). | 0 | new |
 | A | `openpilot/selfdrive/ui/tests/test_maps_settings.py` | SL | The maps page contract: gates, confirm flow, dates, glyphs (source-parsing tests). | 0 | new |
 | M | `openpilot/sunnypilot/mads/mads.py` | B | Pauses on a gateway driver override (`LINBUS_REASON_DRIVER_OVERRIDE`, `_gw_paused`), holds the pause in `should_silent_lkas_enable()`, and also fires on the frame MADS is turned on. Adds the fast-wheel disable (`EMERGENCY_STEER_RATE` 200, `EMERGENCY_STEER_FRAMES` 2), which applies to **every** car; since 2026-09-30 a setting (`MadsEmergencySteerDisable`, default on; `MadsEmergencySteerRate` 150/200/250/300, default 200), read in `__init__` and `read_params()`. | 0 | CONFLICT |
@@ -361,7 +361,7 @@ Four of them arrived after the 2026-09 sync, with the 2026-10 longitudinal work:
 | M | `opendbc/sunnypilot/car/honda/gas_interceptor.py` | C | Imports `HONDA_ELESYS` and `elesys_gas` (re-exporting the v1 names); on `HONDA_ELESYS` builds `ElesysGasLaw` and calls it instead of upstream's line; the `tuner` hook `observe_pedal`. Every other car runs upstream's line. All hunks `FORK(HONDA_ELESYS)`/`FORK:`. | 0 | clean |
 | A | `opendbc/sunnypilot/car/honda/test_dynamic_tuning.py` | C | Script-style tests of the tuner. | 0 | clean |
 | A | `opendbc/sunnypilot/car/honda/test_elesys_gas.py` | C | The gas law, its shape conditions, the crossfade, the slots and the param (31 tests). | - | new (2026-10) |
-| A | `opendbc/sunnypilot/car/honda/test_elesys_stop.py` | C | The soft final stop: every timer, the grade term, the gate, the bound, random-input invariants, never raising (25 tests). | - | new (2026-10) |
+| A | `opendbc/sunnypilot/car/honda/test_elesys_stop.py` | C | The soft final stop: every timer, the grade term, the gate, the bound from entry, the entry-speed bound, random-input invariants, never raising (28 tests). | - | new (2026-10) |
 | A | `opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py` | C+B | Script-style checks through `CarController`, with a `TestCase` wrapper. Sections [7], [8] and [10]–[15] are B; [16], [17], [17b], [18] and [19] (2026-10) are the gas law, the never-raise checks, the NaN-`vEgo` brake block, `CRUISE_OVERRIDE` with brake 0 after a disengage or a pedal, and the soft final stop. | 0 | clean, then edited for the new signatures |
 
 **2026-09 merge summary.**
@@ -838,10 +838,10 @@ reports 22 findings, all older than the merge (see [Pre-existing issues](#pre-ex
 ```bash
 python -m unittest opendbc.car.honda.tests.test_honda opendbc.car.honda.tests.test_elesys   # 56 tests (55 in test_elesys)
 python -m unittest opendbc.sunnypilot.car.honda.test_elesys_gas                            # 31 tests: the gas law
-python -m unittest opendbc.sunnypilot.car.honda.test_elesys_stop                           # 25 tests: the soft final stop
+python -m unittest opendbc.sunnypilot.car.honda.test_elesys_stop                           # 28 tests: the soft final stop
 python -m unittest opendbc.safety.tests.test_honda                                          # builds libsafety; 942 run, OK (skipped=69)
 python -m unittest opendbc.car.tests.test_car_interfaces -k HONDA_ACCORD_9G_AU
-python -m unittest discover -s opendbc/sunnypilot/car -t .                                  # 79 tests, including the integration script
+python -m unittest discover -s opendbc/sunnypilot/car -t .                                  # 82 tests, including the integration script
 python opendbc/sunnypilot/car/honda/test_dynamic_tuning.py                                  # ALL CHECKS PASSED
 python opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py                      # ALL CHECKS PASSED; §15 SKIPs without openpilot
 PYTHONPATH=$HOME/sp-merge python opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py   # §15 runs
@@ -920,7 +920,9 @@ write the next `UPSTREAM-<date>.md`.
   * sunnypilot: `FORK(HONDA_ACCORD_9G_AU)` ×18, `FORK(LKAS-GATEWAY)` ×13, `FORK(GATEWAY-UPDATE)` ×3, bare `FORK:` ×3
     (37 lines), in `drive_helpers.py`, `longitudinal_planner.py`, `longcontrol.py`, `desire_helper.py`, both
     `modeld.py`, `controlsd.py`, `selfdrived.py`, `pandad.py`, mici `settings.py`, `mads.py`, `state.py`,
-    `latcontrol_torque_ext_base.py`, `joystickd.py` and `maneuversd.py`.
+    `latcontrol_torque_ext_base.py`, `joystickd.py` and `maneuversd.py`. The 2026-10 longitudinal work added
+    `FORK(HONDA_ELESYS)` ×6 on its hunks in `params_keys.h` (2), `statsd.py` (1), sunnylink's `vehicle.yaml` (2)
+    and `cruise.yaml` (1); the older hunks in those files still carry prose only.
   * `git grep -n -E "FORK(\(|:)"` lists them. A plain `git grep FORK` also hits upstream Tesla DBC strings.
   * The older sunnypilot hunks still carry prose markers only: "LIN-bus gateway:", "HONDA_ELESYS:", "EPS-LKAS".
 * **Per-car gating, so other cars keep upstream behaviour:**

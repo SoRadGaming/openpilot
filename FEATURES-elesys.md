@@ -60,7 +60,8 @@ off, key on.
 
 In sunnylink only. On: the pedal uses the throttle response measured on your car. Off: the
 previous pedal law, exactly. Also read once at ignition. The comma 4 card shows which one the
-car will use (`v2` = measured, `v1` = previous).
+car will use from the next drive (`v2 next drive` = measured, `v1 next drive` = previous).
+It runs whether or not the learning toggle is on.
 
 (The old "blend the PCM gas above 30 km/h" toggle is gone — the car's cruise computer was never
 shown to respond to it.)
@@ -71,10 +72,12 @@ shown to respond to it.)
 
 On the comma 4 it is the card at the front of **Settings → vehicle**:
 
-- **gas law** — `v2` (measured) or `v1` (previous), then the learned brake correction as
-  `brake x1.00` (`x1.00` until it has learned anything).
+- **gas law** — `v2` (measured) or `v1` (previous), the law the car will use from the next
+  drive, then the learned brake correction as `brake x1.00` (`x1.00` until it has learned
+  anything). On another Honda the gas law does nothing, so the card shows only **brake**.
 - **D / ECON / S** — minutes driven with sunnypilot's longitudinal engaged in each drive mode,
-  e.g. `412 / 1.4 / 1.3 min`. This is the data a future per-mode pedal table needs.
+  e.g. `412 / 1.4 / 1.3 min`. This is the data a future per-mode pedal table needs. It is
+  counted only while the learning toggle is on.
 
 On the big screen it is **Settings → Vehicle → Learned Values**, and in the app the read-only
 rows on the Cruise page (the mode times there are in seconds).
@@ -85,9 +88,10 @@ they could not move (see below), so they were showing nothing.
 The numbers refresh about once a second on screen, and the car itself saves them roughly once
 a minute while you drive, so open the page after a drive to see the day's numbers.
 
-**RESET** (slide to confirm on the comma 4) puts the brake correction and the mode times back
-to zero. It asks for confirmation first, and it is only available with the car off — the
-tuner keeps them in memory while driving and would just write them back over the top a minute
+**RESET** (slide to confirm on the comma 4) puts the brake correction back to zero. The mode
+times are kept: they are a tally of the data collected, not something learned. It asks for
+confirmation first, and it is only available with the car off — the
+tuner keeps it in memory while driving and would just write it back over the top a minute
 later.
 
 ---
@@ -166,8 +170,9 @@ Now, with the learning toggle on, the brake is held lower (125, a little more on
 still rolling in the stopping phase. About half a second after the wheels stop it rises to the usual hold in a quarter of
 a second, so **how the car holds at a light does not change**.
 
-It gives way early - back to the old behavior - if the car is not slowing, if the wheels start turning again, or after
-1.9 s. Your brake or gas pedal removes it at once.
+It gives way early - back to the old behavior - if the car is not slowing, if the wheels start turning again, or
+1.9 s after the stopping phase began. A stop that starts faster than about 4 km/h (1.2 m/s) does not get it at all:
+none of your logged stops did. Your brake or gas pedal removes it at once.
 
 Each stop writes one `hondastop` line to the log, saying what happened.
 
@@ -250,7 +255,8 @@ for each — all set to "no change" for now, because there are only about 1.5 mi
 driving in ECON and in S in a month of logs, far too little to set them from. The car now
 counts that time for you (the `D / ECON / S` minutes on the comma 4 card). **To make per-mode
 tuning possible, drive at least 15 minutes engaged in ECON and 15 in S**, with some gentle
-accelerations at 40-80 km/h. A change of mode fades the pedal over 2 seconds rather than
+accelerations at 40-80 km/h, and with the learning toggle on (the minutes are only counted
+then). A change of mode fades the pedal over 2 seconds rather than
 stepping it.
 
 The reason ECON looked "dead" in the old logs is simply that you never turned it on during
