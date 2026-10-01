@@ -1,11 +1,16 @@
 import datetime
 import os
+import re
 import threading
 import time
 import uuid
 
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.common.params import Params, ParamKeyFlag, UnknownKeyName
+
+# FORK(UPSTREAM-FIX): each entry is {"Key", {FLAG | FLAG, TYPE[, "default"]}}
+PARAMS_KEYS_H = os.path.join(os.path.dirname(__file__), "..", "params_keys.h")
+PARAM_ENTRY_RE = re.compile(r'^\s*\{"(?P<key>\w+)",\s*\{(?P<flags>[A-Z_ |]+),', re.MULTILINE)
 
 class TestParams(OpenpilotTestCase):
   def setup_method(self):
@@ -113,6 +118,20 @@ class TestParams(OpenpilotTestCase):
     assert len(keys) > 20
     assert len(keys) == len(set(keys))
     assert b"CarParams" in keys
+
+  def test_params_all_keys_by_flag(self):
+    # FORK(UPSTREAM-FIX): the by-flag path returned dangling pointers, and sunnylink backup/restore decodes these keys
+    with open(PARAMS_KEYS_H) as f:
+      registered = {m.group("key"): {flag.strip() for flag in m.group("flags").split("|")}
+                    for m in PARAM_ENTRY_RE.finditer(f.read())}
+    assert len(registered) == len(Params().all_keys())
+
+    for flag in (ParamKeyFlag.BACKUP, ParamKeyFlag.PERSISTENT, ParamKeyFlag.CLEAR_ON_MANAGER_START):
+      keys = Params().all_keys(flag)
+      for k in keys:
+        assert k.isascii() and k.decode("ascii") in registered, f"{flag.name}: corrupt key {k!r}"
+      assert len(keys) == len(set(keys))
+      assert {k.decode("ascii") for k in keys} == {k for k, flags in registered.items() if flag.name in flags}
 
   def test_params_default_value(self):
     self.params.remove("LanguageSetting")

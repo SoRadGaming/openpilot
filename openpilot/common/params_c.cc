@@ -162,12 +162,19 @@ ParamsBuffer params_key_at(ParamsHandle *handle, size_t index) noexcept {
 
 size_t params_keys_by_flag(ParamsHandle *handle, uint32_t flag, ParamsBuffer *out, size_t out_size) noexcept {
   return translate_exceptions(size_t{0}, [&]() {
-    auto filtered = handle->params.allKeys(static_cast<ParamKeyFlag>(flag));
-    size_t count = std::min(filtered.size(), out_size);
-    for (size_t i = 0; i < count; i++) {
-      out[i] = return_string(filtered[i]);
+    // FORK(UPSTREAM-FIX): out[] used to be filled from return_string(), which keeps one string per thread, so every
+    // entry but the last pointed at overwritten or freed memory and all_keys(flag) returned garbage. Point into
+    // handle->keys instead: it is const and lives as long as the handle. Same filter as Params::allKeys(flag).
+    size_t count = 0;
+    for (const auto &key : handle->keys) {
+      if (flag == ALL || (handle->params.getKeyFlag(key) & flag)) {
+        if (count < out_size) {
+          out[count] = ParamsBuffer{key.data(), key.size()};
+        }
+        count++;
+      }
     }
-    return filtered.size();
+    return count;
   });
 }
 

@@ -247,9 +247,12 @@ anything above 0 is where the next merge can conflict.
 * *modify/delete*: upstream deleted the old path; the fork's edits were re-applied to the new one.
 * *added in the merge*: the file carries a fork change for the first time, made during or after the merge.
 
-### sunnypilot: 67 files and the submodule pointer
+### sunnypilot: 69 files and the submodule pointer
 
 Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-specific, gated by `SpeedLimitMapStrict` and `OsmAutoUpdateWeekly`, markers `FORK(SPEED-LIMIT)`.
+
+Area **UF** is a fix to an upstream bug, carried until upstream fixes it, markers `FORK(UPSTREAM-FIX)`. On each merge,
+check whether upstream changed the same function; if it did, take upstream's version and drop ours.
 
 | St | Path | Area | What the fork changes | Upstream commits | Last merge |
 |---|---|---|---|---|---|
@@ -263,7 +266,9 @@ Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-sp
 | A | `docs/fork/README.md`, `GATEWAY-UPDATE.md`, `LKAS-GATEWAY-PROTOCOL.md`, `CAR-HONDA-ACCORD-9G-AU.md` | — | These documents. | 0 | clean |
 | A | `docs/fork/UPSTREAM-2026-09.md` | — | What the 2026-09 sync brought. | 0 | added in the merge |
 | M | `openpilot/cereal/custom.capnp` | A+B | Adds `CarControlSP.lateralControl @5` (B), `CarStateSP.linbusGateway @1` (fields @0–@18 B, @19–@26 A) and `CarStateSP.driverTorqueStale @2` (B). | 0 | auto |
+| M | `openpilot/common/params_c.cc` | UF | `params_keys_by_flag()` points its results into the handle's own key list. It used to fill them from `return_string()`, which keeps one string per thread, so `Params().all_keys(flag)` returned garbage for every flag but `ALL` and sunnylink backup/restore (`all_keys(ParamKeyFlag.BACKUP)`) got corrupt keys or a `UnicodeDecodeError`. The function came in with sunnypilot's 2026-08-13 sync (`7461f70fd`) on top of upstream's ctypes params (`74ac5ef9a`); commaai has no by-flag path. Unfixed upstream as of sunnypilot `a5f44653d`. | 0 | added in the merge |
 | M | `openpilot/common/params_keys.h` | A+B+C+SL | Adds 7 `EpsLkas*` keys (A), 9 `HondaDyn*` keys (C), and `SpeedLimitMapStrict`, `OsmAutoUpdateWeekly`, `OsmLastCompleteDate` (SL), and `MadsEmergencySteerDisable`, `MadsEmergencySteerRate` (B, the fast-wheel takeover's settings). | 0 | auto |
+| M | `openpilot/common/tests/test_params.py` | UF | `test_params_all_keys_by_flag`: `all_keys(flag)` for `BACKUP`, `PERSISTENT` and `CLEAR_ON_MANAGER_START` equals the keys `params_keys.h` gives that flag, all ASCII. | 0 | added in the merge |
 | M | `openpilot/selfdrive/car/card.py` | A+C | A: `stage_board_firmware()`, `write_board_firmware()` and `log_flash_trace()`, called from `params_thread` (staging from `state_publish`). C: `get_car(..., skip_fw_query=bool(fixed_fingerprint))`. | 0 | auto |
 | M | `openpilot/selfdrive/car/helpers.py` | B | `convert_carControlSP()` rebuilds `lateralControl`. | 0 | auto |
 | A | `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | B (+A) | Every nested `CarControlSP` struct, and the firmware fields, through the capnp→dataclass seam (1 test). | 0 | new→moved |
