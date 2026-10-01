@@ -142,7 +142,8 @@ class TestEpsLatchAlertDefinitions(OpenpilotTestCase):
     assert announce.audible_alert == AudibleAlert.prompt, "prompt plays once; promptRepeat would loop"
     assert remind.audible_alert == AudibleAlert.none
     assert remind.priority == Priority.LOWEST
-    assert announce.priority < Priority.HIGH, "must never hide driver monitoring or an FCW"
+    # driver monitoring's stage 2 is MID and a priority tie goes to the newer alert, so MID would hide it
+    assert announce.priority < Priority.MID, "must never hide driver monitoring's stage 2, stage 3 or an FCW"
     assert announce.alert_status == AlertStatus.userPrompt and announce.alert_size == AlertSize.mid
     assert remind.alert_status == AlertStatus.normal and remind.alert_size == AlertSize.small
     # upstream's own sanity rules (selfdrive/selfdrived/tests/test_alerts.py)
@@ -218,13 +219,33 @@ class TestThroughTheAlertManager(OpenpilotTestCase):
       am.add_many(frame, ev.create_alerts([ET.PERMANENT, ET.WARNING]))
       am.process_alerts(frame, set())
       shown.append(am.current_alert.alert_text_1)
-    announce = [i for i, s in enumerate(shown) if s == "Steering Fault: Restart Car"]
+    announce = [i for i, s in enumerate(shown) if s == "Steering Fault"]
     remind = [i for i, s in enumerate(shown) if s == "Steering Off Until Restart"]
     # AlertEntry.active() is `frame <= end_frame`, so an alert of N frames is on screen for N + 1
     assert announce[0] == LATCH_CONFIRM_FRAMES - 1
     assert len(announce) == 601 and announce[-1] - announce[0] == 600, "6 s, once"
     assert len(remind) == 401 and remind[-1] - remind[0] == 400, "4 s"
-    assert set(shown) == {"", "Steering Fault: Restart Car", "Steering Off Until Restart"}
+    assert set(shown) == {"", "Steering Fault", "Steering Off Until Restart"}
+
+  def test_it_never_hides_driver_monitoring(self):
+    """A latch while DM stage 2 is on screen: DM keeps the screen (and its sound) throughout."""
+    from openpilot.cereal import log
+    from openpilot.selfdrive.selfdrived.alertmanager import AlertManager
+    from openpilot.selfdrive.selfdrived.events import Events
+    dm = log.OnroadEvent.EventName.driverDistracted2
+    a, am, ev, ev_sp = EpsLatchAlert(), AlertManager(), Events(), EventsSP()
+    shown: list[str] = []
+    for frame in range(LATCH_CONFIRM_FRAMES + 700):
+      ev.clear()
+      ev_sp.clear()
+      ev.add(dm)
+      for e in a.update(gw(True), True):
+        ev_sp.add(e)
+      am.add_many(frame, ev.create_alerts([ET.PERMANENT, ET.WARNING]) + ev_sp.create_alerts([ET.PERMANENT, ET.WARNING]))
+      am.process_alerts(frame, set())
+      shown.append(am.current_alert.alert_text_1)
+    assert a.latched
+    assert set(shown) == {"Pay Attention"}, set(shown)
 
   def test_disengaging_clears_it_from_the_screen(self):
     # selfdrived clears WARNING alerts when nothing is active (update_alerts' clear_event_types)
@@ -236,7 +257,7 @@ class TestThroughTheAlertManager(OpenpilotTestCase):
         ev.add(e)
       am.add_many(frame, ev.create_alerts([ET.PERMANENT, ET.WARNING]))
       am.process_alerts(frame, set())
-    assert am.current_alert.alert_text_1 == "Steering Fault: Restart Car"
+    assert am.current_alert.alert_text_1 == "Steering Fault"
     am.process_alerts(LATCH_CONFIRM_FRAMES + 100, {ET.WARNING})
     assert am.current_alert.alert_text_1 == ""
 
