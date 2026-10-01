@@ -65,7 +65,15 @@ throttles it, and in practice it has run every 3–6 hours. Its rules, all docum
 * **Fast-forward only**, and every push is leased. A hand push or rollback on `sunnypilot` is held rather than
   overwritten; `overwrite` on a manual run replaces it.
 * **`pre-*` branches here are mirrored under the same name, create-only**, so the device's branch picker offers them as
-  rollbacks. `pre-upstream-2026-09` is the fork as it was before the 2026-09 sync.
+  rollbacks. The mirror never deletes one; removing a snapshot is done by hand, in both repos.
+* **There is no `pre-*` branch today.** `pre-upstream-2026-09`, the fork as it was before the 2026-09 sync, was deleted
+  from `SoRadGaming/sunnypilot` and `SoRadGaming/openpilot` on 2026-10-01. It could not have installed from the device
+  anyway: the `updated.py` the car now runs compares AGNOS versions and, when they differ, reads the target branch's
+  manifest at `openpilot/system/hardware/comma/agnos.json`. That tree is AGNOS 18.4 in the old, un-nested layout, with
+  its manifest elsewhere, so the AGNOS step would have failed and the update with it. The sync has since proved itself
+  on the car, so nothing needed it. **Before offering the next snapshot,** check that the running `updated.py` can
+  install it: a snapshot taken across an AGNOS change or a move of `agnos.json` cannot be, and is a git ref for
+  reference, not a rollback.
 * **Upstream syncs change `.github/workflows/`, and GitHub's Actions token may not push that.** The run then goes red and
   its summary gives the two commands to push it by hand. Alternatively, add a `MIRROR_TOKEN` secret to
   `SoRadGaming/openpilot` (a fine-grained token for that repo only, with Contents and Workflows read and write), and the
@@ -247,9 +255,11 @@ anything above 0 is where the next merge can conflict.
 * *modify/delete*: upstream deleted the old path; the fork's edits were re-applied to the new one.
 * *added in the merge*: the file carries a fork change for the first time, made during or after the merge.
 
-### sunnypilot: 67 files and the submodule pointer
+### sunnypilot: 76 files and the submodule pointer
 
 Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-specific, gated by `SpeedLimitMapStrict` and `OsmAutoUpdateWeekly`, markers `FORK(SPEED-LIMIT)`.
+
+Area **UPD** is the comma 4 software page of 2026-10-01: the download progress and the highlighted "download update" button. Not car-specific and not gated (it is a display, every device gets it), markers `FORK(UPDATER)`.
 
 | St | Path | Area | What the fork changes | Upstream commits | Last merge |
 |---|---|---|---|---|---|
@@ -262,8 +272,9 @@ Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-sp
 | A | `docs/SP_HUD_STATUS.md` | B | SP-PROTOCOL, openpilot side. | 0 | clean |
 | A | `docs/fork/README.md`, `GATEWAY-UPDATE.md`, `LKAS-GATEWAY-PROTOCOL.md`, `CAR-HONDA-ACCORD-9G-AU.md` | — | These documents. | 0 | clean |
 | A | `docs/fork/UPSTREAM-2026-09.md` | — | What the 2026-09 sync brought. | 0 | added in the merge |
-| M | `openpilot/cereal/custom.capnp` | A+B | Adds `CarControlSP.lateralControl @5` (B), `CarStateSP.linbusGateway @1` (fields @0–@18 B, @19–@26 A) and `CarStateSP.driverTorqueStale @2` (B). | 0 | auto |
-| M | `openpilot/common/params_keys.h` | A+B+C+SL | Adds 7 `EpsLkas*` keys (A), 9 `HondaDyn*` keys (C), and `SpeedLimitMapStrict`, `OsmAutoUpdateWeekly`, `OsmLastCompleteDate` (SL), and `MadsEmergencySteerDisable`, `MadsEmergencySteerRate` (B, the fast-wheel takeover's settings). | 0 | auto |
+| M | `openpilot/cereal/custom.capnp` | A+B | Adds `CarControlSP.lateralControl @5` (B), `CarStateSP.linbusGateway @1` (fields @0–@18 B, @19–@26 A) and `CarStateSP.driverTorqueStale @2` (B). Since 2026-10-01 also `OnroadEventSP.EventName` `lkasGatewayEpsLatched @26` and `lkasGatewayEpsLatchedReminder @27` (B). | 0 | auto |
+| M | `openpilot/common/hardware/comma/agnos.py` | UPD | An optional `progress_cb` (last, default `None`) on `extract_compressed_image()`, `flash_partition()` and `flash_agnos_update()`, and `on_chunk` on `StreamingDecompressor`: compressed bytes received over `Content-Length` per 1 MB chunk, weighted across partitions by size. Without a callback every call is upstream's. Upstream file. | 0 | new |
+| M | `openpilot/common/params_keys.h` | A+B+C+SL+UPD | Adds 7 `EpsLkas*` keys (A), 9 `HondaDyn*` keys (C), and `SpeedLimitMapStrict`, `OsmAutoUpdateWeekly`, `OsmLastCompleteDate` (SL), and `MadsEmergencySteerDisable`, `MadsEmergencySteerRate` (B, the fast-wheel takeover's settings), and `UpdaterDownloadProgress` (UPD). | 0 | auto |
 | M | `openpilot/selfdrive/car/card.py` | A+C | A: `stage_board_firmware()`, `write_board_firmware()` and `log_flash_trace()`, called from `params_thread` (staging from `state_publish`). C: `get_car(..., skip_fw_query=bool(fixed_fingerprint))`. | 0 | auto |
 | M | `openpilot/selfdrive/car/helpers.py` | B | `convert_carControlSP()` rebuilds `lateralControl`. | 0 | auto |
 | A | `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | B (+A) | Every nested `CarControlSP` struct, and the firmware fields, through the capnp→dataclass seam (1 test). | 0 | new→moved |
@@ -277,7 +288,8 @@ Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-sp
 | A | `openpilot/selfdrive/controls/tests/test_stopping_debounce.py` | C | The debounce and the stopping tune (17 tests). | 0 | new→moved, then rewritten |
 | M | `openpilot/selfdrive/modeld/modeld.py` | B+C | Subscribes `carStateSP`, calls `DesireHelper(CP.carFingerprint)` and passes `driver_torque_stale=` into `DH.update`. | 0 | modify/delete |
 | M | `openpilot/selfdrive/pandad/pandad.py` | A | Adds `flash_if_requested()` before `./pandad`, `watch_for_request()` after it, and `skip_panda_reset`. | 0 | CONFLICT |
-| M | `openpilot/selfdrive/selfdrived/selfdrived.py` | B | Subscribes `carStateSP`, which `mads.py` reads. | 0 | CONFLICT |
+| M | `openpilot/selfdrive/selfdrived/selfdrived.py` | B | Subscribes `carStateSP`, which `mads.py` reads. Since 2026-10-01 also builds `EpsLatchAlert` and, in `update_events()` after the car events, adds its events to `events_sp` from `carStateSP.linbusGateway` and `self.active or self.mads.active`. | 0 | CONFLICT |
+| M | `openpilot/selfdrive/ui/mici/layouts/settings/software.py` | UPD | `CheckUpdateButton`: the progress label from `download_label()` while `UpdaterState` is "downloading...", and the "download update" highlight (`DOWNLOAD_READY_GREEN`, `_set_download_ready`, `_handle_background`, `_draw_content`), on only while that text waits for its tap. | 0 | new |
 | M | `openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py` | C | Honda dynamic-learning toggle on the Cruise panel. | 0 | moved |
 | M | `openpilot/selfdrive/ui/sunnypilot/layouts/settings/vehicle/brands/honda.py` | C | `HondaSettings`: toggle, learned values and reset (`LEARNED_DEFAULTS`, `PEDAL_GAIN_BP`, `reset_learned_values`). | 0 | moved |
 | A | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/board.py` | A | Settings > gateway page: `BoardLayoutMici`, `UpdateBoardButton`, `board_page_visible`, `bundled_firmware`. | 0 | new→moved |
@@ -290,6 +302,7 @@ Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-sp
 | A | `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py` | C | Params, UI and sunnylink in sync with the tuner (11 tests). | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/tests/test_mads_fast_wheel_settings.py` | B | The fast-wheel settings in agreement across `params_keys.h`, `mads.py`, the mici page and sunnylink (15 tests). | 0 | new |
 | A | `openpilot/selfdrive/ui/tests/test_maps_settings.py` | SL | The maps page contract: gates, confirm flow, dates, glyphs (source-parsing tests). | 0 | new |
+| A | `openpilot/selfdrive/ui/tests/test_software_update_button.py` | UPD | The real `CheckUpdateButton` in a headless raylib window, in a child process: the label per phase, the highlight on and off, the tap's signal, onroad (5 tests; skipped where no headless window opens). | 0 | new |
 | M | `openpilot/sunnypilot/mads/mads.py` | B | Pauses on a gateway driver override (`LINBUS_REASON_DRIVER_OVERRIDE`, `_gw_paused`), holds the pause in `should_silent_lkas_enable()`, and also fires on the frame MADS is turned on. Adds the fast-wheel disable (`EMERGENCY_STEER_RATE` 200, `EMERGENCY_STEER_FRAMES` 2), which applies to **every** car; since 2026-09-30 a setting (`MadsEmergencySteerDisable`, default on; `MadsEmergencySteerRate` 150/200/250/300, default 200), read in `__init__` and `read_params()`. | 0 | CONFLICT |
 | M | `openpilot/sunnypilot/mads/state.py` | B | DISABLED branch: an ENABLE that arrives with `silentLkasDisable` goes to `paused`. | 0 | added in the merge |
 | A | `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | B | The gateway pause, resume, brake modes, emergency and enable-frame cases, and the fast-wheel settings (41 tests). | 0 | new→moved |
@@ -311,6 +324,9 @@ Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-sp
 | A | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_appslot.bin` | A | Board app-slot image: 46,540 bytes, marker `APL1`, origin `0x08004000`, commit `d995bc95`, flags `0x04` (INCAR_TEST). | 0 | new→moved |
 | A | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_flasher.py` | A | Portable bootloader protocol, `PandaTransport` (ELM327), `BenchTransport`, and the steering/vibration trace. | 0 | new→moved |
 | A | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_hook.py` | A | pandad glue: `flash_if_requested()`, `watch_for_request()`. | 0 | new→moved |
+| A | `openpilot/sunnypilot/selfdrive/selfdrived/eps_latch_alert.py` | B | `EpsLatchAlert`: the "restart the car" alert for an EPS latched until key-off. Debounced on fresh `0x70B` frames only (1 s to confirm, 3 s of fresh "not latched" to clear, stale frames count for neither); the announcement once per latch, held until a WARNING can be shown; then a silent reminder every 5 minutes. | 0 | new |
+| M | `openpilot/sunnypilot/selfdrive/selfdrived/events.py` | B | `EVENTS_SP` entries for the two events: `ET.WARNING` only. Announcement: "Steering Fault: Restart Car" / "Turn the ignition off and on to clear it", userPrompt, mid, `Priority.MID`, `AudibleAlert.prompt`, 6 s. Reminder: "Steering Off Until Restart", normal, small, `Priority.LOWEST`, silent, 4 s. | 0 | new |
+| A | `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_eps_latch_alert.py` | B | The debounce, the stale-frame pattern of routes fc/fd, the deferral, the reminder, warnings only, the text against the mici alert renderer's sizing with the real fonts, the AlertManager path and selfdrived's wiring (18 tests). | 0 | new |
 | M | `openpilot/sunnypilot/sunnylink/settings_ui.json` | C+B | Compiled output of the YAML files below. | 0 | auto, then recompiled |
 | M | `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/cruise.yaml` | C+SL | `honda_dynamic_learning` read-only info section (C); the "Strict Map Speed Limits" toggle in the speed limit settings (SL); the NSW mode, the weekly updates and the "update now" toggles for NSW zones and OSM maps (NSW-ZONES, see NSW-SPEED-ZONES.md). | 0 | moved |
 | M | `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/steering.yaml` | B | MADS Settings: "Turn Off Steering on a Fast Wheel" (`MadsEmergencySteerDisable`) with "Fast Wheel Threshold" (`MadsEmergencySteerRate`) under it. | 0 | new |
@@ -318,6 +334,9 @@ Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-sp
 | M | `openpilot/sunnypilot/sunnylink/statsd.py` | C | Reports `HondaDynamicTuningEnabled` and the 8 learned values. | 0 | auto |
 | M | `openpilot/sunnypilot/sunnylink/tests/test_settings_changes.py` | SL | `TestMapDataControls` appended at the end of the file, marked FORK(NSW-ZONES): the four map-data items in the speed limit settings and a real `saveParams` round trip. Upstream file (sunnypilot SDUI #1780, #1830): **merge hazard**. | 0 | new |
 | M | `openpilot/sunnypilot/sunnylink/tools/compile_settings_ui.py` | C (Other) | Reads and writes UTF-8 with an LF newline, so compiling on Windows matches CI. | 0 | moved |
+| A | `openpilot/sunnypilot/system/updated/download_progress.py` | UPD | `DownloadProgress` (writes `UpdaterDownloadProgress`, one write per second within a phase, a failed write never fails the update), `git_fetch_with_progress()` (git's Receiving/Unpacking meter; returns and raises what `run()` did, minus the meter's redraws) and `download_label()` (the page's text). | 0 | new |
+| A | `openpilot/sunnypilot/system/updated/tests/test_download_progress.py` | UPD | Throttle, labels, a fake and a real `git fetch --progress`, the AGNOS weighting and chunk reports through `agnos.py`, and the wiring in `updated.py` (22 tests). | 0 | new |
+| M | `openpilot/system/updated/updated.py` | UPD | `self.progress = DownloadProgress(...)`; `fetch_update()` sets the phases "code", "checkout" and "os", fetches with `git_fetch_with_progress(["git", "fetch", "--progress", ...])` and still logs "git fetch success: …", passes `progress_cb` through `handle_agnos_update()`, and clears the param before "finalizing update..." and on every return to idle. | 0 | new |
 | M | `openpilot/tools/joystick/joystickd.py` | C | Passes the car's stopping speed to `should_stop()`. | 0 | added in the merge |
 | M | `openpilot/tools/longitudinal_maneuvers/maneuversd.py` | C | Parses `CarParams` and passes the car's stopping speed to `should_stop()`. | 0 | added in the merge |
 
@@ -386,6 +405,7 @@ after every merge.
 | `CarControlSP` | `lateralControl @5 :LateralControl`. Nested `LateralControl { integrator @0 :Float32; saturated @1 :Bool; integratorFrozen @2 :Bool }` | `@4` (`intelligentCruiseButtonManagement`) | **none** |
 | `CarStateSP` | `linbusGateway @1 :LinbusGateway`, `driverTorqueStale @2 :Bool` | `@0` (`speedLimit`) | **none** |
 | `CarStateSP.LinbusGateway` (fork-only) | `engaged @0`, `dryRun @1`, `valid @2`, `actuating @3`, `present @4`, `grantValid @5`, `grantState @6 :UInt8`, `grantReason @7 :UInt8`, `granted @8`, `authority @9 :UInt8`, `epsAck @10`, `epsLatched @11`, `epsErrorState @12 :UInt8`, `epsFresh @13`, `camLkasOn @14`, `applied @15 :Int16`, `motorTorque @16 :Int16`, `retryIn @17 :UInt8`, `latchedUntilKeyOff @18` (all B). `fwValid @19`, `fwGitHash @20 :UInt32`, `fwDirty @21`, `fwAppSlot @22`, `fwBootloader @23`, `fwReadOnly @24`, `boardUid @25 :UInt32`, `fwBuildValid @26` (all A). | n/a | none |
+| `OnroadEventSP.EventName` (2026-10-01) | `lkasGatewayEpsLatched @26`, `lkasGatewayEpsLatchedReminder @27` (B) | `@25` (`bigModelReady`) | **none** today. Upstream's next event takes `@26`: give it the ordinal and move these two up. An event is only an enum value, so a renumber costs nothing but the meaning of `onroadEventsSP` in older routes. |
 
 The merge kept every fork ordinal. No upstream struct is named `LateralControl` or `LinbusGateway`.
 
@@ -424,13 +444,16 @@ An end-to-end probe after the merge also pushed a `CarStateSP` with every gatewa
 | `EpsLkasFlashTrace` | PERSISTENT | JSON | – | A |
 | `MadsEmergencySteerDisable` | PERSISTENT, BACKUP | BOOL | "1" | B |
 | `MadsEmergencySteerRate` | PERSISTENT, BACKUP | INT | "200" | B |
+| `UpdaterDownloadProgress` | CLEAR_ON_MANAGER_START | JSON | – | UPD |
 
 Upstream's file at `a5f44653d` has 264 entries and none of the 16 A and C names; the merged file has 280. The fork's two
 blocks sit between stable neighbours: `HideVEgoUI`/`IntelligentCruiseButtonManagement` and
 `InteractivityTimeout`/`IsDevelopmentBranch`. Upstream still defines the `FLOAT` and `JSON` types. The two B keys came
 after that merge (2026-09-30) and sit inside upstream's `// MADS params` block, between `Mads` and
 `MadsMainCruiseAllowed`. The 3 SL keys are named in the `params_keys.h` row of the file table above; the 5 NSW keys
-are in [NSW-SPEED-ZONES.md](NSW-SPEED-ZONES.md).
+are in [NSW-SPEED-ZONES.md](NSW-SPEED-ZONES.md). The UPD key (2026-10-01) sits in upstream's `Updater*` run, between
+`UpdaterCurrentReleaseNotes` and `UpdaterFetchAvailable`; MVL's unmerged branch calls its version `UpdaterProgress`
+(an INT), so the name is deliberately different. The file has 292 entries on 2026-10-01 and no duplicate.
 
 **Why a name collision would be silent.** The table is an `std::unordered_map` initializer list. A duplicate key
 compiles without complaint, and only one entry survives. After every merge, check:
@@ -557,6 +580,11 @@ They are listed because the same kind of thing will happen again.
 | `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | 18 |
 | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | 9 |
 | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` | 4 |
+
+Added since (2026-10-01): `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_eps_latch_alert.py` (18),
+`openpilot/sunnypilot/system/updated/tests/test_download_progress.py` (22) and
+`openpilot/selfdrive/ui/tests/test_software_update_button.py` (5; it opens a headless raylib window in a child process
+and skips where none opens). The two font-metric tests skip where Pillow or the LFS fonts are missing.
 
 `test_stopping_debounce.py` no longer stubs `sys.modules`; it imports the real `longcontrol`, `drive_helpers` and
 `stopping_tune`.
@@ -885,8 +913,10 @@ sunnypilot `master` to the merge branch and push it with `GIT_LFS_SKIP_PUSH=1`. 
 ([How the car gets updates](#how-the-car-gets-updates)). A sync changes `.github/workflows/`, so expect the mirror to
 hold it and push it to `SoRadGaming/openpilot` `sunnypilot` by hand with the commands from the run summary, unless a
 `MIRROR_TOKEN` is set. Before landing, also push a `pre-<date>` snapshot of the old master to this repo; the mirror
-publishes it as a rollback on the device. Bring `S:/OP/sp-live` up to date from master: its layout changes with the
-merge.
+publishes it as a rollback on the device. Only call it a rollback if the merged `updated.py` can install it: when the
+merge changes `AGNOS_VERSION` or moves `agnos.json`, it cannot (that is why `pre-upstream-2026-09` was deleted on
+2026-10-01, see [How the car gets updates](#how-the-car-gets-updates)); keep it as a tag instead. Bring
+`S:/OP/sp-live` up to date from master: its layout changes with the merge.
 
 The firmware repo's `tools/bundle_appslot.py` finds `eps_lkas_flasher.py` in either layout (nested first, since
 `862540c`), and `docs/CAN-UPDATE.md` names the nested path, so nothing there needs changing unless upstream moves the
@@ -907,7 +937,11 @@ write the next `UPSTREAM-<date>.md`.
   * sunnypilot: `FORK(HONDA_ACCORD_9G_AU)` ×18, `FORK(LKAS-GATEWAY)` ×13, `FORK(GATEWAY-UPDATE)` ×3, bare `FORK:` ×3
     (37 lines), in `drive_helpers.py`, `longitudinal_planner.py`, `longcontrol.py`, `desire_helper.py`, both
     `modeld.py`, `controlsd.py`, `selfdrived.py`, `pandad.py`, mici `settings.py`, `mads.py`, `state.py`,
-    `latcontrol_torque_ext_base.py`, `joystickd.py` and `maneuversd.py`.
+    `latcontrol_torque_ext_base.py`, `joystickd.py` and `maneuversd.py`. That was the 2026-09-27 count. On
+    2026-10-01, with SL, NSW-ZONES, the fast-wheel settings and this batch, `git grep -n -E "FORK(\(|:)" -- openpilot`
+    prints 193 lines (156 before this batch): `FORK(UPDATER)` marks `agnos.py`, `updated.py`, `params_keys.h` and the
+    mici `software.py`, and `FORK(LKAS-GATEWAY)` now also marks the latch alert in `selfdrived.py`, `custom.capnp`
+    and the sunnypilot `events.py`.
   * `git grep -n -E "FORK(\(|:)"` lists them. A plain `git grep FORK` also hits upstream Tesla DBC strings.
   * The older sunnypilot hunks still carry prose markers only: "LIN-bus gateway:", "HONDA_ELESYS:", "EPS-LKAS".
 * **Per-car gating, so other cars keep upstream behaviour:**
@@ -953,6 +987,9 @@ These are the hunks to look at first when judging whether a merge changed anothe
   old behaviour) turns it off, and `MadsEmergencySteerRate` picks 150, 200 (default), 250 or 300 deg/s. Both are in
   sunnylink (Steering > MADS Settings) and on the mici's Settings > vehicle page, which is shown only on a Honda or an
   unrecognised car - on another car the switch is in sunnylink only.
+* **The software page and `updated.py` (UPD, 2026-10-01)** are not gated on anything: every device running this fork
+  writes `UpdaterDownloadProgress` and shows the progress and the highlight. `agnos.py` behaves as upstream's when no
+  callback is passed, which is every caller but `updated.py`.
 * **`card.py` passes `skip_fw_query=bool(fixed_fingerprint)`.** Every car whose platform the user picked skips the
   VIN/FW query and runs with empty `carFw`/VIN, not just this car.
 * **`longcontrol.py`** reads a Honda parameter (`HondaDynamicTuningEnabled`) in a file every car runs. It is inert

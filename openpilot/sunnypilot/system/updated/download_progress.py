@@ -15,9 +15,9 @@ and the software page shows it under "downloading...". It reports what it can me
 * "checkout": checkout, clean and `git submodule update`. git gives no usable meter here, so no pct.
 * "os": the AGNOS images, only when the new branch needs a different AGNOS. pct is the share of
   the image bytes done, each partition weighted by its size (system is 99% of them) and measured
-  as compressed bytes received over the server's Content-Length. Weighting every partition the
-  same, as the first version of this did, ran to 6/7 = 86% on the small partitions in seconds and
-  then sat there for the whole system download.
+  as compressed bytes received over the server's Content-Length. MVL's version weighted the seven
+  partitions the same, so the six small ones took the OS share to 6/7 in seconds (~91% on its
+  70-95% scale) and the system image crawled the rest.
 
 There is no ETA: nothing here measures time, and a percentage of objects or bytes is not one.
 Writes are throttled to one per WRITE_INTERVAL within a phase; a phase change is written at once.
