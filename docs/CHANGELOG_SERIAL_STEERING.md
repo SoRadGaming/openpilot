@@ -207,6 +207,83 @@ default; turn it off to get the previous law back exactly.
 
 ---
 
+## 2026-10-01 — lateral batch: the car's own torque numbers, an honest torque report, a 0.38 s delay fallback
+
+**openpilot's learned steering strength was stuck on a floor borrowed from
+another car.** torqued started from the 2018+ Accord's values (via
+`substitute.toml`), so it could only learn a lateral-accel factor between
+1.18 and 2.20, and it sat on 1.18 on every route from ed to 103. This car
+is a different steering system (torque 1.0 = 2560 on `0x0E4` = 160 serial
+counts at board authority 160), and torqued's own estimator sees a raw
+factor of 0.67 in town to 1.47 on the highway, 0.79-1.35 filtered.
+
+* **Its own prior:** `[1.1, 1.1, 0.18]` in opendbc `override.toml`. torqued
+  can now learn 0.77-1.43 (friction 0.09-0.27). Live learning stays on.
+  That window holds every filtered value in the replays, but not every raw
+  one: its floor clips up to ~24% of a town route's raw samples (d9, fc),
+  its ceiling ~1% of a highway route's (fd). No ±30% window can hold
+  0.67-1.47 (a ratio of 2.2 against 1.86), so 1.1 is a compromise.
+  Day one asks for about 7.5% more torque per m/s² than today's 1.183; the
+  board still clamps at 160.
+* **One reset, on the first drive.** The new prior throws torqued's saved
+  points away once, including points learned at authorities 40-200, when
+  "torque 1.0" meant something else each time. Until it has enough points
+  again (about 25-60 min of steering above 54 km/h in the replays) it uses
+  the prior.
+* **The offset survives the reset.** torqued's learned offset (-0.42 to
+  -0.50 on every route) cancels about 0.4 m/s² of road crossfall. After a
+  reset it restarted at 0, which would have meant a pull after every
+  engagement on that drive. The car now carries -0.43 in its CarParams and
+  torqued starts from it (`torqued.py`, `FORK(HONDA_ACCORD_9G_AU)`; every
+  other car still starts at 0). It also survives EnforceTorqueControl and
+  NNLC: their re-run of `configure_torque_tune()` would reset it to 0, and
+  sunnypilot's `interfaces.py` (`FORK(HONDA_ACCORD_9G_AU)`) now keeps it.
+* **Torque is reported only while the board steers.** While
+  `linbusGateway.actuating` is false, `carOutput` reports 0 torque. torqued
+  stops learning from frames nothing followed, no "turn exceeds limit"
+  alert can fire, and the torque bar shows 0. What goes on the wire is
+  unchanged (`0x0E4`, `torqueOutputCan`, the ramp).
+* **Steering-delay fallback 0.58 → 0.38 s.** `steerActuatorDelay` is 0.18;
+  lagd's fallback and the LagdToggle-off delay both add 0.2. lagd sat at
+  0.58 for about 5 h (d7 to fd) before it relearned. Its learned 0.342 is
+  kept. With LagdToggle off, Settings shows "0.18 s + 0.20 s = 0.38 s".
+* **Unchanged:** full scale stays 2560 = 160 counts (nothing above 160 has
+  been sent since d8), and the PID gains and friction threshold.
+* **For the future:** any change to the board's `GW_LIN_AUTHORITY` or full
+  scale must change the `override.toml` prior too. The prior is torqued's
+  cache key, so changing it is what discards points learned at the old
+  scale.
+* **NNLC:** without the substitute line, its model lookup still picks
+  `HONDA_ACCORD.json` (fuzzy). NNLC is off on this car.
+* **Check on the next drive:**
+  * `lateralTorqueParameters` starts at 1.100 / -0.43 / 0.18 with 0 points.
+    It may not be valid by the end of the first drive.
+  * The filtered factor within 0.03 of 0.77 (below 0.80) means town driving
+    is pressing on the floor (the replays' lowest was 0.793); within 0.03 of
+    1.43 the same on the highway (highest 1.347).
+  * `carOutput.actuatorsOutput.torque` is 0 whenever `actuating` is false,
+    and otherwise matches `carControl.actuators.torque`.
+  * No pull at takeovers. The integrator should stay near +0.05 on
+    straights.
+  * `lateralDelay` reads 0.342 "estimated", or 0.38 if ever unestimated.
+  * More frames at 160 are possible, because a lower factor asks for more
+    torque: the review replay estimates 0.9-1.0% of actuating frames above
+    54 km/h today, 1.0-1.6% on day one. Still nothing above 160.
+* **Commits:** opendbc `d288838a` (prior + seed), `bddc6395` (report +
+  comment), `1f7c50fd` (delay), `f60e7704` (review: window wording,
+  sturdier tests). sunnypilot `c4a6262f7`, `7e9ffe547`, `71b071a2c`,
+  `4e606d119` (the seed survives EnforceTorqueControl / NNLC).
+* **Tests:** 17 new in `test_elesys.py` (prior, seed, report incl. `0x704`
+  through the real CarInterface, the 2560 scale, the delay, the brake
+  release step on the wire), `test_torqued_elesys.py` (11),
+  `test_latcontrol_reported_torque.py` (7), `test_lagd_elesys.py` (5).
+* **Replay (review):** the real CarInterface over 11 routes (4.07 h) put
+  byte-identical sends on the wire to the parent commit on every frame, with
+  no exceptions, no `0x1FA` gap and no nonzero brake after `longActive`
+  dropped.
+
+---
+
 ## 2026-09-30 — the fast-wheel takeover is now a setting
 
 **Turning the wheel fast turns MADS steering off (not a pause), and you can now

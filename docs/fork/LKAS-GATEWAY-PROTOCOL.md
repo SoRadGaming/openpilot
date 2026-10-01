@@ -81,7 +81,7 @@ the hunk. Integration-test sections ("integration §N") refer to
 | repo | file | area-B hunk | commits | pinned by |
 |---|---|---|---|---|
 | odbc | `opendbc/car/honda/hondacan.py` | `create_steering_control(..., serial_gateway=False, ldw_left=False, ldw_right=False)`; `SP_HUD_PROTOCOL_VERSION`, `SP_OP_STATE_*`, `SP_HUD_MAX_TORQUE`, `create_sp_hud_status()`; `HONDA_ELESYS` added to the import. (`create_brake_command(..., is_metric, ...)` and `create_scm_buttons_no_cruise()` are area C) | `031743c4` `ad76c278` `02e7fd71` `1a133e47` | integration §7, §10, §11 |
-| odbc | `opendbc/car/honda/carcontroller.py` | `BRAKE_RELEASE_FRAMES`, `brake_release_scale()`, `self.brake_release_frames`, the brake ceiling on `limited_torque`, the `serial_gateway` call, the `0x500` block that replaces `create_lkas_hud` on ELESYS (`release_brake`, `release_driver`, `lat_ready`, `op_state`). Everything longitudinal in this file is area C | `031743c4` `ad76c278` `a091808d` `02e7fd71` `1a133e47` `43a98b9d` | integration §7, §10, §11, §12 |
+| odbc | `opendbc/car/honda/carcontroller.py` | `BRAKE_RELEASE_FRAMES`, `brake_release_scale()`, `self.brake_release_frames`, the brake ceiling on `limited_torque`, the `serial_gateway` call, the `0x500` block that replaces `create_lkas_hud` on ELESYS (`release_brake`, `release_driver`, `lat_ready`, `op_state`); the reported torque, `linbus_gateway_actuating()` and the `new_actuators.torque = 0.0` hunk (section 3.6). Everything longitudinal in this file is area C | `031743c4` `ad76c278` `a091808d` `02e7fd71` `1a133e47` `43a98b9d` `bddc6395` | integration §7, §10, §11, §12; `test_elesys.py` `TestElesysReportedTorque*`; `test_latcontrol_reported_torque.py` |
 | odbc | `opendbc/car/honda/carstate.py` | `get_can_parsers()` registers `GW_ACTIVE`, `GW_STEER_GRANT`, `EPS_LIN_RAW`, `GW_VERSION`, `GW_BUILD` with `float("nan")`; `CarStateExt.update(self, ret, ret_sp, can_parsers)`. The ELESYS `carFaultedNonCritical` branch is area C but described in [section 10.1](#101-lkas_problem-read-back-carstatepy) | `ad76c278` `02e7fd71` `2cc16a02` `124465ca` | integration §8, §13 |
 | odbc | `opendbc/sunnypilot/car/honda/carstate_ext.py` | `_update_linbus_gateway`, `_update_linbus_grant`, `_update_linbus_firmware` (area A), `_update_driver_torque_validity`, `_eps_lin_driver_torque_valid`, the constants, the `ret_sp` parameter. `FUEL_LEVEL_FULL` and `fuelGauge` are area C | `ad76c278` `02e7fd71` `1a133e47` `23dce590` `2cc16a02` `124465ca` `2619b404` | integration §8, §13, §14, §14b |
 | odbc | `opendbc/car/structs.py` | `CarControlSP.LateralControl`, `CarStateSP.driverTorqueStale`, `CarStateSP.LinbusGateway` | `ad76c278` `02e7fd71` `23dce590` `124465ca` `2619b404` | `test_car_control_sp_seam.py` |
@@ -109,6 +109,7 @@ the hunk. Integration-test sections ("integration §N") refer to
 | sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | two tests: `test_a_stale_torque_still_confirms_nothing` and `test_driver_torque_stale_comes_after_the_road_edges` (the rest is area C) | `10e088a2d`, 2026-09 merge | itself |
 | sp | `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | the gateway pause and its resume, every brake mode, the brake and regen guard, the emergency takeover beside an override, no board no pause, `selfdrived`'s subscription, the enable-frame cases, and (`TestFastWheelSetting`) the takeover's switch and threshold | `2cfcd3c6a`, 2026-09 merge, 2026-09-30 | itself |
 | sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` (added in the 2026-09 merge) | 300 frames on `HONDA_ACCORD_9G_AU` with Lateral Jerk on and the board present but not actuating: `pid.i` stays 0.0 in both torque controllers. Control case: with no gateway the same run winds `abs(i)` above 1e-3, as upstream does | 2026-09 merge | itself |
+| sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_reported_torque.py` (2026-10) | the zero reported torque keeps `_check_saturation` from firing while the board is not actuating, closed loop through the real Honda `CarController`, both torque controllers; a real saturation still alerts while actuating; a source guard on controlsd's `steer_limited_by_safety` line | `7e9ffe547` | itself |
 
 `openpilot/selfdrive/car/card.py` has no area-B hunk. It already published `carStateSP` before the fork.
 Its fork additions (`stage_board_firmware`, `write_board_firmware`, `log_flash_trace`) are
@@ -231,13 +232,66 @@ Why: the stock camera drops `LKAS_ON` within about 20 frames of a brake press (r
 torque with error state 0 (board `docs/SP-PROTOCOL-V3.md` §0).
 
 The step is 2560/20 = 128 CAN counts per frame. That is 8 serial counts at authority 160, still
-under the 10 per frame that SP-PROTOCOL-V3 §3 allows. The code comment says 4 counts, which
-was true at authority 80. Integration test §12 pins the ramp, the linearity, the zero at 20
-frames, the recovery and the lack of a latch.
+under the 10 per frame that SP-PROTOCOL-V3 §3 allows and far under the board's own 40-count
+step toward zero (`GW_LIN_MAX_STEP_DOWN`). The code comment and integration §12's said 4 counts,
+true at authority 80, until `bddc6395`. Integration test §12 pins the ramp, the linearity, the
+zero at 20 frames, the recovery and the lack of a latch.
 
 **Re-apply:** in the upstream `CarController.update()`, straight after
 `limited_torque = rate_limit(...)` and before `self.last_torque = limited_torque`, gate on
 HONDA_ELESYS. Keep `self.brake_release_frames = 0` in `__init__`.
+
+### 3.6 The reported torque (carcontroller.py, `bddc6395`, 2026-10)
+
+```python
+def linbus_gateway_actuating(CS) -> bool   # CS.out_sp.linbusGateway.actuating; True if missing or odd
+...
+new_actuators.torque = self.last_torque
+# FORK(HONDA_ELESYS)
+if self.CP.carFingerprint in HONDA_ELESYS and not linbus_gateway_actuating(CS):
+  new_actuators.torque = 0.0
+new_actuators.torqueOutputCan = apply_torque
+```
+
+`carOutput.actuatorsOutput.torque` is a report, and three things read it: torqued fits it
+(`steer = -actuatorsOutput.torque`; a 0 is dropped by `STEER_MIN_THRESHOLD`), controlsd compares
+it with what it asked for (`steer_limited_by_safety = |actuators.torque - reported| > 0.01`,
+which freezes the integrator and keeps `_check_saturation` from counting), and the comma 4's
+torque bar draws it. While the board is not actuating nothing follows `0x0E4`, so the report is
+0. Effects: torqued stops collecting points the car never acted on (0-0.4% of points on
+fc/fd/103, up to 6% on a latch with MADS still on); no "turn exceeds limit" alert while the
+board is not steering (on d5-dd two saturation alerts came that way, at 50 and 46 km/h); the integrator
+freeze duplicates the gateway hold (section 7) harmlessly; the torque bar shows 0.
+
+* **Only the report.** `last_torque`, the rate limiter, `apply_torque`, `torqueOutputCan` and
+  `0x0E4` are untouched, so the wire is bit-identical and, when the board takes over, the report
+  picks up the ramp where it is. MVL's version also resets the rate limiter; that is
+  deliberately not taken, because it would stack a second ramp on the board's 20-frame intro and
+  2 s soft start and change what the board's guards see.
+* **Keyed on `actuating`** (`0x704`: engaged, not a dry run, and fresh), which already includes
+  the EPS's ack: the board drops ENGAGED 500 ms after a missing ack and at once on an EPS
+  error. Not `grantValid`/`epsAck`: `0x70B` is valid only 86.5-87.6% of the time, which would
+  zero 1.6-5.6% of actuating time. Not the EPS's `STEER_CONTROL_ACTIVE`: it holds its ack
+  0.6-6.7 s after LKAS_ON falls.
+* **Not the wire torque.** Reporting what the board actually applied would lag the request by a
+  frame or more, so `steer_limited_by_safety` would be true on most frames and the integrator
+  would never run.
+* **Cannot raise.** `CarController.update()` must never raise (a gap in `0x1FA` latches
+  `BRAKE_ERROR`). A `CS` without `out_sp`, with `out_sp = None`, without `linbusGateway`, or with
+  an `actuating` whose truth value raises, reports `last_torque` as before.
+* `present` is True on every `HONDA_ELESYS` car, board or not; with no board `actuating` is False,
+  so the report is 0 for the whole drive, which is the truth.
+
+Tests: `test_elesys.py` `TestElesysReportedTorque` (zero while not actuating with `0x0E4` and
+`torqueOutputCan` identical to an actuating run; the resume; default and odd `out_sp`; other
+Hondas unaffected) and `TestElesysReportedTorqueSeam` (`0x704` frames through the real
+`CarInterface`: none, engaged, dry run, disengaged, stale); `test_latcontrol_reported_torque.py`
+and `test_torqued_elesys.py` on the sunnypilot side.
+
+**Re-apply:** in the upstream `CarController.update()`, between
+`new_actuators.torque = self.last_torque` and `new_actuators.torqueOutputCan = apply_torque`. If
+upstream starts reporting something other than `last_torque` there, keep its value for the
+actuating case.
 
 ---
 
@@ -898,6 +952,8 @@ Run them in the openpilot venv, from the repo root (WSL `~/sp-merge` for the syn
 | `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | the gateway pause and resume (section 9), 41 tests, 23 of them the fast-wheel settings | runner |
 | `openpilot/selfdrive/ui/tests/test_mads_fast_wheel_settings.py` | the fast-wheel settings agree across `params_keys.h`, `mads.py`, the mici page and `settings_ui.json`; what sunnylink writes reads back the way `mads.py` reads it; the FORK markers, 15 tests | runner |
 | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` | the integrator freeze through the torque-controller extension, 4 tests | runner |
+| `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_reported_torque.py` | the zero reported torque blocks the saturation alert while the board is not actuating, and a real saturation still alerts (section 3.6), 7 tests | runner |
+| `opendbc_repo/opendbc/car/honda/tests/test_elesys.py` `TestElesysReportedTorque`, `TestElesysReportedTorqueSeam`, `TestElesysTorqueScale` | section 3.6, and the 2560 scale with byte 2 bit 2 clear | `python -m unittest opendbc.car.honda.tests.test_elesys` from `opendbc_repo` |
 
 After the merge all of these pass: the fork's sunnypilot targets together with upstream's
 MADS, lateral and sunnylink tests gave 309 passed and 1 skipped (a sunnylink test that needs
@@ -944,7 +1000,7 @@ do not change behaviour. Board line numbers below are at `d995bc9`.
 | board `docs/SP-PROTOCOL-V3.md` §1.3 | "use item access on `CC_SP.lateralControl['integrator']`" | attribute access, because `convert_carControlSP` rebuilds the dataclass |
 | "0x33D is the camera's" framing: `carcontroller.py` ELESYS HUD comments ("stock camera's HUD is forwarded instead", "The stock camera keeps 0x33D. This is the side channel an in-line module reads to merge"); `hondacan.create_sp_hud_status` docstring ("a module that is already passing the camera's LKAS_HUD through can merge"); `_sunnypilot_linbus_gw.dbc` `CM_ BO_ 1280`; the comment above the ELESYS lists in `honda.h` ("the stock camera keeps it") | the camera owns `0x33D` and the board merges into it | since board `df42a0d` (Stage 6) the Stage 10 image owns `0x33D` and mutes the camera's; the merge runs only on the dry-run and Stage 2a paths. What these comments conclude (openpilot must not send `0x33D`) is still right |
 | `carcontroller.py` v3 comment | "the board acts on OP_STATE and the release bits when it decides what to put in 0x70B REASON" | the board parses `OP_STATE`, `RELEASE_BRAKE` and `RELEASE_DRIVER` and reads none of them (`sp_hud.c` stores them; nothing in `gw_active.c` uses them) |
-| `carcontroller.py` brake-release comment | 4 serial counts per frame | 8 at the current authority of 160 |
+| `carcontroller.py` brake-release comment; integration §12 | 4 serial counts per frame | fixed in `bddc6395` (2026-10): 8 at the current authority of 160 |
 | `structs.py` comments in `LinbusGateway` | "names and order must stay in lockstep" | only names matter (section 6) |
 | `carstate_ext.py` comment on `LINBUS_GW_STALE_FRAMES` | `GW_ACTIVE` "has been observed dropping" | true of early firmware; later measured at 10.0 Hz with none lost. The 500 ms window is still reasonable |
 | integration test §10 | expected `LAT_READY` with MADS off | fixed in the 2026-09 merge (section 12) |
