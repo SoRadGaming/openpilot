@@ -6,7 +6,7 @@ import os
 import struct
 import subprocess
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator  # FORK(UPDATER)
 
 import requests
 
@@ -16,7 +16,7 @@ AGNOS_MANIFEST_FILE = "openpilot/system/hardware/comma/agnos.json"
 
 
 class StreamingDecompressor:
-  def __init__(self, url: str, on_chunk: Callable[[int, int | None], None] | None = None) -> None:
+  def __init__(self, url: str, on_chunk: Callable[[int, int | None], None] | None = None) -> None:  # FORK(UPDATER)
     self.buf = b""
 
     self.req = requests.get(url, stream=True, headers={'Accept-Encoding': 'identity'}, timeout=60)
@@ -166,7 +166,7 @@ def clear_partition_hash(target_slot_number: int, partition: dict) -> None:
 
 
 def extract_compressed_image(target_slot_number: int, partition: dict, cloudlog,
-                             progress_cb: Callable[[float], None] | None = None):
+                             progress_cb: Callable[[float], None] | None = None):  # FORK(UPDATER)
   path = get_partition_path(target_slot_number, partition)
 
   # FORK(UPDATER): progress_cb gets this partition's fraction done: compressed bytes received over
@@ -205,7 +205,7 @@ def extract_compressed_image(target_slot_number: int, partition: dict, cloudlog,
 
 
 def flash_partition(target_slot_number: int, partition: dict, cloudlog, standalone=False,
-                    progress_cb: Callable[[float], None] | None = None):
+                    progress_cb: Callable[[float], None] | None = None):  # FORK(UPDATER)
   cloudlog.info(f"Downloading and writing {partition['name']}")
 
   if verify_partition(target_slot_number, partition):
@@ -246,7 +246,7 @@ def swap(manifest_path: str, target_slot_number: int, cloudlog) -> None:
 
 
 def flash_agnos_update(manifest_path: str, target_slot_number: int, cloudlog, standalone=False,
-                       progress_cb: Callable[[float], None] | None = None) -> None:
+                       progress_cb: Callable[[float], None] | None = None) -> None:  # FORK(UPDATER)
   update = json.load(open(manifest_path))
 
   cloudlog.info(f"Target slot {target_slot_number}")
@@ -262,7 +262,7 @@ def flash_agnos_update(manifest_path: str, target_slot_number: int, cloudlog, st
   for partition in update:
     success = False
 
-    def partition_progress(frac: float, done: int = done_size, size: int = partition['size']) -> None:
+    def partition_progress(frac: float, done: int = done_size, size: int = partition['size']) -> None:  # FORK(UPDATER)
       if progress_cb is not None:
         progress_cb((done + frac * size) / total_size)
 
