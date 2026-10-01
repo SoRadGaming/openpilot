@@ -26,11 +26,18 @@ HONDA_PANEL = ROOT / "selfdrive/ui/sunnypilot/layouts/settings/vehicle/brands/ho
 CRUISE_PANEL = ROOT / "selfdrive/ui/sunnypilot/layouts/settings/cruise.py"
 PARAMS_KEYS = ROOT / "common/params_keys.h"
 TUNER = REPO / "opendbc_repo/opendbc/sunnypilot/car/honda/dynamic_tuning.py"
+GAS_LAW = REPO / "opendbc_repo/opendbc/sunnypilot/car/honda/elesys_gas.py"
 SDUI = ROOT / "sunnypilot/sunnylink/settings_ui.json"
+SDUI_SRC = ROOT / "sunnypilot/sunnylink/settings_ui_src/pages"
+STATSD = ROOT / "sunnypilot/sunnylink/statsd.py"
 MICI_PANEL = ROOT / "selfdrive/ui/sunnypilot/mici/layouts/vehicle.py"
 MICI_SETTINGS = ROOT / "selfdrive/ui/sunnypilot/mici/layouts/settings.py"
 
 TOGGLE_PARAMS = ("HondaDynamicTuningEnabled",)
+# the HONDA_ELESYS gas law: a setting like the toggle above, but ON by default
+GAS_LAW_PARAM = "HondaElesysGasLawV2"
+# retired in 2026-10 with the pedal and aero learners; nothing may read, write or show them
+RETIRED_RE = re.compile(r"HondaDynPedalGain\d*|HondaDynWindFactor")
 
 # {"Key", {FLAGS, TYPE, "default"}},  -- the default is optional
 PARAM_ENTRY_RE = re.compile(r'\{"(?P<key>\w+)",\s*\{(?P<flags>[^,}]+),\s*(?P<type>\w+)(?:,\s*"(?P<default>[^"]*)")?\}\}')
@@ -100,12 +107,40 @@ class TestHondaDynamicSettings(unittest.TestCase):
       assert key_default == "0", f"{key} must default to off, got {key_default}"
       assert "BACKUP" in flags, f"{key} is a setting and should survive a sunnylink restore"
 
-  def test_pedal_gain_breakpoints_match_the_learned_gains(self):
-    breakpoints = _panel_constant("PEDAL_GAIN_BP")
-    gains = [k for k in _panel_constant("LEARNED_DEFAULTS") if k.startswith("HondaDynPedalGain")]
-    assert len(breakpoints) == len(gains), "one learned gain per speed breakpoint"
-    assert sorted(gains) == [f"HondaDynPedalGain{i}" for i in range(len(gains))], "gains must be numbered from 0"
-    assert list(breakpoints) == sorted(breakpoints), "breakpoints must ascend"
+  def test_mode_time_keys_cover_every_slot(self):
+    slots = _panel_constant("MODE_SLOTS")
+    learned = _panel_constant("LEARNED_DEFAULTS")
+    assert [k for k in learned if k.startswith("HondaDynModeSec")] == [f"HondaDynModeSec{s}" for s in slots], \
+      "one HondaDynModeSec<slot> per drive-mode slot, in slot order"
+
+  def test_gas_law_param_is_registered_on_by_default_and_backed_up(self):
+    flags, key_type, key_default = _registered_params()[GAS_LAW_PARAM]
+    assert key_type == "BOOL", f"{GAS_LAW_PARAM} is {key_type}"
+    assert key_default == "1", f"{GAS_LAW_PARAM} must default to the measured law, got {key_default}"
+    assert "BACKUP" in flags, f"{GAS_LAW_PARAM} is a setting and should survive a sunnylink restore"
+    assert _panel_constant("GAS_LAW_PARAM") == GAS_LAW_PARAM
+    assert _panel_constant("GAS_LAW_DEFAULT") is True
+
+  def test_retired_keys_are_gone_everywhere(self):
+    # Gone from the registry, so the mici and big panels, sunnylink and statsd must not name
+    # them either: Params would raise UnknownKeyName on every read.
+    paths = [PARAMS_KEYS, HONDA_PANEL, MICI_PANEL, SDUI, STATSD, *sorted(SDUI_SRC.glob("*.yaml"))]
+    if TUNER.is_file():
+      paths += [TUNER, GAS_LAW]
+    for path in paths:
+      for i, line in enumerate(path.read_text().splitlines(), 1):
+        # a comment may record the history; code and data may not use the names
+        code = line.split("//")[0] if path.suffix == ".h" else line.split("#")[0] if path.suffix in (".py", ".yaml") else line
+        assert not RETIRED_RE.search(code), f"{path.name}:{i} still uses a retired key: {line.strip()}"
+
+  def test_statsd_reports_only_registered_honda_keys(self):
+    registered = _registered_params()
+    reported = re.findall(r"'(Honda\w+)'", STATSD.read_text())
+    assert reported, "statsd no longer reports the Honda keys"
+    for key in reported:
+      assert key in registered, f"statsd reports {key}, which params_keys.h does not register"
+    for key in (*TOGGLE_PARAMS, GAS_LAW_PARAM, *_panel_constant("LEARNED_DEFAULTS")):
+      assert key in reported, f"statsd does not report {key}"
 
   def test_both_panels_drive_the_same_params(self):
     # the toggle exists in Settings > Cruise and in Settings > Vehicle > Honda;
@@ -162,6 +197,16 @@ class TestHondaDynamicSettings(unittest.TestCase):
       assert items[key].get("needs_onroad_cycle") is True, f"{key} must tell the app it needs an ignition cycle"
       assert items[key].get("title") not in (None, key), f"{key} needs a real title"
 
+  def test_sunnylink_exposes_the_gas_law_toggle(self):
+    items = {i["key"]: i for i in _sdui_honda_items()}
+    assert GAS_LAW_PARAM in items, f"{GAS_LAW_PARAM} is missing from the honda section of settings_ui.json"
+    item = items[GAS_LAW_PARAM]
+    assert item["widget"] == "toggle"
+    # the car reads it once, at CarController init
+    assert item.get("needs_onroad_cycle") is True, f"{GAS_LAW_PARAM} must tell the app it needs an ignition cycle"
+    assert "next drive" in item.get("details", ""), "the details must say it applies at the next drive"
+    assert item.get("title") not in (None, GAS_LAW_PARAM) and item.get("description"), f"{GAS_LAW_PARAM} needs a real title and description"
+
   def test_sunnylink_learned_values_are_read_only_and_on_a_page(self):
     # The learned values live in a PAGE section (cruise), NOT in the honda vehicle section.
     # The only info row the dashboard demonstrably renders is LanguageSetting, which is in a
@@ -214,11 +259,16 @@ class TestHondaDynamicSettings(unittest.TestCase):
     panel_defaults = _panel_constant("LEARNED_DEFAULTS")
     assert tuner_defaults == panel_defaults, "the panel and the tuner disagree about the learned defaults"
 
-    bp = re.search(r"ELESYS_GAS_BP\s*=\s*\[([^\]]*)\]",
-                   (TUNER.parent / "gas_interceptor.py").read_text())
-    assert bp, "could not find ELESYS_GAS_BP in gas_interceptor.py"
-    tuner_bp = [float(v) for v in bp.group(1).replace(" ", "").strip(",").split(",")]
-    assert tuner_bp == list(_panel_constant("PEDAL_GAIN_BP")), "the panel and the tuner disagree about the speed bands"
+    law = GAS_LAW.read_text()
+    slots = re.search(r"DRIVE_MODE_SLOTS\s*=\s*\(([^)]*)\)", law)
+    assert slots, "could not find DRIVE_MODE_SLOTS in elesys_gas.py"
+    assert tuple(re.findall(r'"(\w+)"', slots.group(1))) == tuple(_panel_constant("MODE_SLOTS")), \
+      "the panel and the gas law disagree about the drive-mode slots"
+    param = re.search(r'GAS_LAW_PARAM\s*=\s*"(\w+)"', law)
+    default = re.search(r"GAS_LAW_DEFAULT\s*=\s*(True|False)", law)
+    assert param and param.group(1) == _panel_constant("GAS_LAW_PARAM"), "the panel and the gas law name different params"
+    assert default and (default.group(1) == "True") == _panel_constant("GAS_LAW_DEFAULT"), \
+      "the panel and the gas law disagree about the default law"
 
 
 if __name__ == "__main__":

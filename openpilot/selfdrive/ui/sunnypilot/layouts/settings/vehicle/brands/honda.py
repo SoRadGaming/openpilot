@@ -6,7 +6,6 @@ See the LICENSE.md file in the root directory for more details.
 """
 import time
 
-from openpilot.common.constants import CV
 from openpilot.common.params import UnknownKeyName
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.vehicle.brands.base import BrandSettings
 from openpilot.selfdrive.ui.ui_state import ui_state
@@ -16,12 +15,11 @@ from openpilot.system.ui.sunnypilot.widgets.list_view import button_item_sp, tog
 from openpilot.system.ui.widgets import DialogResult
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
 
-# Speed breakpoints of the learned pedal gain, in m/s. Mirrors ELESYS_GAS_BP /
-# PEDAL_GAIN_BP in opendbc/sunnypilot/car/honda/{gas_interceptor,dynamic_tuning}.py.
-PEDAL_GAIN_BP = (0.0, 3.0, 6.0, 10.0, 15.0, 20.0)
-
-# The learned state, with the same defaults as _PARAM_SPEC in
+# The learned (and counted) state, with the same defaults as _PARAM_SPEC in
 # opendbc/sunnypilot/car/honda/dynamic_tuning.py and as common/params_keys.h.
+# The per-band pedal gains and the aero factor are gone: their learners were
+# retired in 2026-10 (they could not move), and showing their last values would
+# be showing numbers nothing reads.
 #
 # Deliberately duplicated instead of imported: this panel is built while the
 # settings screen is coming up, and the tuner drags in the whole opendbc car
@@ -29,32 +27,38 @@ PEDAL_GAIN_BP = (0.0, 3.0, 6.0, 10.0, 15.0, 20.0)
 # take the settings panel off the screen rather than just breaking the tuner.
 # selfdrive/ui/tests/test_honda_dynamic_settings.py keeps the two in sync.
 LEARNED_DEFAULTS: dict[str, float] = {
-  "HondaDynPedalGain0": 1.0,
-  "HondaDynPedalGain1": 1.0,
-  "HondaDynPedalGain2": 1.0,
-  "HondaDynPedalGain3": 1.0,
-  "HondaDynPedalGain4": 1.0,
-  "HondaDynPedalGain5": 1.0,
-  "HondaDynWindFactor": 1.0,
   "HondaDynBrakeGain": 0.0,
+  "HondaDynModeSecD": 0.0,
+  "HondaDynModeSecECON": 0.0,
+  "HondaDynModeSecS": 0.0,
 }
 
+# Drive-mode slots in the tuner's order (DRIVE_MODE_SLOTS in elesys_gas.py); the
+# running engaged seconds of each are HondaDynModeSec<slot>.
+MODE_SLOTS = ("D", "ECON", "S")
+
 TUNING_PARAM = "HondaDynamicTuningEnabled"
+# Which gas law the car runs, read once at ignition. Mirrors GAS_LAW_PARAM and
+# GAS_LAW_DEFAULT in opendbc/sunnypilot/car/honda/elesys_gas.py; the setting itself
+# is in sunnylink (Vehicle > Honda Settings).
+GAS_LAW_PARAM = "HondaElesysGasLawV2"
+GAS_LAW_DEFAULT = True
 
 # reading 13 params at 60 fps would be 13 file reads a frame; once a second is
 # plenty for a readout that only changes once a minute anyway
 LEARNED_REFRESH_S = 1.0
 
-DYN_DESC = tr_noop("Learn this car's throttle and brake response while you drive, and correct for it. " +
-                   "Also compensates the accel target for road grade. Honda Nidec with sunnypilot " +
+DYN_DESC = tr_noop("Learn this car's brake response while you drive, and correct for it. " +
+                   "Also compensates the accel target for road grade, and counts driving time " +
+                   "in each drive mode (D, ECON, S). Honda Nidec with sunnypilot " +
                    "longitudinal only; has no effect on other platforms. Learned values are saved " +
                    "roughly once a minute and reloaded on the next drive.")
 DYN_IGNITION_NOTE = tr_noop("Takes effect at the next ignition: the car reads this toggle once when it goes onroad.")
 DYN_NO_LONG_DESC = tr_noop("This feature is unavailable because sunnypilot Longitudinal Control is not enabled on this car.")
 LEARNED_TITLE = tr_noop("Learned Values")
 LEARNED_ONROAD_NOTE = tr_noop("Resetting is only available while the car is off.")
-RESET_CONFIRM = tr_noop("Reset everything this car has learned about its throttle and brakes back to the " +
-                        "defaults? It starts learning again from scratch on the next drive.")
+RESET_CONFIRM = tr_noop("Reset what this car has learned about its brakes, and its drive-mode times, back " +
+                        "to the defaults? It starts again from scratch on the next drive.")
 
 
 def learned_value(key: str) -> float:
@@ -72,8 +76,35 @@ def learned_value(key: str) -> float:
     return LEARNED_DEFAULTS[key]
 
 
-def learned_pedal_gains() -> list[float]:
-  return [learned_value(f"HondaDynPedalGain{i}") for i in range(len(PEDAL_GAIN_BP))]
+def gas_law_v2() -> bool:
+  """The gas-law setting as the car will read it at the next ignition; the registered
+  default if it is unset, unreadable, or the registry predates it."""
+  try:
+    value = ui_state.params.get(GAS_LAW_PARAM, return_default=True)
+    return GAS_LAW_DEFAULT if value is None else bool(value)
+  except (TypeError, ValueError, UnknownKeyName):
+    return GAS_LAW_DEFAULT
+
+
+def gas_law_label(short: bool = False) -> str:
+  if short:
+    return "v2" if gas_law_v2() else "v1"
+  return tr("v2, measured") if gas_law_v2() else tr("v1, previous")
+
+
+def mode_minutes() -> dict[str, str]:
+  """Engaged, moving minutes per drive mode, as the tuner last saved them, formatted:
+  tenths below ten minutes, which is where ECON and S live."""
+  out = {}
+  for slot in MODE_SLOTS:
+    m = learned_value(f"HondaDynModeSec{slot}") / 60.0
+    out[slot] = f"{m:.0f}" if m >= 10.0 else f"{m:.1f}"
+  return out
+
+
+def mode_time_text() -> str:
+  """'D 412 min | ECON 1.4 min | S 1.3 min'"""
+  return " | ".join(f"{slot} {m} {tr('min')}" for slot, m in mode_minutes().items())
 
 
 def reset_learned_values() -> None:
@@ -127,18 +158,12 @@ class HondaSettings(BrandSettings):
       reset_learned_values()
 
   def _build_learned_text(self) -> str:
-    gains = learned_pedal_gains()
-    speed_factor = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
-    unit = tr("km/h") if ui_state.is_metric else tr("mph")
-
     # the description renderer collapses every run of whitespace, newlines
     # included -- a line break is <br>, and a tag boundary is what starts a new
     # block, so the separators here are load bearing
-    bands = " | ".join(f"{round(bp * speed_factor):d}: {gain:.2f}" for bp, gain in zip(PEDAL_GAIN_BP, gains, strict=True))
-    text = (f"<b>{tr('Pedal gain by speed')} ({unit})</b>" + bands + "<br>" +
-            f"{tr('Aero')} x{learned_value('HondaDynWindFactor'):.2f} | " +
-            # stored as an offset (0.0 = no correction), shown as a gain so it reads
-            # the same way as the pedal and aero numbers either side of it
+    text = (f"<b>{tr('Gas law')}</b>" + gas_law_label() + " " + tr("(from the next drive)") + "<br>" +
+            f"<b>{tr('Engaged time by drive mode')}</b>" + mode_time_text() + "<br>" +
+            # stored as an offset (0.0 = no correction), shown as a gain
             f"{tr('Brake')} x{1.0 + learned_value('HondaDynBrakeGain'):.2f}")
     if not ui_state.is_offroad():
       text += "<br>" + tr(LEARNED_ONROAD_NOTE)
