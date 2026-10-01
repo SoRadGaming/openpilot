@@ -79,6 +79,12 @@ step("no_progress", UpdaterDownloadProgress=None)
 step("finalizing", UpdaterState="finalizing update...", UpdaterDownloadProgress={"phase": "os", "pct": 99})
 step("back_to_idle", UpdaterState="idle", UpdaterFetchAvailable=False)
 step("ready_again", UpdaterFetchAvailable=True)
+# updated's own background download, hours after the last tap: the page is IDLE throughout
+b._hide_value_t = None
+step("bg_download", UpdaterState="downloading...", UpdaterDownloadProgress={"phase": "os", "pct": 12})
+step("bg_checkout", UpdaterDownloadProgress={"phase": "checkout", "pct": None})
+step("bg_done", UpdaterState="idle", UpdaterFetchAvailable=False, UpdaterDownloadProgress=None)
+out["bg_state_idle"] = b._state == software.UpdaterState.IDLE
 ui_state.started = True
 step("onroad")
 print("RESULT " + json.dumps(out), flush=True)
@@ -118,8 +124,17 @@ class TestCheckUpdateButton(OpenpilotTestCase):
     assert self.r["no_progress"]["value"] == "downloading..."
     assert self.r["finalizing"]["value"] == "finalizing update...", "progress is shown only while downloading"
 
+  def test_a_background_download_shows_its_progress(self):
+    # not "download update" (highlighted) for the update already being fetched
+    assert self.r["bg_state_idle"], "the page never left IDLE"
+    assert self.r["bg_download"]["value"] == "downloading...\nos update 12%"
+    assert self.r["bg_checkout"]["value"] == "downloading...\nchecking out"
+    assert self.r["bg_done"]["value"] == "", "the progress label outlived the download"
+    assert self.r["bg_done"]["enabled"]
+
   def test_the_highlight_and_the_progress_never_meet(self):
-    for k in ("fetch", "checkout", "os", "no_progress", "finalizing", "back_to_idle", "onroad"):
+    for k in ("fetch", "checkout", "os", "no_progress", "finalizing", "back_to_idle", "bg_download", "bg_checkout",
+              "bg_done", "onroad"):
       assert not self.r[k]["ready"] and not self.r[k]["pressed_bg"] and self.r[k]["grey_sub"], k
     assert self.r["ready_again"]["ready"], "a new update waiting for its tap is highlighted again"
 

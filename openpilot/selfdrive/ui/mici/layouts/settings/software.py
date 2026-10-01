@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 from openpilot.common.time_helpers import system_time_valid
 from openpilot.selfdrive.ui.mici.layouts.settings.device import EngagedConfirmationButton
-from openpilot.selfdrive.ui.mici.widgets.button import BigButton, LABEL_COLOR, COMPLICATION_GREY
+from openpilot.selfdrive.ui.mici.widgets.button import BigButton, LABEL_COLOR, COMPLICATION_GREY  # FORK(UPDATER)
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigDialog
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.sunnypilot.system.updated.download_progress import PARAM as DOWNLOAD_PROGRESS_PARAM, download_label  # FORK(UPDATER)
@@ -152,6 +152,11 @@ class CheckUpdateButton(BigButton):
       rl.draw_circle(int(x), int(y), 50, DOWNLOAD_READY_GREEN)
     super()._draw_content(btn_y)
 
+  # FORK(UPDATER): under "downloading...", the phase and, where one is measured, its percentage
+  def _download_label(self, updater_state: str) -> str:
+    progress = ui_state.params.get(DOWNLOAD_PROGRESS_PARAM) if updater_state == "downloading..." else None
+    return download_label(updater_state, progress)
+
   def _update_state(self):
     super()._update_state()
 
@@ -185,15 +190,20 @@ class CheckUpdateButton(BigButton):
         self._state = UpdaterState.IDLE
         self._hide_value_t = rl.get_time()
       else:
-        # FORK(UPDATER): under "downloading...", the phase and, where one is measured, its percentage
-        progress = ui_state.params.get(DOWNLOAD_PROGRESS_PARAM) if updater_state == "downloading..." else None
-        display = download_label(updater_state, progress)
+        display = self._download_label(updater_state)  # FORK(UPDATER)
         if self.get_value() != display:
           self.set_value(display)
 
     elif self._state == UpdaterState.IDLE:
       self.set_rotate_icon(False)
-      if failed:
+      # FORK(UPDATER): updated's own background download (not metered) shows its progress too, not a
+      # "download update" for the update already being fetched. Not highlighted: never "download update".
+      if updater_state == "downloading...":
+        display = self._download_label(updater_state)
+        if self.get_value() != display:
+          self.set_value(display)
+
+      elif failed:  # FORK(UPDATER): elif, after the background download
         self.set_enabled(True)  # allow retry when failure came from updater param
         if self.get_value() != "failed to update":
           self.set_value("failed to update")
