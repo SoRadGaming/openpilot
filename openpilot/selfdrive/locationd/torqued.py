@@ -92,7 +92,9 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
 
     initial_params = {
       'latAccelFactor': self.offline_latAccelFactor,
-      'latAccelOffset': 0.0,
+      # FORK(HONDA_ACCORD_9G_AU): start from the car's own offset when it has one. configure_torque_tune() sets 0.0,
+      # so every car but HONDA_ELESYS (-0.43, opendbc interface.py) starts exactly where upstream does.
+      'latAccelOffset': float(CP.lateralTuning.torque.latAccelOffset) if CP.lateralTuning.which() == 'torque' else 0.0,
       'frictionCoefficient': self.offline_friction,
       'points': []
     }
