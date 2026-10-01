@@ -166,12 +166,15 @@ vision curve slowdown (item 3). Both are listed under [Still open](#still-open-a
    - `LAT_SMOOTH_SECONDS` is 0.0, so nothing is added on top.
    - The merge changed only the comment in opendbc `interface.py` (it used to say the fallback was 0.38). Options for
      the owner: accept it; a `HONDA_ELESYS`-scoped hunk in `lagd.py`; or settings only (incomplete without the hunk).
+   - **Superseded (2026-10).** lagd sat at the 0.58 s fallback for about 5 h of driving (routes d7 to fd) before it had
+     5 blocks above 80 km/h. opendbc now sets `steerActuatorDelay = 0.18` for `HONDA_ELESYS`, so `initial_lag` is the
+     measured 0.38 s with no `lagd.py` hunk (CAR-HONDA-ACCORD-9G-AU.md 5.1).
    - Commits: `900a896c6` `5a7b710d9` `c16039e0b`
 8. **LagdToggle OFF now uses the fixed delay.**
    - This only matters if LagdToggle is OFF on the device; the default is ON.
    - The fork's `get_lat_delay()` returned lagd's value in both states.
    - Upstream, OFF returns `steerActuatorDelay + LagdToggleDelay` = 0.38 + 0.2 (default) = **0.58 s fixed**. ON is
-     unchanged.
+     unchanged. Since 2026-10 it is 0.18 + 0.2 = 0.38 s (item 7).
    - It feeds modeld, modeld_v2, torqued and controlsd_ext. controlsd itself always uses `lateralDelay`.
    - Commit: `53e13a7bc`
 9. **paramsd ignores reverse gear** when learning steer ratio, stiffness and offset. Commit: `612d97cfd`
@@ -381,7 +384,7 @@ vision curve slowdown (item 3). Both are listed under [Still open](#still-open-a
 
 | item | what is open | who decides |
 |---|---|---|
-| lagd (item 7) | 0.58 s steering delay until relearned above 80 km/h; old cache discarded | **accepted** as a one-time relearn; if the first highway drive feels off, the fallback is a scoped `HONDA_ELESYS` hunk in `lagd.py` |
+| lagd (item 7) | 0.58 s steering delay until relearned above 80 km/h; old cache discarded | **accepted** as a one-time relearn. **Closed 2026-10:** `steerActuatorDelay` 0.18 makes the fallback 0.38 s; no `lagd.py` hunk |
 | cruise deceleration (item 3) | up to 1.2 m/s² into curves with vision curve slowdown on | owner: road-test; optional car-only floor in `stopping_tune.py` |
 | MADS mode (item 6) | route `00000103` ran with "remain active", not Pause | owner: check the device setting |
 | steer-rate emergency takeover | the fork's `EMERGENCY_STEER_RATE` in `mads.py` still applies to every car | known, documented in LKAS-GATEWAY-PROTOCOL.md §9 |
@@ -420,8 +423,8 @@ vision curve slowdown (item 3). Both are listed under [Still open](#still-open-a
 
 | Item | What | Commits | Car impact |
 |---|---|---|---|
-| lagd: 50 mph minimum, 0.65 s cap, versioned cache | See item 7. Falls back to 0.58 s until relearned | `900a896c6` `5a7b710d9` `c16039e0b` | **changes this car** once; accepted |
-| LagdToggle OFF branch fix | See item 8 | `53e13a7bc` | **changes this car only if LagdToggle is OFF** (fixed 0.58 s) |
+| lagd: 50 mph minimum, 0.65 s cap, versioned cache | See item 7. Falls back to 0.58 s until relearned (0.38 s since 2026-10) | `900a896c6` `5a7b710d9` `c16039e0b` | **changes this car** once; accepted |
+| LagdToggle OFF branch fix | See item 8 | `53e13a7bc` | **changes this car only if LagdToggle is OFF** (fixed 0.58 s; 0.38 s since 2026-10) |
 | paramsd ignores reverse | See item 9 | `612d97cfd` | **changes this car** |
 | Lateral Jerk Torque Controller | `LateralJerkTorqueController`, default off. Error and feed-forward in torque space with friction compensation. Mutually exclusive with NNLC | `91a53aa16` `fc4699a74` `f531952be` | available. **Fixed in the merge:** `LatControlTorqueExtBase.update_output_torque()` updates the owning controller's PID a second time in the frame and ignored the gateway hold, so with Lateral Jerk or NNLC on the integrator wound open-loop while the board was not actuating. It now also freezes on `integrator_frozen` (`test_latcontrol_gateway_hold.py`) |
 | Lateral maneuvers tool | Adds 20 and 30 mph jitter maneuvers, curvature 0.004, aborts on gas, offroad-only toggle | `f9cc67896` | available (the 20/30 mph maneuvers are below where this EPS has accepted torque) |
