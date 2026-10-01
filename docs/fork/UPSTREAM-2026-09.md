@@ -160,9 +160,9 @@ vision curve slowdown (item 3). Both are listed under [Still open](#still-open-a
    - It clamps to 0.15–0.65 s. It was 1.0 s.
    - It versions its cache (`VERSION = 1`). The fork's stored `LiveDelay` has no version, reads as 0, and is deleted on
      first start.
-   - Until 5 valid blocks are learned again, lagd publishes its `initial_lag = steerActuatorDelay + 0.2 = 0.58 s`. That
-     is not the 0.38 s the fork had learned (0.383/0.377 s on routes d3/d4). The +0.2 was already in the fork's lagd;
-     what is new is losing the learned value and relearning only above 80 km/h.
+   - Until 5 valid blocks are learned again, lagd publishes its `initial_lag = steerActuatorDelay + 0.2 = 0.58 s` (0.38 s
+     since 2026-10; see Superseded below). That is not the 0.38 s the fork had learned (0.383/0.377 s on routes d3/d4).
+     The +0.2 was already in the fork's lagd; what is new is losing the learned value and relearning only above 80 km/h.
    - `LAT_SMOOTH_SECONDS` is 0.0, so nothing is added on top.
    - The merge changed only the comment in opendbc `interface.py` (it used to say the fallback was 0.38). Options for
      the owner: accept it; a `HONDA_ELESYS`-scoped hunk in `lagd.py`; or settings only (incomplete without the hunk).
@@ -375,8 +375,9 @@ vision curve slowdown (item 3). Both are listed under [Still open](#still-open-a
 - **The command path.** An open-loop replay of route `00000103` (670 s) through card, selfdrived, controlsd, plannerd
   and radard in both trees gave byte-identical `sendcan` on every address (`0x0E4`, `0x1A6` bus 2, `0x1FA`, `0x200`,
   `0x30C`, `0x500`), identical `carState`/`carStateSP` (bar `cumLagMs`), and matching `CarParams`: `minEnableSpeed`
-  8.494 m/s, `stopAccel` -0.8, `steerActuatorDelay` 0.38, `longitudinalActuatorDelay` 0.6, `safetyParam` 36. Closed
-  loop, `0x0E4` was byte-identical on 66,463 of 66,463 frames; brake and gas differ only through item 3.
+  8.494 m/s, `stopAccel` -0.8, `steerActuatorDelay` 0.38 (0.18 since 2026-10), `longitudinalActuatorDelay` 0.6,
+  `safetyParam` 36. Closed loop, `0x0E4` was byte-identical on 66,463 of 66,463 frames; brake and gas differ only
+  through item 3.
 
 ---
 

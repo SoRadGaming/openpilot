@@ -247,7 +247,7 @@ anything above 0 is where the next merge can conflict.
 * *modify/delete*: upstream deleted the old path; the fork's edits were re-applied to the new one.
 * *added in the merge*: the file carries a fork change for the first time, made during or after the merge.
 
-### sunnypilot: 71 files and the submodule pointer
+### sunnypilot: 72 files and the submodule pointer
 
 Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-specific, gated by `SpeedLimitMapStrict` and `OsmAutoUpdateWeekly`, markers `FORK(SPEED-LIMIT)`.
 
@@ -277,7 +277,7 @@ Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-sp
 | A | `openpilot/selfdrive/controls/tests/test_stopping_debounce.py` | C | The debounce and the stopping tune (17 tests). | 0 | new→moved, then rewritten |
 | M | `openpilot/selfdrive/locationd/torqued.py` | C (+B) | `FORK(HONDA_ACCORD_9G_AU)`: the initial `latAccelOffset` is `CP.lateralTuning.torque.latAccelOffset` when the tuning is torque, else 0.0 (2026-10). `configure_torque_tune()` sets 0.0, so only `HONDA_ELESYS` (-0.43) differs from upstream. | 0 | new |
 | A | `openpilot/selfdrive/locationd/test/test_lagd_elesys.py` | C | The lag fallbacks on this car are 0.38 s (`steerActuatorDelay` 0.18 + 0.2), and a learned cache survives the change (5 tests). | 0 | new |
-| A | `openpilot/selfdrive/locationd/test/test_torqued_elesys.py` | C (+B) | The car's own prior and offset seed in torqued, the cache reset a changed prior forces, a reported 0 adds no point (9 tests). | 0 | new |
+| A | `openpilot/selfdrive/locationd/test/test_torqued_elesys.py` | C (+B) | The car's own prior and offset seed in torqued, the cache reset a changed prior forces, a reported 0 adds no point, the seed through the EnforceTorqueControl / NNLC re-run (11 tests). | 0 | new |
 | M | `openpilot/selfdrive/modeld/modeld.py` | B+C | Subscribes `carStateSP`, calls `DesireHelper(CP.carFingerprint)` and passes `driver_torque_stale=` into `DH.update`. | 0 | modify/delete |
 | M | `openpilot/selfdrive/pandad/pandad.py` | A | Adds `flash_if_requested()` before `./pandad`, `watch_for_request()` after it, and `skip_panda_reset`. | 0 | CONFLICT |
 | M | `openpilot/selfdrive/selfdrived/selfdrived.py` | B | Subscribes `carStateSP`, which `mads.py` reads. | 0 | CONFLICT |
@@ -300,6 +300,7 @@ Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-sp
 | A | `openpilot/sunnypilot/mapd/osm_auto_update.py` | SL | `auto_update_due()` (pure) and `OsmAutoUpdater`: weekly refresh when parked (no ignition on any panda) on unmetered wi-fi/ethernet, once per boot; `record_completion()` writes `OsmLastCompleteDate`; `answer_request()` clears an `OsmDbUpdatesCheck` (button, OSM panel, sunnylink) that is onroad, has no region or arrives mid-download, before `update_osm_db()` sees it. `is_offroad()`/`is_parked()` are shared with the NSW downloader. | 0 | new |
 | A | `openpilot/sunnypilot/mapd/tests/test_osm_auto_update.py` | SL | The refresh decision and the completion recorder, and the request gate (`TestRequestGate`, `TestUpdateOsmDb`). | 0 | new |
 | M | `openpilot/sunnypilot/modeld_v2/modeld.py` | B+C | The same three edits as `modeld.py`. | 0 | CONFLICT |
+| M | `openpilot/sunnypilot/selfdrive/car/interfaces.py` | C | `FORK(HONDA_ACCORD_9G_AU)` in `_initialize_torque_lateral_control()`: keeps `latAccelOffset` across the EnforceTorqueControl / NNLC re-run of `configure_torque_tune()`, which resets it to 0.0 (2026-10). Only `HONDA_ELESYS` carries a nonzero seed (-0.43); every other car ends where upstream leaves it. | 0 | new |
 | M | `openpilot/sunnypilot/selfdrive/controls/controlsd_ext.py` | B | Fills `CC_SP.lateralControl` from `lac_log` and `LaC`. | 0 | auto |
 | M | `openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_ext_base.py` | B | `update_output_torque()` also freezes on the owning controller's `integrator_frozen`. | 0 | added in the merge |
 | M | `openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py` | B | The same integrator hold as `latcontrol_torque.py`. | 0 | auto |
@@ -563,7 +564,7 @@ They are listed because the same kind of thing will happen again.
 | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | 9 |
 | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` | 4 |
 
-The 2026-10 lateral batch added three more: `openpilot/selfdrive/locationd/test/test_torqued_elesys.py` (9),
+The 2026-10 lateral batch added three more: `openpilot/selfdrive/locationd/test/test_torqued_elesys.py` (11),
 `openpilot/selfdrive/locationd/test/test_lagd_elesys.py` (5) and
 `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_reported_torque.py` (7).
 
