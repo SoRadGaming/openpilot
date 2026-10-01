@@ -104,7 +104,9 @@ the hunk. Integration-test sections ("integration §N") refer to
 | sp | `openpilot/selfdrive/modeld/modeld.py`, `openpilot/sunnypilot/modeld_v2/modeld.py` | `"carStateSP"` in upstream's renamed SubMaster, `driver_torque_stale=sm['carStateSP'].driverTorqueStale` passed to `DH.update` by keyword after the edges. `DesireHelper(CP.carFingerprint)` is area C | `56a404318`, 2026-09 merge | none |
 | sp | `openpilot/sunnypilot/mads/mads.py` | `LINBUS_REASON_DRIVER_OVERRIDE`, `self._gw_paused`, the gateway pause block, and `if self._gw_paused: return False` at the top of `should_silent_lkas_enable()` (`2cfcd3c6a`). Also the steer-rate emergency takeover (`EMERGENCY_STEER_RATE`, `EMERGENCY_STEER_RATES`, `EMERGENCY_STEER_FRAMES`, `self._fast_steer`, and since 2026-09-30 its two settings: `read_emergency_steer_rate()`, and `self.emergency_steer_disable`/`self.emergency_steer_rate` read in `__init__` and `read_params()`), see "Other" in section 9. Since the 2026-09 merge the gateway block also fires on the frame MADS is being turned on (`self.enabled or ...check_contains(ET.ENABLE)`), so an LKAS press or UEM engagement during an override no longer gives one active frame, and a `KeyError` fallback treats a `SubMaster` without `carStateSP` (upstream's MADS tests) as "no gateway" | `ef4f29432` `4932aa73c` `35622a994` `2cfcd3c6a`, 2026-09 merge, 2026-09-30 | `test_mads_gateway_pause.py` (41 tests) |
 | sp | `openpilot/sunnypilot/mads/state.py` (added in the 2026-09 merge) | DISABLED branch: an ENABLE that arrives with `silentLkasDisable` goes to `paused`, not `enabled`/`overriding`. Only the gateway block can raise `silentLkasDisable` while MADS is disabled | 2026-09 merge | `test_mads_gateway_pause.py::test_turning_mads_on_during_an_override_starts_paused` |
-| sp | `openpilot/selfdrive/selfdrived/selfdrived.py` | `'carStateSP'` added to upstream's SubMaster, for MADS | `ef4f29432` | `test_mads_gateway_pause.py::test_selfdrived_subscribes_the_gateway_state` |
+| sp | `openpilot/selfdrive/selfdrived/selfdrived.py` | `'carStateSP'` added to upstream's SubMaster, for MADS. Since 2026-10-01 also `self.eps_latch_alert = EpsLatchAlert()` and the call in `update_events()` that adds its events to `events_sp` | `ef4f29432`, 2026-10-01 | `test_mads_gateway_pause.py::test_selfdrived_subscribes_the_gateway_state`, `test_eps_latch_alert.py::TestSelfdrivedWiring` |
+| sp | `openpilot/sunnypilot/selfdrive/selfdrived/eps_latch_alert.py` (new, 2026-10-01) | `EpsLatchAlert`, `LATCH_CONFIRM_FRAMES`, `LATCH_CLEAR_FRAMES`, `ANNOUNCE_FRAMES`, `REMINDER_PERIOD_FRAMES`, `REMINDER_FRAMES`: the "restart the car" alert for `latchedUntilKeyOff`, see section 9 | 2026-10-01 | `test_eps_latch_alert.py` (18 tests) |
+| sp | `openpilot/sunnypilot/selfdrive/selfdrived/events.py`, `openpilot/cereal/custom.capnp` | `OnroadEventSP.EventName` `lkasGatewayEpsLatched @26`, `lkasGatewayEpsLatchedReminder @27`, and their `ET.WARNING`-only `EVENTS_SP` entries | 2026-10-01 | `test_eps_latch_alert.py::TestEpsLatchAlertDefinitions` |
 | sp | `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | the capnp ↔ dataclass seam for `lateralControl` and `linbusGateway` | `d11d2c9a8` `2dd8827d5` | itself |
 | sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | two tests: `test_a_stale_torque_still_confirms_nothing` and `test_driver_torque_stale_comes_after_the_road_edges` (the rest is area C) | `10e088a2d`, 2026-09 merge | itself |
 | sp | `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | the gateway pause and its resume, every brake mode, the brake and regen guard, the emergency takeover beside an override, no board no pause, `selfdrived`'s subscription, the enable-frame cases, and (`TestFastWheelSetting`) the takeover's switch and threshold | `2cfcd3c6a`, 2026-09 merge, 2026-09-30 | itself |
@@ -510,8 +512,8 @@ comments in `structs.py` that say "names and order must stay in lockstep" overst
 | 1 | `dryRun` | Bool | `0x704 DRY_RUN` | |
 | 2 | `valid` | Bool | `0x704` within 500 ms | |
 | 3 | `actuating` | Bool | `engaged and not dryRun and valid` | `controlsd` → `LaC.set_linbus_gateway` |
-| 4 | `present` | Bool | this platform has a board: always True on ELESYS, even with nothing plugged in; False elsewhere | `controlsd`, `mads` |
-| 5 | `grantValid` | Bool | `0x70B` within 500 ms | `mads` |
+| 4 | `present` | Bool | this platform has a board: always True on ELESYS, even with nothing plugged in; False elsewhere | `controlsd`, `mads`, `selfdrived` (latch alert) |
+| 5 | `grantValid` | Bool | `0x70B` within 500 ms | `mads`, `selfdrived` (latch alert) |
 | 6 | `grantState` | UInt8 | `STATE` | |
 | 7 | `grantReason` | UInt8 | `REASON` | `mads` (== 4) |
 | 8 | `granted` | Bool | `grantValid and STATE in {3,4,5}` | `mads` |
@@ -524,12 +526,13 @@ comments in `structs.py` that say "names and order must stay in lockstep" overst
 | 15 | `applied` | Int16 | `APPLIED` (quantised to 2) | |
 | 16 | `motorTorque` | Int16 | `MOTOR_TORQUE` | |
 | 17 | `retryIn` | UInt8 | `RETRY_IN` | |
-| 18 | `latchedUntilKeyOff` | Bool | `RETRY_IN == 255` | |
+| 18 | `latchedUntilKeyOff` | Bool | `RETRY_IN == 255` | `selfdrived` → `eps_latch_alert.py` (the "restart the car" alert, section 9) |
 | 19–26 | `fwValid` … `fwBuildValid` | | `0x707` / `0x70F` | area A (`card`, `board.py`) |
 
 Fields with no reader appear only in the route log (`carStateSP` is logged), and the only
-driver-facing surface for them is the `carlog.warning` above. Wiring `grantReason` or
-`latchedUntilKeyOff` into an alert has not been done.
+driver-facing surface for them is the `carlog.warning` above. Since 2026-10-01
+`latchedUntilKeyOff` has an alert (section 9, "Other: the EPS latch alert"); `grantReason` still
+has none.
 
 **Subscriptions added for these fields:** `controlsd` (`carStateSP`), `selfdrived` (`carStateSP`,
 not in its `ignore` list, so it is part of `sm.all_checks()`), `modeld` and `modeld_v2`
@@ -869,6 +872,67 @@ a swerve below a raised threshold during an override (pauses, then disables once
 threshold) and the fallback for out-of-set values. `selfdrive/ui/tests/test_mads_fast_wheel_settings.py`
 keeps the registry, `mads.py`, the mici page and `settings_ui.json` in agreement. Nothing tests
 it on another car.
+
+### Other: the EPS latch alert (2026-10-01)
+
+When the EPS latches until key-off, nothing openpilot or the board can do brings steering back
+(`S:/Software/EPS-LKAS/docs/EPS-FAULT-STATES.md`, "Nothing passive clears it"). Until this, the
+driver heard about it only from the board's `carlog.warning` and the cluster's LKAS lamp. Now
+`selfdrived` tells them to restart the car.
+
+```python
+# selfdrived.update_events(), after the car events, every frame but dashcam's:
+for e in self.eps_latch_alert.update(self.sm['carStateSP'].linbusGateway, self.active or self.mads.active):
+  self.events_sp.add(e)
+```
+
+| event | type | alert |
+|---|---|---|
+| `lkasGatewayEpsLatched @26` | `ET.WARNING` only | "Steering Fault" / "Turn the car off and on to clear it"; userPrompt, mid, `Priority.LOW`, `AudibleAlert.prompt` (one `warning.wav`), 6 s. Once per latch. |
+| `lkasGatewayEpsLatchedReminder @27` | `ET.WARNING` only | "Steering Off Until Restart"; normal, small, `Priority.LOWEST`, silent, 4 s. Every 5 minutes while latched. |
+
+**A warning, never a fault.** No `NO_ENTRY`, no disable type, no `steerFaultPermanent`, no
+carState flag: longitudinal, engagement and MADS are untouched. A WARNING is shown only while
+openpilot or MADS is active (`state.py` adds `ET.WARNING` to the alert types only then), so
+`eps_latch_alert.py` holds the announcement, and each reminder, until it can be shown rather
+than losing it; `can_show` is the previous frame's `self.active or self.mads.active`.
+
+**Below driver monitoring.** The announcement is `Priority.LOW`. Driver monitoring's stage 2
+(`driverDistracted2`, `driverUnresponsive2`) is `Priority.MID`, and `AlertManager` breaks a
+priority tie in favour of the newer alert, so a MID announcement arriving during stage 2 would
+take the screen and silence its repeating sound for 6 s. LOW still wins a tie against other LOW
+warnings by being newer; it can hold DM's small stage-1 "Pay Attention" (also LOW) off the screen
+for those 6 s, which escalates to stage 2 on DM's own timer regardless.
+
+**The debounce, and why it is not an edge detector.** Read back with LogReader from routes fc
+and fd (2026-09-27): after the latch the board says `RETRY_IN 255` on every fresh `0x70B` frame
+for the rest of the drive, but `0x70B` itself goes stale again and again - `grantValid` False for
+0.1 s to 25.7 s at a time, about twenty times a route - and a stale frame reads as
+`latchedUntilKeyOff` False (`carstate_ext.py` reports zeros when stale). `0x70B` also goes
+stale on drives with no latch (route `00000103`: 8,300 of 66,859 frames), which is a board-side
+question for another day. So:
+
+* evidence comes only from fresh frames: `grantValid and latchedUntilKeyOff` counts towards the
+  latch, `grantValid and not latchedUntilKeyOff` towards a clear, a stale frame towards neither;
+* `LATCH_CONFIRM_FRAMES` = 1 s of latched evidence confirms. The board already ignores EPS error
+  states under 200 ms (`GW_ERR_LATCH_MS`; the longest transient on record is 40 ms) and every
+  real latch has lasted minutes;
+* once confirmed, only `LATCH_CLEAR_FRAMES` = 3 s of fresh "not latched" clears it, and only a
+  confirm after a clear announces again;
+* `present` False (any other car) or no `carStateSP` raises nothing.
+
+**Replayed** through the helper with each route's own `selfdriveState`/`selfdriveStateSP`: fd,
+fc, f2 and ed each announce once, about 1.0 s after their first `RETRY_IN 255`, with a reminder
+every 5 minutes after (fd one, fc two); `00000102` and `00000103` raise nothing.
+
+`openpilot/sunnypilot/selfdrive/selfdrived/tests/test_eps_latch_alert.py` (19 tests): announced
+once, a 0.9 s transient never, nothing without a board or on stale frames, the fc/fd stale
+pattern announces once, stale frames count towards neither side, only a real clear re-arms, the
+announcement and the reminder wait until they can be shown, a silent reminder every 5 minutes,
+warnings only, shown only while engaged, one sound, both texts fit the mici alert renderer
+(wrapped with the real Inter fonts at the renderer's own sizes, which the test also pins), the
+`AlertManager` path (6 s, then 4 s; and a latch during DM stage 2 leaves "Pay Attention" on
+screen throughout) and `selfdrived`'s wiring.
 
 ---
 

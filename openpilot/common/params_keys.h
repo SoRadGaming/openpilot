@@ -128,6 +128,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"UpdaterAvailableBranches", {PERSISTENT, STRING}},
     {"UpdaterCurrentDescription", {CLEAR_ON_MANAGER_START, STRING}},
     {"UpdaterCurrentReleaseNotes", {CLEAR_ON_MANAGER_START, BYTES}},
+    // FORK(UPDATER): {"phase": "code"|"checkout"|"os", "pct": 0-100 or null} while updated downloads.
+    // Written by sunnypilot/system/updated/download_progress.py, shown on the comma 4's software page.
+    {"UpdaterDownloadProgress", {CLEAR_ON_MANAGER_START, JSON}},
     {"UpdaterFetchAvailable", {CLEAR_ON_MANAGER_START, BOOL}},
     {"UpdaterNewDescription", {CLEAR_ON_MANAGER_START, STRING}},
     {"UpdaterNewReleaseNotes", {CLEAR_ON_MANAGER_START, BYTES}},

@@ -18,6 +18,9 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.common.hardware import AGNOS, HARDWARE
 from openpilot.common.version import get_build_metadata, SP_BRANCH_MIGRATIONS
+# FORK(UPDATER): the download progress shown on the comma 4's software page
+from openpilot.sunnypilot.system.updated.download_progress import (DownloadProgress, git_fetch_with_progress,
+                                                                   PHASE_CODE, PHASE_CHECKOUT, PHASE_OS)
 
 LOCK_FILE = os.getenv("UPDATER_LOCK_FILE", "/tmp/safe_staging_overlay.lock")
 STAGING_ROOT = os.getenv("UPDATER_STAGING_ROOT", "/data/safe_staging")
@@ -192,7 +195,7 @@ def finalize_update() -> None:
   cloudlog.info("done finalizing overlay")
 
 
-def handle_agnos_update() -> None:
+def handle_agnos_update(progress_cb=None) -> None:  # FORK(UPDATER): progress_cb, the fraction done
   from openpilot.common.hardware.comma.agnos import flash_agnos_update, get_target_slot_number
 
   cur_version = HARDWARE.get_os_version()
@@ -210,7 +213,7 @@ def handle_agnos_update() -> None:
 
   manifest_path = os.path.join(OVERLAY_MERGED, "openpilot/system/hardware/comma/agnos.json")
   target_slot_number = get_target_slot_number()
-  flash_agnos_update(manifest_path, target_slot_number, cloudlog)
+  flash_agnos_update(manifest_path, target_slot_number, cloudlog, progress_cb=progress_cb)  # FORK(UPDATER)
 
 
 class Updater:
@@ -218,6 +221,7 @@ class Updater:
     self.params = Params()
     self.branches = defaultdict(str)
     self._has_internet: bool = False
+    self.progress = DownloadProgress(self.params)  # FORK(UPDATER): UpdaterDownloadProgress for the software page
 
   @property
   def has_internet(self) -> bool:
@@ -358,6 +362,7 @@ class Updater:
   def fetch_update(self) -> None:
     cloudlog.info("attempting git fetch inside staging overlay")
 
+    self.progress.set(PHASE_CODE)  # FORK(UPDATER)
     self.params.put("UpdaterState", "downloading...", block=True)
 
     # TODO: cleanly interrupt this and invalidate old update
@@ -369,10 +374,13 @@ class Updater:
     run(["git", "config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"], OVERLAY_MERGED)
 
     branch = self.target_branch
-    git_fetch_output = run(["git", "fetch", "origin", branch], OVERLAY_MERGED)
+    # FORK(UPDATER): --progress for the receiving meter; the output logged is what run() returned before
+    git_fetch_output = git_fetch_with_progress(["git", "fetch", "--progress", "origin", branch], OVERLAY_MERGED,
+                                               lambda pct: self.progress.set(PHASE_CODE, pct))
     cloudlog.info("git fetch success: %s", git_fetch_output)
 
     cloudlog.info("git reset in progress")
+    self.progress.set(PHASE_CHECKOUT)  # FORK(UPDATER)
     cmds = [
       ["git", "checkout", "--force", "--no-recurse-submodules", "-B", branch, "FETCH_HEAD"],
       ["git", "branch", "--set-upstream-to", f"origin/{branch}"],
@@ -385,11 +393,12 @@ class Updater:
     r = [run(cmd, OVERLAY_MERGED) for cmd in cmds]
     cloudlog.info("git reset success: %s", '\n'.join(r))
 
-    # TODO: show agnos download progress
     if AGNOS:
-      handle_agnos_update()
+      # FORK(UPDATER): the AGNOS progress, weighted by partition size (download_progress.py)
+      handle_agnos_update(progress_cb=lambda frac: self.progress.set(PHASE_OS, 100 * frac))
 
     # Create the finalized, ready-to-swap update
+    self.progress.clear()  # FORK(UPDATER)
     self.params.put("UpdaterState", "finalizing update...", block=True)
     finalize_update()
     cloudlog.info("finalize success!")
@@ -478,6 +487,7 @@ def main() -> None:
         OVERLAY_INIT.unlink(missing_ok=True)
 
       try:
+        updater.progress.clear()  # FORK(UPDATER): also after a failed download
         params.put("UpdaterState", "idle", block=True)
         update_successful = (update_failed_count == 0)
         updater.set_params(update_successful, update_failed_count, exception)
