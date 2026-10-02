@@ -12,3 +12,7 @@
 
 openpilot/selfdrive/car/tests/test_models_segs.txt filter=lfs diff=lfs merge=lfs -text
 openpilot/common/hardware/comma/updater filter=lfs diff=lfs merge=lfs -text
+
+# FORK(HUD): the fork's own PNGs are plain git objects. LFS here means sunnypilot's GitLab, which the fork cannot push
+# to (docs/fork/README.md pushes with GIT_LFS_SKIP_PUSH=1): a pointer would reach the car without its object.
+openpilot/sunnypilot/selfdrive/assets/icons_mici/gateway.png -filter binary

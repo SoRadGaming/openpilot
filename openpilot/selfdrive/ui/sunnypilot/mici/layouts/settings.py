@@ -67,10 +67,11 @@ class SettingsLayoutSP(OP.SettingsLayout):
     # FORK(GATEWAY-UPDATE): Settings > gateway.
     # the EPS-LKAS gateway board: which firmware is on it, and whether it can be
     # updated over CAN at all. Hidden until the board has identified itself once,
-    # so a car without one never sees it.
+    # so a car without one never sees it. Its icon (FORK(HUD), 2026-10, the owner's pick "B, inline bridge"): the board
+    # inline on the harness, passing traffic both ways. The update dialog keeps the download arrow (board.py).
     board_panel = BoardLayoutMici()
     board_btn = SettingsBigButton(tr("gateway"), "",
-                                  gui_app.texture("../../sunnypilot/selfdrive/assets/offroad/icon_software.png", ICON_SIZE, ICON_SIZE))
+                                  gui_app.texture("../../sunnypilot/selfdrive/assets/icons_mici/gateway.png", ICON_SIZE, ICON_SIZE))
     board_btn.set_click_callback(lambda: gui_app.push_widget(board_panel))
     board_btn.set_visible(board_page_visible)
 
