@@ -363,8 +363,9 @@ hypotheses agree. It finds the first point where the published limit would chang
 sampling every 20 m. It also reports a school zone that will be active at the estimated arrival time. The horizon is
 15 s × speed, clamped to 150–1000 m. It stops at a junction where lines with different limits continue. The result
 goes out as `speedLimitAhead` / `speedLimitAheadDistance` while matched (state 2) and in `nswZone.speedLimitAhead` always.
-**Nothing acts on it:** the resolver makes no early switch under NSW live (see [Resolver](#resolver)), and on the
-comma 4 (mici) nothing on screen shows the next limit; it is only logged.
+**Nothing acts on it:** the resolver makes no early switch under NSW live (see [Resolver](#resolver)). Since
+2026-10-03 the comma 4 **shows** the published one - `speedLimitAhead*`, never `nswZone`'s - when it is lower and within
+15 s or 500 m ([On the comma 4 screen](#on-the-comma-4-screen-hud)); `nswZone.speedLimitAhead` is still only logged.
 
 ---
 
@@ -417,6 +418,26 @@ to log-only in a tunnel would otherwise let OSM's surface-street value through t
   trusted fix after GPS returns (state 2), the OSM settle window is cleared.
 
 ---
+
+## On the comma 4 screen (HUD)
+
+Since 2026-10-03 the comma 4's speed cluster (`selfdrive/ui/sunnypilot/mici/onroad/hud_*.py`, area **HUD** in
+[README.md](README.md), markers `FORK(HUD)`) draws three things from this feature. Each needs the limit on screen -
+the resolver's `speedLimitLast`, source map - to **be** the NSW limit mapd published: `nswZone.mode` 2 (live) and
+`round(nswZone.speedLimit)` equal to it. In log-only mode, or while the resolver holds another value, nothing below is
+drawn: `nswZone` then describes a limit that is not the one shown.
+
+| on screen | from | setting (sunnylink Visuals → HUD) |
+|---|---|---|
+| Two amber lamps on the sign's rim, flashing in turn about once a second, and SCHOOL under it | `nswZone.schoolZone` 2 (active); the sign shows the published limit, 40 as a rule | School Zone Lights (`HudSchoolZoneCue`) |
+| The same lamps unlit (grey), no text | `schoolZone` 1 (inactive) | the same |
+| Nothing | `schoolZone` 3 (unknown): nothing is published then, so there is no NSW limit on screen to mark | - |
+| The electronic sign: black face, red ring, white digits | `nswZone.variable` (a Variable zone: the published value is its static maximum, and the overhead sign may show less) | Electronic Sign in Variable Zones (`HudVariableLimitSign`) |
+| The next lower limit (small sign, distance and/or bar) | `liveMapDataSP.speedLimitAhead*`: what mapd published - only while matched (state 2), so **never while dead reckoning** | Next Lower Limit (`HudNextLimit`) |
+
+The sign keeps its round shape in a school zone: the owner rejected the NSW plate shape in the mockups ("keep the same
+shape as all the others"). The lamp and label drawing is one function, `hud_draw.school_cue()`, so it can be restyled
+alone.
 
 ## The maps page (mici)
 

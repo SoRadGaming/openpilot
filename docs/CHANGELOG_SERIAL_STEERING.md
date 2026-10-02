@@ -15,6 +15,84 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-03 — the comma 4 HUD: speed and speed limit, the next lower limit, a stop timer; the gateway icon
+
+**The comma 4 now shows your speed and the speed limit**, top right beside the
+confidence ball: your speed as the Accord's own speedometer reads it
+(`vEgoCluster`), ~35 px, next to a 60 px Australian speed sign (white, red ring,
+condensed black digits). This is the design you picked from the mockups (Layout B,
+"speed cluster"), drawn by the same code that rendered them.
+
+* **The next lower limit.** When the next limit is LOWER and within 15 seconds or
+  500 m (whichever comes first), a 36 px sign appears under the speed with the
+  distance over a bar that shrinks toward it (your pick: both; sunnylink can make
+  it the bar or the distance alone). Never a higher limit, never while stopped.
+  The distance uses sunnypilot's own rounding (`300 m`, `1.2 km`).
+* **School zones keep the round sign.** You said the plate looked out of place:
+  the sign is now the same circle as every other limit. When a NSW school zone is
+  on, the 40 sign gets two amber lights on its rim that flash in turn, about once
+  a second, and an amber **SCHOOL** under it. Outside the zone's hours the lights
+  are grey and there is no text.
+* **Variable-limit zones** (motorways and tunnels with overhead signs) draw the
+  sign like the electronic one: black face, red ring, white digits - a reminder
+  that the overhead sign can show less.
+* **At a stop** the speed becomes a stopwatch and the time stopped (`0:29`), and
+  the orange "take control / resume driving manually" no longer covers the
+  screen: it is a small banner top left. **When the car ahead moves off, the full
+  orange prompt comes back** (and stays until you go) - that is the moment the
+  prompt is for.
+* **"Press - to confirm speed limit" now shows which limit:** the green arrow is
+  replaced by the limit itself with a dashed ring (not confirmed yet) beside the
+  same green minus (or plus). The minus blinks as the arrow did.
+* **Settings > gateway** has its own icon: **B, the inline bridge** (the board on
+  the harness, traffic both ways), which you picked. The update dialog keeps the
+  download arrow.
+
+**Everything is a setting**, in sunnylink under **Visuals → HUD** (shown for a
+comma 4 only), all on by default: Speed and Speed Limit, Next Lower Limit
+(Off / Bar / Distance / Both), School Zone Lights, Electronic Sign in Variable
+Zones, Stop Timer, Compact Take Control Banner When Stopped, and Show the Limit
+in the Confirm Prompt. Changes show within a second (the screen reads them once
+a second, never per frame). **All of them off is today's screen, pixel for
+pixel** - checked over the five real moments of your 1 Oct drive and in the
+tests.
+
+* **What it never covers:** the 60 px strip with the confidence ball (as you
+  asked - the right-side items are a separate design job), the driver-monitor
+  icon (except under the stop banner), the wheel, the lanes. The whole group
+  fades out while any alert is up, and the speed hides for the 2.5 s the stock
+  "MAX" number shows after a set-speed change, so two big numbers are never on
+  screen together.
+* **Only what is true:** the sign is the limit sunnypilot is using (grey digits
+  while it is only holding the last one, as sunnypilot's own sign does); the
+  school lights and the electronic look appear only when that limit IS the NSW
+  limit (NSW Speed Zones on Live); the next limit is only what the map published.
+  **In a tunnel, while the position is dead-reckoned, there is no next limit:**
+  mapd deliberately does not publish one there (it reported drops that never came
+  on your tunnel passes). The mockup showed one, from the logged look-ahead; the
+  build does not.
+* **Not in this build, as agreed:** the car-ahead icon (your speedometer already
+  shows following distance) and anything on the right side - traffic lights,
+  stop and give-way signs and what the model sees are being researched first.
+  The mockups' "set 70" line (set speed below the limit) was not among your
+  picks and is not built.
+* **What does not change:** no alert's text, sound, priority or timing; nothing
+  that drives the car. The screen only.
+* **Tests:** 37 (the rules, the settings and their once-a-second read, sunnylink,
+  the markers, the icon) and 11 that draw the real onroad view in a headless
+  window per state - including "every setting off = the stock pixels" and "an
+  alert's own setting off = that alert as stock".
+* **New params:** `HudSpeedCluster`, `HudNextLimit`, `HudSchoolZoneCue`,
+  `HudVariableLimitSign`, `HudStoppedTimer`, `HudStoppedBanner`,
+  `HudConfirmLimit` (backed up with your settings). The first start after this
+  update rebuilds, as any `params_keys.h` change does.
+* **Watch on the next drive:** the speed matches the dashboard; the next-limit
+  sign appears only for drops and only in the last 15 s / 500 m; at the first
+  stop behind a car, the banner, the timer counting, and the full prompt when
+  that car moves off. A school zone in its hours, if your route has one.
+
+---
+
 ## 2026-10-03 — The VSA's own fault, named on screen; no engagement while the VSA holds it
 
 **What this is for.** On 2026-10-01 the car's VSA (the ABS / stability-control
