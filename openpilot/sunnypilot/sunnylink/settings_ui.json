@@ -1635,6 +1635,101 @@
           ]
         },
         {
+          "id": "hud_comma4",
+          "title": "HUD",
+          "description": "The comma 4 driving screen - speed, speed limit, next limit and stops. Changes show within a second.",
+          "visibility": [
+            {
+              "type": "capability",
+              "field": "device_type",
+              "equals": "mici"
+            }
+          ],
+          "items": [
+            {
+              "key": "HudSpeedCluster",
+              "widget": "toggle",
+              "title": "Speed and Speed Limit",
+              "description": "Your speed, as the car's speedometer shows it, beside the speed limit sign, top right. The sign is hidden when Speed Limit is Off, and greyed while the limit is only being held from earlier. While the set speed shows after a change the speed hides, and the whole group fades out while an alert is up."
+            },
+            {
+              "key": "HudNextLimit",
+              "widget": "multiple_button",
+              "title": "Next Lower Limit",
+              "description": "A small sign for the next LOWER limit under the speed, once it is within 15 seconds or 500 m. Bar shrinks toward the sign as you get closer; Distance shows how far, as the map rounds it; Both shows the distance over the bar. Never while stopped, never for a higher limit, and never from a tunnel's guessed position.",
+              "options": [
+                {
+                  "value": 0,
+                  "label": "Off"
+                },
+                {
+                  "value": 1,
+                  "label": "Bar"
+                },
+                {
+                  "value": 2,
+                  "label": "Distance"
+                },
+                {
+                  "value": 3,
+                  "label": "Both"
+                }
+              ],
+              "visibility": [
+                {
+                  "type": "param",
+                  "key": "HudSpeedCluster",
+                  "equals": true
+                }
+              ]
+            },
+            {
+              "key": "HudSchoolZoneCue",
+              "widget": "toggle",
+              "title": "School Zone Lights",
+              "description": "When the limit shown is a NSW school zone, two amber lights on the sign flash in turn and SCHOOL shows under it while the zone is on; outside its hours the lights are grey. Needs NSW Speed Zones on Live.",
+              "visibility": [
+                {
+                  "type": "param",
+                  "key": "HudSpeedCluster",
+                  "equals": true
+                }
+              ]
+            },
+            {
+              "key": "HudVariableLimitSign",
+              "widget": "toggle",
+              "title": "Electronic Sign in Variable Zones",
+              "description": "In a NSW variable speed limit zone (motorways and tunnels with overhead signs) the sign is drawn like the electronic one - black, with white digits - because the overhead sign can show less than the limit here. Needs NSW Speed Zones on Live.",
+              "visibility": [
+                {
+                  "type": "param",
+                  "key": "HudSpeedCluster",
+                  "equals": true
+                }
+              ]
+            },
+            {
+              "key": "HudStoppedTimer",
+              "widget": "toggle",
+              "title": "Stop Timer",
+              "description": "After a second at a standstill the speed becomes a stopwatch and how long you have been stopped."
+            },
+            {
+              "key": "HudStoppedBanner",
+              "widget": "toggle",
+              "title": "Compact Take Control Banner When Stopped",
+              "description": "At a standstill the 'take control, resume driving manually' prompt is a small banner top left instead of covering the screen. It goes back to full screen when the car ahead moves off."
+            },
+            {
+              "key": "HudConfirmLimit",
+              "widget": "toggle",
+              "title": "Show the Limit in the Confirm Prompt",
+              "description": "The 'press - (or +) to confirm speed limit' prompt shows the limit it is asking about, with a dashed ring until you confirm it, beside the green - or +."
+            }
+          ]
+        },
+        {
           "id": "developer_ui",
           "title": "Developer UI Info",
           "description": "Speedometer and debug display options",

@@ -186,6 +186,15 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // FORK(HONDA_ELESYS): the gas law. 1 = v2, the measured pedal response; 0 = v1, the law before it.
     // A setting, so BACKUP; read once at ignition (elesys_gas.py).
     {"HondaElesysGasLawV2", {PERSISTENT | BACKUP, BOOL, "1"}},
+    // FORK(HUD): the comma 4 HUD, one setting per piece (sunnylink Visuals > HUD). All default on; all off is the stock
+    // screen. HudNextLimit: 0 off, 1 bar, 2 distance, 3 both. Read by the UI at most once a second.
+    {"HudConfirmLimit", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"HudNextLimit", {PERSISTENT | BACKUP, INT, "3"}},
+    {"HudSchoolZoneCue", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"HudSpeedCluster", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"HudStoppedBanner", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"HudStoppedTimer", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"HudVariableLimitSign", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"IntelligentCruiseButtonManagement", {PERSISTENT | BACKUP , BOOL}},
     {"InteractivityTimeout", {PERSISTENT | BACKUP, INT, "0"}},
     // EPS-LKAS gateway board. PERSISTENT because the settings page is offroad and card,

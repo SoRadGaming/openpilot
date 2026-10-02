@@ -15,6 +15,7 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.label import UnifiedLabel
 
 from openpilot.selfdrive.ui.sunnypilot.onroad.speed_limit import SpeedLimitAlertRenderer
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_alerts  # FORK(HUD)
 
 AlertSize = log.SelfdriveState.AlertSize
 AlertStatus = log.SelfdriveState.AlertStatus
@@ -242,6 +243,11 @@ class AlertRenderer(Widget, SpeedLimitAlertRenderer):
         self._prev_alert = None
         return False
 
+    # FORK(HUD): at a standstill 'take control / resume driving manually' can be a compact banner (hud_alerts.py)
+    if hud_alerts.draw_compact_standstill(self, alert):
+      SpeedLimitAlertRenderer.update(self)
+      return True
+
     self._draw_background(alert)
 
     # update speed limit UI states
@@ -262,6 +268,10 @@ class AlertRenderer(Widget, SpeedLimitAlertRenderer):
       self._turn_signal_alpha_filter.x = 255 * 2
     else:
       self._turn_signal_alpha_filter.update(255 * 0.2)
+
+    # FORK(HUD): the speed-limit confirm can show the pending limit instead of the bare arrow (hud_alerts.py)
+    if hud_alerts.draw_pending_limit(self, alert_layout):
+      return
 
     if alert_layout.icon.side == 'left':
       pos_x = int(self._rect.x + alert_layout.icon.margin_x)
