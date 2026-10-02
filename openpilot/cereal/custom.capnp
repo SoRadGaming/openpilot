@@ -359,6 +359,11 @@ struct OnroadEventSP @0xda96579883444c35 {
     # give it the ordinals and move these two to the next free ones.
     lkasGatewayEpsLatched @26;
     lkasGatewayEpsLatchedReminder @27;
+    # FORK(HONDA_ACCORD_9G_AU): the VSA's own fault (carStateSP.vsaFault / vsaStoredFault), see
+    # sunnypilot/selfdrive/selfdrived/vsa_fault_alert.py. Same rule as above if upstream takes these ordinals.
+    vsaFault @28;
+    vsaStoredFault @29;
+    vsaFaultAnnounce @30;
   }
 }
 
@@ -471,6 +476,15 @@ struct CarStateSP @0xb86e6369214c01c8 {
   # frame still arriving at 100 Hz and canValid true throughout. See docs/SP_GATEWAY_FIRMWARE.md.
   # True means: nothing may infer driver intent from steeringTorque this frame.
   driverTorqueStale @2 :Bool;
+
+  # FORK(HONDA_ACCORD_9G_AU): the VSA's own fault (the ABS / stability-control unit that carries out
+  # openpilot's brake requests), from PROVISIONAL bits named by timing alone - incident 2026-10-01, Honda
+  # DTC 32-11. opendbc/sunnypilot/car/honda/vsa_fault.py; False on every other car.
+  # vsaFault: faulting now - 0x1A4 byte 2 bits 2-3, or 0x1EA's inertial-invalid bit with BRAKE_ERROR.
+  # vsaStoredFault: its fault lamps are on outside the start-up bulb check, debounced 0.5 s - a fault held
+  # from an earlier key cycle (cleared on route 113 once the car passed 35 km/h), or a live one's lamps.
+  vsaFault @3 :Bool;
+  vsaStoredFault @4 :Bool;
 
   # State of the aftermarket LIN-bus gateway that translates openpilot's steering
   # request to the EPS. Decoded from GW_ACTIVE (0x704). See docs/SP_HUD_STATUS.md.

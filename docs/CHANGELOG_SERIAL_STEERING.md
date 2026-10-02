@@ -15,6 +15,65 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-03 — The VSA's own fault, named on screen; no engagement while the VSA holds it
+
+**What this is for.** On 2026-10-01 the car's VSA (the ABS / stability-control
+unit, the one that carries out openpilot's brake requests) faulted twice; Honda
+i-HDS read DTC 32-11, "ABS solenoid valve malfunction"
+(`S:/OP/incident-2026-10-01/REPORT.md`). openpilot showed "TAKE CONTROL
+IMMEDIATELY / Cruise Fault: Restart the Car", and restarting is exactly what does
+not clear it: the VSA keeps the fault across a key cycle and re-checks only once
+the car is moving (route 113 cleared at 35.3 km/h). Until the module is repaired,
+do not use openpilot cruise; this update makes openpilot say so, and refuse.
+
+* **A live fault** (the VSA faulting while you drive): the disengagement is
+  exactly what it was - upstream's `accFaulted`, from BRAKE_ERROR, still drops
+  openpilot and MADS on the same frame. Only the words change: "TAKE CONTROL
+  IMMEDIATELY / Stability Control (VSA) Fault", then a silent banner "VSA Fault /
+  Brakes, ACC, CMBS degraded. Have VSA codes read", and a refused engagement
+  reads "VSA Fault: Brakes Degraded". 30 s later the EPS escalates (it follows
+  the VSA, EPS DTC 85-01); its "LKAS Fault: Restart the car" banner no longer
+  replaces the VSA's for the rest of the drive.
+* **A stored fault** (the lamps already on at key-on): openpilot cannot be
+  engaged - neither cruise **nor MADS** - until the VSA clears it. The banner
+  reads "VSA Fault Stored / Clears after driving above 35 km/h", and SET, RES or
+  the LKAS button get "VSA Fault: Clears Above 35 km/h". The moment the VSA clears
+  (half a second later on screen), everything is available again; nothing engages
+  by itself, so press LKAS (or SET) once it has. MADS is refused
+  on purpose: the EPS refuses torque while the VSA holds the fault (and hard-faults
+  30 s after key-on), and the board steers only above 51.5 km/h, well past where
+  the fault clears - so there is no speed at which lateral could work with it
+  stored. An already-enabled MADS is not switched off by it.
+* **Sound:** one prompt per fault - "Stability Control Fault / Brakes, ACC, CMBS
+  degraded" for 3.5 s - and none if the fault disengaged something, because then
+  the disengagement alarm is the one sound. Banners are silent. A refused SET
+  still gets upstream's refuse tone, per press.
+* **In the logs:** `carStateSP.vsaFault` (faulting now) and
+  `carStateSP.vsaStoredFault` (fault lamps on outside the start-up bulb check), on
+  every route including qlogs; the events `vsaFault`, `vsaStoredFault` and
+  `vsaFaultAnnounce` in `onroadEventsSP`; a stored fault also shows upstream's
+  `carNotReady` in `onroadEvents` (that is the event that refuses the engagement).
+* **The bits are provisional** (named from timing; no Honda DBC has them), so the
+  rules are narrow: live = 0x1A4 byte 2 bits 2-3, or 0x1EA's inertial-invalid bit
+  with BRAKE_ERROR; stored = 0x1A4 b3.3/b3.6/b3.7/b4.0/b6.0 after a 5 s start-up
+  window, for 0.5 s. Two lamp bits of this fault (b3.5, b4.1) are deliberately
+  left out: they also sit on for minutes at a time on 45 earlier drives (June
+  2026) while the VSA braked normally. Replayed over all 166 logged routes, only 110-113 set
+  either flag. Nothing else on any car changes: every other Honda reads both flags
+  False, and on every other car the new code adds nothing.
+* **Watch:** a normal drive should never show any VSA text, and `carNotReady`
+  should never appear in `onroadEvents`. If one does without the cluster's VSA
+  lamps, report the route - that is a provisional bit misread.
+* **Tests:** opendbc `test_vsa_fault.py` (28: real frames from routes 110, 111,
+  112, 113, 10f and the other lamp state on route 69, through the real
+  `CarInterface`; garbage and missing frames; a monitor that raises; other
+  Hondas); sunnypilot `test_vsa_fault_alert.py` (32: the events, both state
+  machines and MADS, the AlertManager path and its sounds, the mici text fit,
+  selfdrived's wiring, the `CarStateSP` capnp/dataclass agreement). Details:
+  `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 6.6.
+
+---
+
 ## 2026-10-01 — Longitudinal (braking): a softer final stop; CRUISE_OVERRIDE stays 1
 
 **The last moment of an openpilot stop should no longer grab.** Measured on the

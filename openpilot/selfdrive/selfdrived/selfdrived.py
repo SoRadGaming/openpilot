@@ -34,6 +34,7 @@ from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.con
 from openpilot.sunnypilot.selfdrive.selfdrived.button_state_tracker import ButtonStateTracker
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.selfdrive.selfdrived.eps_latch_alert import EpsLatchAlert  # FORK(LKAS-GATEWAY)
+from openpilot.sunnypilot.selfdrive.selfdrived.vsa_fault_alert import VsaFaultAlert  # FORK(HONDA_ACCORD_9G_AU)
 
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
@@ -185,6 +186,7 @@ class SelfdriveD(CruiseHelper):
 
     self.car_events_sp = CarSpecificEventsSP(self.CP, self.CP_SP)
     self.eps_latch_alert = EpsLatchAlert()  # FORK(LKAS-GATEWAY): "restart the car" when the EPS latches until key-off
+    self.vsa_fault_alert = VsaFaultAlert()  # FORK(HONDA_ACCORD_9G_AU): name the VSA's own fault; no engagement while it holds one
 
     CruiseHelper.__init__(self, self.CP)
     self.button_state_tracker = ButtonStateTracker()
@@ -300,6 +302,15 @@ class SelfdriveD(CruiseHelper):
     # FORK(LKAS-GATEWAY): warnings only, so a latched EPS never costs longitudinal or engagement.
     # can_show is last frame's "a WARNING would be shown"; the helper holds the announcement until it is.
     for e in self.eps_latch_alert.update(self.sm['carStateSP'].linbusGateway, self.active or self.mads.active):
+      self.events_sp.add(e)
+
+    # FORK(HONDA_ACCORD_9G_AU): the VSA's own fault (vsa_fault_alert.py). Live: accFaulted, above, still does the
+    # disengaging; this adds the event that names the VSA. Stored: carNotReady into `events` - the list this
+    # state machine reads - refuses openpilot (and MADS, deliberately) until the VSA clears the fault.
+    vsa_events, vsa_events_sp = self.vsa_fault_alert.update(self.sm['carStateSP'], self.events.has(EventName.accFaulted))
+    for e in vsa_events:
+      self.events.add(e)
+    for e in vsa_events_sp:
       self.events_sp.add(e)
 
     # Create events for temperature, disk space, and memory
@@ -593,6 +604,7 @@ class SelfdriveD(CruiseHelper):
                      self.state_machine.soft_disable_timer, pers]
 
     alerts = self.events.create_alerts(self.state_machine.current_alert_types, callback_args)
+    alerts = self.vsa_fault_alert.filter_alerts(alerts)  # FORK(HONDA_ACCORD_9G_AU): the VSA's text, not "restart the car"
     alerts_sp = self.events_sp.create_alerts(self.state_machine.current_alert_types, callback_args)
 
     self.AM.add_many(self.sm.frame, alerts + alerts_sp)

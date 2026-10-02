@@ -257,7 +257,7 @@ anything above 0 is where the next merge can conflict.
 * *modify/delete*: upstream deleted the old path; the fork's edits were re-applied to the new one.
 * *added in the merge*: the file carries a fork change for the first time, made during or after the merge.
 
-### sunnypilot: 83 files and the submodule pointer
+### sunnypilot: 85 files and the submodule pointer
 
 Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-specific, gated by `SpeedLimitMapStrict` and `OsmAutoUpdateWeekly`, markers `FORK(SPEED-LIMIT)`.
 
@@ -277,7 +277,7 @@ Area **UPD** is the comma 4 software page of 2026-10-01: the download progress a
 | A | `docs/SP_HUD_STATUS.md` | B | SP-PROTOCOL, openpilot side. | 0 | clean |
 | A | `docs/fork/README.md`, `GATEWAY-UPDATE.md`, `LKAS-GATEWAY-PROTOCOL.md`, `CAR-HONDA-ACCORD-9G-AU.md` | — | These documents. | 0 | clean |
 | A | `docs/fork/UPSTREAM-2026-09.md` | — | What the 2026-09 sync brought. | 0 | added in the merge |
-| M | `openpilot/cereal/custom.capnp` | A+B | Adds `CarControlSP.lateralControl @5` (B), `CarStateSP.linbusGateway @1` (fields @0–@18 B, @19–@26 A) and `CarStateSP.driverTorqueStale @2` (B). Since 2026-10-01 also `OnroadEventSP.EventName` `lkasGatewayEpsLatched @26` and `lkasGatewayEpsLatchedReminder @27` (B). | 0 | auto |
+| M | `openpilot/cereal/custom.capnp` | A+B+C | Adds `CarControlSP.lateralControl @5` (B), `CarStateSP.linbusGateway @1` (fields @0–@18 B, @19–@26 A) and `CarStateSP.driverTorqueStale @2` (B). Since 2026-10-01 also `OnroadEventSP.EventName` `lkasGatewayEpsLatched @26` and `lkasGatewayEpsLatchedReminder @27` (B). Since 2026-10-03 also `CarStateSP.vsaFault @3`, `vsaStoredFault @4` and `OnroadEventSP.EventName` `vsaFault @28`, `vsaStoredFault @29`, `vsaFaultAnnounce @30` (C, the VSA's own fault). | 0 | auto |
 | M | `openpilot/common/params_c.cc` | UF | `params_keys_by_flag()` points its results into the handle's own key list. It used to fill them from `return_string()`, which keeps one string per thread, so `Params().all_keys(flag)` returned garbage for every flag but `ALL` and sunnylink backup/restore (`all_keys(ParamKeyFlag.BACKUP)`) got corrupt keys or a `UnicodeDecodeError`. The function came in with sunnypilot's 2026-08-13 sync (`7461f70fd`) on top of upstream's ctypes params (`74ac5ef9a`); commaai has no by-flag path. Unfixed upstream as of sunnypilot `a5f44653d`. | 0 | added in the merge |
 | M | `openpilot/common/hardware/comma/agnos.py` | UPD | An optional `progress_cb` (last, default `None`) on `extract_compressed_image()`, `flash_partition()` and `flash_agnos_update()`, and `on_chunk` on `StreamingDecompressor`: compressed bytes received over `Content-Length` per 1 MB chunk, weighted across partitions by size. Without a callback every call is upstream's. Upstream file. | 0 | new |
 | M | `openpilot/common/params_keys.h` | A+B+C+SL+UPD | Adds 7 `EpsLkas*` keys (A), 5 `HondaDyn*` keys and `HondaElesysGasLawV2` (C; the 7 pedal-gain and aero keys were removed in 2026-10), and `SpeedLimitMapStrict`, `OsmAutoUpdateWeekly`, `OsmLastCompleteDate` (SL), and `MadsEmergencySteerDisable`, `MadsEmergencySteerRate` (B, the fast-wheel takeover's settings), and `UpdaterDownloadProgress` (UPD). | 0 | auto |
@@ -298,7 +298,7 @@ Area **UPD** is the comma 4 software page of 2026-10-01: the download progress a
 | A | `openpilot/selfdrive/locationd/test/test_torqued_elesys.py` | C (+B) | The car's own prior and offset seed in torqued, the cache reset a changed prior forces, a reported 0 adds no point, the seed through the EnforceTorqueControl / NNLC re-run (11 tests). | 0 | new |
 | M | `openpilot/selfdrive/modeld/modeld.py` | B+C | Subscribes `carStateSP`, calls `DesireHelper(CP.carFingerprint)` and passes `driver_torque_stale=` into `DH.update`. | 0 | modify/delete |
 | M | `openpilot/selfdrive/pandad/pandad.py` | A | Adds `flash_if_requested()` before `./pandad`, `watch_for_request()` after it, and `skip_panda_reset`. | 0 | CONFLICT |
-| M | `openpilot/selfdrive/selfdrived/selfdrived.py` | B | Subscribes `carStateSP`, which `mads.py` reads. Since 2026-10-01 also builds `EpsLatchAlert` and, in `update_events()` after the car events, adds its events to `events_sp` from `carStateSP.linbusGateway` and `self.active or self.mads.active`. | 0 | CONFLICT |
+| M | `openpilot/selfdrive/selfdrived/selfdrived.py` | B+C | Subscribes `carStateSP`, which `mads.py` reads. Since 2026-10-01 also builds `EpsLatchAlert` and, in `update_events()` after the car events, adds its events to `events_sp` from `carStateSP.linbusGateway` and `self.active or self.mads.active`. Since 2026-10-03 (C, `FORK(HONDA_ACCORD_9G_AU)`) also builds `VsaFaultAlert`; in `update_events()`, right after the latch alert, calls `vsa_fault_alert.update(self.sm['carStateSP'], self.events.has(EventName.accFaulted))` and adds its first list to `events` (`carNotReady`, which refuses engagement while the VSA holds a stored fault) and its second to `events_sp`; and in `update_alerts()` passes upstream's alerts through `vsa_fault_alert.filter_alerts()` before `AM.add_many()`. | 0 | CONFLICT |
 | M | `openpilot/selfdrive/ui/mici/layouts/settings/software.py` | UPD | `CheckUpdateButton`: the progress label from `download_label()` (via `_download_label()`) while `UpdaterState` is "downloading..." - after a tap, and also in IDLE for updated's own background download, where it takes precedence over "failed to update" and "download update" - and the "download update" highlight (`DOWNLOAD_READY_GREEN`, `_set_download_ready`, `_handle_background`, `_draw_content`), on only while that text waits for its tap. | 0 | new |
 | M | `openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py` | C | Honda dynamic-learning toggle on the Cruise panel. | 0 | moved |
 | M | `openpilot/selfdrive/ui/sunnypilot/layouts/settings/vehicle/brands/honda.py` | C | `HondaSettings`: toggle, learned values (gas law on the Accord AU only, engaged time per drive mode, brake gain) and reset of the brake gain only (`LEARNED_DEFAULTS`, `RESET_KEYS`, `MODE_SLOTS`, `GAS_LAW_PARAM`, `GAS_LAW_PLATFORMS`, `car_platform`, `gas_law_applies`, `gas_law_label`, `mode_minutes`, `reset_learned_values`). | 0 | moved |
@@ -337,8 +337,10 @@ Area **UPD** is the comma 4 software page of 2026-10-01: the download progress a
 | A | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_flasher.py` | A | Portable bootloader protocol, `PandaTransport` (ELM327), `BenchTransport`, and the steering/vibration trace. | 0 | new→moved |
 | A | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_hook.py` | A | pandad glue: `flash_if_requested()`, `watch_for_request()`. | 0 | new→moved |
 | A | `openpilot/sunnypilot/selfdrive/selfdrived/eps_latch_alert.py` | B | `EpsLatchAlert`: the "restart the car" alert for an EPS latched until key-off. Debounced on fresh `0x70B` frames only (1 s to confirm, 3 s of fresh "not latched" to clear, stale frames count for neither); the announcement once per latch, held until a WARNING can be shown; then a silent reminder every 5 minutes. | 0 | new |
-| M | `openpilot/sunnypilot/selfdrive/selfdrived/events.py` | B | `EVENTS_SP` entries for the two events: `ET.WARNING` only. Announcement: "Steering Fault" / "Turn the car off and on to clear it", userPrompt, mid, `Priority.LOW` (below driver monitoring's MID stage 2, which a tie with a newer alert would hide), `AudibleAlert.prompt`, 6 s. Reminder: "Steering Off Until Restart", normal, small, `Priority.LOWEST`, silent, 4 s. | 0 | new |
+| M | `openpilot/sunnypilot/selfdrive/selfdrived/events.py` | B+C | `EVENTS_SP` entries for the two events: `ET.WARNING` only. Announcement: "Steering Fault" / "Turn the car off and on to clear it", userPrompt, mid, `Priority.LOW` (below driver monitoring's MID stage 2, which a tie with a newer alert would hide), `AudibleAlert.prompt`, 6 s. Reminder: "Steering Off Until Restart", normal, small, `Priority.LOWEST`, silent, 4 s. Since 2026-10-03 (C) also `vsaFault` (IMMEDIATE_DISABLE "Stability Control (VSA) Fault", NO_ENTRY "VSA Fault: Brakes Degraded", a silent `Priority.LOWER` PERMANENT banner), `vsaStoredFault` (callbacks `vsa_stored_fault_no_entry_alert` and `vsa_stored_fault_permanent_alert`, "Clears Above 35 km/h" / 22 mph; NO_ENTRY and PERMANENT only) and `vsaFaultAnnounce` (PERMANENT, `Priority.LOW`, `AudibleAlert.prompt`, 3.5 s), and `VSA_CLEAR_SPEED_TEXT`. | 0 | new |
 | A | `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_eps_latch_alert.py` | B | The debounce, the stale-frame pattern of routes fc/fd, the deferral, the reminder, warnings only, the text against the mici alert renderer's sizing with the real fonts, the AlertManager path (including that driver monitoring's stage 2 keeps the screen) and selfdrived's wiring (19 tests). | 0 | new |
+| A | `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_vsa_fault_alert.py` | C | The VSA fault alert: the helper's events and filter, the event classes (live adds nothing `accFaulted` does not; stored is NO_ENTRY and PERMANENT only), the texts (no "restart", the mici renderer's fit with the real fonts), selfdrived's state machine and MADS (stored refuses both, never disables), the AlertManager path and its sounds, selfdrived's wiring, and the `CarStateSP` capnp/dataclass agreement and round trip (32 tests). | 0 | new |
+| A | `openpilot/sunnypilot/selfdrive/selfdrived/vsa_fault_alert.py` | C | `VsaFaultAlert`: a live VSA fault (`carStateSP.vsaFault` with upstream's `accFaulted`) keeps `accFaulted`'s disengagement and adds `vsaFault`, whose texts replace `accFaulted`'s; a stored one (`vsaStoredFault`) adds `carNotReady` to `events`, refusing openpilot and, deliberately, MADS until the VSA clears it; `filter_alerts()` drops the upstream alerts these replace (and `steerUnavailable`'s banner and no-entry while either is up); `vsaFaultAnnounce` once per fault. The MADS decision is in its docstring and `CAR-HONDA-ACCORD-9G-AU.md` 10.6. | 0 | new |
 | M | `openpilot/sunnypilot/sunnylink/settings_ui.json` | C+B | Compiled output of the YAML files below. | 0 | auto, then recompiled |
 | M | `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/cruise.yaml` | C+SL | `honda_dynamic_learning` read-only info section (C); the "Strict Map Speed Limits" toggle in the speed limit settings (SL); the NSW mode, the weekly updates and the "update now" toggles for NSW zones and OSM maps (NSW-ZONES, see NSW-SPEED-ZONES.md). | 0 | moved |
 | M | `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/steering.yaml` | B | MADS Settings: "Turn Off Steering on a Fast Wheel" (`MadsEmergencySteerDisable`) with "Fast Wheel Threshold" (`MadsEmergencySteerRate`) under it. | 0 | new |
@@ -352,41 +354,43 @@ Area **UPD** is the comma 4 software page of 2026-10-01: the download progress a
 | M | `openpilot/tools/joystick/joystickd.py` | C | Passes the car's stopping speed to `should_stop()`. | 0 | added in the merge |
 | M | `openpilot/tools/longitudinal_maneuvers/maneuversd.py` | C | Parses `CarParams` and passes the car's stopping speed to `should_stop()`. | 0 | added in the merge |
 
-### opendbc: 36 files and `FORK.md`
+### opendbc: 39 files and `FORK.md`
 
-Five of them arrived after the 2026-09 sync, with the 2026-10 work: `elesys_gas.py` and `test_elesys_gas.py` (the gas law), `elesys_stop.py` and `test_elesys_stop.py` (the soft final stop), and `torque_data/override.toml` (the car's own torque prior).
+Five of them arrived after the 2026-09 sync, with the 2026-10 work: `elesys_gas.py` and `test_elesys_gas.py` (the gas law), `elesys_stop.py` and `test_elesys_stop.py` (the soft final stop), and `torque_data/override.toml` (the car's own torque prior). Three more on 2026-10-03: `vsa_fault.py`, `test_vsa_fault.py` and its fixture `fixtures/vsa_fault_frames.json.gz` (the VSA's own fault).
 
 | St | Path | Area | What the fork changes | Upstream commits | Last merge |
 |---|---|---|---|---|---|
 | A | `FORK.md` | — | Short fork index. | 0 | clean |
 | M | `opendbc/car/car_helpers.py` | C | `skip_fw_query` argument on `fingerprint()` and `get_car()`. | 0 | auto |
 | M | `opendbc/car/honda/carcontroller.py` | B+C | B: brake-release ceiling (`BRAKE_RELEASE_FRAMES`, `brake_release_scale`), the reported torque (`linbus_gateway_actuating()`; `new_actuators.torque = 0.0` while the board is not actuating, 2026-10), `serial_gateway` LDW bits, `SP_HUD_STATUS` send with `lat_ready` and `op_state`, `LKAS_HUD` not sent. C: `compute_gb_honda_elesys` (dispatched from `compute_gas_brake(accel, speed, CP)`), `brake_pump_hysteresis_elesys` and `ELESYS_PUMP_*`, dynamic-tuner hooks (`hill_accel`/`adjust_accel`, `brake_gain`, `wind_scale`, the 32-count brake release), the soft final stop's construction and call (`ElesysSoftStop`, `HONDA_ELESYS` with the tuner on only), the NaN-`vEgo` guard in the brake block, the `CRUISE_OVERRIDE` decision comment (kept at 1), `SCM_BUTTONS` re-sent on `CAN.camera` every 4th frame when `openpilotLongitudinalControl`, `pcm_accel` computed from `adjust_accel`, and a `FORK:` comment explaining why there is no PCM crossfade. | 0 | CONFLICT |
-| M | `opendbc/car/honda/carstate.py` | A+B+C | A/B: registers `GW_ACTIVE`, `GW_STEER_GRANT`, `EPS_LIN_RAW`, `GW_VERSION` and `GW_BUILD` liveness-exempt (`nan`), and calls `CarStateExt.update(ret, ret_sp, ...)`. C: `update_gear_elesys` / `SPORT_DWELL` (taken only when the gearbox frame has `GEAR`; the fuzz fix of 2026-10), ELESYS `stockAeb` (and `carFaultedNonCritical = True` when stock AEB fires with `ACC_HUD.ACC_ON == 0`), `LKAS_PROBLEM` read from bus 0 inside upstream's `if not (self.CP.flags & HondaFlags.BOSCH):`, `scm_buttons`, `econ_on`. | 0 | CONFLICT |
+| M | `opendbc/car/honda/carstate.py` | A+B+C | A/B: registers `GW_ACTIVE`, `GW_STEER_GRANT`, `EPS_LIN_RAW`, `GW_VERSION` and `GW_BUILD` liveness-exempt (`nan`), and calls `CarStateExt.update(ret, ret_sp, ...)`. C: `update_gear_elesys` / `SPORT_DWELL` (taken only when the gearbox frame has `GEAR`; the fuzz fix of 2026-10), ELESYS `stockAeb` (and `carFaultedNonCritical = True` when stock AEB fires with `ACC_HUD.ACC_ON == 0`), `LKAS_PROBLEM` read from bus 0 inside upstream's `if not (self.CP.flags & HondaFlags.BOSCH):`, `scm_buttons`, `econ_on`; since 2026-10-03 `VEHICLE_DYNAMICS` registered liveness-exempt with the gateway frames, for the VSA fault monitor. | 0 | CONFLICT |
 | M | `opendbc/car/honda/fingerprints.py` | C | `FW_VERSIONS[HONDA_ACCORD_9G_AU]`: fwdRadar `36707-T2M-Q640`, srs `77959-T2A-B110`. | 0 | auto |
 | M | `opendbc/car/honda/hondacan.py` | B+C | B: `create_steering_control(serial_gateway, ldw_left, ldw_right)`, `SP_HUD_PROTOCOL_VERSION`=3, `SP_OP_STATE_*`, `SP_HUD_MAX_TORQUE`=0, `create_sp_hud_status()`. C: `create_brake_command(..., is_metric=True, elesys=False)` units bit, `create_scm_buttons_no_cruise()`. | 0 | CONFLICT |
 | M | `opendbc/car/honda/interface.py` | C (+B) | Gearbox `0x188` → automatic. Long tuning: `longitudinalActuatorDelay` 0.6, `stopAccel` -0.8 (the stopping speed lives in sunnypilot's `stopping_tune.py`). `steerActuatorDelay` 0.18 (both lag fallbacks add 0.2, giving the measured 0.38), `steerAtStandstill` True, `latAccelOffset` seed -0.43 (2026-10), `ELESYS_SCM_STANDDOWN` safety parameter, `minEnableSpeed` 19 mph, and its exemption from the gas-interceptor -1 in `_get_params_sp()`. | 0 | CONFLICT |
 | M | `opendbc/car/honda/radar_interface.py` | C | Elesys radar parser (`0x400`, `0x410`–`0x417`, `0x420`–`0x424` at 10 Hz), trigger `0x423`, `RADAR_STATE` ok in (104, 111, 125). | 0 | auto |
 | A | `opendbc/car/honda/tests/test_elesys.py` | C (+B) | 72 unittest tests: gas/brake map, pump, gas curve, units bit, gear, AEB; since 2026-10 also the torque prior and offset seed, the reported torque (fake CS and `0x704` through the real `CarInterface`), the 2560 scale and the steering delay. | 0 | clean |
 | M | `opendbc/car/honda/values.py` | C | `HondaSafetyFlags.ELESYS_SCM_STANDDOWN`=32, `HondaFlags.ELESYS`=1024, `CAR.HONDA_ACCORD_9G_AU`, `HONDA_ELESYS` (a frozenset), `STEER_THRESHOLD` 600, `non_essential_ecus`. | 0 | CONFLICT |
-| M | `opendbc/car/structs.py` | A+B | `CarControlSP.LateralControl`, `CarStateSP.driverTorqueStale`, `CarStateSP.LinbusGateway` (control fields and `fw*` fields). | 0 | auto |
+| M | `opendbc/car/structs.py` | A+B+C | `CarControlSP.LateralControl`, `CarStateSP.driverTorqueStale`, `CarStateSP.LinbusGateway` (control fields and `fw*` fields); since 2026-10-03 `CarStateSP.vsaFault` and `vsaStoredFault` (C). | 0 | auto |
 | M | `opendbc/car/tests/routes.py` | C | `CarTestRoute("15646e8515eda1a7/00000019--dd0700eac9", HONDA_ACCORD_9G_AU)`. | 0 | auto |
 | M | `opendbc/car/torque_data/override.toml` | C | `"HONDA_ACCORD_9G_AU" = [1.1, 1.1, 0.18]`, the car's own torqued prior, with a `FORK(HONDA_ACCORD_9G_AU)` comment (2026-10). **Any change of the board's authority or full scale must change it.** | 0 | new |
 | M | `opendbc/car/torque_data/substitute.toml` | C | A `FORK(HONDA_ACCORD_9G_AU)` comment where `HONDA_ACCORD_9G_AU = HONDA_ACCORD` was (removed 2026-10; it held torqued at its 1.18 floor). A merge must not bring the line back: `test_elesys.py` fails if it does. | 0 | clean |
 | A | `opendbc/dbc/generator/honda/_gearbox_legacy.dbc` | C | `GEARBOX_AUTO` `0x188`, `GEARBOX_CVT`. | 0 | clean |
-| A | `opendbc/dbc/generator/honda/_honda_elesys_base.dbc` | C | This car's modified copy of `_honda_common.dbc` (differences listed under [DBC generator includes](#dbc-generator-includes-and-can-ids)). | 0 | clean |
+| A | `opendbc/dbc/generator/honda/_honda_elesys_base.dbc` | C | This car's modified copy of `_honda_common.dbc` (differences listed under [DBC generator includes](#dbc-generator-includes-and-can-ids)); since 2026-10-03 also the provisional `VSA_FAULT_*` signals on `VSA_STATUS` and `VEHICLE_DYNAMICS`. | 0 | clean |
 | A | `opendbc/dbc/generator/honda/_lkas_hud_4byte.dbc` | C | 4-byte `LKAS_HUD` `0x33D`. | 0 | clean |
 | M | `opendbc/dbc/generator/honda/_nidec_common.dbc` | C (**shared**) | `BRAKE_COMMAND` read-only signals `CMBS_BRAKE`, `CMBS_DISABLED` and `AEB_REQ_3`. They appear in every Nidec DBC. | 0 | clean |
 | M | `opendbc/dbc/generator/honda/_nidec_scm_group_a.dbc` | C (**shared**) | `SCM_BUTTONS.CMBS_BUTTON` (read-only). | 0 | clean |
 | A | `opendbc/dbc/generator/honda/_nidec_scm_group_a_elesys.dbc` | C | Copy of group A plus `FUEL_LEVEL`, `FUEL_SENDER`, `ODOMETER_KM`. | 0 | clean |
 | A | `opendbc/dbc/generator/honda/_steering_control_e.dbc` | B+C | `0x0E4` 5-byte with `LDW_RIGHT`, `LDW_LEFT`, `SET_ME_X00_3` (B). `STEER_STATUS` `0x18F` with `STEER_CONTROL_ACTIVE` (C, read by B). | 0 | clean |
 | A | `opendbc/dbc/generator/honda/_sunnypilot_linbus_gw.dbc` | A+B | `0x500 SP_HUD_STATUS`, `0x700 EPS_LIN_RAW`, `0x704 GW_ACTIVE` and `0x70B GW_STEER_GRANT` (B). `0x707 GW_VERSION` and `0x70F GW_BUILD` (A). | 0 | clean |
-| A | `opendbc/dbc/generator/honda/honda_accord_au_2015_can.dbc` | C | Generator top file: the 9 imports plus `ECON_STATUS` `0x221`. | 0 | clean |
+| A | `opendbc/dbc/generator/honda/honda_accord_au_2015_can.dbc` | C | Generator top file: the 9 imports plus `ECON_STATUS` `0x221`; since 2026-10-03 also `VSA_1AA` (`0x1AA`) and `VSA_3D9` (`0x3D9`), provisional VSA-fault frames carstate does not read. | 0 | clean |
 | A | `opendbc/dbc/honda_accord_2015au_radar.dbc` | C | Elesys radar DBC (hand-written, not generated). | 0 | clean |
 | M | `opendbc/safety/modes/honda.h` | C (+B) | `ELESYS_SCM_STANDDOWN` (param 32): TX lists with `0x1A6` on bus 2 and `0x500` on bus 0 (B), and **without** `0x33D`; AEB bit 43; the `pcm_gas` 198 exception; blocking `0x1A6` bus 0→2; `honda_bosch_init()` resets `honda_elesys_scm_standdown = false`. | 0 | clean |
 | M | `opendbc/safety/tests/common.py` | C (+B) | Scanned-range exceptions for `TestHondaElesys` and `0x1A6`, and `0x500` between the two `TestHondaElesys*` classes only. | 0 | auto |
 | M | `opendbc/safety/tests/test_honda.py` | C | `TestHondaElesysScmStanddownSafety`, `TestHondaElesysStanddownGasInterceptorSafety`. | 0 | clean |
 | M | `opendbc/sunnypilot/car/car_list.json` | C | `"Honda Accord 2013-15"` → `HONDA_ACCORD_9G_AU`. | 0 | auto |
-| M | `opendbc/sunnypilot/car/honda/carstate_ext.py` | A+B+C | A: `_update_linbus_firmware`. B: `_update_linbus_gateway`, `_update_linbus_grant`, `_update_driver_torque_validity`, `_eps_lin_driver_torque_valid`. C: `fuelGauge`. | 0 | auto |
+| M | `opendbc/sunnypilot/car/honda/carstate_ext.py` | A+B+C | A: `_update_linbus_firmware`. B: `_update_linbus_gateway`, `_update_linbus_grant`, `_update_driver_torque_validity`, `_eps_lin_driver_torque_valid`. C: `fuelGauge`; since 2026-10-03 `_update_vsa_fault()` (never raises; reads `VSA_STATUS` and `VEHICLE_DYNAMICS`). | 0 | auto |
+| A | `opendbc/sunnypilot/car/honda/vsa_fault.py` | C | `VsaFaultMonitor`: `carStateSP.vsaFault` (0x1A4 b2.2/b2.3, or 0x1EA b6.2 with `accFaulted` after the start-up window) and `vsaStoredFault` (0x1A4 b3.3/b3.6/b3.7/b4.0/b6.0 after a 5 s start-up window, 0.5 s set and clear debounce, False on a 0.5 s silence). The bits are provisional; the measured basis is in its docstring. | - | new (2026-10-03) |
+| A | `opendbc/sunnypilot/car/honda/test_vsa_fault.py`, `opendbc/sunnypilot/car/honda/fixtures/vsa_fault_frames.json.gz` | C | Real frames from routes 110, 112, 111, 113, 10f and comma route 69 through the real `CarInterface`, the DBC decode, the parser registration, other Hondas, never raising, the monitor's timing (28 tests). The fixture is 52 KB of real bus-0 frames. | - | new (2026-10-03) |
 | A | `opendbc/sunnypilot/car/honda/dynamic_tuning.py` | C | `HondaDynamicTuner` (self-learning longitudinal: the brake gain and the pitch term; the pedal and aero learners were retired in 2026-10), the per-drive-mode data counter (`observe_pedal`), and `filtered_pitch()` for the soft final stop. | 0 | clean |
 | A | `opendbc/sunnypilot/car/honda/elesys_gas.py` | C | This car's gas law: v1 (`elesys_gas_multiplier`, `ELESYS_GAS_BP`/`ELESYS_GAS_V`) and v2 (`ELESYS_FF_*`, `elesys_pedal_v2`), picked by `HondaElesysGasLawV2`; drive-mode slots, `MODE_K` and the crossfade (`ElesysGasLaw`). | - | new (2026-10) |
 | A | `opendbc/sunnypilot/car/honda/elesys_stop.py` | C | The soft final stop: a brake ceiling while still rolling in the stopping state (`soft_stop_ceiling`, `SOFT_STOP_*`), wrapped for `CarController` by `ElesysSoftStop` (the `hondastop` log line, never raises). | - | new (2026-10) |
@@ -422,9 +426,9 @@ after every merge.
 | struct | fork adds | upstream's highest ordinal at `a5f44653d` | collision |
 |---|---|---|---|
 | `CarControlSP` | `lateralControl @5 :LateralControl`. Nested `LateralControl { integrator @0 :Float32; saturated @1 :Bool; integratorFrozen @2 :Bool }` | `@4` (`intelligentCruiseButtonManagement`) | **none** |
-| `CarStateSP` | `linbusGateway @1 :LinbusGateway`, `driverTorqueStale @2 :Bool` | `@0` (`speedLimit`) | **none** |
+| `CarStateSP` | `linbusGateway @1 :LinbusGateway`, `driverTorqueStale @2 :Bool`; since 2026-10-03 `vsaFault @3 :Bool`, `vsaStoredFault @4 :Bool` (C) | `@0` (`speedLimit`) | **none** |
 | `CarStateSP.LinbusGateway` (fork-only) | `engaged @0`, `dryRun @1`, `valid @2`, `actuating @3`, `present @4`, `grantValid @5`, `grantState @6 :UInt8`, `grantReason @7 :UInt8`, `granted @8`, `authority @9 :UInt8`, `epsAck @10`, `epsLatched @11`, `epsErrorState @12 :UInt8`, `epsFresh @13`, `camLkasOn @14`, `applied @15 :Int16`, `motorTorque @16 :Int16`, `retryIn @17 :UInt8`, `latchedUntilKeyOff @18` (all B). `fwValid @19`, `fwGitHash @20 :UInt32`, `fwDirty @21`, `fwAppSlot @22`, `fwBootloader @23`, `fwReadOnly @24`, `boardUid @25 :UInt32`, `fwBuildValid @26` (all A). | n/a | none |
-| `OnroadEventSP.EventName` (2026-10-01) | `lkasGatewayEpsLatched @26`, `lkasGatewayEpsLatchedReminder @27` (B) | `@25` (`bigModelReady`) | **none** today. Upstream's next event takes `@26`: give it the ordinal and move these two up. An event is only an enum value, so a renumber costs nothing but the meaning of `onroadEventsSP` in older routes. |
+| `OnroadEventSP.EventName` (2026-10-01) | `lkasGatewayEpsLatched @26`, `lkasGatewayEpsLatchedReminder @27` (B) | `@25` (`bigModelReady`) | **none** today. Upstream's next event takes `@26`: give it the ordinal and move these two up. An event is only an enum value, so a renumber costs nothing but the meaning of `onroadEventsSP` in older routes. Since 2026-10-03 also `vsaFault @28`, `vsaStoredFault @29`, `vsaFaultAnnounce @30` (C); the same rule applies to them. |
 
 The merge kept every fork ordinal. No upstream struct is named `LateralControl` or `LinbusGateway`.
 
@@ -436,12 +440,15 @@ the next free one. Routes recorded before the renumber then decode that field wr
 `convert_to_capnp()` calls `custom.CarStateSP.new_message(**asdictref(struct))`, which is keyword-based, so a missing or
 extra name raises when card publishes, on a drive. The order is not load-bearing, and the fork already differs at the
 top level (`structs.py` lists `speedLimit`, `driverTorqueStale`, `linbusGateway`; capnp has `linbusGateway @1`,
-`driverTorqueStale @2`). Two tests guard this, both narrower than their names suggest:
+`driverTorqueStale @2`). Three tests guard this, each narrower than its name suggests:
 
 * `test_capnp_and_dataclass_agree` (`test_gateway_board_settings.py`) checks `LinbusGateway` only: the eight `fw*`
   fields exist on both sides and in the same relative order, and no `LinbusGateway` ordinal is duplicated.
 * `test_car_control_sp_seam` (`test_car_control_sp_seam.py`) checks that every nested `CarControlSP` struct is rebuilt
   by `convert_carControlSP()` in `helpers.py`, and round-trips `linbusGateway` including the `fw*` fields.
+* Since 2026-10-03, `TestCarStateSPAgreement` (`test_vsa_fault_alert.py`) checks the **top level** of `CarStateSP`: the
+  same set of field names in `custom.capnp` and `structs.py`, ordinals unique and contiguous from `@0`, the two VSA
+  fields `Bool`, and a round trip of both through `convert_to_capnp()`. It still does not look inside `LinbusGateway`.
 
 An end-to-end probe after the merge also pushed a `CarStateSP` with every gateway field set to a non-default value
 (negative `Int16`s, a `UInt32` hash with the top bit set) through `convert_to_capnp()` without loss.
@@ -524,7 +531,9 @@ In the merged tree these are the intended differences; anything else in the outp
   * `CAMERA_MESSAGES` (`0x35E`) is 7 bytes instead of 8;
   * `STALK_STATUS` (`0x374`) is 7 bytes, has no `WIPER_SWITCH`, and its `COUNTER`/`CHECKSUM` sit at bits 53/51
     instead of 61/59;
-  * the comments on 304 and 316 are `CM_ BO_` instead of the original `CM_ SG_`.
+  * the comments on 304 and 316 are `CM_ BO_` instead of the original `CM_ SG_`;
+  * since 2026-10-03, nine provisional `VSA_FAULT_*` signals on `VSA_STATUS` (`0x1A4`) and `VSA_FAULT_INERTIAL_INVALID` on
+    `VEHICLE_DYNAMICS` (`0x1EA`), with a `CM_ SG_` for each.
 * `_nidec_scm_group_a_elesys.dbc`: a header comment, `ODOMETER_KM` (`0x294`), `FUEL_LEVEL` and `FUEL_SENDER`
   (`0x1A6`), and their comments.
 
@@ -606,7 +615,8 @@ The 2026-10 lateral batch added three more: `openpilot/selfdrive/locationd/test/
 Added since (2026-10-01): `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_eps_latch_alert.py` (19),
 `openpilot/sunnypilot/system/updated/tests/test_download_progress.py` (27) and
 `openpilot/selfdrive/ui/tests/test_software_update_button.py` (6; it opens a headless raylib window in a child process
-and skips where none opens). The two font-metric tests skip where Pillow or the LFS fonts are missing.
+and skips where none opens). The two font-metric tests skip where Pillow or the LFS fonts are missing. Added on 2026-10-03:
+`openpilot/sunnypilot/selfdrive/selfdrived/tests/test_vsa_fault_alert.py` (32), whose font-metric test skips the same way.
 
 `test_stopping_debounce.py` no longer stubs `sys.modules`; it imports the real `longcontrol`, `drive_helpers` and
 `stopping_tune`.

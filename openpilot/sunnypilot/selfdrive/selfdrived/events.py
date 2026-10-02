@@ -73,6 +73,22 @@ def speed_limit_pre_active_alert(CP: car.CarParams, CS: car.CarState, sm: messag
     Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleLow, .1)
 
 
+# FORK(HONDA_ACCORD_9G_AU): the speed the VSA's stored fault cleared at on route 113 (35.3 km/h), for the texts
+VSA_CLEAR_SPEED_TEXT = {True: "35 km/h", False: "22 mph"}
+
+
+def vsa_stored_fault_no_entry_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  return NoEntryAlert(f"VSA Fault: Clears Above {VSA_CLEAR_SPEED_TEXT[bool(metric)]}")
+
+
+def vsa_stored_fault_permanent_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  return Alert(
+    "VSA Fault Stored",
+    f"Clears after driving above {VSA_CLEAR_SPEED_TEXT[bool(metric)]}",
+    AlertStatus.normal, AlertSize.mid,
+    Priority.LOWER, VisualAlert.none, AudibleAlert.none, .2)
+
+
 class EventsSP(EventsBase):
   def __init__(self):
     super().__init__()
@@ -279,5 +295,35 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       "",
       AlertStatus.normal, AlertSize.small,
       Priority.LOWEST, VisualAlert.none, AudibleAlert.none, 4.),
+  },
+
+  # FORK(HONDA_ACCORD_9G_AU): the VSA's own fault, raised by vsa_fault_alert.py, which also drops the upstream
+  # alerts these replace ("Cruise Fault: Restart the Car" - a restart does not clear it). vsaFault is raised only
+  # beside upstream's accFaulted, which keeps doing the disengaging, so its IMMEDIATE_DISABLE/NO_ENTRY add nothing
+  # accFaulted does not already do; it only names the cause. vsaStoredFault refuses nothing by itself either:
+  # carNotReady, beside it in `events`, is what selfdrived's state machine reads. The banners are silent and
+  # Priority.LOWER (upstream's level for accFaulted's own banner); the one sound is vsaFaultAnnounce's, once per
+  # fault, 3.5 s - shorter than a disengagement alert, so a live onset that disengages plays only that one.
+  EventNameSP.vsaFault: {
+    ET.IMMEDIATE_DISABLE: ImmediateDisableAlert("Stability Control (VSA) Fault"),
+    ET.NO_ENTRY: NoEntryAlert("VSA Fault: Brakes Degraded"),
+    ET.PERMANENT: Alert(
+      "VSA Fault",
+      "Brakes, ACC, CMBS degraded. Have VSA codes read",
+      AlertStatus.normal, AlertSize.mid,
+      Priority.LOWER, VisualAlert.none, AudibleAlert.none, .2),
+  },
+
+  EventNameSP.vsaStoredFault: {
+    ET.NO_ENTRY: vsa_stored_fault_no_entry_alert,
+    ET.PERMANENT: vsa_stored_fault_permanent_alert,
+  },
+
+  EventNameSP.vsaFaultAnnounce: {
+    ET.PERMANENT: Alert(
+      "Stability Control Fault",
+      "Brakes, ACC, CMBS degraded",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 3.5),
   },
 }
