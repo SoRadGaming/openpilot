@@ -297,6 +297,33 @@ is a different steering system (torque 1.0 = 2560 on `0x0E4` = 160 serial
 counts at board authority 160), and torqued's own estimator sees a raw
 factor of 0.67 in town to 1.47 on the highway, 0.79-1.35 filtered.
 
+> **2026-10-03: the prior is now `[1.25, 1.25, 0.18]`** (opendbc `e49da403`),
+> changed before this batch reached the car. Route 10f, a clean highway
+> commute, puts the car's factor at 1.63-1.66 - the estimator from an empty
+> cache, a fit on the wire and the controller's own correction agree - and
+> 1.1's 1.43 ceiling pinned it there (chained after fc → fd → 103 the raw sat
+> on the ceiling 63% of 10f). fc/fd/103 give 1.2-1.5, town routes 0.67-0.9.
+> Highway commuting dominates the engaged steering, and a feedforward that is
+> too strong at speed is the worse error, so the window now follows the
+> highway: **0.875-1.625** (friction unchanged, 0.09-0.27). Town drives are
+> clipped at the 0.875 floor by design.
+>
+> * Replay with 1.25 (the real `TorqueEstimator`, empty cache): fc → fd →
+>   103 → 10f is valid 58 min in and ends 1.352 / 1.362 / 1.459, never at a
+>   limit; 10f alone is valid at 18 min and ends 1.578, its raw above the
+>   ceiling 69% of the time; town first (d5..e2 → fc → fd → 103 → 10f) is
+>   valid at 23 min, sits on the floor through e2 and fc (0.882, 0.876) and
+>   climbs back to 1.353 by the end of 10f.
+> * Day one asks for about 5% *less* torque per m/s² than the 1.183 the car
+>   sat on through 103 (10f ended at 1.302), not 7.5% more, so the
+>   frames-at-160 estimate below (made for 1.1) should be a high bound.
+> * Still one reset: the car goes from the substitute straight to 1.25.
+> * Read the checks below with 1.250 / 0.875 / 1.625. A filtered factor
+>   within 0.03 of 0.875 is town driving on the floor - now expected, not a
+>   warning; within 0.03 of 1.625 is the highway pressing on the ceiling.
+> * Details and the full replay table: `docs/fork/CAR-HONDA-ACCORD-9G-AU.md`
+>   2.4.
+
 * **Its own prior:** `[1.1, 1.1, 0.18]` in opendbc `override.toml`. torqued
   can now learn 0.77-1.43 (friction 0.09-0.27). Live learning stays on.
   That window holds every filtered value in the replays, but not every raw

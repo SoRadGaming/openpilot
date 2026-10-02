@@ -1,9 +1,10 @@
 """
 FORK(HONDA_ACCORD_9G_AU): torqued on the Elesys Accord.
 
-* The car has its own prior (opendbc override.toml, [1.1, 1.1, 0.18]) and seeds its lateral-accel offset at
-  -0.43 (opendbc interface.py). torqued starts its offset from CP whenever it has no valid cache, so the
-  one-time cache reset the new prior forces does not throw away the ~0.43 m/s^2 of crossfall the car carries.
+* The car has its own prior (opendbc override.toml, [1.25, 1.25, 0.18]; [1.1, 1.1, 0.18] until 2026-10-03) and
+  seeds its lateral-accel offset at -0.43 (opendbc interface.py). torqued starts its offset from CP whenever it
+  has no valid cache, so the one-time cache reset a new prior forces does not throw away the ~0.43 m/s^2 of
+  crossfall the car carries.
 * A prior that changes is a restore key that changes: the cache learned under the old prior is discarded.
 * CarController reports 0 torque while the gateway board is not actuating, and a 0 never becomes a point.
 * The seed also survives sunnypilot's EnforceTorqueControl / NNLC re-run of configure_torque_tune().
@@ -23,6 +24,7 @@ from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfac
 
 ELESYS = HONDA.HONDA_ACCORD_9G_AU
 OLD_PRIOR = (1.6893333799149202, 0.2120497022936265)   # HONDA_ACCORD's factor / friction, the substitute until 2026-10
+BATCH1_PRIOR = (1.1, 0.18)                              # the car's own first prior, until 2026-10-03
 
 
 def _cp(car_name=ELESYS, offset=None, prior=None):
@@ -64,11 +66,11 @@ class TestTorquedElesysPrior(OpenpilotTestCase):
     ltp = _ltp(est)
     self.assertEqual(ltp.totalBucketPoints, 0)
     self.assertAlmostEqual(ltp.latAccelOffsetFiltered, -0.43, places=6)
-    self.assertAlmostEqual(ltp.latAccelFactorFiltered, 1.1, places=6)
+    self.assertAlmostEqual(ltp.latAccelFactorFiltered, 1.25, places=6)
     self.assertAlmostEqual(ltp.frictionCoefficientFiltered, 0.18, places=6)
-    # the learnable window is centered on the car's own prior, not on HONDA_ACCORD's 1.18-2.20
-    self.assertAlmostEqual(est.min_lataccel_factor, 0.77, places=5)
-    self.assertAlmostEqual(est.max_lataccel_factor, 1.43, places=5)
+    # the learnable window is centered on the car's own prior: not HONDA_ACCORD's 1.18-2.20, not the 1.1 prior's 0.77-1.43
+    self.assertAlmostEqual(est.min_lataccel_factor, 0.875, places=5)
+    self.assertAlmostEqual(est.max_lataccel_factor, 1.625, places=5)
 
   def test_a_zero_offset_starts_where_upstream_does(self):
     # every other car: configure_torque_tune() leaves 0.0, which is exactly upstream's hard-coded start
@@ -119,14 +121,16 @@ class TestTorquedElesysCache(OpenpilotTestCase):
     params.put("LiveTorqueParameters", msg.to_bytes(), block=True)
 
   def test_a_changed_prior_discards_the_cache(self):
-    # the cache was learned under the HONDA_ACCORD substitute; the new prior is a new restore key
-    self._cache(_cp(prior=OLD_PRIOR))
-    est = TorqueEstimator(_cp().as_reader())
-    ltp = _ltp(est)
-    self.assertEqual(ltp.totalBucketPoints, 0)
-    self.assertAlmostEqual(ltp.latAccelFactorFiltered, 1.1, places=6)
-    self.assertAlmostEqual(ltp.latAccelOffsetFiltered, -0.43, places=6)   # the seed, not the cache's -0.45
-    self.assertAlmostEqual(ltp.frictionCoefficientFiltered, 0.18, places=6)
+    # a cache learned under the HONDA_ACCORD substitute or under the 1.1 prior; the new prior is a new restore key
+    for old in (OLD_PRIOR, BATCH1_PRIOR):
+      with self.subTest(old=old):
+        self._cache(_cp(prior=old))
+        est = TorqueEstimator(_cp().as_reader())
+        ltp = _ltp(est)
+        self.assertEqual(ltp.totalBucketPoints, 0)
+        self.assertAlmostEqual(ltp.latAccelFactorFiltered, 1.25, places=6)
+        self.assertAlmostEqual(ltp.latAccelOffsetFiltered, -0.43, places=6)   # the seed, not the cache's -0.45
+        self.assertAlmostEqual(ltp.frictionCoefficientFiltered, 0.18, places=6)
 
   def test_the_same_prior_restores_the_cache(self):
     # the control: with an unchanged prior the cache is used, offset included
@@ -145,8 +149,9 @@ class TestTorquedElesysCache(OpenpilotTestCase):
     self.assertAlmostEqual(ltp.latAccelOffsetFiltered, -0.43, places=6)
 
   def test_restore_key_includes_the_prior(self):
-    self.assertNotEqual(TorqueEstimator.get_restore_key(_cp(prior=OLD_PRIOR), VERSION),
-                        TorqueEstimator.get_restore_key(_cp(), VERSION))
+    for old in (OLD_PRIOR, BATCH1_PRIOR):
+      self.assertNotEqual(TorqueEstimator.get_restore_key(_cp(prior=old), VERSION),
+                          TorqueEstimator.get_restore_key(_cp(), VERSION))
 
 
 class TestTorquedElesysSeedWithTorqueToggles(OpenpilotTestCase):
@@ -170,7 +175,7 @@ class TestTorquedElesysSeedWithTorqueToggles(OpenpilotTestCase):
         CP = self._setup(ELESYS, enforce, nnlc)
         self.assertEqual(CP.lateralTuning.which(), 'torque')
         self.assertAlmostEqual(CP.lateralTuning.torque.latAccelOffset, -0.43, places=6)
-        self.assertAlmostEqual(CP.lateralTuning.torque.latAccelFactor, 1.1, places=6)
+        self.assertAlmostEqual(CP.lateralTuning.torque.latAccelFactor, 1.25, places=6)
         self.assertAlmostEqual(CP.lateralTuning.torque.friction, 0.18, places=6)
         ltp = _ltp(TorqueEstimator(CP.as_reader()))
         self.assertEqual(ltp.totalBucketPoints, 0)
