@@ -52,6 +52,16 @@ REMINDER_FRAMES = int(0.1 / DT_CTRL)
 
 class EpsLatchAlert:
   def __init__(self):
+    self.reset()
+
+  def reset(self) -> None:
+    """Forget everything: a latch has to be confirmed again from fresh 0x70B frames.
+
+    FORK(HONDA_ACCORD_9G_AU): selfdrived calls this when the VSA's own fault clears (vsa_fault_alert.py). The EPS
+    refuses torque while the VSA holds a fault and clears with it, so a latch the board reported during the VSA fault
+    says nothing about the EPS afterwards - and 0x70B can go stale for seconds right then (route 113: 34.5-41.6 s), so
+    the 3 s of fresh "not latched" frames a clear needs may not come before the driver engages.
+    """
     self.latched = False         # confirmed: the EPS is latched until key-off
     self._latch_evidence = 0     # fresh latched frames towards a confirm
     self._clear_evidence = 0     # fresh not-latched frames towards a clear

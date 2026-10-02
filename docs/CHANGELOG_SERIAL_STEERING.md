@@ -33,17 +33,33 @@ do not use openpilot cruise; this update makes openpilot say so, and refuse.
   Brakes, ACC, CMBS degraded. Have VSA codes read", and a refused engagement
   reads "VSA Fault: Brakes Degraded". 30 s later the EPS escalates (it follows
   the VSA, EPS DTC 85-01); its "LKAS Fault: Restart the car" banner no longer
-  replaces the VSA's for the rest of the drive.
+  replaces the VSA's for the rest of the drive. The VSA's words are there from
+  the first frame of the disengagement: card now sends `carStateSP` before
+  `carState`, and should the VSA's flag still reach selfdrived one frame late,
+  its alert takes over upstream's "Cruise Fault: Restart the Car" from the next
+  frame (no second sound).
 * **A stored fault** (the lamps already on at key-on): openpilot cannot be
   engaged - neither cruise **nor MADS** - until the VSA clears it. The banner
   reads "VSA Fault Stored / Clears after driving above 35 km/h", and SET, RES or
-  the LKAS button get "VSA Fault: Clears Above 35 km/h". The moment the VSA clears
-  (half a second later on screen), everything is available again; nothing engages
-  by itself, so press LKAS (or SET) once it has. MADS is refused
+  the LKAS button get "VSA Fault: Clears Above 35 km/h" (35 km/h is what route 113
+  showed - one observation). The moment the VSA clears (half a second later on
+  screen; a press inside that half second is still refused, the next one is not),
+  everything is available again; nothing engages by itself, so press LKAS (or SET)
+  once it has. The flag is set about half a second after openpilot's car process
+  starts (about 2.6 s after key-on), well before openpilot finishes starting up
+  (about 8 s on routes 111 and 113), so its first screen already names the fault.
+  MADS is refused
   on purpose: the EPS refuses torque while the VSA holds the fault (and hard-faults
   30 s after key-on), and the board steers only above 51.5 km/h, well past where
   the fault clears - so there is no speed at which lateral could work with it
   stored. An already-enabled MADS is not switched off by it.
+* **No "turn the car off and on" after the VSA clears.** The board reports the
+  EPS latched while the VSA holds its fault (the EPS follows the VSA), and its
+  0x70B can then go quiet for seconds; on route 113 the EPS-latch alert announced
+  "Steering Fault / Turn the car off and on to clear it" as MADS engaged, 0.7 s
+  after the EPS had cleared with the VSA. That alert is now hidden while the VSA
+  fault is up and forgets any latch when it clears; a real latch afterwards is
+  confirmed again from fresh frames and announced as before.
 * **Sound:** one prompt per fault - "Stability Control Fault / Brakes, ACC, CMBS
   degraded" for 3.5 s - and none if the fault disengaged something, because then
   the disengagement alarm is the one sound. Banners are silent. A refused SET
@@ -55,22 +71,27 @@ do not use openpilot cruise; this update makes openpilot say so, and refuse.
   `carNotReady` in `onroadEvents` (that is the event that refuses the engagement).
 * **The bits are provisional** (named from timing; no Honda DBC has them), so the
   rules are narrow: live = 0x1A4 byte 2 bits 2-3, or 0x1EA's inertial-invalid bit
-  with BRAKE_ERROR; stored = 0x1A4 b3.3/b3.6/b3.7/b4.0/b6.0 after a 5 s start-up
-  window, for 0.5 s. Two lamp bits of this fault (b3.5, b4.1) are deliberately
-  left out: they also sit on for minutes at a time on 45 earlier drives (June
+  with BRAKE_ERROR; stored = 0x1A4 b3.3/b4.0/b6.0 (never seen in a start-up bulb
+  check, nor anywhere outside routes 110-113) from the first frame, or b3.6/b3.7
+  (which the bulb check lights) after a 5 s start-up window, for 0.5 s. 0x1EA's
+  counter is not checked, so it can never cost openpilot `canValid`. Two lamp
+  bits of this fault (b3.5, b4.1) are deliberately left out: they also sit on for minutes at a time on 45 earlier drives (June
   2026) while the VSA braked normally. Replayed over all 166 logged routes, only 110-113 set
   either flag. Nothing else on any car changes: every other Honda reads both flags
   False, and on every other car the new code adds nothing.
 * **Watch:** a normal drive should never show any VSA text, and `carNotReady`
   should never appear in `onroadEvents`. If one does without the cluster's VSA
   lamps, report the route - that is a provisional bit misread.
-* **Tests:** opendbc `test_vsa_fault.py` (28: real frames from routes 110, 111,
+* **Tests:** opendbc `test_vsa_fault.py` (33: real frames from routes 110, 111,
   112, 113, 10f and the other lamp state on route 69, through the real
-  `CarInterface`; garbage and missing frames; a monitor that raises; other
-  Hondas); sunnypilot `test_vsa_fault_alert.py` (32: the events, both state
-  machines and MADS, the AlertManager path and its sounds, the mici text fit,
-  selfdrived's wiring, the `CarStateSP` capnp/dataclass agreement). Details:
-  `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 6.6.
+  `CarInterface`, a stored start with card starting 2.1 s late, 10f's bulb check
+  stretched past the longest seen; 0x1EA's counter; garbage and missing frames; a
+  monitor that raises; other Hondas); sunnypilot `test_vsa_fault_alert.py` (47:
+  the events, both state machines and MADS, the AlertManager path and its sounds,
+  the onset with the VSA's flag one frame late, a live fault with CAN invalid,
+  the EPS-latch alert across route 113's clear, the mici text fit, selfdrived's
+  and card's wiring, the `CarStateSP` capnp/dataclass agreement). Details:
+  `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 6.6 and 10.6.
 
 ---
 

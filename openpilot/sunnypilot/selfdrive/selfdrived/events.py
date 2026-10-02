@@ -73,18 +73,33 @@ def speed_limit_pre_active_alert(CP: car.CarParams, CS: car.CarState, sm: messag
     Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleLow, .1)
 
 
-# FORK(HONDA_ACCORD_9G_AU): the speed the VSA's stored fault cleared at on route 113 (35.3 km/h), for the texts
+# FORK(HONDA_ACCORD_9G_AU): the speed the VSA's stored fault cleared at on route 113 (35.3 km/h; one observation - route
+# 111 never moved), for the texts
 VSA_CLEAR_SPEED_TEXT = {True: "35 km/h", False: "22 mph"}
+VSA_LIVE_NO_ENTRY_TEXT = "VSA Fault: Brakes Degraded"
+VSA_LIVE_BANNER_TEXT = ("VSA Fault", "Brakes, ACC, CMBS degraded. Have VSA codes read")
+
+
+def _vsa_fault_live(sm) -> bool:
+  """carStateSP.vsaFault, the live bits. vsaStoredFault's event also carries a live fault that upstream's accFaulted is
+  not raised beside (CAN invalid, so no car events; or live bits without BRAKE_ERROR, never seen): then the live texts."""
+  try:
+    return bool(sm['carStateSP'].vsaFault)
+  except Exception:
+    return False
 
 
 def vsa_stored_fault_no_entry_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  if _vsa_fault_live(sm):
+    return NoEntryAlert(VSA_LIVE_NO_ENTRY_TEXT)
   return NoEntryAlert(f"VSA Fault: Clears Above {VSA_CLEAR_SPEED_TEXT[bool(metric)]}")
 
 
 def vsa_stored_fault_permanent_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  text1, text2 = VSA_LIVE_BANNER_TEXT if _vsa_fault_live(sm) else \
+    ("VSA Fault Stored", f"Clears after driving above {VSA_CLEAR_SPEED_TEXT[bool(metric)]}")
   return Alert(
-    "VSA Fault Stored",
-    f"Clears after driving above {VSA_CLEAR_SPEED_TEXT[bool(metric)]}",
+    text1, text2,
     AlertStatus.normal, AlertSize.mid,
     Priority.LOWER, VisualAlert.none, AudibleAlert.none, .2)
 
@@ -301,15 +316,15 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
   # alerts these replace ("Cruise Fault: Restart the Car" - a restart does not clear it). vsaFault is raised only
   # beside upstream's accFaulted, which keeps doing the disengaging, so its IMMEDIATE_DISABLE/NO_ENTRY add nothing
   # accFaulted does not already do; it only names the cause. vsaStoredFault refuses nothing by itself either:
-  # carNotReady, beside it in `events`, is what selfdrived's state machine reads. The banners are silent and
+  # carNotReady, beside it in `events`, is what selfdrived's state machine reads; it is also the event for a live
+  # fault without accFaulted (CAN invalid), and then shows the live texts (_vsa_fault_live). The banners are silent and
   # Priority.LOWER (upstream's level for accFaulted's own banner); the one sound is vsaFaultAnnounce's, once per
   # fault, 3.5 s - shorter than a disengagement alert, so a live onset that disengages plays only that one.
   EventNameSP.vsaFault: {
     ET.IMMEDIATE_DISABLE: ImmediateDisableAlert("Stability Control (VSA) Fault"),
-    ET.NO_ENTRY: NoEntryAlert("VSA Fault: Brakes Degraded"),
+    ET.NO_ENTRY: NoEntryAlert(VSA_LIVE_NO_ENTRY_TEXT),
     ET.PERMANENT: Alert(
-      "VSA Fault",
-      "Brakes, ACC, CMBS degraded. Have VSA codes read",
+      *VSA_LIVE_BANNER_TEXT,
       AlertStatus.normal, AlertSize.mid,
       Priority.LOWER, VisualAlert.none, AudibleAlert.none, .2),
   },

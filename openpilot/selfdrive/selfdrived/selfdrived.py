@@ -299,18 +299,21 @@ class SelfdriveD(CruiseHelper):
         (CS.regenBraking and (not self.CS_prev.regenBraking or not CS.standstill)):
         self.events.add(EventName.pedalPressed)
 
-    # FORK(LKAS-GATEWAY): warnings only, so a latched EPS never costs longitudinal or engagement.
-    # can_show is last frame's "a WARNING would be shown"; the helper holds the announcement until it is.
-    for e in self.eps_latch_alert.update(self.sm['carStateSP'].linbusGateway, self.active or self.mads.active):
-      self.events_sp.add(e)
-
     # FORK(HONDA_ACCORD_9G_AU): the VSA's own fault (vsa_fault_alert.py). Live: accFaulted, above, still does the
-    # disengaging; this adds the event that names the VSA. Stored: carNotReady into `events` - the list this
-    # state machine reads - refuses openpilot (and MADS, deliberately) until the VSA clears the fault.
+    # disengaging; this adds the event that names the VSA. Held (stored, or live without accFaulted): carNotReady into
+    # `events` - the list this state machine reads - refuses openpilot (and MADS, deliberately) until the VSA clears it.
+    # Before the EPS latch alert: a latch the board reported while the VSA held its fault is forgotten when it clears.
     vsa_events, vsa_events_sp = self.vsa_fault_alert.update(self.sm['carStateSP'], self.events.has(EventName.accFaulted))
     for e in vsa_events:
       self.events.add(e)
     for e in vsa_events_sp:
+      self.events_sp.add(e)
+    if self.vsa_fault_alert.cleared:
+      self.eps_latch_alert.reset()
+
+    # FORK(LKAS-GATEWAY): warnings only, so a latched EPS never costs longitudinal or engagement.
+    # can_show is last frame's "a WARNING would be shown"; the helper holds the announcement until it is.
+    for e in self.eps_latch_alert.update(self.sm['carStateSP'].linbusGateway, self.active or self.mads.active):
       self.events_sp.add(e)
 
     # Create events for temperature, disk space, and memory
@@ -604,8 +607,9 @@ class SelfdriveD(CruiseHelper):
                      self.state_machine.soft_disable_timer, pers]
 
     alerts = self.events.create_alerts(self.state_machine.current_alert_types, callback_args)
-    alerts = self.vsa_fault_alert.filter_alerts(alerts)  # FORK(HONDA_ACCORD_9G_AU): the VSA's text, not "restart the car"
     alerts_sp = self.events_sp.create_alerts(self.state_machine.current_alert_types, callback_args)
+    # FORK(HONDA_ACCORD_9G_AU): the VSA's text, not "restart the car" - also when vsaFault arrives a frame after accFaulted
+    alerts, alerts_sp = self.vsa_fault_alert.adjust_alerts(alerts, alerts_sp, self.AM, self.sm.frame, callback_args)
 
     self.AM.add_many(self.sm.frame, alerts + alerts_sp)
     self.AM.process_alerts(self.sm.frame, clear_event_types)

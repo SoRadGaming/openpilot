@@ -250,6 +250,16 @@ class Car:
     co_send.carOutput.actuatorsOutput = self.last_actuators_output
     self.pm.send('carOutput', co_send)
 
+    # FORK(HONDA_ACCORD_9G_AU): carStateSP goes out BEFORE carState. selfdrived blocks on carState and then reads
+    # carStateSP without waiting (sm.update(0)), so sent after it, carStateSP could be the previous frame's - and the
+    # disengagement alert is created on the one frame accFaulted first appears, so a stale vsaFault there would show
+    # upstream's "Cruise Fault: Restart the Car" for 4 s (vsa_fault_alert.py). Sent first, it is always in
+    # selfdrived's queue by the time carState wakes it. One small message earlier; carState's timing is unchanged.
+    cs_sp_send = messaging.new_message('carStateSP')
+    cs_sp_send.valid = CS.canValid
+    cs_sp_send.carStateSP = CS_SP
+    self.pm.send('carStateSP', cs_sp_send)
+
     # kick off controlsd step while we actuate the latest carControl packet
     cs_send = messaging.new_message('carState')
     cs_send.valid = CS.canValid
@@ -271,11 +281,7 @@ class Car:
       cp_sp_send.carParamsSP = self.CP_SP_capnp
       self.pm.send('carParamsSP', cp_sp_send)
 
-    cs_sp_send = messaging.new_message('carStateSP')
-    cs_sp_send.valid = CS.canValid
-    cs_sp_send.carStateSP = CS_SP
-    self.pm.send('carStateSP', cs_sp_send)
-
+    # FORK(HONDA_ACCORD_9G_AU): carStateSP is sent above, before carState
     self.stage_board_firmware(CS_SP)
 
   def stage_board_firmware(self, CS_SP: custom.CarStateSP) -> None:
