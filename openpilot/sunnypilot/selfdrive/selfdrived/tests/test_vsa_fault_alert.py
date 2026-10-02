@@ -222,6 +222,7 @@ class TestHelper(OpenpilotTestCase):
     h.update(cs_sp(live=True), True)
     assert h.late_alerts(am, 1, [], [None] * 6) == [], "nothing of accFaulted's is up"
     up = EVENTS[EventName.accFaulted][ET.IMMEDIATE_DISABLE]
+    assert isinstance(up, Alert), "accFaulted's immediate-disable alert is a plain Alert"
     up.alert_type, up.event_type = "accFaulted/immediateDisable", ET.IMMEDIATE_DISABLE
     am.add_many(0, [up])
     late = h.late_alerts(am, 1, [], [None] * 6)

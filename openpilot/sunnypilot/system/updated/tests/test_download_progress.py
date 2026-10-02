@@ -340,6 +340,7 @@ class TestWiring(OpenpilotTestCase):
       return "From https://github.com/SoRadGaming/openpilot\n"
 
     def fake_agnos(progress_cb=None):
+      assert progress_cb is not None, "fetch_update must pass its progress callback"
       progress_cb(0.3)
       snap("os")
       progress_cb(1.0)   # the last partition, then straight back to fetch_update's clear()

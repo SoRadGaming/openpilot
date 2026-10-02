@@ -158,7 +158,8 @@ class TestHondaDynamicSettings(unittest.TestCase):
     refresh = next(n for n in info.body if isinstance(n, ast.FunctionDef) and n.name == "refresh")
     calls = {n.func.id for n in ast.walk(refresh) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
     assert {"gas_law_applies", "gas_law_label"} <= calls, "the mici card must gate the gas-law line"
-    assert "next drive" in ast.get_source_segment(mici, refresh), "the mici card must say the law applies at the next drive"
+    segment = ast.get_source_segment(mici, refresh)
+    assert segment is not None and "next drive" in segment, "the mici card must say the law applies at the next drive"
 
   def test_retired_keys_are_gone_everywhere(self):
     # Gone from the registry, so the mici and big panels, sunnylink and statsd must not name
