@@ -41,6 +41,9 @@ SCHOOL_AMBER = rl.Color(255, 176, 0, 255)
 # the green of sunnypilot's own img_minus_arrow_down.png / img_plus_arrow_up.png (median of the opaque pixels)
 KEY_GREEN = rl.Color(42, 255, 96, 255)
 WHITE = rl.Color(255, 255, 255, 255)
+# sunnypilot's speed-limit offset badge (speed_limit.py _render_vienna): black disc, its DARK_GREY rim, white digits
+OFFSET_FACE = rl.Color(0, 0, 0, 255)
+OFFSET_RIM = rl.Color(77, 77, 77, 255)
 
 
 def a(c: rl.Color, alpha: float) -> rl.Color:
@@ -208,7 +211,7 @@ def school_cue(cx: float, cy: float, d: float, active: bool, t: float, alpha: fl
     else:
       rl.draw_circle_v(c, lamp_r, a(LAMP_AMBER_OFF, alpha))
   if active:
-    cap = d * 0.2
+    cap = d * 0.25  # 15 px on the 60 px sign: the smallest text the approved mockups used
     size, sx = fit_digits("SCHOOL", round(cap, 2), round(d, 2), sx=0.92, min_sx=0.7)
     lw, _, _, _ = ink("SCHOOL", size, sx)
     ly = cy + r + 4 + cap / 2 + 3
@@ -287,13 +290,30 @@ def standstill_banner(x: float, y: float, line1: str, line2: str, color: rl.Colo
   return w, h
 
 
-def pending_icon(bx: float, by: float, size: float, value: int, lower: bool, key_alpha: float = 1.0, sign_alpha: float = 1.0):
+def offset_badge(cx: float, cy: float, r: float, offset: int, alpha: float = 1.0):
+  """A speed-limit offset on a sign, as sunnypilot's own sign shows it: a small black disc with a grey rim and the
+  offset in white - '5' for +5, '-5' for -5."""
+  txt = f"{'' if offset > 0 else '-'}{abs(int(offset))}"
+  c = rl.Vector2(cx, cy)
+  rl.draw_circle_v(c, r, a(OFFSET_FACE, alpha))
+  rl.draw_ring(c, r - 2.0, r, 0, 360, 36, a(OFFSET_RIM, alpha))
+  cap = r * (0.95 if len(txt) < 3 else 0.8)
+  size, sx = fit_digits(txt, round(cap, 2), round(r * 1.55, 2), sx=0.9, min_sx=0.7)
+  text_ink(txt, size, cx, cy, a(WHITE, alpha), sx=sx)
+
+
+def pending_icon(bx: float, by: float, size: float, value: int, lower: bool, key_alpha: float = 1.0, sign_alpha: float = 1.0,
+                 offset: int = 0):
   """In place of the green arrow of the 'press - to confirm speed limit' alert (the same size x size box): the PENDING
-  limit as a sign with a dashed ring (= not confirmed yet), beside the same green '-' (or '+') the arrow image carries.
+  limit as a sign with a dashed ring (= not confirmed yet), beside the same green '-' (or '+') the arrow image carries,
+  and a non-zero offset as sunnypilot's badge on the ring, up and right, inside the box.
   The key keeps the arrow's blink (key_alpha); the sign stays solid so it can be read."""
   d = size * 0.70
   scx, scy = bx + size - d / 2, by + size / 2
   sign(scx, scy, d, value, alpha=sign_alpha, dashed=True, shadow=True)
+  if offset:
+    r = d / 2
+    offset_badge(scx + r * 0.60, scy - r * 0.80, d * 0.2, offset, alpha=sign_alpha)
   bw, bh = size * 0.22, size * 0.12
   col = a(KEY_GREEN, key_alpha)
   rl.draw_rectangle_rounded(rl.Rectangle(bx, scy - bh / 2, bw, bh), 0.5, 6, col)

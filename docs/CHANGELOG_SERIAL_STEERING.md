@@ -26,27 +26,43 @@ condensed black digits). This is the design you picked from the mockups (Layout 
 * **The next lower limit.** When the next limit is LOWER and within 15 seconds or
   500 m (whichever comes first), a 36 px sign appears under the speed with the
   distance over a bar that shrinks toward it (your pick: both; sunnylink can make
-  it the bar or the distance alone). Never a higher limit, never while stopped.
-  The distance uses sunnypilot's own rounding (`300 m`, `1.2 km`).
+  it the bar or the distance alone). Never a higher limit, never while stopped,
+  and only while the limit on screen comes from the map. The distance uses
+  sunnypilot's own rounding (`300 m`, `1.2 km`); the map sends it once a second,
+  so in between it counts down with your speed and the bar shrinks smoothly
+  instead of in 30 m steps on the motorway.
 * **School zones keep the round sign.** You said the plate looked out of place:
   the sign is now the same circle as every other limit. When a NSW school zone is
   on, the 40 sign gets two amber lights on its rim that flash in turn, about once
-  a second, and an amber **SCHOOL** under it. Outside the zone's hours the lights
-  are grey and there is no text.
+  a second, and an amber **SCHOOL** under it (15 px, the smallest text in the
+  mockups). Outside the zone's hours the lights are grey and there is no text.
 * **Variable-limit zones** (motorways and tunnels with overhead signs) draw the
   sign like the electronic one: black face, red ring, white digits - a reminder
   that the overhead sign can show less.
 * **At a stop** the speed becomes a stopwatch and the time stopped (`0:29`), and
   the orange "take control / resume driving manually" no longer covers the
   screen: it is a small banner top left. **When the car ahead moves off, the full
-  orange prompt comes back** (and stays until you go) - that is the moment the
-  prompt is for.
+  orange prompt comes back** (once the radar has seen it moving for 0.4 s, so a
+  noisy reading cannot do it) and stays until you go - that is the moment the
+  prompt is for. **Every stop starts with the small banner again**, however many
+  times the car ahead moved off earlier in the drive. A stop of an hour or more
+  (`1:02:05`) shrinks the time to fit rather than running into the banner.
+  With the banner setting off, the full prompt covers the screen at every engaged
+  stop - and the stopwatch under it; the Stop Timer then shows only while you
+  are stopped and not engaged.
 * **"Press - to confirm speed limit" now shows which limit:** the green arrow is
   replaced by the limit itself with a dashed ring (not confirmed yet) beside the
-  same green minus (or plus). The minus blinks as the arrow did.
+  same green minus (or plus). The minus blinks as the arrow did. If you have a
+  speed limit offset, it shows on the sign as a small black badge (`5` for +5),
+  exactly as sunnypilot's own sign shows it: confirming sets limit + offset, and
+  the plus or minus compares your set speed with that sum.
 * **Settings > gateway** has its own icon: **B, the inline bridge** (the board on
   the harness, traffic both ways), which you picked. The update dialog keeps the
-  download arrow.
+  download arrow. The icon is stored as an ordinary git file: the repository
+  keeps PNGs in Git LFS on sunnypilot's server, which this fork cannot upload to,
+  and an icon that never arrived would have stopped the comma 4's screen from
+  starting. Should it ever fail to load anyway, the tile falls back to the old
+  icon.
 
 **Everything is a setting**, in sunnylink under **Visuals → HUD** (shown for a
 comma 4 only), all on by default: Speed and Speed Limit, Next Lower Limit
@@ -57,39 +73,49 @@ a second, never per frame). **All of them off is today's screen, pixel for
 pixel** - checked over the five real moments of your 1 Oct drive and in the
 tests.
 
-* **What it never covers:** the 60 px strip with the confidence ball (as you
-  asked - the right-side items are a separate design job), the driver-monitor
-  icon (except under the stop banner), the wheel, the lanes. The whole group
-  fades out while any alert is up, and the speed hides for the 2.5 s the stock
-  "MAX" number shows after a set-speed change, so two big numbers are never on
-  screen together.
+* **What it never covers:** the 60 px strip with the confidence ball (unchanged
+  in this build - see "Not in this build"), the driver-monitor icon (except under
+  the stop banner), the wheel, the lanes. The whole group fades out while any
+  alert is up and comes back only once the alert has faded away, so the two never
+  overlap; and the speed hides for the 2.5 s the stock "MAX" number shows after a
+  set-speed change, so two big numbers are never on screen together.
 * **Only what is true:** the sign is the limit sunnypilot is using (grey digits
   while it is only holding the last one, as sunnypilot's own sign does); the
   school lights and the electronic look appear only when that limit IS the NSW
-  limit (NSW Speed Zones on Live); the next limit is only what the map published.
+  limit (NSW Speed Zones on Live, the road matched or dead-reckoned - never an
+  ambiguous match); the next limit is only what the map published.
   **In a tunnel, while the position is dead-reckoned, there is no next limit:**
   mapd deliberately does not publish one there (it reported drops that never came
   on your tunnel passes). The mockup showed one, from the logged look-ahead; the
   build does not.
-* **Not in this build, as agreed:** the car-ahead icon (your speedometer already
-  shows following distance) and anything on the right side - traffic lights,
-  stop and give-way signs and what the model sees are being researched first.
-  The mockups' "set 70" line (set speed below the limit) was not among your
-  picks and is not built.
+* **Not in this build - your right-side request is still open.** You asked for
+  the right side to show, in our own design rather than StarPilot's and each
+  switchable in sunnylink: a traffic light in the colour the model detects, stop
+  and give-way signs, and what the AI is seeing (but not the car ahead, which
+  your dashboard already shows). None of that is here yet. That was our decision,
+  not yours: a separate job is first working out which of those the model and the
+  car actually report, so that nothing on screen is a guess. Until then the
+  confidence-ball strip is exactly as before. The car-ahead icon is dropped, as
+  you asked. The mockups' "set 70" line (set speed below the limit) was not among
+  your picks and is not built.
 * **What does not change:** no alert's text, sound, priority or timing; nothing
   that drives the car. The screen only.
-* **Tests:** 37 (the rules, the settings and their once-a-second read, sunnylink,
-  the markers, the icon) and 11 that draw the real onroad view in a headless
-  window per state - including "every setting off = the stock pixels" and "an
-  alert's own setting off = that alert as stock".
+* **Tests:** 45 (the rules, the settings and their once-a-second read, the
+  banner through two stops in the order the screen really calls it, sunnylink,
+  the markers, the icon - including that git holds the PNG itself) and 16 that
+  draw the real onroad view in a headless window per state - including "every
+  setting off = the stock pixels", "an alert's own setting off = that alert as
+  stock", two stops in one drive, an alert fading out, an hour-long stop, and the
+  gateway icon replaced by an LFS pointer.
 * **New params:** `HudSpeedCluster`, `HudNextLimit`, `HudSchoolZoneCue`,
   `HudVariableLimitSign`, `HudStoppedTimer`, `HudStoppedBanner`,
   `HudConfirmLimit` (backed up with your settings). The first start after this
   update rebuilds, as any `params_keys.h` change does.
 * **Watch on the next drive:** the speed matches the dashboard; the next-limit
-  sign appears only for drops and only in the last 15 s / 500 m; at the first
-  stop behind a car, the banner, the timer counting, and the full prompt when
-  that car moves off. A school zone in its hours, if your route has one.
+  sign appears only for drops and only in the last 15 s / 500 m; at every stop
+  behind a car - the second and third too - the small banner, the timer
+  counting, and the full prompt when that car moves off. A school zone in its
+  hours, if your route has one.
 
 ---
 

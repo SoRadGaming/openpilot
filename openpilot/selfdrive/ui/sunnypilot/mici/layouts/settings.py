@@ -14,12 +14,27 @@ from openpilot.selfdrive.ui.sunnypilot.mici.layouts.models import ModelsLayoutMi
 from openpilot.selfdrive.ui.sunnypilot.mici.layouts.vehicle import VehicleLayoutMici, car_brand
 from openpilot.selfdrive.ui.sunnypilot.mici.layouts.board import BoardLayoutMici, board_page_visible
 from openpilot.selfdrive.ui.sunnypilot.mici.layouts.maps import MapsLayoutMici  # FORK(SPEED-LIMIT): Settings > maps
+from openpilot.common.swaglog import cloudlog  # FORK(HUD): gateway_icon()
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
 
 ICON_SIZE = 70
 BIG_ICON_SIZE = 110
+
+
+# FORK(HUD): the gateway tile's icon B, falling back to the old icon should it ever fail to load. An LFS pointer in
+# place of the PNG raises in the loader at the comma 4's scale (and loads as an empty texture at others); the tile is
+# built at UI start, where an exception would take the whole UI down.
+def gateway_icon():
+  try:
+    tex = gui_app.texture("../../sunnypilot/selfdrive/assets/icons_mici/gateway.png", ICON_SIZE, ICON_SIZE)
+    if tex.id:
+      return tex
+    cloudlog.error("gateway icon loaded empty, using the old icon")
+  except Exception:
+    cloudlog.exception("gateway icon failed to load, using the old icon")
+  return gui_app.texture("../../sunnypilot/selfdrive/assets/offroad/icon_software.png", ICON_SIZE, ICON_SIZE)
 
 
 class SunnylinkBigButton(SettingsBigButton):
@@ -70,8 +85,7 @@ class SettingsLayoutSP(OP.SettingsLayout):
     # so a car without one never sees it. Its icon (FORK(HUD), 2026-10, the owner's pick "B, inline bridge"): the board
     # inline on the harness, passing traffic both ways. The update dialog keeps the download arrow (board.py).
     board_panel = BoardLayoutMici()
-    board_btn = SettingsBigButton(tr("gateway"), "",
-                                  gui_app.texture("../../sunnypilot/selfdrive/assets/icons_mici/gateway.png", ICON_SIZE, ICON_SIZE))
+    board_btn = SettingsBigButton(tr("gateway"), "", gateway_icon())
     board_btn.set_click_callback(lambda: gui_app.push_widget(board_panel))
     board_btn.set_visible(board_page_visible)
 

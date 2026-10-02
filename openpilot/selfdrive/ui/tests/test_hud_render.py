@@ -78,7 +78,7 @@ def put(svc, fill):
 
 
 def scene(v=110 / KPH, limit=110, ahead=100, ahead_dist=339.0, ahead_valid=True, school=0, variable=False,
-          standstill=False, alert=None, assist="active", set_kph=110, lead=None, lp=True, cs=True):
+          standstill=False, alert=None, assist="active", set_kph=110, lead=None, lp=True, cs=True, offset=0):
   for svc in SERVICES:
     sm.seen[svc] = sm.alive[svc] = sm.updated[svc] = False
     sm.recv_frame[svc] = 0
@@ -101,7 +101,9 @@ def scene(v=110 / KPH, limit=110, ahead=100, ahead_dist=339.0, ahead_valid=True,
 
   def plan(p):
     r = p.speedLimit.resolver
-    r.speedLimit = r.speedLimitLast = r.speedLimitFinal = r.speedLimitFinalLast = limit / KPH
+    r.speedLimit = r.speedLimitLast = limit / KPH
+    r.speedLimitOffset = offset / KPH
+    r.speedLimitFinal = r.speedLimitFinalLast = (limit + offset) / KPH
     r.speedLimitValid = r.speedLimitLastValid = True
     r.source = "map"
     p.speedLimit.assist.state = assist
@@ -126,6 +128,7 @@ def scene(v=110 / KPH, limit=110, ahead=100, ahead_dist=339.0, ahead_valid=True,
 
 STOPPED = ("manualRestart/warning", "TAKE CONTROL", "Resume Driving Manually", "mid", "userPrompt")
 CONFIRM = ("speedLimitPreActive/warning", "Press - to confirm speed limit", "", "small", "normal")
+SATURATED = ("steerSaturated/warning", "TAKE CONTROL", "Turn Exceeds Steering Limit", "mid", "userPrompt")
 
 rt = rl.load_render_texture(W, H)
 rect = rl.Rectangle(0, 0, W, H)
@@ -144,6 +147,7 @@ def render(name, params, stock=False, frames=100, t0=100.0, jump_at=None, jump=0
   2.5 s the stock MAX number shows after engaging (and its fade), which hides the speed digits."""
   ui_state.params.v = dict(params)
   HS.hud_settings.get(force=True)
+  hud_alerts.standstill_banner.reset()  # a fresh view is a fresh UI start
   view = AugmentedRoadView()
   view.set_rect(rect)
   saved = (hud_alerts.draw_compact_standstill, hud_alerts.draw_pending_limit)
@@ -163,11 +167,50 @@ def render(name, params, stock=False, frames=100, t0=100.0, jump_at=None, jump=0
   finally:
     hud_alerts.draw_compact_standstill, hud_alerts.draw_pending_limit = saved
   arr = grab()
+  save(arr, name)
+  view.close()
+  return arr
+
+
+def save(arr, name):
   if OUT:
     from PIL import Image
     Image.fromarray(arr.astype(np.uint8)).save(os.path.join(OUT, f"{name}.png"))
+
+
+def run(params, steps, stock=False, t0=100.0):
+  """ONE view through several phases, as a drive goes: steps = [(scene kwargs, frames, name)]. Returns the last frame
+  of each phase (saved as name when HUD_RENDER_OUT is set)."""
+  ui_state.params.v = dict(params)
+  HS.hud_settings.get(force=True)
+  hud_alerts.standstill_banner.reset()
+  view = AugmentedRoadView()
+  view.set_rect(rect)
+  if stock:
+    saved = (hud_alerts.draw_compact_standstill, hud_alerts.draw_pending_limit)
+    hud_alerts.draw_compact_standstill = lambda ar, alert: False
+    hud_alerts.draw_pending_limit = lambda ar, layout: False
+    view._hud_cluster.render = lambda *a, **k: None
+  grabs, t = [], t0
+  try:
+    for kw, frames, name in steps:
+      scene(**kw)
+      for _ in range(frames):
+        clock["t"] = t
+        t += 0.05
+        rl.begin_drawing()
+        rl.begin_texture_mode(rt)
+        rl.clear_background(rl.BLACK)
+        view.render(rect)
+        rl.end_texture_mode()
+        rl.end_drawing()
+      grabs.append(grab())
+      save(grabs[-1], name.replace("_on", "_stock") if stock else name)
+  finally:
+    if stock:
+      hud_alerts.draw_compact_standstill, hud_alerts.draw_pending_limit = saved
   view.close()
-  return arr
+  return grabs
 
 
 def box(arr, x0, y0, x1, y1):
@@ -224,7 +267,10 @@ states = {
   "next_far": dict(v=20.0, ahead_dist=480.0),
   "next_tunnel": dict(limit=80, variable=True, ahead_valid=False, ahead=0, ahead_dist=0.0),
   "confirm": dict(limit=50, v=27 / KPH, alert=CONFIRM, assist="preActive", set_kph=105, ahead=70, ahead_dist=143.0),
+  "confirm_offset": dict(limit=50, offset=5, v=27 / KPH, alert=CONFIRM, assist="preActive", set_kph=105, ahead=70,
+                         ahead_dist=143.0),
   "stopped": dict(limit=40, v=0.0, standstill=True, alert=STOPPED, ahead=0, ahead_dist=0.0, lead=0.1),
+  "stopped_1h": dict(limit=40, v=0.0, standstill=True, alert=STOPPED, ahead=0, ahead_dist=0.0, lead=0.1),
   "stopped_lead_departs": dict(limit=40, v=0.0, standstill=True, alert=STOPPED, ahead=0, ahead_dist=0.0, lead=2.0),
   "school_active": dict(limit=40, v=33 / KPH, school=2, ahead=0, ahead_dist=0.0),
   "school_inactive": dict(limit=50, v=33 / KPH, school=1, ahead=70, ahead_dist=85.0),
@@ -232,20 +278,49 @@ states = {
   "missing_plan": dict(lp=False),
   "missing_carstate": dict(cs=False),
 }
+BADGE = (440, 24, 468, 52)   # the offset badge on the pending sign's ring, up and right
+
+
+def stop_gap(arr):
+  """(the compact banner's right edge, the left edge of what the cluster draws right of it), rows of the top row."""
+  p = arr[6:72]
+  orange = (p[..., 0] > 80) & (p[..., 1] < p[..., 0] * 0.6) & (p[..., 1] > p[..., 0] * 0.2) & (p[..., 2] < 40)
+  cols = np.nonzero(orange.any(axis=0))[0]
+  right = int(cols.max()) if len(cols) else -1
+  q = arr[8:64, right + 1:476]
+  white = (q[..., 0] > 200) & (q[..., 1] > 200) & (q[..., 2] > 200)
+  wc = np.nonzero(white.any(axis=0))[0]
+  return right, (int(wc.min()) + right + 1 if len(wc) else -1)
+
+
+JUMP_S = {"stopped_1h": 3725.0}  # stopped for 1:02:05
+images = {}
 for name, kw in states.items():
   scene(**kw)
   stopped = kw.get("standstill", False)
-  jump = dict(jump_at=10, jump=30.0) if stopped else {}
+  jump = dict(jump_at=10, jump=JUMP_S.get(name, 30.0)) if stopped else {}
   on = render(f"{name}_on", ON, **jump)
   off = render(f"{name}_off", OFF, **jump)
   stock = render(f"{name}_stock", ON, stock=True, **jump)
   r = {"off_vs_stock": same(off, stock), "on_vs_stock": same(on, stock), "on_diff_box": diff_box(on, stock)}
   for b, bn in ((SIGN, "sign"), (SIGN_INNER, "inner"), (SPEED, "speed"), (NEXT, "next"), (LAMP_L, "lamp_l"),
-                (LAMP_R, "lamp_r"), (LABEL, "label"), (BANNER, "banner"), (LOWER, "lower"), (ARROW, "arrow"), (KEY, "key")):
+                (LAMP_R, "lamp_r"), (LABEL, "label"), (BANNER, "banner"), (LOWER, "lower"), (ARROW, "arrow"), (KEY, "key"),
+                (BADGE, "badge")):
     for kind in ("red", "white", "amber", "orange", "green", "dark", "grey"):
       r[f"{bn}_{kind}"] = count(on, b, kind)
       r[f"stock_{bn}_{kind}"] = count(stock, b, kind)
+  if stopped:
+    r["banner_right"], r["cluster_left"] = stop_gap(on)
   out[name] = r
+  images[name] = on
+
+# the stop time's size: full up to 59:59, shrunk beyond
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_cluster import timer_size
+out["timer_size"] = {t: round(timer_size(t), 3) for t in ("0:30", "59:59", "1:02:05")}
+
+# the offset badge is the only difference an offset makes
+out["badge"] = {"px": same(images["confirm_offset"], images["confirm"]),
+                "box": diff_box(images["confirm_offset"], images["confirm"])}
 
 # while the stock MAX number shows (the first 2.5 s after engaging) the speed digits hide; the sign stays
 scene(**states["cruise"])
@@ -264,6 +339,42 @@ for name, key in (("confirm", HS.PARAM_CONFIRM_LIMIT), ("stopped", HS.PARAM_STOP
   alone = render(f"{name}_only_its_setting_off", {**ON, key: False}, **jump)
   stock = render(f"{name}_stock2", ON, stock=True, **jump)
   out[f"{name}_only_its_setting_off_vs_stock"] = same(alone, stock)
+
+# two stops in one drive: the second starts compact again (the banner's departure must not stick for the drive)
+STOP = dict(limit=40, v=0.0, standstill=True, alert=STOPPED, ahead=0, ahead_dist=0.0)
+steps = [(dict(STOP, lead=0.1), 40, "two_stops_1_stopped_on"),
+         (dict(STOP, lead=2.0), 20, "two_stops_2_lead_departs_on"),
+         (dict(limit=40, v=10.0, ahead=0, ahead_dist=0.0, lead=8.0), 100, "two_stops_3_driving_on"),
+         (dict(STOP, lead=0.1), 40, "two_stops_4_stopped_again_on")]
+two = run(ON, steps)
+out["two_stops"] = [{"banner_orange": count(g, BANNER, "orange"), "lower_orange": count(g, LOWER, "orange"),
+                     "sign_red": count(g, SIGN, "red")} for g in two]
+
+# an alert fading out: the cluster comes back only once the alert has gone (it used to fade in 3 frames into the fade)
+steps = [(dict(alert=SATURATED), 40, "fade_1_alert_on"), (dict(), 3, "fade_2_gone_3_frames_on"),
+         (dict(), 60, "fade_3_gone_60_frames_on")]
+fade_on, fade_stock = run(ON, steps), run(ON, steps, stock=True)
+out["alert_fade"] = {"on_vs_stock": [same(a, b) for a, b in zip(fade_on, fade_stock, strict=True)],
+                     "sign_red": [count(g, SIGN, "red") for g in fade_on]}
+
+# the gateway tile's icon: icon B, and the old icon if B ever fails to load (an LFS pointer in place of the PNG)
+from openpilot.selfdrive.ui.sunnypilot.mici.layouts import settings as mici_settings
+icon_b = mici_settings.gateway_icon()
+pointer = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"hud_gateway_pointer_{os.getpid()}.png")
+with open(pointer, "wb") as fh:
+  fh.write(b"version https://git-lfs.github.com/spec/v1\noid sha256:" + b"0" * 64 + b"\nsize 1734\n")
+real_load = gui_app._load_image_from_path
+for key in [k for k in gui_app._textures if "icons_mici/gateway.png" in k]:
+  del gui_app._textures[key]  # load it again, through the loader
+gui_app._load_image_from_path = lambda path, *a, **k: real_load(pointer if path.endswith("icons_mici/gateway.png") else path, *a, **k)
+try:
+  icon_fallback = mici_settings.gateway_icon()
+finally:
+  gui_app._load_image_from_path = real_load
+  os.unlink(pointer)
+software = gui_app.texture("../../sunnypilot/selfdrive/assets/offroad/icon_software.png", 70, 70)
+out["gateway_icon"] = {"b": [icon_b.id, icon_b.width, icon_b.height], "fallback_id": icon_fallback.id,
+                       "software_id": software.id}
 
 print("RESULT " + json.dumps(out), flush=True)
 '''
@@ -325,15 +436,53 @@ class TestHudRender(OpenpilotTestCase):
     x0, y0, x1, y1 = r["on_diff_box"]
     assert x0 >= 374 and y0 >= 18 and x1 < 467 and y1 < 108, f"only the arrow's box changes, the cluster stays hidden: {r['on_diff_box']}"
 
+  def test_confirm_shows_an_offset_as_sunnypilots_badge(self):
+    r, plain, badge = self.r["confirm_offset"], self.r["confirm"], self.r["badge"]
+    assert r["arrow_red"] > 60 and r["key_green"] > 20
+    assert badge["px"] > 150, "the offset adds a badge"
+    x0, y0, x1, y1 = badge["box"]
+    assert x0 >= 438 and y0 >= 22 and x1 <= 468 and y1 <= 54, f"on the ring, up and right, and nothing else: {badge['box']}"
+    assert r["badge_grey"] > plain["badge_grey"] + 20, "sunnypilot's grey rim"
+    assert r["badge_white"] > 10, "and its white digit"
+    x0, y0, x1, y1 = r["on_diff_box"]
+    assert x0 >= 374 and y0 >= 18 and x1 < 467 and y1 < 108, f"still inside the arrow's box: {r['on_diff_box']}"
+
   def test_stopped_banner_and_timer(self):
     r = self.r["stopped"]
     assert r["banner_orange"] > 4000, "the compact banner"
     assert r["lower_orange"] == 0 < r["stock_lower_orange"], "the road below it is not covered"
     assert r["speed_white"] > 150 and r["sign_red"] > 150, "the stop time and the sign"
+    assert r["cluster_left"] - r["banner_right"] >= 30, (r["banner_right"], r["cluster_left"])
+    assert self.r["timer_size"]["0:30"] == self.r["timer_size"]["59:59"] == 50, "an m:ss time is drawn at full size"
+
+  def test_an_hour_long_stop_keeps_clear_of_the_banner(self):
+    r = self.r["stopped_1h"]
+    assert r["banner_orange"] > 4000 and r["speed_white"] > 100 and r["sign_red"] > 150
+    assert r["cluster_left"] - r["banner_right"] >= 10, ("1:02:05 shrinks to the width of 59:59",
+                                                         r["banner_right"], r["cluster_left"])
+    assert self.r["timer_size"]["1:02:05"] < 50
 
   def test_the_full_prompt_returns_when_the_car_ahead_moves_off(self):
     r = self.r["stopped_lead_departs"]
     assert r["on_vs_stock"] == 0, "the stock full-screen prompt, and no cluster over it"
+
+  def test_two_stops_in_a_drive_both_start_compact(self):
+    stop1, departs, driving, stop2 = self.r["two_stops"]
+    for s in (stop1, stop2):
+      assert s["banner_orange"] > 4000 and s["lower_orange"] == 0, s
+    assert departs["lower_orange"] > 4000, "the full prompt when the car ahead moved off"
+    assert driving["banner_orange"] == 0 and driving["lower_orange"] == 0 and driving["sign_red"] > 150, driving
+
+  def test_the_cluster_returns_only_after_an_alert_has_faded_out(self):
+    r = self.r["alert_fade"]
+    up, gone3, gone60 = r["on_vs_stock"]
+    assert up == 0 and gone3 == 0, f"hidden under the alert and through its fade-out: {r}"
+    assert gone60 > 0 and r["sign_red"][2] > 150, f"back once it has gone: {r}"
+
+  def test_the_gateway_icon_falls_back_instead_of_crashing(self):
+    g = self.r["gateway_icon"]
+    assert g["b"][0] != 0 and g["b"][1] > 0, "icon B loads"
+    assert g["fallback_id"] == g["software_id"] != 0, "a pointer in its place: the old icon, and the UI keeps going"
 
   def test_school_zone_keeps_the_round_sign_and_adds_lamps(self):
     a, later = self.r["school_active"], self.r["school_active_later"]

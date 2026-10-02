@@ -12,6 +12,7 @@ hud_model.py and hud_settings.py import no raylib, so they are imported here; th
 import dataclasses
 import json
 import re
+import subprocess
 from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,10 +22,13 @@ from openpilot.common.params import Params
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_settings as HS
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (HudFrame, StandstillBanner, build_frame, next_window_m,
-                                                                     pending_limit, short_line2, SCHOOL_ACTIVE,
+                                                                     pending_limit, short_line2, LEAD_DEPART_S,
+                                                                     MAP_EXTRAPOLATE_MAX_S, SCHOOL_ACTIVE,
                                                                      SCHOOL_INACTIVE, SCHOOL_NONE)
 
 ROOT = Path(__file__).parents[3]   # openpilot/
+REPO = ROOT.parent
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 PARAMS_KEYS = ROOT / "common/params_keys.h"
 ROAD_VIEW = ROOT / "selfdrive/ui/mici/onroad/augmented_road_view.py"
 ALERTS = ROOT / "selfdrive/ui/mici/onroad/alert_renderer.py"
@@ -62,8 +66,8 @@ class FakeSM:
 
 
 def drive(v=110 / KPH, limit=110, valid=True, last_valid=True, source='map', ahead=100, ahead_dist=339.0,
-          ahead_valid=True, nsw_mode=2, nsw_limit=None, school=0, variable=False, standstill=False, v_cluster=None,
-          lp=True, lmd=True, lmd_alive=True, lp_alive=True):
+          ahead_valid=True, nsw_mode=2, nsw_state=2, nsw_limit=None, school=0, variable=False, standstill=False,
+          v_cluster=None, lp=True, lmd=True, lmd_alive=True, lp_alive=True, offset=0):
   sm = FakeSM()
   cs = sm.put('carState')
   cs.vEgo = v
@@ -71,7 +75,9 @@ def drive(v=110 / KPH, limit=110, valid=True, last_valid=True, source='map', ahe
   cs.standstill = standstill
   if lp:
     res = sm.put('longitudinalPlanSP', alive=lp_alive).speedLimit.resolver
-    res.speedLimit = res.speedLimitLast = res.speedLimitFinal = res.speedLimitFinalLast = limit / KPH
+    res.speedLimit = res.speedLimitLast = limit / KPH
+    res.speedLimitOffset = offset / KPH
+    res.speedLimitFinal = res.speedLimitFinalLast = (limit + offset) / KPH
     res.speedLimitValid = valid
     res.speedLimitLastValid = last_valid
     res.source = source
@@ -84,7 +90,7 @@ def drive(v=110 / KPH, limit=110, valid=True, last_valid=True, source='map', ahe
     m.speedLimitAheadDistance = ahead_dist
     z = m.nswZone
     z.mode = nsw_mode
-    z.state = 2
+    z.state = nsw_state
     z.speedLimit = (limit if nsw_limit is None else nsw_limit) / KPH
     z.schoolZone = school
     z.variable = variable
@@ -92,9 +98,9 @@ def drive(v=110 / KPH, limit=110, valid=True, last_valid=True, source='map', ahe
 
 
 def frame(sm, settings=HS.ALL_ON, *, metric=True, sl_mode_on=True, stopped_s=None, cluster_seen=True, max_visible=False,
-          started_frame=5) -> HudFrame:
+          started_frame=5, map_age_s=0.0) -> HudFrame:
   return build_frame(sm, settings, started_frame=started_frame, is_metric=metric, speed_limit_mode_on=sl_mode_on,
-                     stopped_s=stopped_s, v_ego_cluster_seen=cluster_seen, max_visible=max_visible)
+                     stopped_s=stopped_s, v_ego_cluster_seen=cluster_seen, max_visible=max_visible, map_age_s=map_age_s)
 
 
 def with_(**kw) -> HS.HudSettings:
@@ -222,6 +228,26 @@ class TestClusterRules(OpenpilotTestCase):
     z.speedLimitAheadDistance = 250.0
     assert frame(sm).next_limit == 0
 
+  def test_next_limit_only_while_the_limit_on_screen_is_from_the_map(self):
+    # as sunnypilot's own sign (_draw_ahead_info): a car-sourced limit is never paired with a map look-ahead
+    assert frame(drive(source='map')).next_limit == 100
+    for source in ('car', 'none'):
+      f = frame(drive(source=source))
+      assert f.limit == 110 and f.next_limit == 0, source
+
+  def test_the_distance_runs_down_between_map_messages(self):
+    # liveMapDataSP is 1 Hz: between messages the distance shrinks with vEgo (not the speedometer), for one period
+    sm = drive(v=30.0, v_cluster=31.0, ahead_dist=339.0)
+    assert frame(sm, map_age_s=0.0).next_dist == 339.0
+    assert abs(frame(sm, map_age_s=0.5).next_dist - (339.0 - 15.0)) < 1e-3
+    assert abs(frame(sm, map_age_s=MAP_EXTRAPOLATE_MAX_S).next_dist - 309.0) < 1e-3
+    assert abs(frame(sm, map_age_s=5.0).next_dist - 309.0) < 1e-3, "a late message: held, not run down further"
+    assert frame(sm, map_age_s=-1.0).next_dist == 339.0
+    f0, f1 = frame(sm, map_age_s=0.0), frame(sm, map_age_s=0.5)
+    assert f1.next_frac < f0.next_frac, "the bar shrinks in between"
+    # passed the sign before the next message: gone, not drawn at 0 m
+    assert frame(drive(v=30.0, ahead_dist=20.0), map_age_s=1.0).next_limit == 0
+
   def test_school_zone(self):
     assert frame(drive(limit=40, school=2)).school == SCHOOL_ACTIVE
     assert frame(drive(limit=50, school=1)).school == SCHOOL_INACTIVE
@@ -238,6 +264,13 @@ class TestClusterRules(OpenpilotTestCase):
     assert not frame(drive(limit=80, variable=True, nsw_limit=60)).electronic
     # a car-sourced limit
     assert not frame(drive(limit=80, variable=True, source='car')).electronic
+    # nswZone not matched: 0 off, 1 no match (OSM's value), 3 ambiguous (0), 5 error, 6 no data file
+    for state in (0, 1, 3, 5, 6):
+      assert frame(drive(limit=40, school=2, nsw_state=state)).school == SCHOOL_NONE, state
+      assert not frame(drive(limit=80, variable=True, nsw_state=state)).electronic, state
+    # dead reckoning publishes the tunnel line's limit: still the NSW limit on screen
+    assert frame(drive(limit=80, variable=True, nsw_state=4)).electronic
+    assert frame(drive(limit=40, school=2, nsw_state=4)).school == SCHOOL_ACTIVE
 
   def test_variable_zone_is_the_electronic_sign(self):
     assert frame(drive(limit=80, variable=True)).electronic
@@ -302,29 +335,107 @@ def alert(kind="manualRestart/warning", text1="TAKE CONTROL", text2="Resume Driv
   return SimpleNamespace(alert_type=kind, text1=text1, text2=text2)
 
 
+STARTED = 5  # the drive's started_frame; FakeSM.put() receives at frame 10
+
+
+class StopFlow:
+  """The banner's calls in the order the UI makes them, one frame at a time (20 Hz):
+    1. HudCluster._update_state: observe(what the alert renderer will draw) - the alert, the previous one while it
+       fades out, or None - every frame;
+    2. HudCluster._alert_covers: compact() for any alert it draws;
+    3. AlertRenderer._render -> hud_alerts.draw_compact_standstill: compact(), only when there is an alert.
+  The renderer never asks while there is no alert: that is the call order the first version's test did not follow."""
+  def __init__(self, settings=HS.ALL_ON):
+    self.b, self.sm, self.t, self.settings = StandstillBanner(), FakeSM(), 100.0, settings
+    self.lead = self.sm.put('radarState').leadOne
+
+  def frame(self, shown, dt=0.05):
+    self.t += dt
+    self.b.observe(shown)
+    if shown is None:
+      return None
+    cluster = self.b.compact(shown, self.settings, self.sm, STARTED, self.t)
+    renderer = self.b.compact(shown, self.settings, self.sm, STARTED, self.t)
+    assert cluster == renderer, "the cluster and the renderer agree within a frame"
+    return renderer
+
+  def frames(self, shown, seconds):
+    return [self.frame(shown) for _ in range(int(round(seconds / 0.05)))]
+
+
 class TestAlertRules(OpenpilotTestCase):
   def test_the_standstill_prompt_is_compact_with_the_setting_on(self):
     b, sm = StandstillBanner(), FakeSM()
-    assert b.compact(alert(), HS.ALL_ON, sm)
-    assert not b.compact(alert(), with_(stopped_banner=False), sm)
+    assert b.compact(alert(), HS.ALL_ON, sm, STARTED, 0.0)
+    assert not b.compact(alert(), with_(stopped_banner=False), sm, STARTED, 0.0)
     for other in ("speedLimitPreActive/warning", "steerSaturated/warning", "resumeRequired/warning", ""):
-      assert not b.compact(alert(kind=other), HS.ALL_ON, sm), other
-    assert not b.compact(None, HS.ALL_ON, sm)
+      assert not b.compact(alert(kind=other), HS.ALL_ON, sm, STARTED, 0.0), other
 
   def test_the_full_prompt_returns_when_the_car_ahead_moves_off_and_stays(self):
-    b, sm = StandstillBanner(), FakeSM()
-    lead = sm.put('radarState').leadOne
-    lead.present, lead.vLead = True, 0.2
-    assert b.compact(alert(), HS.ALL_ON, sm), "a stopped car ahead"
-    lead.vLead = 1.5
-    assert not b.compact(alert(), HS.ALL_ON, sm), "it moves off: the full alert"
-    lead.vLead = 0.0
-    assert not b.compact(alert(), HS.ALL_ON, sm), "and it stays full until the prompt clears"
-    assert not b.compact(alert(), HS.ALL_ON, sm), "idempotent: the cluster and the renderer both ask"
-    assert not b.compact(None, HS.ALL_ON, sm)
-    assert b.compact(alert(), HS.ALL_ON, sm), "the next stop starts compact again"
-    lead.present, lead.vLead = False, 5.0
-    assert b.compact(alert(), HS.ALL_ON, sm), "no car ahead: nothing to move off"
+    s = StopFlow()
+    s.lead.present, s.lead.vLead = True, 0.2
+    assert all(s.frames(alert(), 2.0)), "a stopped car ahead: compact"
+    s.lead.vLead = 1.5
+    moving = s.frames(alert(), 1.0)
+    assert not moving[-1], "it moves off: the full alert"
+    assert all(moving[:int(LEAD_DEPART_S / 0.05) - 1]), f"after {LEAD_DEPART_S} s of moving, not on the first frame"
+    s.lead.vLead = 0.0
+    assert not any(s.frames(alert(), 2.0)), "and it stays full until the prompt clears"
+    s.lead.present, s.lead.vLead = False, 5.0
+    assert not any(s.frames(alert(), 1.0)), "the car ahead gone from the radar: still full"
+
+  def test_two_stops_in_a_drive_both_start_compact(self):
+    s = StopFlow()
+    s.lead.present, s.lead.vLead = True, 0.1
+    assert all(s.frames(alert(), 2.0)), "stop 1: compact"
+    s.lead.vLead = 2.0
+    assert not s.frames(alert(), 1.0)[-1], "stop 1: the car ahead moves off - full"
+    # we drive away: the prompt clears; the renderer keeps drawing it while it fades out (will_render returns it),
+    # then there is no alert at all and the renderer stops asking
+    s.lead.vLead = 8.0
+    assert not any(s.frames(alert(), 0.3)), "still full while it fades out"
+    s.frames(None, 5.0)
+    s.lead.vLead = 0.1
+    assert all(s.frames(alert(), 2.0)), "stop 2: compact again"
+    s.lead.vLead = 2.0
+    assert not s.frames(alert(), 1.0)[-1], "stop 2: full again when the car ahead moves off"
+
+  def test_another_alert_in_between_also_ends_the_prompt(self):
+    s = StopFlow()
+    s.lead.present, s.lead.vLead = True, 2.0
+    assert not s.frames(alert(), 1.0)[-1]
+    s.frames(alert(kind="steerSaturated/warning", text1="TAKE CONTROL", text2="Turn Exceeds Steering Limit"), 0.5)
+    s.lead.vLead = 0.0
+    assert all(s.frames(alert(), 1.0))
+
+  def test_a_moment_of_radar_noise_does_not_bring_the_full_prompt_back(self):
+    s = StopFlow()
+    s.lead.present, s.lead.vLead = True, 0.0
+    for _ in range(5):
+      s.lead.vLead = 1.6
+      assert all(s.frames(alert(), LEAD_DEPART_S - 0.1)), "under the debounce"
+      s.lead.vLead = 0.3
+      assert all(s.frames(alert(), 0.2))
+
+  def test_a_radar_state_from_before_this_drive_or_stale_is_ignored(self):
+    s = StopFlow()
+    s.lead.present, s.lead.vLead = True, 3.0
+    s.sm.recv_frame['radarState'] = STARTED - 1   # seen, but last drive's
+    assert all(s.frames(alert(), 2.0))
+    s.sm.recv_frame['radarState'] = STARTED + 5
+    s.sm.alive['radarState'] = False              # this drive's, but no longer arriving
+    assert all(s.frames(alert(), 2.0))
+    s.sm.alive['radarState'] = True
+    assert not s.frames(alert(), 1.0)[-1], "fresh: it counts"
+
+  def test_the_setting_off_mid_stop_draws_it_full_and_forgets(self):
+    s = StopFlow()
+    s.lead.present, s.lead.vLead = True, 2.0
+    assert not s.frames(alert(), 1.0)[-1]
+    s.settings = with_(stopped_banner=False)
+    assert not any(s.frames(alert(), 0.2))
+    s.settings, s.lead.vLead = HS.ALL_ON, 0.0
+    assert all(s.frames(alert(), 0.2)), "on again: a fresh start, compact"
 
   def test_second_line(self):
     assert short_line2("Resume Driving Manually") == "resume manually"
@@ -332,9 +443,11 @@ class TestAlertRules(OpenpilotTestCase):
 
   def test_the_pending_limit(self):
     sm = drive(limit=50)
-    assert pending_limit(sm, True) == 50
-    assert pending_limit(sm, False) == round(50 / KPH * 2.23694)
-    assert pending_limit(FakeSM(), True) == 0
+    assert pending_limit(sm, True) == (50, 0)
+    assert pending_limit(sm, False) == (round(50 / KPH * 2.23694), 0)
+    assert pending_limit(drive(limit=50, offset=5), True) == (50, 5), "the offset, as sunnypilot's sign shows it"
+    assert pending_limit(drive(limit=50, offset=-3), True) == (50, -3)
+    assert pending_limit(FakeSM(), True) == (0, 0)
 
 
 # ------------------------------------------------------------------------------------------- sunnylink
@@ -393,7 +506,8 @@ class TestUpstreamHunks(OpenpilotTestCase):
     marked(ALERTS, ("import hud_alerts", "hud_alerts.draw_compact_standstill(", "hud_alerts.draw_pending_limit("))
     marked(PARAMS_KEYS, [f'"{k}"' for k in HS.ALL_PARAMS], window=10)
     marked(VISUALS_YAML, ("id: hud_comma4",))
-    marked(MICI_SETTINGS, ("icons_mici/gateway.png",), window=5)
+    marked(MICI_SETTINGS, ("import cloudlog", "def gateway_icon():", "icons_mici/gateway.png", "gateway_icon())"), window=5)
+    marked(REPO / ".gitattributes", ("icons_mici/gateway.png -filter",))
 
   def test_the_hooks_fall_through_to_the_stock_drawing(self):
     src = ALERTS.read_text(encoding="utf-8")
@@ -411,18 +525,41 @@ class TestUpstreamHunks(OpenpilotTestCase):
 
 
 # ------------------------------------------------------------------------------------------- the gateway icon
+def git(*args) -> subprocess.CompletedProcess:
+  return subprocess.run(["git", "-C", str(REPO), *args], capture_output=True)
+
+
 class TestGatewayIcon(OpenpilotTestCase):
   def test_the_tile_uses_icon_b_and_the_dialog_keeps_the_arrow(self):
     settings = MICI_SETTINGS.read_text(encoding="utf-8")
     tile = settings[settings.index('board_btn = SettingsBigButton(tr("gateway")'):settings.index("board_btn.set_click_callback")]
-    assert "icons_mici/gateway.png" in tile and "icon_software.png" not in tile
+    assert "gateway_icon()" in tile
+    helper = settings[settings.index("def gateway_icon():"):settings.index("class SunnylinkBigButton")]
+    loaded, fallback = helper.split("except Exception:")
+    assert "icons_mici/gateway.png" in loaded and "icon_software.png" not in loaded
+    assert "if tex.id:" in loaded, "an empty texture (a failed load at another scale) also falls back"
+    assert "icon_software.png" in fallback, "the old icon only when B cannot be loaded"
     assert "icon_software.png" in BOARD.read_text(encoding="utf-8"), "the update dialog describes the action: an arrow"
 
   def test_the_asset(self):
+    # never skipped: a git-lfs pointer here is the bug (the fork cannot push LFS objects; see the next test)
     data = GATEWAY_ICON.read_bytes()
-    if data.startswith(b"version https://git-lfs"):
-      self.skipTest("git-lfs pointer: the image itself is not checked out here")
-    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    assert data[:8] == PNG_SIGNATURE, f"not a PNG: {data[:60]!r}"
     w, h = int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
     assert (w, h) == (128, 88), "128 on the long side, like the rest of icons_mici"
     assert data[24] == 8 and data[25] == 6, "8-bit RGBA: white on transparent"
+
+  def test_git_stores_the_png_itself_not_an_lfs_pointer(self):
+    # .gitattributes sends *.png to sunnypilot's LFS server, which the fork cannot push to: a pointer committed here
+    # would reach the car without its object. The path override keeps this file a plain git object.
+    if git("rev-parse", "--is-inside-work-tree").returncode != 0:
+      return  # an exported tree without git: test_the_asset has already checked the file itself
+    rel = GATEWAY_ICON.relative_to(REPO).as_posix()
+    attrs = git("check-attr", "filter", "--", rel).stdout.decode()
+    assert attrs.strip().endswith("filter: unset"), f"the LFS filter applies to it: {attrs!r}"
+    staged = git("cat-file", "-p", f":{rel}")
+    assert staged.returncode == 0 and staged.stdout[:8] == PNG_SIGNATURE, f"the index holds {staged.stdout[:60]!r}"
+    committed = git("cat-file", "-p", f"HEAD:{rel}")
+    if committed.returncode == 0:  # absent only before the commit that adds it
+      assert committed.stdout[:8] == PNG_SIGNATURE, f"HEAD holds {committed.stdout[:60]!r}"
+    assert staged.stdout == GATEWAY_ICON.read_bytes()

@@ -257,7 +257,7 @@ anything above 0 is where the next merge can conflict.
 * *modify/delete*: upstream deleted the old path; the fork's edits were re-applied to the new one.
 * *added in the merge*: the file carries a fork change for the first time, made during or after the merge.
 
-### sunnypilot: 96 files and the submodule pointer
+### sunnypilot: 97 files and the submodule pointer
 
 Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-specific, gated by `SpeedLimitMapStrict` and `OsmAutoUpdateWeekly`, markers `FORK(SPEED-LIMIT)`.
 
@@ -273,10 +273,13 @@ with seven settings (`Hud*`, sunnylink Visuals → HUD); all off is the stock sc
 (`test_hud_render.py`). The logic lives in `selfdrive/ui/sunnypilot/mici/onroad/hud_*.py`; the upstream files carry one
 import, one construction and one call (`augmented_road_view.py`) and one import and two calls (`alert_renderer.py`),
 each with a fall-through to the stock drawing. Markers `FORK(HUD)`. The changelog entry is in
-`docs/CHANGELOG_SERIAL_STEERING.md` (2026-10-03).
+`docs/CHANGELOG_SERIAL_STEERING.md` (2026-10-03). The gateway icon is the fork's first PNG of its own: `.gitattributes`
+exempts it from Git LFS by path, because LFS here is sunnypilot's GitLab, which the fork cannot push to - see
+**Pushing** below before adding any other file an LFS pattern matches.
 
 | St | Path | Area | What the fork changes | Upstream commits | Last merge |
 |---|---|---|---|---|---|
+| M | `.gitattributes` | HUD | One `FORK(HUD)` block at the end: `openpilot/sunnypilot/selfdrive/assets/icons_mici/gateway.png -filter binary`, so the fork's icon is a plain git object, not an LFS pointer whose object would never reach the car. Upstream file: a pattern upstream adds above it cannot undo it (later lines win). | 0 | new |
 | M | `.gitmodules` | — | Points the `opendbc` submodule URL at `SoRadGaming/opendbc` and adds `branch = sp-master`. | 0 | auto |
 | M | `opendbc_repo` (gitlink) | — | Pins the merged `sp-master`, not upstream's `f95f996f`. | 0 | submodule conflict |
 | A | `CHANGELOG-elesys.md` | C | History of the longitudinal work. | 0 | clean |
@@ -315,15 +318,15 @@ each with a fall-through to the stock drawing. Markers `FORK(HUD)`. The changelo
 | M | `openpilot/selfdrive/ui/sunnypilot/layouts/settings/vehicle/brands/honda.py` | C | `HondaSettings`: toggle, learned values (gas law on the Accord AU only, engaged time per drive mode, brake gain) and reset of the brake gain only (`LEARNED_DEFAULTS`, `RESET_KEYS`, `MODE_SLOTS`, `GAS_LAW_PARAM`, `GAS_LAW_PLATFORMS`, `car_platform`, `gas_law_applies`, `gas_law_label`, `mode_minutes`, `reset_learned_values`). | 0 | moved |
 | A | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/board.py` | A | Settings > gateway page: `BoardLayoutMici`, `UpdateBoardButton`, `board_page_visible`, `bundled_firmware`. | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/maps.py` | SL | Settings > maps: `MapsLayoutMici`, `MapDataInfo` (one card per data set), `UpdateOsmButton` (offroad only, Always Offroad with the car on included; writes `OsmDbUpdatesCheck`), the "update weekly" toggle. | 0 | new |
-| M | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py` | A+C+SL | Adds a "vehicle" row (C) and a "gateway" row (A) with `items.insert(2, ...)` and `items.insert(3, ...)`, a form two tests pin, and a "maps" row (SL) with `items.insert(4, ...)`. The gateway tile's icon is `icons_mici/gateway.png` (HUD, 2026-10-03; it was `offroad/icon_software.png`). | 0 | CONFLICT |
+| M | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py` | A+C+SL | Adds a "vehicle" row (C) and a "gateway" row (A) with `items.insert(2, ...)` and `items.insert(3, ...)`, a form two tests pin, and a "maps" row (SL) with `items.insert(4, ...)`. The gateway tile's icon is `icons_mici/gateway.png` (HUD, 2026-10-03; it was `offroad/icon_software.png`), loaded by `gateway_icon()`, which falls back to `icon_software.png` if it raises or loads empty - the tile is built at UI start - and the `cloudlog` import it logs with. | 0 | CONFLICT |
 | A | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/vehicle.py` | C (+B) | mici vehicle page: `VehicleLayoutMici`, `car_brand()`, `HondaLearnedInfo` (the gas law from the next drive with the brake gain - only the brake on another Honda - and engaged minutes per drive mode, since 2026-10); and (B) the fast-wheel rows, "off on swerve" and "swerve at", the rate (`FastWheelRateToggle`). | 0 | new→moved |
-| A | `openpilot/selfdrive/ui/sunnypilot/mici/onroad/hud_alerts.py`, `hud_cluster.py`, `hud_draw.py`, `hud_model.py`, `hud_settings.py` | HUD | The comma 4 HUD. `hud_settings`: the seven params, read at most once a second, off when unreadable. `hud_model`: what is shown (pure, no raylib): `build_frame()`, `StandstillBanner` (the full prompt again once the car ahead moves off), `pending_limit()`. `hud_cluster`: `HudCluster`, the widget. `hud_alerts`: the banner and the pending-limit icon. `hud_draw`: ink-box text, condensed digits, the AU and electronic signs, `school_cue()`, the stopwatch, the next-limit row, the banner. | 0 | new |
+| A | `openpilot/selfdrive/ui/sunnypilot/mici/onroad/hud_alerts.py`, `hud_cluster.py`, `hud_draw.py`, `hud_model.py`, `hud_settings.py` | HUD | The comma 4 HUD. `hud_settings`: the seven params, read at most once a second, off when unreadable. `hud_model`: what is shown (pure, no raylib): `build_frame()` (the next limit only while the limit on screen is from the map, its distance run down by `vEgo` between the 1 Hz map messages; the NSW cues only in `nswZone.state` 2 or 4), `StandstillBanner` (the full prompt again once a fresh `radarState` lead has moved off for 0.4 s; `observe()`, called by the cluster every frame, ends it when the prompt clears), `pending_limit()` (limit and offset). `hud_cluster`: `HudCluster`, the widget; hidden until an alert has faded out. `hud_alerts`: the banner and the pending-limit icon. `hud_draw`: ink-box text, condensed digits, the AU and electronic signs, `school_cue()`, the stopwatch, the next-limit row, the banner, sunnypilot's offset badge. | 0 | new |
 | A | `openpilot/selfdrive/ui/tests/test_eps_lkas_flasher.py` | A | Flasher protocol, image checks and trace (26 tests). | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/tests/test_eps_lkas_hook.py` | A | pandad hook ordering, the onroad refusal and param registration (10 tests). | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/tests/test_gateway_board_settings.py` | A (+B) | DBC, capnp, params, page and button gates (25 tests), including `test_lat_ready_means_lateral_is_enabled_not_merely_possible` (B). | 0 | new→moved |
 | A | `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py` | C | Params, UI, sunnylink and statsd in sync with the tuner and the gas law; no retired key named anywhere; RESET keeps the mode times; the gas-law readout gated to `HONDA_ELESYS` (18 tests). | 0 | new→moved |
-| A | `openpilot/selfdrive/ui/tests/test_hud_cluster.py` | HUD | The HUD's rules (next-limit window and direction, school and Variable cues only on the published NSW limit, the timer, MAX, missing and stale messages, imperial), the settings and their once-a-second read, the banner's lead-departure rule, sunnylink, the `FORK(HUD)` markers and fall-throughs, the gateway icon (37 tests). | 0 | new |
-| A | `openpilot/selfdrive/ui/tests/test_hud_render.py` | HUD | The real `AugmentedRoadView` in a headless raylib window (child process; skips where no window opens), 12 states: every setting off equals the stock drawing pixel for pixel, an alert's own setting off draws it as stock, and each piece is where it should be (11 tests). | 0 | new |
+| A | `openpilot/selfdrive/ui/tests/test_hud_cluster.py` | HUD | The HUD's rules (next-limit window and direction, school and Variable cues only on the published NSW limit, the timer, MAX, missing and stale messages, imperial), the settings and their once-a-second read, the banner's lead-departure rule through two stops in the UI's real call order, sunnylink, the `FORK(HUD)` markers and fall-throughs, the gateway icon and that git stores it as a PNG, not an LFS pointer (45 tests). | 0 | new |
+| A | `openpilot/selfdrive/ui/tests/test_hud_render.py` | HUD | The real `AugmentedRoadView` in a headless raylib window (child process; skips where no window opens), 14 states and two sequences (two stops in one drive, an alert fading out): every setting off equals the stock drawing pixel for pixel, an alert's own setting off draws it as stock, each piece is where it should be, and the gateway tile falls back when its PNG is an LFS pointer (16 tests). | 0 | new |
 | A | `openpilot/selfdrive/ui/tests/test_mads_fast_wheel_settings.py` | B | The fast-wheel settings in agreement across `params_keys.h`, `mads.py`, the mici page and sunnylink (15 tests). | 0 | new |
 | A | `openpilot/selfdrive/ui/tests/test_maps_settings.py` | SL | The maps page contract: gates, confirm flow, dates, glyphs (source-parsing tests). | 0 | new |
 | A | `openpilot/selfdrive/ui/tests/test_software_update_button.py` | UPD | The real `CheckUpdateButton` in a headless raylib window, in a child process: the label per phase, a background download's label, the highlight on and off, the tap's signal, onroad (6 tests; skipped where no headless window opens). | 0 | new |
@@ -334,7 +337,7 @@ each with a fall-through to the stock drawing. Markers `FORK(HUD)`. The changelo
 | A | `openpilot/sunnypilot/mapd/osm_auto_update.py` | SL | `auto_update_due()` (pure) and `OsmAutoUpdater`: weekly refresh when parked (no ignition on any panda) on unmetered wi-fi/ethernet, once per boot; `record_completion()` writes `OsmLastCompleteDate`; `answer_request()` clears an `OsmDbUpdatesCheck` (button, OSM panel, sunnylink) that is onroad, has no region or arrives mid-download, before `update_osm_db()` sees it. `is_offroad()`/`is_parked()` are shared with the NSW downloader. | 0 | new |
 | A | `openpilot/sunnypilot/mapd/tests/test_osm_auto_update.py` | SL | The refresh decision and the completion recorder, and the request gate (`TestRequestGate`, `TestUpdateOsmDb`). | 0 | new |
 | M | `openpilot/sunnypilot/modeld_v2/modeld.py` | B+C | The same three edits as `modeld.py`. | 0 | CONFLICT |
-| A | `openpilot/sunnypilot/selfdrive/assets/icons_mici/gateway.png` | HUD | The gateway tile's icon, option "B, inline bridge" (128×88, white on transparent, the harness stubs at 50%; Git LFS like every PNG here). The update dialog keeps `icon_software.png`. | 0 | new |
+| A | `openpilot/sunnypilot/selfdrive/assets/icons_mici/gateway.png` | HUD | The gateway tile's icon, option "B, inline bridge" (128×88, white on transparent, the harness stubs at 50%). A plain git object, not Git LFS like the other PNGs here: `.gitattributes` exempts it (see that row). The update dialog keeps `icon_software.png`. | 0 | new |
 | M | `openpilot/sunnypilot/selfdrive/car/interfaces.py` | C | `FORK(HONDA_ACCORD_9G_AU)` in `_initialize_torque_lateral_control()`: keeps `latAccelOffset` across the EnforceTorqueControl / NNLC re-run of `configure_torque_tune()`, which resets it to 0.0 (2026-10). Only `HONDA_ELESYS` carries a nonzero seed (-0.43); every other car ends where upstream leaves it. | 0 | new |
 | M | `openpilot/sunnypilot/selfdrive/controls/controlsd_ext.py` | B | Fills `CC_SP.lateralControl` from `lac_log` and `LaC`. | 0 | auto |
 | M | `openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_ext_base.py` | B | `update_output_torque()` also freezes on the owning controller's `integrator_frozen`. | 0 | added in the merge |
@@ -499,7 +502,9 @@ are in [NSW-SPEED-ZONES.md](NSW-SPEED-ZONES.md). The UPD key (2026-10-01) sits i
 `UpdaterCurrentReleaseNotes` and `UpdaterFetchAvailable`; MVL's unmerged branch calls its version `UpdaterProgress`
 (an INT), so the name is deliberately different. The file has 291 entries on 2026-10-01 (290 on `nsw-live`, plus this one) and no duplicate. The seven HUD keys
 (2026-10-03) sit in one marked block between `HondaElesysGasLawV2` and `IntelligentCruiseButtonManagement`; no upstream
-or sunnypilot key starts with `Hud`, and the duplicate check below still prints nothing.
+or sunnypilot key starts with `Hud`, and the duplicate check below still prints nothing. On 2026-10-03 the file has 295
+entries (288 on `nsw-live` at `8b7ec463a`, plus the seven HUD keys); the `grep -oE` below prints one more, the
+`{"phase"` inside the `UpdaterDownloadProgress` comment.
 
 **Why a name collision would be silent.** The table is an `std::unordered_map` initializer list. A duplicate key
 compiles without complaint, and only one entry survives. After every merge, check:
@@ -637,9 +642,9 @@ Added since (2026-10-01): `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_
 `openpilot/selfdrive/ui/tests/test_software_update_button.py` (6; it opens a headless raylib window in a child process
 and skips where none opens). The two font-metric tests skip where Pillow or the LFS fonts are missing. Added on 2026-10-03:
 `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_vsa_fault_alert.py` (47), whose font-metric test skips the same way.
-Added 2026-10-03 (HUD): `openpilot/selfdrive/ui/tests/test_hud_cluster.py` (37) and
-`openpilot/selfdrive/ui/tests/test_hud_render.py` (11; the real onroad view in a headless raylib window in a child
-process, about 75 s, skipping where none opens; `HUD_RENDER_OUT=<dir>` keeps its PNGs).
+Added 2026-10-03 (HUD): `openpilot/selfdrive/ui/tests/test_hud_cluster.py` (45) and
+`openpilot/selfdrive/ui/tests/test_hud_render.py` (16; the real onroad view in a headless raylib window in a child
+process, about 90 s, skipping where none opens; `HUD_RENDER_OUT=<dir>` keeps its PNGs).
 
 `test_stopping_debounce.py` no longer stubs `sys.modules`; it imports the real `longcontrol`, `drive_helpers` and
 `stopping_tune`.
@@ -705,6 +710,11 @@ Do the sunnypilot half on Linux or WSL. The build and most tests need it. The 20
   clone never downloaded, so the LFS pre-push hook fails trying to upload them. Push with
   `GIT_LFS_SKIP_PUSH=1 git push origin <branch>`. Before a device updates from that branch, check that a fresh clone of
   it can `git lfs pull` the models (not verified in 2026-09).
+  **The flip side: a file the fork adds must never be an LFS pointer.** `.gitattributes` puts every `*.png`, `*.svg`,
+  `*.ttf`, `*.wav` (and more) into LFS, the skip above means the fork never uploads an LFS object, and the LFS server
+  is sunnypilot's anyway - so a new fork PNG would reach the car as a 130-byte pointer. Exempt each such file by path
+  at the end of `.gitattributes` (as `FORK(HUD)` does for `icons_mici/gateway.png`), then `git rm --cached` and
+  `git add` it again; `git lfs ls-files` must not list it.
 * **Calling WSL from Git Bash.** Put the commands in a script file and run it with
   `MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-24.04 -- bash /mnt/c/.../script.sh`; keep `$` out of inline `-c` strings,
   which Git Bash expands first. If `wsl.exe` fails with `HCS_E_CONNECTION_TIMEOUT`, `wsl --shutdown` and try again.
@@ -1011,8 +1021,9 @@ write the next `UPSTREAM-<date>.md`.
     and the sunnypilot `events.py`. In those upstream files every changed line is marked or sits under a marker in
     its own `git diff -U0` hunk, except `updated.py`'s deleted `# TODO: show agnos download progress`.
   * The HUD (2026-10-03) adds `FORK(HUD)` on its hunks in `augmented_road_view.py` (3), the mici
-    `alert_renderer.py` (3), `params_keys.h` (1, over the block), the mici `settings.py` (1, the gateway icon) and
-    sunnylink's `visuals.yaml` (1); its new files carry it in their headers.
+    `alert_renderer.py` (3), `params_keys.h` (1, over the block), the mici `settings.py` (3: the `cloudlog` import,
+    `gateway_icon()` and the tile's comment), sunnylink's `visuals.yaml` (1) and `.gitattributes` (1, the LFS
+    exemption); its new files carry it in their headers.
   * `git grep -n -E "FORK(\(|:)"` lists them. A plain `git grep FORK` also hits upstream Tesla DBC strings.
   * The older sunnypilot hunks still carry prose markers only: "LIN-bus gateway:", "HONDA_ELESYS:", "EPS-LKAS".
 * **Per-car gating, so other cars keep upstream behaviour:**

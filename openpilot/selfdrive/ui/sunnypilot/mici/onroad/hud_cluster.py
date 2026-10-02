@@ -17,8 +17,9 @@ as the electronic sign.
 
 WHAT IS SHOWN, from which message, and what a missing message does: hud_model.py decides; this file only draws.
 
-WHERE IT IS DRAWN: under the alerts, and the whole cluster fades out (fast) while an alert is up - except the compact
-standstill banner (hud_alerts.py), which leaves the top right free. The 60 px strip on the right (the confidence ball)
+WHERE IT IS DRAWN: under the alerts, and the whole cluster fades out (fast) while an alert is up, and comes back only
+once the alert has finished fading out, so the two never overlap - except the compact standstill banner (hud_alerts.py),
+which leaves the top right free. The 60 px strip on the right (the confidence ball)
 is outside the content rect and is never painted. While the stock MAX number shows (2.5 s after a set-speed change) the
 speed digits hide, so two big numbers are never on screen together.
 
@@ -30,6 +31,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_draw as hd
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import HudFrame, build_frame, received, SCHOOL_NONE, SCHOOL_ACTIVE
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import HudSettings, hud_settings, NEXT_BAR, NEXT_TEXT, NEXT_BOTH
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_alerts import standstill_banner
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import Widget
@@ -43,6 +45,14 @@ SPEED_SIZE = 50         # nominal; ~35 px digits
 ROW2_CY = 77            # the next-limit sign spans 59..95: at or above the horizon, clear of the overtaking lane
 NEXT_D = 36
 STOPWATCH_SIZE = 28
+TIMER_WIDEST = "59:59"  # the stop time up to this is drawn at full size; "1:00:00" and up shrink to its width, so the
+                        # stopwatch never reaches into the compact banner
+
+
+def timer_size(txt: str) -> float:
+  """The stop time's nominal size: SPEED_SIZE up to the width of TIMER_WIDEST, smaller beyond it."""
+  tw, max_w = hd.ink(txt, SPEED_SIZE)[0], hd.ink(TIMER_WIDEST, SPEED_SIZE)[0]
+  return SPEED_SIZE if tw <= max_w else SPEED_SIZE * max_w / tw
 
 
 def _format_dist(d: float) -> str:
@@ -59,6 +69,10 @@ class HudCluster(Widget):
     self._alpha = FirstOrderFilter(0.0, 0.05, 1 / gui_app.target_fps)
     self._stop_start: float | None = None
     self._v_ego_cluster_seen = False
+    self._map_frame = -1
+    self._map_t = 0.0
+    self._alert = None
+    self._now = 0.0
     self.settings: HudSettings = hud_settings.settings
     self.frame = HudFrame()
 
@@ -66,16 +80,24 @@ class HudCluster(Widget):
     return bool(self._hud_renderer is not None and self._hud_renderer.drawing_top_icons())
 
   def _alert_covers(self) -> bool:
-    if self._alert_renderer is None:
-      return False
-    from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_alerts import standstill_banner
-    alert, gone = self._alert_renderer.will_render()
-    return alert is not None and not gone and not standstill_banner.compact(alert, self.settings, ui_state.sm)
+    """An alert is drawn this frame - including the previous one while it fades out, so the cluster comes back only
+    once it has gone - and it is not the compact banner."""
+    alert = self._alert
+    return alert is not None and not standstill_banner.compact(alert, self.settings, ui_state.sm, ui_state.started_frame,
+                                                               self._now)
 
   def _update_state(self):
     self.settings = hud_settings.get()
     sm = ui_state.sm
-    now = rl.get_time()
+    now = self._now = rl.get_time()
+    # what the alert renderer will draw this frame (it renders after the cluster); every frame, so the standstill
+    # banner sees the prompt clear even though the renderer stops asking once there is no alert
+    self._alert = self._alert_renderer.will_render()[0] if self._alert_renderer is not None else None
+    standstill_banner.observe(self._alert)
+    # liveMapDataSP is 1 Hz: how long ago the one in sm arrived, to run the next limit's distance down in between
+    map_frame = sm.recv_frame['liveMapDataSP']
+    if map_frame != self._map_frame:
+      self._map_frame, self._map_t = map_frame, now
     if received(sm, 'carState', ui_state.started_frame):
       cs = sm['carState']
       self._v_ego_cluster_seen = self._v_ego_cluster_seen or cs.vEgoCluster != 0.0
@@ -89,7 +111,8 @@ class HudCluster(Widget):
     stopped_s = (now - self._stop_start) if self._stop_start is not None else None
     self.frame = build_frame(sm, self.settings, started_frame=ui_state.started_frame, is_metric=ui_state.is_metric,
                              speed_limit_mode_on=ui_state.speed_limit_mode != 0, stopped_s=stopped_s,
-                             v_ego_cluster_seen=self._v_ego_cluster_seen, max_visible=self._max_visible())
+                             v_ego_cluster_seen=self._v_ego_cluster_seen, max_visible=self._max_visible(),
+                             map_age_s=now - self._map_t)
 
   def _render(self, rect: rl.Rectangle):
     f = self.frame
@@ -113,7 +136,8 @@ class HudCluster(Widget):
         hd.school_cue(sign_cx, cy, SIGN_D, f.school == SCHOOL_ACTIVE, rl.get_time(), alpha=alpha)
 
     if f.timer_s is not None:
-      w, _ = hd.big_digits(speed_r, cy, hd.fmt_mmss(f.timer_s), SPEED_SIZE, alpha=alpha)
+      txt = hd.fmt_mmss(f.timer_s)
+      w, _ = hd.big_digits(speed_r, cy, txt, timer_size(txt), alpha=alpha)
       hd.stopwatch_glyph(speed_r - w - GAP, cy, size=STOPWATCH_SIZE, alpha=alpha)
     elif f.speed is not None:
       hd.big_digits(speed_r, cy, str(f.speed), SPEED_SIZE, alpha=alpha)

@@ -1713,19 +1713,19 @@
               "key": "HudStoppedTimer",
               "widget": "toggle",
               "title": "Stop Timer",
-              "description": "After a second at a standstill the speed becomes a stopwatch and how long you have been stopped."
+              "description": "After a second at a standstill the speed becomes a stopwatch and how long you have been stopped. While engaged, a stop raises the 'take control' prompt, which covers the screen - and the stopwatch - unless Compact Take Control Banner When Stopped is on."
             },
             {
               "key": "HudStoppedBanner",
               "widget": "toggle",
               "title": "Compact Take Control Banner When Stopped",
-              "description": "At a standstill the 'take control, resume driving manually' prompt is a small banner top left instead of covering the screen. It goes back to full screen when the car ahead moves off."
+              "description": "At a standstill the 'take control, resume driving manually' prompt is a small banner top left instead of covering the screen. It goes back to full screen when the car ahead moves off, until you drive away; the next stop starts small again."
             },
             {
               "key": "HudConfirmLimit",
               "widget": "toggle",
               "title": "Show the Limit in the Confirm Prompt",
-              "description": "The 'press - (or +) to confirm speed limit' prompt shows the limit it is asking about, with a dashed ring until you confirm it, beside the green - or +."
+              "description": "The 'press - (or +) to confirm speed limit' prompt shows the limit it is asking about, with a dashed ring until you confirm it, beside the green - or +. A speed limit offset shows as a small number on the sign, as on sunnypilot's own sign."
             }
           ]
         },

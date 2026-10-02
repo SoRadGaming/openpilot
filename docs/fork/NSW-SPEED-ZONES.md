@@ -423,8 +423,9 @@ to log-only in a tunnel would otherwise let OSM's surface-street value through t
 
 Since 2026-10-03 the comma 4's speed cluster (`selfdrive/ui/sunnypilot/mici/onroad/hud_*.py`, area **HUD** in
 [README.md](README.md), markers `FORK(HUD)`) draws three things from this feature. Each needs the limit on screen -
-the resolver's `speedLimitLast`, source map - to **be** the NSW limit mapd published: `nswZone.mode` 2 (live) and
-`round(nswZone.speedLimit)` equal to it. In log-only mode, or while the resolver holds another value, nothing below is
+the resolver's `speedLimitLast`, source map - to **be** the NSW limit mapd published: `nswZone.mode` 2 (live),
+`nswZone.state` 2 (matched) or 4 (dead reckoning, the tunnel line's limit) and `round(nswZone.speedLimit)` equal to it.
+In log-only mode, in an ambiguous or unmatched state, or while the resolver holds another value, nothing below is
 drawn: `nswZone` then describes a limit that is not the one shown.
 
 | on screen | from | setting (sunnylink Visuals → HUD) |
@@ -433,7 +434,7 @@ drawn: `nswZone` then describes a limit that is not the one shown.
 | The same lamps unlit (grey), no text | `schoolZone` 1 (inactive) | the same |
 | Nothing | `schoolZone` 3 (unknown): nothing is published then, so there is no NSW limit on screen to mark | - |
 | The electronic sign: black face, red ring, white digits | `nswZone.variable` (a Variable zone: the published value is its static maximum, and the overhead sign may show less) | Electronic Sign in Variable Zones (`HudVariableLimitSign`) |
-| The next lower limit (small sign, distance and/or bar) | `liveMapDataSP.speedLimitAhead*`: what mapd published - only while matched (state 2), so **never while dead reckoning** | Next Lower Limit (`HudNextLimit`) |
+| The next lower limit (small sign, distance and/or bar) | `liveMapDataSP.speedLimitAhead*`: what mapd published - only while matched (state 2), so **never while dead reckoning** - and only while the limit on screen is source map. The 1 Hz distance is run down by `vEgo` between messages (for at most 1 s) | Next Lower Limit (`HudNextLimit`) |
 
 The sign keeps its round shape in a school zone: the owner rejected the NSW plate shape in the mockups ("keep the same
 shape as all the others"). The lamp and label drawing is one function, `hud_draw.school_cue()`, so it can be restyled

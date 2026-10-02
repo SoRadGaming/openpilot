@@ -12,12 +12,16 @@ the settings off those lines fall through to the stock drawing.
    Driving Manually' (manualRestart: userPrompt, mid, silent, low priority), drawn over the whole screen for the whole
    stop. With the setting on it is a 66 px banner top left in the alert's own colour instead, and the road - and the
    cluster's stop time - stay visible. The FULL alert comes back when the car ahead moves off (hud_model.StandstillBanner):
-   the one moment in a stop the prompt is for. It stays full until the prompt clears.
+   the one moment in a stop the prompt is for. It stays full until the prompt clears; the next stop starts compact.
 
 2. THE SPEED-LIMIT CONFIRM SHOWS THE LIMIT (HudConfirmLimit). 'Press - (or +) to confirm speed limit' draws a green
    arrow and never says which limit. With the setting on the arrow's box holds the pending limit (a sign with a dashed
-   ring: not confirmed yet) beside the same green '-' or '+'. The key keeps the arrow's blink; the sign stays solid.
+   ring: not confirmed yet) beside the same green '-' or '+'. A speed-limit offset is shown on the sign as a small
+   number, as sunnypilot's own sign does: the confirm sets limit + offset, and the '+' or '-' compares the set speed with
+   that sum. The key keeps the arrow's blink; the sign stays solid.
 """
+import pyray as rl
+
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_draw as hd
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import StandstillBanner, pending_limit, short_line2
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import hud_settings
@@ -33,7 +37,7 @@ standstill_banner = StandstillBanner()
 def draw_compact_standstill(ar, alert) -> bool:
   """Called by AlertRenderer._render with the alert it is about to draw. Draws the banner and returns True, or returns
   False and the stock full-screen drawing runs."""
-  if not standstill_banner.compact(alert, hud_settings.get(), ui_state.sm):
+  if not standstill_banner.compact(alert, hud_settings.get(), ui_state.sm, ui_state.started_frame, rl.get_time()):
     return False
   from openpilot.selfdrive.ui.mici.onroad.alert_renderer import ALERT_COLORS, AlertStatus
   color = ALERT_COLORS.get(alert.status, ALERT_COLORS[AlertStatus.normal])
@@ -50,12 +54,13 @@ def draw_pending_limit(ar, alert_layout) -> bool:
   tid = icon.texture.id
   if tid not in (ar.arrow_up.id, ar.arrow_down.id):
     return False
-  value = pending_limit(ui_state.sm, ui_state.is_metric)
+  value, offset = pending_limit(ui_state.sm, ui_state.is_metric)
   if value <= 0:
     return False
   size = icon.texture.width
   bx = ar._rect.x + ar._rect.width - icon.margin_x - size
   by = ar._rect.y + icon.margin_y
   full = ar._alpha_filter.x
-  hd.pending_icon(bx, by, size, value, lower=tid == ar.arrow_down.id, key_alpha=(icon.alpha / 255.0) * full, sign_alpha=full)
+  hd.pending_icon(bx, by, size, value, lower=tid == ar.arrow_down.id, key_alpha=(icon.alpha / 255.0) * full, sign_alpha=full,
+                  offset=offset)
   return True
