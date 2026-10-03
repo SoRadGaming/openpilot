@@ -71,35 +71,53 @@ the top of the right strip, above the confidence ball, one thing at a time:
   model's speed plan comes to a standstill (`20 m`), when that is within the
   next 10 seconds and no car is in front of it (the radar's car inside that
   distance + 10 m means the plan stops behind a car - your dashboard shows
-  that). **White with a solid line only while openpilot is driving your speed
-  and the model's plan is the one it follows; grey with a dashed line when it is
-  only the model's plan** and openpilot is not braking for it (disengaged, chill
-  mode, or another target in charge). It appears after 0.3 s and goes 0.5 s
-  after, so it does not flicker, and it goes at once in the last metre and at a
-  standstill, where the stopwatch takes over. Metres (5 m steps, whole metres
-  under 10 m), or feet if the comma is set to imperial.
+  that). Once a stop is showing, only a car within 5 m past it takes it away:
+  a car parked a little past the line, coming and going on the radar, can no
+  longer blank the countdown. **White with a solid line only while openpilot is
+  driving your speed and the model's plan is the one it follows; grey with a
+  dashed line when it is only the model's plan** and openpilot is not braking
+  for it (disengaged, chill mode, or another target in charge). It appears after
+  0.3 s and goes 0.5 s after, so it does not flicker, and it goes at once in the
+  last metre and at a standstill, where the stopwatch takes over. Metres (whole
+  metres under 20 m, then 5 m steps), or feet if the comma is set to imperial.
+  **The number only counts down** - it goes back up only if the stop moves 5 m
+  or more further away, so the plan's twenty re-calculations a second do not
+  make it jitter (`9-10-9`, `6-7-8`).
 * **It never says why.** Nothing on the comma - the model or any other message -
   knows whether the plan stops for a red light, a stop line, a give-way or a
   queue the radar has not picked up yet, let alone a light's colour (the
   research went through every field). So there are no light or sign icons, as
   you decided.
 * **Curve:** a curve arrow, left or right (from the model's predicted path), and
-  openpilot's own target speed for the curve (`37 km/h`), while Smart Cruise
-  Control is slowing for a curve or about to (vision: entering or turning; map:
-  turning) AND it is what limits your speed. Not while you hold the gas, not when
-  your set speed is already lower.
+  openpilot's own target speed for the curve, in 5 km/h steps as curve signs
+  are (`35 km/h`), while Smart Cruise Control is slowing the car for a curve
+  (vision: entering or turning; map: turning) AND it is what limits your speed
+  AND its target is below your speed - it appears once the target is 2 km/h
+  under it and goes once it is 3 km/h over. On the motorway, where its target
+  is your own speed, it shows nothing. It goes **the moment you press the gas
+  or the brake** (openpilot is no longer driving the speed), not half a second
+  later. Not when your set speed is already lower.
 * A planned stop comes before a curve.
 * **The confidence ball keeps its size, colours and maths.** While an item shows
   it is held just under it - it moves down only if it would otherwise reach the
-  item - and glides back after. With both settings off the strip is today's,
-  pixel for pixel.
-* **On your 1 Oct drive** (49 min) it would have shown 2 planned stops and 6
+  item. The item fades in over 0.15 s while the ball eases down out of its way
+  (it used to jump 90 px in one frame, which could read as a sudden drop in
+  confidence), and fades out while the ball eases back. With both settings off
+  the strip is today's, pixel for pixel.
+* **On your 1 Oct drive** (49 min) it would have shown 2 planned stops and 4
   curves, nothing else. The red light on Bringelly Rd: `20 m` grey 4.4 s before
-  you stopped, counting down to `2 m` - grey because you were driving; engaged on
-  the model's plan it is white. Creeping in the Pyrmont queue at 13 km/h: grey
-  `10 m` (you did not stop: the plan is the model's intent, not a promise). The
-  plan touching a stop for one frame 11 s later, engaged: ignored. The Northern
-  Road curve: a left arrow, the target falling from `58` to `32 km/h`.
+  you stopped, counting down a metre at a time to `2 m` - grey because you were
+  driving; engaged on the model's plan it is white. Creeping in the Pyrmont queue
+  at 13 km/h: grey `11 m` down to `6 m` (you did not stop: the plan is the
+  model's intent, not a promise). The plan touching a stop for one frame 11 s
+  later, engaged: ignored. The Northern Road curve: a left arrow, `50`, `45`,
+  `40 km/h`, gone the moment you pressed the gas, then `40` to `30` in the
+  turn. On the motorway at 84 km/h, through a lane change, where it used to
+  show `87 km/h` (the target was your own speed): nothing.
+* **On route 110** (before the VSA fault), engaged at a light with no car ahead:
+  white `40 m`, counting down to `1 m` without a gap. Before this fix it went
+  blank for 0.65 s at `7 m` - a car stopped 8-12 m past the line came and went on
+  the radar.
 
 **Everything is a setting**, in sunnylink under **Visuals → HUD** (shown for a
 comma 4 only), all on by default: Speed and Speed Limit, Next Lower Limit
@@ -133,17 +151,20 @@ today's screen, pixel for pixel** - checked over eleven real moments of your
   is not built.
 * **What does not change:** no alert's text, sound, priority or timing; nothing
   that drives the car. The screen only.
-* **Tests:** 65 (the rules, the settings and their once-a-second read, the
+* **Tests:** 71 (the rules, the settings and their once-a-second read, the
   banner through two stops in the order the screen really calls it, the right
   rail's rules - where the plan stops, the debounce both ways, white vs grey, a
-  car inside the stop, standstill, the curve states, priority, each toggle, every
+  car inside the stop and the parked car past the line, standstill, the number
+  only counting down, the curve states, the curve only while the car is slowing
+  for it, its 5 km/h steps, the gas and the brake, priority, each toggle, every
   message missing or stale - sunnylink, the markers, the icon - including that
   git holds the PNG itself) and 24 that draw the real onroad view in a headless
   window per state - including "every setting off = the stock pixels", "an
   alert's own setting off = that alert as stock", two stops in one drive, an
   alert fading out, an hour-long stop, the gateway icon replaced by an LFS
-  pointer, the rail's item only in the ball's strip, the ball held under it and
-  back after, and "Planned Stop and Curve Speed off = the stock strip".
+  pointer, the rail's item only in the ball's strip, fading in and out, the ball
+  held under it and back after, and "Planned Stop and Curve Speed off = the
+  stock strip".
 * **New params:** `HudSpeedCluster`, `HudNextLimit`, `HudSchoolZoneCue`,
   `HudVariableLimitSign`, `HudStoppedTimer`, `HudStoppedBanner`,
   `HudConfirmLimit`, `HudPlannedStop`, `HudCurve` (backed up with your settings).
@@ -152,10 +173,14 @@ today's screen, pixel for pixel** - checked over eleven real moments of your
   sign appears only for drops and only in the last 15 s / 500 m; at every stop
   behind a car - the second and third too - the small banner, the timer
   counting, and the full prompt when that car moves off. A school zone in its
-  hours, if your route has one. Engaged in experimental mode, at a red light with
-  no car ahead: the planned stop white and counting down; disengaged, the same
-  grey and dashed. A sharp curve engaged: the arrow points the right way and the
-  speed is close to what the car slows to.
+  hours, if your route has one. Driving yourself, at a red light with no car
+  ahead: the planned stop grey and dashed, counting down. **Only once the VSA is
+  repaired (DTC 32-11) and you use openpilot's speed control again - not before,
+  as you decided:** engaged in experimental mode at a red light with no car
+  ahead, the planned stop white and counting down; a sharp curve engaged, the
+  arrow pointing the right way and the speed close to what the car slows to. The
+  white stop and the curve cannot appear without openpilot driving the speed, so
+  there is nothing to test there until then.
 
 ---
 
