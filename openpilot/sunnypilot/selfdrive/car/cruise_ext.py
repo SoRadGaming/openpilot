@@ -127,6 +127,13 @@ class VCruiseHelperSP:
         return True
       if button_type == ButtonType.accelCruise and self.req_plus:
         return True
+      # FORK(SPEED-LIMIT): a press the OTHER way while the 'press + (or -) to confirm' prompt is up is ignored too, not a
+      # set-speed change: '-' with the gas down raised the set speed to vEgo (route 114, 50 -> 72.5 km/h, still asking
+      # for '+'). It confirms nothing either (the planner takes only the asked-for button), so the prompt stays until the
+      # right press or its timeout. Non-PCM cruise only: that prompt's flow (PCM long asks for a set speed instead).
+      if not self.CP.pcmCruise and button_type in (ButtonType.accelCruise, ButtonType.decelCruise) and \
+         (self.req_plus or self.req_minus):
+        return True
 
     return False
 
