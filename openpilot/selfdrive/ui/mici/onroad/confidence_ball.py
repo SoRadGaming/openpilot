@@ -29,6 +29,7 @@ class ConfidenceBall(Widget, ConfidenceBallSP):
     ConfidenceBallSP.__init__(self)
     self._demo = demo
     self._confidence_filter = FirstOrderFilter(-0.5, 0.5, 1 / gui_app.target_fps)
+    self.hud_floor_y = -math.inf  # FORK(HUD): the ball's centre stays at or below this; the right rail sets it (hud_rail.py)
 
   def update_filter(self, value: float):
     self._confidence_filter.update(value)
@@ -57,6 +58,7 @@ class ConfidenceBall(Widget, ConfidenceBallSP):
     status_dot_radius = 24
     dot_height = (1 - self._confidence_filter.x) * (content_rect.height - 2 * status_dot_radius) + status_dot_radius
     dot_height = self._rect.y + dot_height
+    dot_height = max(dot_height, self.hud_floor_y)  # FORK(HUD): below the rail's item, only when it would reach it
 
     # confidence zones
     if ui_state.status == UIStatus.ENGAGED or self._demo:

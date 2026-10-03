@@ -6,7 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 
 FORK(HUD): the comma 4 HUD's settings - one param per piece, set from sunnylink (Visuals > HUD).
 
-READ AT MOST ONCE A SECOND, from the render thread: seven small param reads a second, never one per frame.
+READ AT MOST ONCE A SECOND, from the render thread: nine small param reads a second, never one per frame.
 
 EVERY KEY DEFAULTS TO ON (params_keys.h), and every key off gives exactly the stock comma 4 screen. A key that cannot be
 read at all - a build whose params library predates it - reads as OFF, so a half-installed update draws the stock
@@ -33,9 +33,11 @@ PARAM_VARIABLE_SIGN = "HudVariableLimitSign"  # a Variable (gantry) zone drawn a
 PARAM_STOPPED_TIMER = "HudStoppedTimer"     # at a standstill the speed becomes a stopwatch and m:ss
 PARAM_STOPPED_BANNER = "HudStoppedBanner"   # 'take control / resume driving manually' as a compact banner
 PARAM_CONFIRM_LIMIT = "HudConfirmLimit"     # the speed-limit confirm alert shows the pending limit
+PARAM_PLANNED_STOP = "HudPlannedStop"       # right strip: where the model's speed plan comes to a stop, and how far
+PARAM_CURVE = "HudCurve"                    # right strip: slowing for a curve, and openpilot's target speed for it
 
 BOOL_PARAMS = (PARAM_SPEED_CLUSTER, PARAM_SCHOOL_CUE, PARAM_VARIABLE_SIGN, PARAM_STOPPED_TIMER, PARAM_STOPPED_BANNER,
-               PARAM_CONFIRM_LIMIT)
+               PARAM_CONFIRM_LIMIT, PARAM_PLANNED_STOP, PARAM_CURVE)
 ALL_PARAMS = BOOL_PARAMS + (PARAM_NEXT_LIMIT,)
 
 
@@ -48,10 +50,12 @@ class HudSettings:
   stopped_timer: bool = False
   stopped_banner: bool = False
   confirm_limit: bool = False
+  planned_stop: bool = False
+  curve: bool = False
 
 
 ALL_OFF = HudSettings()
-ALL_ON = HudSettings(True, NEXT_BOTH, True, True, True, True, True)
+ALL_ON = HudSettings(True, NEXT_BOTH, True, True, True, True, True, True, True)
 
 
 def read_settings(params) -> HudSettings:
@@ -79,6 +83,8 @@ def read_settings(params) -> HudSettings:
     stopped_timer=flag(PARAM_STOPPED_TIMER),
     stopped_banner=flag(PARAM_STOPPED_BANNER),
     confirm_limit=flag(PARAM_CONFIRM_LIMIT),
+    planned_stop=flag(PARAM_PLANNED_STOP),
+    curve=flag(PARAM_CURVE),
   )
 
 

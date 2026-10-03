@@ -188,8 +188,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"HondaElesysGasLawV2", {PERSISTENT | BACKUP, BOOL, "1"}},
     // FORK(HUD): the comma 4 HUD, one setting per piece (sunnylink Visuals > HUD). All default on; all off is the stock
     // screen. HudNextLimit: 0 off, 1 bar, 2 distance, 3 both. Read by the UI at most once a second.
+    // FORK(HUD): HudPlannedStop and HudCurve are the right strip's two items (hud_rail.py).
     {"HudConfirmLimit", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"HudCurve", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudNextLimit", {PERSISTENT | BACKUP, INT, "3"}},
+    {"HudPlannedStop", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudSchoolZoneCue", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudSpeedCluster", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudStoppedBanner", {PERSISTENT | BACKUP, BOOL, "1"}},

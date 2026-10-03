@@ -25,12 +25,14 @@ from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (HudFrame, S
                                                                      pending_limit, short_line2, LEAD_DEPART_S,
                                                                      MAP_EXTRAPOLATE_MAX_S, SCHOOL_ACTIVE,
                                                                      SCHOOL_INACTIVE, SCHOOL_NONE)
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_model as HM
 
 ROOT = Path(__file__).parents[3]   # openpilot/
 REPO = ROOT.parent
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 PARAMS_KEYS = ROOT / "common/params_keys.h"
 ROAD_VIEW = ROOT / "selfdrive/ui/mici/onroad/augmented_road_view.py"
+BALL = ROOT / "selfdrive/ui/mici/onroad/confidence_ball.py"
 ALERTS = ROOT / "selfdrive/ui/mici/onroad/alert_renderer.py"
 MICI_SETTINGS = ROOT / "selfdrive/ui/sunnypilot/mici/layouts/settings.py"
 BOARD = ROOT / "selfdrive/ui/sunnypilot/mici/layouts/board.py"
@@ -41,7 +43,7 @@ KPH = 3.6
 
 DEFAULTS = {HS.PARAM_SPEED_CLUSTER: True, HS.PARAM_NEXT_LIMIT: HS.NEXT_BOTH, HS.PARAM_SCHOOL_CUE: True,
             HS.PARAM_VARIABLE_SIGN: True, HS.PARAM_STOPPED_TIMER: True, HS.PARAM_STOPPED_BANNER: True,
-            HS.PARAM_CONFIRM_LIMIT: True}
+            HS.PARAM_CONFIRM_LIMIT: True, HS.PARAM_PLANNED_STOP: True, HS.PARAM_CURVE: True}
 
 
 # ------------------------------------------------------------------------------------------- a SubMaster stand-in
@@ -144,7 +146,9 @@ class TestHudParams(OpenpilotTestCase):
     params = Params()
     fields = {HS.PARAM_SPEED_CLUSTER: "speed_cluster", HS.PARAM_SCHOOL_CUE: "school_cue",
               HS.PARAM_VARIABLE_SIGN: "variable_sign", HS.PARAM_STOPPED_TIMER: "stopped_timer",
-              HS.PARAM_STOPPED_BANNER: "stopped_banner", HS.PARAM_CONFIRM_LIMIT: "confirm_limit"}
+              HS.PARAM_STOPPED_BANNER: "stopped_banner", HS.PARAM_CONFIRM_LIMIT: "confirm_limit",
+              HS.PARAM_PLANNED_STOP: "planned_stop", HS.PARAM_CURVE: "curve"}
+    assert set(fields) | {HS.PARAM_NEXT_LIMIT} == set(HS.ALL_PARAMS), "every setting is switched here"
     for key, field in fields.items():
       params.put_bool(key, False, block=True)
       s = HS.read_settings(params)
@@ -330,12 +334,265 @@ class TestClusterRules(OpenpilotTestCase):
     assert f.speed == round(30.0 * 2.23694) and f.limit == round(100 / KPH * 2.23694) and f.next_limit == 56
 
 
+# ------------------------------------------------------------------------------------------- the right rail's rules
+def stopping_plan(stop_m: float | None, v0: float = 8.0):
+  """modelV2's 33-point plan (velocity.x, position.x at T_IDXS): a steady brake from v0 to a stop stop_m ahead, or
+  cruising at v0 (None)."""
+  vx, px = [], []
+  a = v0 ** 2 / (2 * stop_m) if stop_m else 0.0
+  for t in HM.T_IDXS:
+    if a and t >= v0 / a:
+      vx.append(0.0)
+      px.append(stop_m)
+    else:
+      vx.append(v0 - a * t)
+      px.append(v0 * t - a * t * t / 2)
+  return vx, px
+
+
+def rail_sm(stop_m=None, v=8.0, standstill=False, lead_d=None, long_active=True, src='e2e', scc=None, scc_src=None,
+            v_target=37 / KPH, map_turning=False, yaw=-0.1, plan_v0=8.0, missing=()):
+  """Every message the rail reads, this drive's and arriving; `missing` leaves services out."""
+  sm = FakeSM()
+  if 'carState' not in missing:
+    cs = sm.put('carState')
+    cs.vEgo = cs.vEgoCluster = v
+    cs.standstill = standstill
+  if 'modelV2' not in missing:
+    m = sm.put('modelV2')
+    m.velocity.x, m.position.x = stopping_plan(stop_m, plan_v0)
+    m.orientationRate.z = [yaw * min(1.0, t) for t in HM.T_IDXS]
+  if 'radarState' not in missing:
+    lead = sm.put('radarState').leadOne
+    if lead_d is not None:
+      lead.present, lead.dRel = True, lead_d
+  if 'carControl' not in missing:
+    sm.put('carControl').longActive = long_active
+  if 'longitudinalPlan' not in missing:
+    sm.put('longitudinalPlan').longitudinalPlanSource = src
+  if 'longitudinalPlanSP' not in missing:
+    p = sm.put('longitudinalPlanSP')
+    if scc is not None:
+      p.smartCruiseControl.vision.state = scc
+      p.smartCruiseControl.vision.active = scc in ('entering', 'turning', 'leaving')
+      p.smartCruiseControl.vision.vTarget = v_target
+    if map_turning:
+      p.smartCruiseControl.map.state = 'turning'
+      p.smartCruiseControl.map.active = True
+      p.smartCruiseControl.map.vTarget = v_target
+    p.longitudinalPlanSource = scc_src or ('sccVision' if scc else 'sccMap' if map_turning else 'cruise')
+  return sm
+
+
+class Rail:
+  """A RailState driven at 20 Hz on a sim clock, as HudRail drives it."""
+  def __init__(self, settings=HS.ALL_ON):
+    self.s, self.t, self.settings = HM.RailState(), 100.0, settings
+
+  def step(self, sm, seconds=0.05) -> HM.RailFrame:
+    f = HM.RailFrame()
+    for _ in range(max(1, int(round(seconds / 0.05)))):
+      self.t += 0.05
+      f = self.s.update(sm, self.settings, started_frame=STARTED, now=self.t)
+    return f
+
+  def frames(self, sm, seconds) -> list[HM.RailFrame]:
+    return [self.step(sm) for _ in range(int(round(seconds / 0.05)))]
+
+
+STARTED = 5  # the drive's started_frame; FakeSM.put() receives at frame 10
+
+
+class TestRailRules(OpenpilotTestCase):
+  def test_where_the_plan_stops(self):
+    vx, px = stopping_plan(25.0)
+    m = rail_sm(stop_m=25.0)['modelV2']
+    d = HM.plan_stop_m(m)
+    i = next(k for k, v in enumerate(vx) if v < HM.STOP_V_MS)
+    assert d is not None and d == px[i] and 22.0 < d <= 25.0, "position.x at the first point under 0.5 m/s"
+    assert HM.plan_stop_m(rail_sm(stop_m=None)['modelV2']) is None, "cruising: no stop"
+    # a stop past the 10 s horizon is not in the plan; a short or empty plan is no plan
+    assert HM.plan_stop_m(rail_sm(stop_m=200.0, plan_v0=25.0)['modelV2']) is None
+    sm = rail_sm(stop_m=25.0)
+    sm['modelV2'].velocity.x = [0.0] * 5
+    assert HM.plan_stop_m(sm['modelV2']) is None
+    assert HM.plan_stop_m(FakeSM()['modelV2']) is None
+
+  def test_the_stop_shows_after_the_debounce_with_its_distance(self):
+    r, sm = Rail(), rail_sm(stop_m=25.0)
+    early = r.frames(sm, HM.RAIL_ON_S)
+    assert all(f.kind == HM.RAIL_NONE for f in early), "not before it has held 0.3 s"
+    f, d = r.step(sm), HM.plan_stop_m(sm['modelV2'])
+    assert d is not None and f.kind == HM.RAIL_STOP and abs(f.stop_m - d) < 1e-6
+    assert HM.fmt_stop_dist(f.stop_m, True) == ("25", "m")
+
+  def test_solid_only_while_openpilot_drives_the_speed_on_the_plan(self):
+    assert Rail().step(rail_sm(stop_m=25.0), 1.0).solid, "longActive and the e2e plan in control: white"
+    assert not Rail().step(rail_sm(stop_m=25.0, long_active=False), 1.0).solid, "disengaged: grey, the model's plan"
+    for src in ('cruise', 'lead0'):
+      f = Rail().step(rail_sm(stop_m=25.0, src=src), 1.0)
+      assert f.kind == HM.RAIL_STOP and not f.solid, f"{src} in control: grey"
+    for missing in ('carControl', 'longitudinalPlan'):
+      f = Rail().step(rail_sm(stop_m=25.0, missing=(missing,)), 1.0)
+      assert f.kind == HM.RAIL_STOP and not f.solid, f"no {missing}: still the plan, but never white"
+
+  def test_braking_out_of_it_greys_it_on_the_frame(self):
+    r = Rail()
+    assert r.step(rail_sm(stop_m=25.0), 1.0).solid
+    f = r.step(rail_sm(stop_m=25.0, long_active=False))
+    assert f.kind == HM.RAIL_STOP and not f.solid
+
+  def test_the_plan_source_settles_before_it_counts(self):
+    r = Rail()
+    assert r.step(rail_sm(stop_m=25.0), 1.0).solid
+    blip = [r.step(rail_sm(stop_m=25.0, src='cruise')).solid for _ in range(round(HM.RAIL_OFF_S / 0.05) - 1)]
+    assert all(blip), "a moment of another source: still white"
+    assert not r.step(rail_sm(stop_m=25.0, src='cruise'), 0.1).solid, "held: grey"
+    back = [r.step(rail_sm(stop_m=25.0)).solid for _ in range(round(HM.RAIL_ON_S / 0.05) + 1)]
+    assert not back[0] and back[-1], "white again once e2e has held 0.3 s"
+
+  def test_a_car_ahead_inside_the_stop_hides_it(self):
+    # the plan stops behind a car: the Accord's own HUD shows the car
+    assert Rail().step(rail_sm(stop_m=25.0, lead_d=20.0), 1.0).kind == HM.RAIL_NONE
+    assert Rail().step(rail_sm(stop_m=25.0, lead_d=25.0 + HM.LEAD_MARGIN_M - 1), 1.0).kind == HM.RAIL_NONE
+    assert Rail().step(rail_sm(stop_m=25.0, lead_d=25.0 + HM.LEAD_MARGIN_M + 5), 1.0).kind == HM.RAIL_STOP, \
+      "a car well past the stop line: the stop is not for it"
+    sm = rail_sm(stop_m=25.0, lead_d=10.0)
+    sm['radarState'].leadOne.present = False
+    assert Rail().step(sm, 1.0).kind == HM.RAIL_STOP, "a lead slot the radar does not mark present is no car"
+
+  def test_a_lead_appearing_hides_it_after_the_debounce(self):
+    r = Rail()
+    assert r.step(rail_sm(stop_m=25.0), 1.0).kind == HM.RAIL_STOP
+    held = r.frames(rail_sm(stop_m=25.0, lead_d=15.0), HM.RAIL_OFF_S - 0.05)
+    assert all(f.kind == HM.RAIL_STOP for f in held), "drawn with its last distance while it settles"
+    assert r.step(rail_sm(stop_m=25.0, lead_d=15.0), 0.1).kind == HM.RAIL_NONE
+
+  def test_no_flicker(self):
+    r = Rail()
+    # the plan dips under 0.5 m/s for a moment, four times: never shown
+    for _ in range(4):
+      assert all(f.kind == HM.RAIL_NONE for f in r.frames(rail_sm(stop_m=25.0), HM.RAIL_ON_S - 0.1))
+      r.frames(rail_sm(stop_m=None), 0.2)
+    # shown, then the plan stops reaching zero for a moment, four times: never hidden
+    r.step(rail_sm(stop_m=25.0), 1.0)
+    for _ in range(4):
+      assert all(f.kind == HM.RAIL_STOP for f in r.frames(rail_sm(stop_m=None), HM.RAIL_OFF_S - 0.1))
+      assert all(f.kind == HM.RAIL_STOP for f in r.frames(rail_sm(stop_m=25.0), 0.2))
+    assert r.step(rail_sm(stop_m=None), HM.RAIL_OFF_S + 0.05).kind == HM.RAIL_NONE, "for good: gone"
+
+  def test_hidden_at_once_at_a_standstill_and_under_a_metre(self):
+    r = Rail()
+    assert r.step(rail_sm(stop_m=25.0), 1.0).kind == HM.RAIL_STOP
+    assert r.step(rail_sm(stop_m=25.0, standstill=True, v=0.0)).kind == HM.RAIL_NONE, "stopped: the stopwatch has it"
+    r = Rail()
+    assert r.step(rail_sm(stop_m=25.0), 1.0).kind == HM.RAIL_STOP
+    assert r.step(rail_sm(stop_m=0.8)).kind == HM.RAIL_NONE, "the stop is here"
+    assert Rail().step(rail_sm(stop_m=0.8), 1.0).kind == HM.RAIL_NONE
+
+  def test_the_distance_follows_the_plan(self):
+    r = Rail()
+    r.step(rail_sm(stop_m=40.0), 1.0)
+    d = [r.step(rail_sm(stop_m=x)).stop_m for x in (38.0, 36.0, 34.0, 32.0) + (30.0,) * 11]
+    assert all(b <= a for a, b in zip(d, d[1:], strict=False)), "it counts down"
+    target = HM.plan_stop_m(rail_sm(stop_m=30.0)['modelV2'])
+    assert target is not None and abs(d[-1] - target) < 0.3, "and settles on the plan's own number within half a second"
+
+  def test_a_curve(self):
+    f = Rail().step(rail_sm(scc='entering'), 1.0)
+    assert f.kind == HM.RAIL_CURVE and abs(f.curve_v - 37 / KPH) < 1e-4 and f.curve_left
+    assert HM.fmt_speed(f.curve_v, True) == ("37", "km/h")
+    f = Rail().step(rail_sm(scc='turning', yaw=0.1), 1.0)
+    assert f.kind == HM.RAIL_CURVE and not f.curve_left, "a positive yaw rate (z down) is a right curve"
+
+  def test_a_curve_only_while_it_is_the_limit(self):
+    for state in ('disabled', 'enabled', 'leaving', 'overriding'):
+      assert Rail().step(rail_sm(scc=state, scc_src='sccVision'), 1.0).kind == HM.RAIL_NONE, state
+    for src in ('cruise', 'speedLimitAssist', 'sccMap'):
+      assert Rail().step(rail_sm(scc='entering', scc_src=src), 1.0).kind == HM.RAIL_NONE, f"{src} is the limit"
+    sm = rail_sm(scc='entering')
+    sm['longitudinalPlanSP'].smartCruiseControl.vision.active = False
+    assert Rail().step(sm, 1.0).kind == HM.RAIL_NONE
+    assert Rail().step(rail_sm(scc='entering', v_target=255.0), 1.0).kind == HM.RAIL_NONE, "the 'unset' target"
+    assert Rail().step(rail_sm(scc='entering', v_target=0.0), 1.0).kind == HM.RAIL_NONE
+
+  def test_a_map_curve(self):
+    f = Rail().step(rail_sm(map_turning=True, v_target=45 / KPH), 1.0)
+    assert f.kind == HM.RAIL_CURVE and HM.fmt_speed(f.curve_v, True) == ("45", "km/h")
+    assert Rail().step(rail_sm(map_turning=True, scc_src='cruise'), 1.0).kind == HM.RAIL_NONE
+
+  def test_the_curve_keeps_its_direction_when_the_model_sees_none(self):
+    r = Rail()
+    assert r.step(rail_sm(scc='entering', yaw=0.1), 1.0).curve_left is False
+    assert r.step(rail_sm(scc='entering', yaw=0.0), 0.5).curve_left is False
+    assert Rail().step(rail_sm(scc='entering', missing=('modelV2',)), 1.0).kind == HM.RAIL_CURVE, \
+      "the curve needs no model: the arrow just keeps its last direction"
+
+  def test_a_driver_override_flicker_does_not_flash_the_curve(self):
+    r = Rail()
+    assert r.step(rail_sm(scc='entering'), 1.0).kind == HM.RAIL_CURVE
+    assert all(f.kind == HM.RAIL_CURVE for f in r.frames(rail_sm(scc='overriding', scc_src='cruise'), 0.4))
+    assert r.step(rail_sm(scc='overriding', scc_src='cruise'), 0.2).kind == HM.RAIL_NONE
+
+  def test_a_planned_stop_wins_over_a_curve(self):
+    r = Rail()
+    f = r.step(rail_sm(stop_m=25.0, scc='entering'), 1.0)
+    assert f.kind == HM.RAIL_STOP
+    f = r.step(rail_sm(stop_m=None, scc='entering'), HM.RAIL_OFF_S + 0.05)
+    assert f.kind == HM.RAIL_CURVE, "and the curve is back once the stop has gone"
+
+  def test_each_toggle(self):
+    sm = rail_sm(stop_m=25.0, scc='entering')
+    assert Rail(dataclasses.replace(HS.ALL_ON, planned_stop=False)).step(sm, 1.0).kind == HM.RAIL_CURVE
+    assert Rail(dataclasses.replace(HS.ALL_ON, curve=False)).step(sm, 1.0).kind == HM.RAIL_STOP
+    assert Rail(dataclasses.replace(HS.ALL_ON, curve=False)).step(rail_sm(scc='entering'), 1.0).kind == HM.RAIL_NONE
+    assert Rail(dataclasses.replace(HS.ALL_ON, planned_stop=False, curve=False)).step(sm, 1.0) == HM.RailFrame()
+    assert Rail(HS.ALL_OFF).step(sm, 1.0) == HM.RailFrame()
+    # switched off mid-stop: gone on the frame, and back on it starts over (the debounce again)
+    r = Rail()
+    r.step(sm, 1.0)
+    r.settings = dataclasses.replace(HS.ALL_ON, planned_stop=False, curve=False)
+    assert r.step(sm).kind == HM.RAIL_NONE
+    r.settings = HS.ALL_ON
+    assert r.step(sm).kind == HM.RAIL_NONE and r.step(sm, HM.RAIL_ON_S).kind == HM.RAIL_STOP
+
+  def test_missing_or_stale_messages_never_raise(self):
+    services = ('carState', 'modelV2', 'radarState', 'carControl', 'longitudinalPlan', 'longitudinalPlanSP')
+    assert Rail().step(FakeSM(), 1.0) == HM.RailFrame(), "nothing received"
+    for svc in ('carState', 'modelV2', 'radarState'):
+      assert Rail().step(rail_sm(stop_m=25.0, missing=(svc,)), 1.0).kind == HM.RAIL_NONE, f"no {svc}: no stop"
+    assert Rail().step(rail_sm(scc='entering', missing=('longitudinalPlanSP',)), 1.0).kind == HM.RAIL_NONE
+    assert Rail().step(rail_sm(scc='entering', missing=('carState',)), 1.0).kind == HM.RAIL_NONE
+    for svc in services:
+      sm = rail_sm(stop_m=25.0, scc='entering')
+      sm.alive[svc] = False
+      f = Rail().step(sm, 1.0)
+      sm = rail_sm(stop_m=25.0, scc='entering')
+      sm.recv_frame[svc] = STARTED - 1   # last drive's
+      g = Rail().step(sm, 1.0)
+      assert f == g, svc
+      if svc in ('carState', ):
+        assert f.kind == HM.RAIL_NONE
+      elif svc in ('modelV2', 'radarState'):
+        assert f.kind == HM.RAIL_CURVE, f"no stop without {svc}; the curve does not need it"
+      elif svc == 'longitudinalPlanSP':
+        assert f.kind == HM.RAIL_STOP
+      else:
+        assert f.kind == HM.RAIL_STOP and not f.solid, f"stale {svc}: grey"
+
+  def test_units(self):
+    assert [HM.fmt_stop_dist(d, True) for d in (1.2, 4.4, 9.6, 23.0, 97.0, 123.0, 1500.0)] == \
+      [("1", "m"), ("4", "m"), ("10", "m"), ("25", "m"), ("95", "m"), ("120", "m"), ("1.5", "km")]
+    assert [HM.fmt_stop_dist(d, False) for d in (2.0, 25.0, 120.0, 1200.0)] == \
+      [("7", "ft"), ("80", "ft"), ("400", "ft"), ("0.7", "mi")]
+    assert HM.fmt_speed(37 / KPH, True) == ("37", "km/h") and HM.fmt_speed(37 / KPH, False) == ("23", "mph")
+
+
 # ------------------------------------------------------------------------------------------- the alerts' rules
 def alert(kind="manualRestart/warning", text1="TAKE CONTROL", text2="Resume Driving Manually"):
   return SimpleNamespace(alert_type=kind, text1=text1, text2=text2)
 
 
-STARTED = 5  # the drive's started_frame; FakeSM.put() receives at frame 10
 
 
 class StopFlow:
@@ -486,8 +743,16 @@ class TestSunnylink(OpenpilotTestCase):
     by_key = {it["key"]: it for it in sec["items"]}
     for key in (HS.PARAM_NEXT_LIMIT, HS.PARAM_SCHOOL_CUE, HS.PARAM_VARIABLE_SIGN):
       assert by_key[key].get("visibility") == rule, key
-    for key in (HS.PARAM_SPEED_CLUSTER, HS.PARAM_STOPPED_TIMER, HS.PARAM_STOPPED_BANNER, HS.PARAM_CONFIRM_LIMIT):
+    for key in (HS.PARAM_SPEED_CLUSTER, HS.PARAM_STOPPED_TIMER, HS.PARAM_STOPPED_BANNER, HS.PARAM_CONFIRM_LIMIT,
+                HS.PARAM_PLANNED_STOP, HS.PARAM_CURVE):
       assert "visibility" not in by_key[key], f"{key} works without the cluster"
+
+  def test_the_rail_items_say_what_they_cannot_know(self):
+    _, sec = hud_section()
+    by_key = {it["key"]: it for it in sec["items"]}
+    stop = by_key[HS.PARAM_PLANNED_STOP]["description"]
+    assert "never says why" in stop and "grey" in stop and "10 seconds" in stop
+    assert "target speed" in by_key[HS.PARAM_CURVE]["description"]
 
 
 # ------------------------------------------------------------------------------------------- upstream files
@@ -502,7 +767,9 @@ def marked(path: Path, needles, window=3):
 
 class TestUpstreamHunks(OpenpilotTestCase):
   def test_every_hook_in_an_upstream_file_is_marked(self):
-    marked(ROAD_VIEW, ("hud_cluster import HudCluster", "self._hud_cluster = HudCluster(", "self._hud_cluster.render("))
+    marked(ROAD_VIEW, ("hud_cluster import HudCluster", "self._hud_cluster = HudCluster(", "self._hud_cluster.render(",
+                       "hud_rail import HudRail", "self._hud_rail = HudRail(", "self._hud_rail.render("))
+    marked(BALL, ("self.hud_floor_y = -math.inf", "max(dot_height, self.hud_floor_y)"), window=0)
     marked(ALERTS, ("import hud_alerts", "hud_alerts.draw_compact_standstill(", "hud_alerts.draw_pending_limit("))
     marked(PARAMS_KEYS, [f'"{k}"' for k in HS.ALL_PARAMS], window=10)
     marked(VISUALS_YAML, ("id: hud_comma4",))
@@ -522,6 +789,12 @@ class TestUpstreamHunks(OpenpilotTestCase):
     assert road.index("self._hud_cluster.render(") < road.index("self._alert_renderer.render(self._content_rect)"), \
       "the cluster is drawn under the alerts"
     assert road.index("self._hud_cluster.render(") > road.index("rl.begin_scissor_mode("), "inside the content rect"
+    rail, ball = road.index("self._hud_rail.render(self.rect)"), road.index("self._confidence_ball.render(self.rect)")
+    assert road.index("rl.end_scissor_mode()") < rail < ball, "the rail is in the ball's strip, and sets its floor first"
+    src = BALL.read_text(encoding="utf-8")
+    render = src[src.index("  def _render(self"):]
+    assert render.index("dot_height = self._rect.y + dot_height") < render.index("max(dot_height, self.hud_floor_y)") < \
+      render.index("draw_circle_gradient("), "the floor applies to the stock position, before it is drawn"
 
 
 # ------------------------------------------------------------------------------------------- the gateway icon

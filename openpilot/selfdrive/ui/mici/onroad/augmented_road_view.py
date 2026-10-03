@@ -12,6 +12,7 @@ from openpilot.selfdrive.ui.mici.onroad.model_renderer import ModelRenderer
 from openpilot.selfdrive.ui.mici.onroad.confidence_ball import ConfidenceBall
 from openpilot.selfdrive.ui.mici.onroad.cameraview import CameraView
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_cluster import HudCluster  # FORK(HUD)
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_rail import HudRail  # FORK(HUD)
 from openpilot.system.ui.lib.application import FontWeight, gui_app, MousePos, MouseEvent, TextAlignment, TextAlignmentVertical
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.system.ui.widgets import Widget
@@ -159,6 +160,8 @@ class AugmentedRoadView(CameraView):
     self._confidence_ball = ConfidenceBall()
     # FORK(HUD): speed, speed-limit sign, next lower limit and the stop time, top right (hud_cluster.py)
     self._hud_cluster = HudCluster(self._hud_renderer, self._alert_renderer)
+    # FORK(HUD): the planned stop or the curve at the top of the confidence ball's strip, the ball kept below it
+    self._hud_rail = HudRail(self._confidence_ball)
     self._offroad_label = UnifiedLabel("start the car to\nuse sunnypilot", 54, FontWeight.DISPLAY,
                                        text_color=rl.Color(255, 255, 255, int(255 * 0.9)),
                                        alignment=TextAlignment.CENTER,
@@ -248,6 +251,7 @@ class AugmentedRoadView(CameraView):
 
     # Custom UI extension point - add custom overlays here
     # Use self._content_rect for positioning within camera bounds
+    self._hud_rail.render(self.rect)  # FORK(HUD): before the ball - it sets the ball's floor (hud_rail.py)
     self._confidence_ball.render(self.rect)
 
     self._bookmark_icon.render(self.rect)

@@ -7,9 +7,12 @@ See the LICENSE.md file in the root directory for more details.
 FORK(HUD): the comma 4 onroad view, drawn for real in a headless raylib window, per HUD state:
 
   * with the settings on, each piece is where it should be (colours sampled in its box);
-  * with every setting off, the frame is PIXEL-IDENTICAL to the stock drawing, i.e. the same view with the three
-    FORK(HUD) call sites neutralised (cluster render a no-op, both alert hooks answering "not mine");
-  * with only an alert's own setting off, that alert is drawn exactly as stock.
+  * with every setting off, the frame is PIXEL-IDENTICAL to the stock drawing, i.e. the same view with the FORK(HUD)
+    call sites neutralised (cluster and rail renders no-ops - so the ball's floor stays unset - and both alert hooks
+    answering "not mine");
+  * with only an alert's own setting off, that alert is drawn exactly as stock;
+  * the right rail: its item only in the ball's strip, white or grey as openpilot drives the plan or not, the ball held
+    under it and back where the stock one is once it has gone, and with its two settings off the stock strip.
 
 The real AugmentedRoadView, fed synthetic messages (no camera: the placeholder is black, which keeps the colour
 sampling honest). It runs in a child process: a raylib that cannot open a headless window must not take the test
@@ -23,6 +26,8 @@ import sys
 
 from openpilot.common.test import OpenpilotTestCase
 
+STRIP_X = 476  # the confidence ball's strip (CHILD's STRIP)
+
 CHILD = r'''
 import json, os
 import numpy as np
@@ -32,6 +37,7 @@ gui_app.init_window("hud-render-test")
 print("INIT_OK", flush=True)
 
 from openpilot.cereal import messaging
+from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.sunnypilot.onroad.speed_limit import SpeedLimitAlertRenderer
 SpeedLimitAlertRenderer.ARROW_SIZE = 90  # the comma 4's (a PC evaluates it to 200 at import)
@@ -46,8 +52,10 @@ clock = {"t": 100.0}
 rl.get_time = lambda: clock["t"]
 
 ON = {HS.PARAM_SPEED_CLUSTER: True, HS.PARAM_NEXT_LIMIT: 3, HS.PARAM_SCHOOL_CUE: True, HS.PARAM_VARIABLE_SIGN: True,
-      HS.PARAM_STOPPED_TIMER: True, HS.PARAM_STOPPED_BANNER: True, HS.PARAM_CONFIRM_LIMIT: True}
+      HS.PARAM_STOPPED_TIMER: True, HS.PARAM_STOPPED_BANNER: True, HS.PARAM_CONFIRM_LIMIT: True,
+      HS.PARAM_PLANNED_STOP: True, HS.PARAM_CURVE: True}
 OFF = {k: (0 if k == HS.PARAM_NEXT_LIMIT else False) for k in ON}
+RAIL_OFF = {**ON, HS.PARAM_PLANNED_STOP: False, HS.PARAM_CURVE: False}
 
 
 class FakeParams:
@@ -67,6 +75,21 @@ ui_state.speed_limit_mode = 1
 ui_state.status = UIStatus.ENGAGED
 sm = ui_state.sm
 SERVICES = ("carState", "selfdriveState", "controlsState", "longitudinalPlanSP", "liveMapDataSP", "radarState")
+RAIL_SERVICES = ("modelV2", "carControl", "longitudinalPlan")  # the right rail's own; a fresh default every scene
+
+
+def stopping_plan(stop_m):
+  """modelV2's 33-point speed plan: a steady brake from 8 m/s to a stop stop_m ahead, or cruising (None)."""
+  vx, px, v0 = [], [], 8.0
+  a = v0 ** 2 / (2 * stop_m) if stop_m else 0.0
+  for t in ModelConstants.T_IDXS:
+    if a and t >= v0 / a:
+      vx.append(0.0)
+      px.append(stop_m)
+    else:
+      vx.append(v0 - a * t)
+      px.append(v0 * t - a * t * t / 2)
+  return vx, px
 
 
 def put(svc, fill):
@@ -78,10 +101,25 @@ def put(svc, fill):
 
 
 def scene(v=110 / KPH, limit=110, ahead=100, ahead_dist=339.0, ahead_valid=True, school=0, variable=False,
-          standstill=False, alert=None, assist="active", set_kph=110, lead=None, lp=True, cs=True, offset=0):
-  for svc in SERVICES:
+          standstill=False, alert=None, assist="active", set_kph=110, lead=None, lp=True, cs=True, offset=0, rail=None):
+  """rail = dict(stop_m, solid, curve_kph, confident): the right rail's messages (modelV2's plan, carControl,
+  longitudinalPlan, smart cruise control) - none of them otherwise."""
+  for svc in SERVICES + RAIL_SERVICES:
     sm.seen[svc] = sm.alive[svc] = sm.updated[svc] = False
     sm.recv_frame[svc] = 0
+  for svc in RAIL_SERVICES:
+    sm.data[svc] = getattr(messaging.new_message(svc), svc)
+  rail = rail or {}
+  if rail:
+    def model(m):
+      m.velocity.x, m.position.x = stopping_plan(rail.get("stop_m"))
+      m.orientationRate.z = [-0.1 * min(1.0, t) for t in ModelConstants.T_IDXS]  # a left curve
+      if rail.get("confident"):
+        m.meta.disengagePredictions.brakeDisengageProbs = [0.0] * 6
+        m.meta.disengagePredictions.steerOverrideProbs = [0.0] * 6
+    put("modelV2", model)
+    put("carControl", lambda c: setattr(c, "longActive", rail.get("solid", True)))
+    put("longitudinalPlan", lambda p: setattr(p, "longitudinalPlanSource", "e2e" if rail.get("solid", True) else "cruise"))
 
   def car(c):
     c.vEgo = c.vEgoCluster = v
@@ -107,6 +145,10 @@ def scene(v=110 / KPH, limit=110, ahead=100, ahead_dist=339.0, ahead_valid=True,
     r.speedLimitValid = r.speedLimitLastValid = True
     r.source = "map"
     p.speedLimit.assist.state = assist
+    if rail.get("curve_kph"):
+      vis = p.smartCruiseControl.vision
+      vis.state, vis.active, vis.vTarget = "entering", True, rail["curve_kph"] / KPH
+      p.longitudinalPlanSource = "sccVision"
   if lp:
     put("longitudinalPlanSP", plan)
 
@@ -155,6 +197,7 @@ def render(name, params, stock=False, frames=100, t0=100.0, jump_at=None, jump=0
     hud_alerts.draw_compact_standstill = lambda ar, alert: False
     hud_alerts.draw_pending_limit = lambda ar, layout: False
     view._hud_cluster.render = lambda *a, **k: None
+    view._hud_rail.render = lambda *a, **k: None
   try:
     for i in range(frames):
       clock["t"] = t0 + i * 0.05 + (jump if jump_at is not None and i >= jump_at else 0.0)
@@ -191,6 +234,7 @@ def run(params, steps, stock=False, t0=100.0):
     hud_alerts.draw_compact_standstill = lambda ar, alert: False
     hud_alerts.draw_pending_limit = lambda ar, layout: False
     view._hud_cluster.render = lambda *a, **k: None
+    view._hud_rail.render = lambda *a, **k: None
   grabs, t = [], t0
   try:
     for kw, frames, name in steps:
@@ -277,8 +321,24 @@ states = {
   "variable": dict(limit=80, v=70 / KPH, variable=True, ahead=0, ahead_dist=0.0),
   "missing_plan": dict(lp=False),
   "missing_carstate": dict(cs=False),
+  # the right rail; the model fully confident, so the stock ball would sit at the very top of the strip
+  "rail_stop": dict(v=30 / KPH, limit=50, ahead=0, ahead_dist=0.0, rail=dict(stop_m=25.0, solid=True, confident=True)),
+  "rail_stop_grey": dict(v=30 / KPH, limit=50, ahead=0, ahead_dist=0.0, rail=dict(stop_m=25.0, solid=False, confident=True)),
+  "rail_stop_lead": dict(v=30 / KPH, limit=50, ahead=0, ahead_dist=0.0, lead=0.0, rail=dict(stop_m=25.0, confident=True)),
+  "rail_stop_standstill": dict(v=0.0, standstill=True, limit=50, ahead=0, ahead_dist=0.0,
+                               rail=dict(stop_m=25.0, confident=True)),
+  "rail_curve": dict(v=45 / KPH, limit=60, ahead=0, ahead_dist=0.0, rail=dict(curve_kph=37, confident=True)),
+  "rail_both": dict(v=45 / KPH, limit=60, ahead=0, ahead_dist=0.0, rail=dict(stop_m=25.0, curve_kph=37, confident=True)),
 }
 BADGE = (440, 24, 468, 52)   # the offset badge on the pending sign's ring, up and right
+STRIP = 476                  # the confidence ball's strip: x 476..536
+RAIL = (477, 4, 536, 80)     # the rail's item: a 48 px glyph from y 6, figures to y 76
+BALL_HIGH = (476, 0, 536, 89)
+BALL_LOW = (476, 89, 536, 140)
+
+
+def strip_diff(a, b):
+  return same(a[:, STRIP:], b[:, STRIP:])
 
 
 def stop_gap(arr):
@@ -294,7 +354,7 @@ def stop_gap(arr):
 
 
 JUMP_S = {"stopped_1h": 3725.0}  # stopped for 1:02:05
-images = {}
+images, stocks = {}, {}
 for name, kw in states.items():
   scene(**kw)
   stopped = kw.get("standstill", False)
@@ -302,17 +362,42 @@ for name, kw in states.items():
   on = render(f"{name}_on", ON, **jump)
   off = render(f"{name}_off", OFF, **jump)
   stock = render(f"{name}_stock", ON, stock=True, **jump)
-  r = {"off_vs_stock": same(off, stock), "on_vs_stock": same(on, stock), "on_diff_box": diff_box(on, stock)}
+  r = {"off_vs_stock": same(off, stock), "on_vs_stock": same(on, stock), "on_diff_box": diff_box(on, stock),
+       "strip_vs_stock": strip_diff(on, stock)}
   for b, bn in ((SIGN, "sign"), (SIGN_INNER, "inner"), (SPEED, "speed"), (NEXT, "next"), (LAMP_L, "lamp_l"),
                 (LAMP_R, "lamp_r"), (LABEL, "label"), (BANNER, "banner"), (LOWER, "lower"), (ARROW, "arrow"), (KEY, "key"),
-                (BADGE, "badge")):
+                (BADGE, "badge"), (RAIL, "rail"), (BALL_HIGH, "ballhi"), (BALL_LOW, "balllo")):
     for kind in ("red", "white", "amber", "orange", "green", "dark", "grey"):
       r[f"{bn}_{kind}"] = count(on, b, kind)
       r[f"stock_{bn}_{kind}"] = count(stock, b, kind)
   if stopped:
     r["banner_right"], r["cluster_left"] = stop_gap(on)
   out[name] = r
-  images[name] = on
+  images[name], stocks[name] = on, stock
+
+# the rail's own settings: each off alone, and both off = the stock strip
+toggles = {}
+for name, label, prm in (("rail_stop", "stop_off", {**ON, HS.PARAM_PLANNED_STOP: False}),
+                         ("rail_curve", "curve_off", {**ON, HS.PARAM_CURVE: False}),
+                         ("rail_both", "stop_off", {**ON, HS.PARAM_PLANNED_STOP: False}),
+                         ("rail_stop", "both_off", RAIL_OFF), ("rail_curve", "both_off", RAIL_OFF),
+                         ("rail_both", "both_off", RAIL_OFF)):
+  scene(**states[name])
+  img = render(f"{name}_{label}", prm)
+  toggles[f"{name}_{label}"] = {"strip_vs_stock": strip_diff(img, stocks[name]),
+                                "strip_vs_curve": strip_diff(img, images["rail_curve"])}
+out["rail_toggles"] = toggles
+out["rail_both_vs_stop"] = strip_diff(images["rail_both"], images["rail_stop"])
+
+# one drive: cruising, a stop appears (debounced), stays a moment after the plan stops stopping, goes; the ball returns
+CRUISE_RAIL = dict(v=30 / KPH, limit=50, ahead=0, ahead_dist=0.0, rail=dict(stop_m=None, confident=True))
+steps = [(CRUISE_RAIL, 40, "rail_seq_1_cruise_on"), (states["rail_stop"], 4, "rail_seq_2_debounce_on"),
+         (states["rail_stop"], 20, "rail_seq_3_stop_on"), (CRUISE_RAIL, 6, "rail_seq_4_held_on"),
+         (CRUISE_RAIL, 40, "rail_seq_5_gone_on")]
+seq_on, seq_stock = run(ON, steps), run(ON, steps, stock=True)
+out["rail_seq"] = {"strip_vs_stock": [strip_diff(a, b) for a, b in zip(seq_on, seq_stock, strict=True)],
+                   "rail_white": [count(g, RAIL, "white") for g in seq_on],
+                   "ballhi_green": [count(g, BALL_HIGH, "green") for g in seq_on]}
 
 # the stop time's size: full up to 59:59, shrunk beyond
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_cluster import timer_size
@@ -503,3 +588,56 @@ class TestHudRender(OpenpilotTestCase):
     r = self.r["missing_plan"]
     assert r["sign_red"] == 0 and r["speed_white"] > 150, "no plan: the speed alone"
     assert self.r["missing_carstate"]["on_vs_stock"] == 0, "no carState: nothing at all"
+
+  def test_the_rail_draws_only_in_the_strip_and_only_with_an_item(self):
+    for name, r in self.r.items():
+      if not isinstance(r, dict) or not isinstance(r.get("strip_vs_stock"), int):
+        continue  # not one of the single states
+      if name in ("rail_stop", "rail_stop_grey", "rail_curve", "rail_both"):
+        assert r["strip_vs_stock"] > 0, name
+      else:
+        assert r["strip_vs_stock"] == 0, f"{name}: nothing for the rail, the stock strip - {r['strip_vs_stock']} px differ"
+    for name in ("rail_stop", "rail_curve"):
+      x0, y0, x1, y1 = self.r[name]["on_diff_box"]
+      assert x1 >= STRIP_X, f"{name}: the rail is in the strip"
+
+  def test_a_planned_stop_openpilot_is_driving_is_white(self):
+    r = self.r["rail_stop"]
+    assert r["rail_white"] > 250 and r["rail_white"] > 4 * r["rail_grey"], f"white (grey only at the text's edges) {r}"
+    g = self.r["rail_stop_grey"]
+    assert g["rail_grey"] > 250 and g["rail_white"] == 0, f"the model's plan only: grey, nothing white {g}"
+
+  def test_a_curve_and_its_target_speed(self):
+    r = self.r["rail_curve"]
+    assert r["rail_white"] > 200, r
+
+  def test_the_ball_moves_down_only_while_an_item_shows(self):
+    for name in ("rail_stop", "rail_stop_grey", "rail_curve"):
+      r = self.r[name]
+      assert r["stock_ballhi_green"] > 100 and r["stock_balllo_green"] == 0, f"{name}: the stock ball at the top"
+      assert r["ballhi_green"] == 0 and r["balllo_green"] > 100, f"{name}: held under the item {r}"
+    for name in ("rail_stop_lead", "rail_stop_standstill"):
+      r = self.r[name]
+      assert r["ballhi_green"] == r["stock_ballhi_green"] > 100, f"{name}: no item, the ball where it was"
+
+  def test_no_stop_behind_a_car_or_at_a_standstill(self):
+    for name in ("rail_stop_lead", "rail_stop_standstill"):
+      assert self.r[name]["rail_white"] == 0 and self.r[name]["rail_grey"] == 0, name
+
+  def test_a_planned_stop_wins_over_a_curve(self):
+    assert self.r["rail_both_vs_stop"] == 0
+
+  def test_the_rail_settings(self):
+    t = self.r["rail_toggles"]
+    for key in ("rail_stop_stop_off", "rail_curve_curve_off", "rail_stop_both_off", "rail_curve_both_off",
+                "rail_both_both_off"):
+      assert t[key]["strip_vs_stock"] == 0, f"{key}: the stock strip, pixel for pixel"
+    assert t["rail_both_stop_off"]["strip_vs_curve"] == 0, "the stop off: the curve takes its place"
+
+  def test_the_rail_through_a_drive(self):
+    s = self.r["rail_seq"]
+    cruise, debounce, stop, held, gone = s["strip_vs_stock"]
+    assert cruise == 0 and debounce == 0, f"nothing while cruising, nor in the first 0.2 s of a stop: {s}"
+    assert stop > 0 and s["rail_white"][2] > 250 and s["ballhi_green"][2] == 0, s
+    assert held > 0, f"kept a moment after the plan stops stopping: {s}"
+    assert gone == 0, f"then gone, and the ball back exactly where the stock one is: {s}"

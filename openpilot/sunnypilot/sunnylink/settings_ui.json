@@ -1637,7 +1637,7 @@
         {
           "id": "hud_comma4",
           "title": "HUD",
-          "description": "The comma 4 driving screen - speed, speed limit, next limit and stops. Changes show within a second.",
+          "description": "The comma 4 driving screen - speed, speed limit, next limit, stops, and the planned stop or curve in the right strip. Changes show within a second.",
           "visibility": [
             {
               "type": "capability",
@@ -1726,6 +1726,18 @@
               "widget": "toggle",
               "title": "Show the Limit in the Confirm Prompt",
               "description": "The 'press - (or +) to confirm speed limit' prompt shows the limit it is asking about, with a dashed ring until you confirm it, beside the green - or +. A speed limit offset shows as a small number on the sign, as on sunnypilot's own sign."
+            },
+            {
+              "key": "HudPlannedStop",
+              "widget": "toggle",
+              "title": "Planned Stop",
+              "description": "Top of the right strip, above the confidence ball - an arrow onto a stop line and how far ahead the driving model plans to come to a stop, when that is within 10 seconds and there is no car ahead in the way. White while openpilot is driving your speed on that plan; grey with a dashed line when it is only the model's plan and openpilot is not braking for it. It never says why - a light, a sign or a queue look the same to it."
+            },
+            {
+              "key": "HudCurve",
+              "widget": "toggle",
+              "title": "Curve Speed",
+              "description": "Top of the right strip - a curve arrow and openpilot's target speed for the curve while Smart Cruise Control is slowing for it or about to. A planned stop takes the place first."
             }
           ]
         },

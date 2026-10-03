@@ -319,3 +319,77 @@ def pending_icon(bx: float, by: float, size: float, value: int, lower: bool, key
   rl.draw_rectangle_rounded(rl.Rectangle(bx, scy - bh / 2, bw, bh), 0.5, 6, col)
   if not lower:
     rl.draw_rectangle_rounded(rl.Rectangle(bx + bw / 2 - bh / 2, scy - bw / 2, bh, bw), 0.5, 6, col)
+
+
+# ------------------------------------------------------------------------------------------- the right rail
+# The glyphs of the approved style-B rail mockup (hud2/design/glyphs.py: SVGs on a 100x100 box), drawn here with raylib
+# primitives instead of PNGs: round-capped strokes are a line plus a disc at each end and joint. Every colour is opaque,
+# so the overlaps never show.
+RAIL_GREY = rl.Color(143, 143, 143, 255)  # the model's plan, which openpilot is not following
+
+
+def _tri(p0: rl.Vector2, p1: rl.Vector2, p2: rl.Vector2, col: rl.Color):
+  """A filled triangle in either winding (raylib culls the one it does not want)."""
+  if (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x) > 0:
+    p1, p2 = p2, p1
+  rl.draw_triangle(p0, p1, p2, col)
+
+
+def _stroke(points: list[rl.Vector2], w: float, col: rl.Color):
+  """A polyline w px wide with round caps and round joins."""
+  for p0, p1 in zip(points, points[1:], strict=False):
+    rl.draw_line_ex(p0, p1, w, col)
+  for p in points:
+    rl.draw_circle_v(p, w / 2, col)
+
+
+def stop_glyph(cx: float, top: float, size: float, solid: bool):
+  """The planned stop: an arrow coming down onto a stop line, in a size x size box. solid = openpilot is driving the
+  speed and stopping on this plan: white, a solid line. Otherwise grey with the line dashed: the model's plan only."""
+  k = size / 100.0
+  col = WHITE if solid else RAIL_GREY
+
+  def p(x: float, y: float) -> rl.Vector2:
+    return rl.Vector2(cx + (x - 50) * k, top + y * k)
+  _stroke([p(50, 6), p(50, 52)], 14 * k, col)
+  _stroke([p(25, 38), p(50, 63), p(75, 38)], 14 * k, col)
+  if solid:
+    rl.draw_rectangle_rounded(rl.Rectangle(cx - 42 * k, top + 80 * k, 84 * k, 13 * k), 1.0, 8, col)
+  else:
+    for x in (8, 30.3, 52.6, 75):
+      rl.draw_rectangle_rounded(rl.Rectangle(cx + (x - 50) * k, top + 80 * k, 17 * k, 13 * k), 0.77, 6, col)
+
+
+def curve_glyph(cx: float, top: float, size: float, left: bool, col: rl.Color = WHITE):
+  """A curve arrow (the AU curve-sign shape) bending left or right, in a size x size box."""
+  k = size / 100.0
+  m = -1.0 if left else 1.0
+
+  def p(x: float, y: float) -> rl.Vector2:
+    return rl.Vector2(cx + m * (x - 50) * k, top + y * k)
+  # M 32 95 V 58 Q 32 30 60 30 H 64, 15 wide
+  bend = [p((1 - t) ** 2 * 32 + 2 * (1 - t) * t * 32 + t ** 2 * 60, (1 - t) ** 2 * 58 + 2 * (1 - t) * t * 30 + t ** 2 * 30)
+          for t in (i / 10 for i in range(11))]
+  _stroke([p(32, 95)] + bend + [p(64, 30)], 15 * k, col)
+  # the head: a triangle with a 7-wide round-joined outline
+  head = [p(59, 9), p(88, 30), p(59, 51)]
+  _tri(head[0], head[1], head[2], col)
+  _stroke(head + [head[0]], 7 * k, col)
+
+
+def rail_figure(num: str, unit: str, cx: float, cy: float, cap: float, max_w: float, col: rl.Color) -> float:
+  """Condensed bold figures (cap px tall in ink) centred on cx, and their unit ('m', 'km/h') smaller after them on the
+  same baseline; both squeezed together if they would be wider than max_w - the figures never lose height for their
+  unit. Returns the total width."""
+  size, sx = fit_digits(num, round(cap, 2), round(max_w, 2), sx=0.9, min_sx=0.72)
+  nw, nh, _, _ = ink(num, size, sx)
+  usize, usx, gap = size * 0.66, 0.95, 1.5
+  uw, uh, _, _ = ink(unit, usize, usx, FontWeight.SEMI_BOLD)
+  total = nw + gap + uw
+  if total > max_w:
+    f = max_w / total
+    sx, usx, nw, uw, total = sx * f, usx * f, nw * f, uw * f, max_w
+  x0 = cx - total / 2
+  text_ink(num, size, x0, cy, col, sx=sx, anchor="left")
+  text_ink(unit, usize, x0 + nw + gap, cy + nh / 2 - uh / 2, col, sx=usx, w=FontWeight.SEMI_BOLD, anchor="left")
+  return total
