@@ -58,3 +58,16 @@ class TestSunnylinkdMethods(OpenpilotTestCase):
     assert len(self.saved_params) == 1
     assert self.saved_params[0][0] == "SpeedLimitOffset"
     assert self.saved_params[0][1] == "10"
+
+  def test_saveParams_offroad_only(self):
+    # FORK(HONDA_ACCORD_9G_AU): stock ACC mode never changes under a moving car, whatever the app allows
+    sunnylinkd.params.remove("IsOffroad")       # not yet known at boot: treated as onroad
+    sunnylinkd.saveParams({"HondaElesysStockAcc": "MQ=="})
+    sunnylinkd.params.put_bool("IsOffroad", False, block=True)
+    sunnylinkd.saveParams({"HondaElesysStockAcc": "MQ==", "SpeedLimitOffset": "10"})
+    assert [p[0] for p in self.saved_params] == ["SpeedLimitOffset"]
+
+    self.saved_params.clear()
+    sunnylinkd.params.put_bool("IsOffroad", True, block=True)
+    sunnylinkd.saveParams({"HondaElesysStockAcc": "MQ=="})
+    assert [p[0] for p in self.saved_params] == ["HondaElesysStockAcc"]

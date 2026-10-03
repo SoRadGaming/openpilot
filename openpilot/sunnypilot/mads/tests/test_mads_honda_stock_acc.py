@@ -33,6 +33,7 @@ SafetyModel = structs.CarParams.SafetyModel
 
 KPH = 1 / 3.6
 DROP_OUT_SPEED = 22.0 * KPH      # where stock ACC lets go by itself on this car (routes 0e, 44, 61, 82)
+CRITICAL_ABOVE = 19 * 0.44704 + 2.   # car_events: cruiseDisabled at minEnableSpeed + 2 m/s and above, 37.8 km/h
 
 
 def stock_car_params(stock: bool = True):
@@ -48,9 +49,10 @@ def stock_car_params(stock: bool = True):
   return CP, CP_SP
 
 
-def car_state(v_ego: float, cruise: bool, lkas_button: bool = False):
+def car_state(v_ego: float, cruise: bool, lkas_button: bool = False, brake: bool = False):
   cs = car.CarState.new_message()
   cs.vEgo = v_ego
+  cs.brakePressed = brake
   cs.standstill = v_ego < 0.001
   cs.gearShifter = car.CarState.GearShifter.drive
   cs.canValid = True
@@ -98,6 +100,8 @@ class Drive:
       sd.events_sp.clear()
       cc = car.CarControl.new_message()
       sd.events.add_from_msg(self.car_events.update(cs, sd.CS_prev, cc.as_reader()).to_msg())
+      if cs.brakePressed and (not sd.CS_prev.brakePressed or not cs.standstill):
+        sd.events.add(EventName.pedalPressed)   # selfdrived's own, from carState
       if sd.initialized:
         sd.enabled, sd.active = sd.state_machine.update(sd.events)
       self.mads.update(cs)
@@ -160,6 +164,52 @@ class TestMadsStockAccEngagement(OpenpilotTestCase):
     d.step(car_state(29 * KPH, True))
     assert not d.sd.enabled
 
+  def test_a_refused_engagement_says_so(self, mocker):
+    # openpilot's NO_ENTRY "drive above" alert on the refused ACC_STATUS rising edge, with MADS off or on, from
+    # unified engagement or not; never on the frames around it. pcmEnable is an edge: the next try is the next SET/RES
+    for uem in (True, False):
+      for mads_first in (False, True):
+        d = Drive(mocker)
+        d.sd.values["MadsUnifiedEngagementMode"] = uem
+        d.mads.unified_engagement_mode = uem
+        d.step(car_state(29.5 * KPH, False))
+        if mads_first:
+          d.step(car_state(29.5 * KPH, False, lkas_button=True))
+          assert d.mads.enabled
+        d.step(car_state(29.5 * KPH, False), n=5)
+        assert not any(a.alert_type.startswith("belowEngageSpeed") for a in d.alerts)
+        d.step(car_state(29.5 * KPH, True))
+        assert not d.sd.enabled
+        assert d.mads.enabled == (uem or mads_first), (uem, mads_first)
+        refused = [a for a in d.alerts if a.alert_type == f"belowEngageSpeed/{ET.NO_ENTRY}"]
+        assert len(refused) == 1, (uem, mads_first, [a.alert_type for a in d.alerts])
+        assert refused[0].alert_status == AlertStatus.normal
+        d.step(car_state(50 * KPH, True), n=5)
+        assert not d.sd.enabled, "an edge, not a level"
+        assert not any(a.alert_type.startswith("belowEngageSpeed") for a in d.alerts)
+
+  def test_mads_turns_on_below_19_mph_while_openpilot_is_engaged(self, mocker):
+    # following stock ACC with MADS off (no unified engagement, or a fast-wheel takeover turned it off), slowing in
+    # traffic with stock ACC still on: the LKAS button turns MADS on at any speed, as with the toggle off
+    for v_kph in (35, 29, 25, 10):
+      for uem in (False, True):
+        d = Drive(mocker)
+        d.sd.values["MadsUnifiedEngagementMode"] = uem
+        d.mads.unified_engagement_mode = uem
+        d.step(car_state(80 * KPH, False))
+        d.step(car_state(80 * KPH, True))
+        assert d.sd.enabled
+        if uem:
+          d.mads.state_machine.state = State.disabled   # what lkasDisable from the takeover leaves
+          d.mads.enabled = d.mads.active = False
+        d.step(car_state(v_kph * KPH, True), n=50)
+        assert d.sd.enabled and not d.mads.enabled
+        d.step(car_state(v_kph * KPH, True, lkas_button=True))
+        assert d.mads.enabled and d.mads.active, f"MADS refused at {v_kph} km/h, uem={uem}"
+        assert d.sd.enabled
+        d.step(car_state(v_kph * KPH, True), n=20)
+        assert d.mads.enabled and d.mads.active and d.sd.enabled
+
 
 class TestMadsStockAccDropOut(OpenpilotTestCase):
   def _engaged(self, mocker, stock: bool = True) -> Drive:
@@ -199,6 +249,51 @@ class TestMadsStockAccDropOut(OpenpilotTestCase):
     d.step(car_state(DROP_OUT_SPEED, False))
     assert not d.sd.enabled and not d.mads.enabled
     assert any(a.alert_text_2 == "Speed too low" for a in d.alerts)
+
+  def test_drop_out_at_speed_is_cruise_disabled_either_way(self, mocker):
+    # above minEnableSpeed + 2 m/s a drop-out is a fault (radar, VSA) and gas and brake are gone: upstream's critical
+    # "Cruise Is Off", with MADS keeping lateral as with MADS off - never silent
+    for v_kph in (39, 80, 100):
+      for mads_on in (True, False):
+        d = self._engaged(mocker)
+        d.step(car_state(v_kph * KPH, True), n=5)
+        if not mads_on:
+          d.mads.state_machine.state = State.disabled
+          d.mads.enabled = d.mads.active = False
+        d.step(car_state(v_kph * KPH, False))
+        assert not d.sd.enabled
+        assert d.mads.enabled == mads_on and d.mads.active == mads_on
+        texts = [(a.alert_text_1, a.alert_text_2) for a in d.alerts]
+        assert ("TAKE CONTROL IMMEDIATELY", "Cruise Is Off") in texts, (v_kph, mads_on, texts)
+        assert not any(a.alert_text_2 == "Speed too low" for a in d.alerts)
+        d.step(car_state(v_kph * KPH, False), n=5)
+        assert d.mads.enabled == mads_on
+
+  def test_the_two_drop_out_alerts_meet_at_37_8_kph(self, mocker):
+    for v, expect in ((CRITICAL_ABOVE - 0.2, "Speed too low"), (CRITICAL_ABOVE + 0.2, "Cruise Is Off")):
+      d = self._engaged(mocker)
+      d.step(car_state(v, True), n=5)
+      d.step(car_state(v, False))
+      assert [a.alert_text_2 for a in d.alerts if a.alert_text_2 in ("Speed too low", "Cruise Is Off")] == [expect]
+
+  def test_driver_cancelling_is_never_critical(self, mocker):
+    # the driver's brake cancels stock ACC 0.03-0.54 s after its rising edge (every high-speed drop on the six stock
+    # routes; the rest follow a CANCEL press by 0.04-0.51 s), and openpilot disengages on the edge: by the drop frame
+    # it is off already, so no drop-out alert at any speed
+    for v_kph in (22, 80):
+      d = self._engaged(mocker)
+      d.step(car_state(v_kph * KPH, True), n=5)
+      seen = []
+      d.step(car_state(v_kph * KPH, True, brake=True))
+      assert not d.sd.enabled and d.mads.enabled
+      seen += d.alerts
+      d.step(car_state(v_kph * KPH, True, brake=True), n=2)
+      seen += d.alerts
+      d.step(car_state(v_kph * KPH, False, brake=True))
+      seen += d.alerts
+      assert d.mads.enabled
+      assert not any(a.alert_status == AlertStatus.critical for a in seen), [a.alert_text_2 for a in seen]
+      assert not any(a.alert_text_2 in ("Speed too low", "Cruise Is Off") for a in seen)
 
   def test_the_alert_comes_back_only_in_the_mode(self, mocker):
     # the same frames without the flag: upstream MADS strips speedTooLow on that frame, alert and all
