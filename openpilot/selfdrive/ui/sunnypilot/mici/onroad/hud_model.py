@@ -29,10 +29,13 @@ the zone is debounced (SignSlot): on after SIGN_ZONE_ON_S, off after SIGN_ZONE_O
 known: the next lower limit is still shown, and the speed takes the sign's place.
 
 COMPACT ALERTS (HudCompactLimitPrompts / HudCompactDisengage / HudCompactTurn, drawn by hud_alerts.py): an alert is drawn
-small only when its EVENT NAME is in an enabled group below AND it is AlertStatus.normal AND VisualAlert.none. Anything
-else - any critical or userPrompt alert, any 'take control' or steer-required one, AEB / FCW, a no-entry ('openpilot
-unavailable'), the UI's own 'system unresponsive' alerts (no event name), an alert upstream adds tomorrow - is drawn
-exactly as stock. test_hud_cluster walks every event and proves no listed one can be anything but normal / LOW / none.
+small only when its FULL ALERT TYPE (event name AND event type, COMPACT_TYPES) is in an enabled group below AND it is
+AlertStatus.normal AND VisualAlert.none AND it is not an 'openpilot Unavailable'. Anything else - any critical or
+userPrompt alert, any 'take control' or steer-required one, AEB / FCW, a no-entry ('openpilot unavailable', which is
+itself normal / LOW / none, so the status test alone would not stop it), the UI's own 'system unresponsive' alerts (no
+event name), an alert upstream adds tomorrow, under a new name or a new type of a listed one - is drawn exactly as stock.
+test_hud_cluster walks every event, proves no listed one can be anything but normal / LOW / none, and fails if a listed
+name gains or loses an event type.
 
 WHAT FEEDS THE RIGHT RAIL (RailState, drawn by hud_rail.py in the confidence ball's strip), one item at a time, a planned
 stop before a curve, and what a missing message does:
@@ -94,19 +97,25 @@ SIGN_ZONE_ON_S = 0.3    # HudLimitSign = zones: the sign appears once the zone h
 SIGN_ZONE_OFF_S = 12.0  # ... and goes once it has been gone this long - the gaps in one zone on route 10f were 2-19 s,
                         # bar one of 58 s
 
-# the compact alerts, by event name (hud_alerts.py draws them). Only names, never a type ('/noEntry'): aeb and stockAeb
-# have no-entry alerts too.
+# the compact alerts, by event name (hud_alerts.py draws them), each only under the one event type it has today
+# (COMPACT_TYPES): a new type of a listed name - a '/noEntry' 'openpilot Unavailable', which is normal / LOW / none like
+# these - would otherwise be drawn compact, under these banners' words or as nothing at all.
 CONFIRM_EVENT = 'speedLimitPreActive'   # 'press + (or -) to confirm speed limit': a banner
 # the set speed was changed: nothing over the road - the stock MAX number shows the new set speed, the cluster stays
 COMPACT_QUIET = frozenset({'speedLimitActive', 'speedLimitChanged', 'speedLimitPending'})
 COMPACT_LIMIT = COMPACT_QUIET | {CONFIRM_EVENT}
-# The driver's own disengagement, which these normal alerts spell out: the brake or cancel ending cruise with lane
-# centering kept, the LKAS button ending lane centering with cruise on. Every other normal alert that ends or refuses
+# The driver's own disengagement, which these normal alerts spell out: the cancel button ending cruise with lane
+# centering kept (mads.py), the LKAS button ending lane centering with cruise on. Every other normal alert that ends or refuses
 # something is not the driver's doing (speedTooLow 'openpilot Canceled', HIGH), refuses an engagement
 # (pedalPressedAlertOnly, 'openpilot Unavailable'), or is a fault (lkasGatewayEpsLatchedReminder, steerUnavailable,
 # accFaulted): those stay full screen. lkasDisable, buttonCancel and pcmDisable draw nothing anyway (AlertSize.none).
 COMPACT_DISENGAGE = frozenset({'manualLongitudinalRequired', 'manualSteeringRequired'})
 COMPACT_TURN = frozenset({'laneTurnLeft', 'laneTurnRight'})
+# the one event type each listed name is raised with (events.py / sunnypilot's events.py); test_hud_cluster fails if
+# either table gives a listed name any other
+COMPACT_TYPES = dict.fromkeys(COMPACT_LIMIT | COMPACT_TURN | {'manualLongitudinalRequired'}, 'warning')
+COMPACT_TYPES['manualSteeringRequired'] = 'userDisable'
+NO_ENTRY_TEXT = 'openpilot unavailable'   # NoEntryAlert's words: never compact, whatever its type
 COMPACT_NONE, COMPACT_LIMIT_KIND, COMPACT_DISENGAGE_KIND, COMPACT_TURN_KIND = 0, 1, 2, 3
 # the banners' words: the stock texts, shortened to fit top left ('Smart/Adaptive Cruise Control: OFF / Manual Speed
 # Control Required', 'Automatic Lane Centering is OFF / Manual Steering Required', 'Turning Left')
@@ -242,12 +251,21 @@ def event_name(alert) -> str:
   return alert.alert_type.split('/')[0] if alert is not None and alert.alert_type else ''
 
 
+def _says_unavailable(alert) -> bool:
+  """A NoEntryAlert: 'openpilot Unavailable' is its first line, or on the comma 4 its second (events_base swaps them)."""
+  return any(str(getattr(alert, t, '') or '').strip().lower() == NO_ENTRY_TEXT for t in ('text1', 'text2'))
+
+
 def compact_kind(alert, s: HudSettings) -> int:
   """Which compact group draws this alert (COMPACT_*_KIND), or COMPACT_NONE: the stock drawing. Only a listed EVENT NAME
-  with its group's setting on, and only while the alert is normal and asks for no visual: a listed event raised critical,
-  userPrompt or steer-required by some future table is drawn as stock."""
-  name = event_name(alert)
-  if not name or _enum(alert.status) != AlertStatus.normal or _enum(alert.visual_alert) != VisualAlert.none:
+  under its one recorded EVENT TYPE (COMPACT_TYPES) with its group's setting on, and only while the alert is normal, asks
+  for no visual and is not an 'openpilot Unavailable': a listed event raised critical, userPrompt, steer-required or as a
+  no-entry by some future table is drawn as stock."""
+  if alert is None or not alert.alert_type:
+    return COMPACT_NONE
+  name, _, event_type = alert.alert_type.partition('/')
+  if COMPACT_TYPES.get(name) != event_type or _enum(alert.status) != AlertStatus.normal or \
+     _enum(alert.visual_alert) != VisualAlert.none or _says_unavailable(alert):
     return COMPACT_NONE
   if s.compact_limit and name in COMPACT_LIMIT:
     return COMPACT_LIMIT_KIND

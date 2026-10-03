@@ -168,7 +168,9 @@ class HudCluster(Widget):
           hd.offset_badge(sign_cx + SIGN_D * 0.30, cy - SIGN_D * 0.40, SIGN_D * 0.2, offset, alpha=sa)
       if f.school != SCHOOL_NONE:
         hd.school_cue(sign_cx, cy, SIGN_D, f.school == SCHOOL_ACTIVE, rl.get_time(), alpha=sa)
-      row1, cluster_edge.sign = sign_cx - SIGN_D / 2, True
+      # the banner (hud_alerts) carries the pending sign itself until this one is at least half faded in, so while it
+      # slides back there is always one limit on screen
+      row1, cluster_edge.sign = sign_cx - SIGN_D / 2, sa > 0.5 * alpha
 
     if f.timer_s is not None:
       txt = hd.fmt_mmss(f.timer_s)

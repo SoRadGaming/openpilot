@@ -969,6 +969,37 @@ class TestCompactAlerts(OpenpilotTestCase):
     assert HM.COMPACT_TURN == {'laneTurnLeft', 'laneTurnRight'}
     names = {n for n, _, _ in every_alert()}
     assert LISTED <= names, f"a listed event no longer exists: {LISTED - names}"
+    assert set(HM.COMPACT_TYPES) == LISTED
+
+  def test_SAFETY_each_listed_name_has_exactly_its_recorded_type(self):
+    # the allow-list is keyed by the full alert type: an upstream table giving a listed name a new type (a '/noEntry'
+    # 'openpilot Unavailable' is normal / LOW / none too) must fail here, not go compact unnoticed
+    from openpilot.selfdrive.selfdrived.events import EVENTS, EVENT_NAME
+    from openpilot.sunnypilot.selfdrive.selfdrived.events import EVENTS_SP, EVENT_NAME_SP
+    types = defaultdict(set)
+    for table, names in ((EVENTS, EVENT_NAME), (EVENTS_SP, EVENT_NAME_SP)):
+      for ev, by_type in table.items():
+        if names[ev] in LISTED:
+          types[names[ev]] |= set(by_type)
+    assert {n: {t} for n, t in HM.COMPACT_TYPES.items()} == dict(types), dict(types)
+
+  def test_SAFETY_a_new_type_of_a_listed_name_is_drawn_as_stock(self):
+    from openpilot.sunnypilot.selfdrive.selfdrived.events_base import ET, NoEntryAlert
+    ets = [v for k, v in vars(ET).items() if k.isupper()]
+    assert len(ets) == 10, ets
+    for name in LISTED:
+      for et in ets:
+        a = SimpleNamespace(alert_type=f"{name}/{et}", status=0, visual_alert=0, text1="Some Text", text2="")
+        if et == HM.COMPACT_TYPES[name]:
+          assert HM.compact_kind(a, HS.ALL_ON) != HM.COMPACT_NONE, f"{name}/{et}: the recorded type is compact"
+        else:
+          assert HM.compact_kind(a, HS.ALL_ON) == HM.COMPACT_NONE, f"{name}/{et}: a new type is drawn as stock"
+      # a no-entry under the recorded type itself, either way round (events_base swaps its lines on the comma 4)
+      ne = NoEntryAlert("Speed Limit Assist Active")
+      for t1, t2 in ((ne.alert_text_1, ne.alert_text_2), (ne.alert_text_2, ne.alert_text_1)):
+        a = SimpleNamespace(alert_type=f"{name}/{HM.COMPACT_TYPES[name]}", status=int(ne.alert_status),
+                            visual_alert=int(ne.visual_alert), text1=t1, text2=t2)
+        assert HM.compact_kind(a, HS.ALL_ON) == HM.COMPACT_NONE, f"{name}: {t1!r} / {t2!r}"
 
   def test_SAFETY_every_listed_alert_is_normal_low_and_asks_for_no_visual(self):
     from openpilot.sunnypilot.selfdrive.selfdrived.events_base import AlertStatus, Priority, VisualAlert
@@ -1009,11 +1040,11 @@ class TestCompactAlerts(OpenpilotTestCase):
     # an upstream table change tomorrow: the same name, but critical, a prompt, or a visual - stock
     for name in LISTED:
       for status in (1, 2):   # userPrompt, critical
-        assert HM.compact_kind(SimpleNamespace(alert_type=f"{name}/warning", status=status, visual_alert=0),
-                               HS.ALL_ON) == HM.COMPACT_NONE, (name, status)
+        assert HM.compact_kind(SimpleNamespace(alert_type=f"{name}/{HM.COMPACT_TYPES[name]}", status=status,
+                                               visual_alert=0), HS.ALL_ON) == HM.COMPACT_NONE, (name, status)
       for visual in VISUALS:
-        assert HM.compact_kind(SimpleNamespace(alert_type=f"{name}/warning", status=0, visual_alert=visual),
-                               HS.ALL_ON) == HM.COMPACT_NONE, (name, visual)
+        assert HM.compact_kind(SimpleNamespace(alert_type=f"{name}/{HM.COMPACT_TYPES[name]}", status=0,
+                                               visual_alert=visual), HS.ALL_ON) == HM.COMPACT_NONE, (name, visual)
 
   def test_SAFETY_the_uis_own_critical_alerts_are_never_compact(self):
     # ALERT_CRITICAL_TIMEOUT / _REBOOT and 'waiting to start' carry no event name
@@ -1027,7 +1058,8 @@ class TestCompactAlerts(OpenpilotTestCase):
 
   def test_each_group_has_its_own_setting(self):
     def kind(name, s):
-      return HM.compact_kind(SimpleNamespace(alert_type=f"{name}/warning", status=0, visual_alert=0), s)
+      return HM.compact_kind(SimpleNamespace(alert_type=f"{name}/{HM.COMPACT_TYPES.get(name, 'warning')}", status=0,
+                                             visual_alert=0), s)
     for name in HM.COMPACT_LIMIT:
       assert kind(name, HS.ALL_ON) == HM.COMPACT_LIMIT_KIND and kind(name, with_(compact_limit=False)) == HM.COMPACT_NONE
       assert kind(name, with_(compact_disengage=False, compact_turn=False)) == HM.COMPACT_LIMIT_KIND
@@ -1042,7 +1074,7 @@ class TestCompactAlerts(OpenpilotTestCase):
 
   def test_only_a_set_speed_change_frees_the_max_number(self):
     def a(name):
-      return SimpleNamespace(alert_type=f"{name}/warning", status=0, visual_alert=0)
+      return SimpleNamespace(alert_type=f"{name}/{HM.COMPACT_TYPES.get(name, 'warning')}", status=0, visual_alert=0)
     for name in HM.COMPACT_QUIET:
       assert HM.frees_top_icons(a(name), HS.ALL_ON) and not HM.frees_top_icons(a(name), with_(compact_limit=False))
     for name in (HM.CONFIRM_EVENT, *HM.COMPACT_DISENGAGE, *HM.COMPACT_TURN, "steerSaturated"):

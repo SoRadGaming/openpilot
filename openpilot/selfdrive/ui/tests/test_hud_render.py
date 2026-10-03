@@ -183,6 +183,7 @@ def scene(v=110 / KPH, limit=110, ahead=100, ahead_dist=339.0, ahead_valid=True,
 STOPPED = ("manualRestart/warning", "TAKE CONTROL", "Resume Driving Manually", "mid", "userPrompt")
 CONFIRM = ("speedLimitPreActive/warning", "Press - to confirm speed limit", "", "small", "normal")
 CONFIRM_PLUS = ("speedLimitPreActive/warning", "Press + to confirm speed limit", "", "small", "normal")
+CONFIRM_EMPTY = ("speedLimitPreActive/warning", "", "", "small", "normal")   # set speed already the limit: no words
 SATURATED = ("steerSaturated/warning", "TAKE CONTROL", "Turn Exceeds Steering Limit", "mid", "userPrompt")
 CHANGED = ("speedLimitChanged/warning", "Set speed changed", "", "small", "normal")
 DISENGAGE = ("manualLongitudinalRequired/warning", "Smart/Adaptive Cruise Control: OFF", "Manual Speed Control Required",
@@ -358,6 +359,13 @@ states = {
                                  ahead_dist=0.0),
   "confirm_compact_sign_off": dict(limit=50, v=27 / KPH, alert=CONFIRM_PLUS, assist="preActive", set_kph=40, ahead=0,
                                    ahead_dist=0.0),
+  "confirm_compact_sign_off_no_cl": dict(limit=50, v=27 / KPH, alert=CONFIRM_PLUS, assist="preActive", set_kph=40,
+                                         ahead=0, ahead_dist=0.0),
+  # the text asks for '+' while sunnypilot's arrow points down (its rounding at .5 ties): the key follows the text
+  "confirm_compact_text_vs_arrow": dict(limit=50, v=27 / KPH, alert=CONFIRM_PLUS, assist="preActive", set_kph=105,
+                                        ahead=0, ahead_dist=0.0),
+  "confirm_compact_empty": dict(limit=50, v=27 / KPH, alert=CONFIRM_EMPTY, assist="preActive", set_kph=50, ahead=0,
+                                ahead_dist=0.0),
   "changed": dict(limit=80, v=60 / KPH, alert=CHANGED, set_kph=80, ahead=0, ahead_dist=0.0),
   "disengage": dict(alert=DISENGAGE),
   "disengage_next": dict(v=30.3, alert=DISENGAGE),   # the next lower limit's row, which a two-line banner reaches down to
@@ -369,7 +377,8 @@ states = {
   "sign_zones_in": dict(limit=80, v=70 / KPH, variable=True, ahead=0, ahead_dist=0.0),
   "stopped_sign_off": dict(limit=40, v=0.0, standstill=True, alert=STOPPED, ahead=0, ahead_dist=0.0, lead=0.1),
 }
-PARAMS = {"confirm": FULL_LIMIT, "confirm_offset": FULL_LIMIT, "confirm_compact_sign_off": SIGN_OFF, "sign_off": SIGN_OFF,
+PARAMS = {"confirm": FULL_LIMIT, "confirm_offset": FULL_LIMIT, "confirm_compact_sign_off": SIGN_OFF,
+          "confirm_compact_sign_off_no_cl": {**SIGN_OFF, HS.PARAM_CONFIRM_LIMIT: False}, "sign_off": SIGN_OFF,
           "sign_zones_out": SIGN_ZONES, "sign_zones_in": SIGN_ZONES, "stopped_sign_off": SIGN_OFF}
 BADGE = (440, 24, 468, 52)   # the offset badge on the pending sign's ring, up and right
 NEXT_CORNER = (330, 58, 470, 97)  # the next lower limit's row with no sign above it: its small sign in the corner
@@ -426,7 +435,8 @@ def cluster_left(arr):
 
 
 compact = {}
-for name in ("confirm_compact", "confirm_compact_plus", "confirm_compact_offset", "confirm_compact_sign_off", "changed",
+for name in ("confirm_compact", "confirm_compact_plus", "confirm_compact_offset", "confirm_compact_sign_off",
+             "confirm_compact_sign_off_no_cl", "confirm_compact_text_vs_arrow", "confirm_compact_empty", "changed",
              "disengage", "disengage_next", "turn", "stopped_sign_off"):
   kw = {k: v for k, v in states[name].items() if k != "alert"}
   scene(**kw)
@@ -491,6 +501,13 @@ def reddish(arr, b):
 
 out["slide"] = {"digits_left": [digits_left(g) for g in slide], "sign_red": [reddish(g, SIGN) for g in slide],
                 "sign_red_full": [count(g, SIGN, "red") for g in slide]}
+
+# the compact confirm while entering a zone: until the cluster's sign has (half) faded in, the banner carries the limit
+ZC_OUT = dict(limit=50, v=27 / KPH, alert=CONFIRM_PLUS, assist="preActive", set_kph=40, ahead=0, ahead_dist=0.0)
+ZC_IN = dict(ZC_OUT, variable=True)
+zc = run(SIGN_ZONES, [(ZC_OUT, 100, "zone_confirm_1_out_on"), (ZC_IN, 8, "zone_confirm_2_sliding_on"),
+                      (ZC_IN, 60, "zone_confirm_3_in_on")])
+out["zone_confirm"] = [{"banner_red": count(g, (0, 0, 300, 120), "red"), "sign_red": reddish(g, SIGN)} for g in zc]
 
 # the rail's own settings: each off alone, and both off = the stock strip
 toggles = {}
@@ -642,6 +659,26 @@ class TestHudRender(OpenpilotTestCase):
     self.assert_banner(c, 6 + 46)
     assert c["banner_red"] > 100 and c["banner_green"] > 100, f"the dashed pending sign beside the key: {c}"
     assert c["sign_red"] == 0 and c["cluster_px"] == 0, f"the cluster has no sign to change: {c}"
+    # owner decision 7: the banner carries the limit whatever 'Show the Limit in the Confirm Prompt' says
+    n = self.r["compact"]["confirm_compact_sign_off_no_cl"]
+    assert n["px"] == c["px"] and n["banner"] == c["banner"], f"HudConfirmLimit off changes nothing here: {n} {c}"
+
+  def test_the_confirm_key_says_what_the_text_says(self):
+    plus, minus = self.r["compact"]["confirm_compact_plus"], self.r["compact"]["confirm_compact"]
+    c = self.r["compact"]["confirm_compact_text_vs_arrow"]
+    self.assert_banner(c, 6 + 46)
+    assert c["banner_green"] > minus["banner_green"] + 50 and abs(c["banner_green"] - plus["banner_green"]) < 30, \
+      f"'press + to confirm' with the '+' key although the arrow points down: {c}"
+
+  def test_entering_a_zone_the_limit_is_always_on_screen(self):
+    out, sliding, inside = self.r["zone_confirm"]
+    assert out["banner_red"] > 100, f"outside a zone the banner carries the sign: {out}"
+    assert sliding["banner_red"] > 100, f"the cluster's sign is still fading in: the banner keeps it {sliding}"
+    assert inside["banner_red"] == 0 and inside["sign_red"] > 100, f"in the zone the cluster's sign has it: {inside}"
+
+  def test_a_confirm_with_no_words_draws_no_banner(self):
+    c = self.r["compact"]["confirm_compact_empty"]
+    assert c["banner"] is None and c["banner_white"] == 0 and c["banner_green"] == 0, f"no empty pill top left: {c}"
 
   def test_set_speed_changed_draws_nothing_and_frees_the_max_number(self):
     assert self.r["compact"]["changed"]["px"] == 0, "pixel for pixel the screen without the alert"

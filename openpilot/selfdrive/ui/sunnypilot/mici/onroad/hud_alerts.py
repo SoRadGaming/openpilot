@@ -24,8 +24,10 @@ augmented_road_view.py, and with the settings off those lines fall through to th
    'Auto adjusting to speed limit', 'Set speed changed' and 'Auto adjusting to last speed limit' draw nothing over the
    road: the stock MAX number shows the new set speed (augmented_road_view lets it, frees_top_icons) and the cluster
    stays. The confirm is a one-line banner top left - 'press + to confirm' and the blinking green key - and the cluster's
-   own sign turns pending (dashed); with no sign in the cluster (HudLimitSign) the banner carries the pending sign.
-   'Cruise off', 'lane centering off' and 'turning left / right' are banners in the alert's color. Every banner stops
+   own sign turns pending (dashed, with HudConfirmLimit); with no sign in the cluster (HudLimitSign, or one not yet half
+   faded in) the banner carries the pending sign, whatever HudConfirmLimit says - the limit has nowhere else to be. The
+   key says what the text says. A confirm with no words (the set speed already equal to the limit, a frame or two) draws
+   nothing. 'Cruise off', 'lane centering off' and 'turning left / right' are banners in the alert's color. Every banner stops
    short of what the cluster drew this frame (ClusterEdge). Sounds are untouched: soundd plays them from selfdriveState.
 """
 import math
@@ -87,8 +89,8 @@ def draw_compact(ar, alert) -> bool:
   if compact_kind(alert, s) == COMPACT_NONE:
     return False
   name = event_name(alert)
-  if name in COMPACT_QUIET:
-    return True
+  if name in COMPACT_QUIET or (name == CONFIRM_EVENT and not confirm_text(alert.text1)):
+    return True   # nothing over the road (a wordless confirm too: no empty pill)
   from openpilot.selfdrive.ui.mici.onroad.alert_renderer import ALERT_COLORS, AlertStatus
   color = ALERT_COLORS.get(alert.status, ALERT_COLORS[AlertStatus.normal])
   x, y, alpha = ar._rect.x + BANNER_X, ar._rect.y + BANNER_Y, ar._alpha_filter.x
@@ -102,17 +104,15 @@ def draw_compact(ar, alert) -> bool:
 
 
 def _draw_confirm(ar, alert, s, x: float, y: float, color: rl.Color, alpha: float):
-  # the key's direction and blink from sunnypilot's own arrow (the same compare as the confirm itself); before the arrow
-  # has faded in, from the text
+  # the key's direction from the text, so the two can never disagree (sunnypilot's arrow rounds differently at .5 ties:
+  # a 72.5 km/h set speed on route 114); its blink from the arrow. Only a text naming no key (the PCM one) takes the
+  # arrow's direction.
   _, icon, icon_alpha, _, _ = ar.speed_limit_pre_active_icon_helper()
-  if icon.id == ar.arrow_down.id:
-    lower = True
-  elif icon.id == ar.arrow_up.id:
-    lower = False
-  else:
-    lower = confirm_lower(alert.text1)
+  lower = confirm_lower(alert.text1)
+  if lower is None:
+    lower = True if icon.id == ar.arrow_down.id else False if icon.id == ar.arrow_up.id else None
   value, offset = 0, 0
-  if s.confirm_limit and not cluster_edge.sign:
+  if not cluster_edge.sign:   # no limit on screen otherwise (owner decision 7, whatever HudConfirmLimit says)
     value, offset = pending_limit(ui_state.sm, ui_state.is_metric)
   h = hd.CONFIRM_H if value > 0 else hd.BANNER_LINE_H
   hd.confirm_banner(x, y, confirm_text(alert.text1), lower, color, alpha=alpha, key_alpha=(icon_alpha / 255.0) * alpha,

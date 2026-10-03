@@ -1764,7 +1764,7 @@
               "key": "HudConfirmLimit",
               "widget": "toggle",
               "title": "Show the Limit in the Confirm Prompt",
-              "description": "The 'press - (or +) to confirm speed limit' prompt shows the limit it is asking about, with a dashed ring until you confirm it, beside the green - or +. A speed limit offset shows as a small number on the sign, as on sunnypilot's own sign. With Compact Speed Limit Prompts on, the dashed ring is on the sign top right instead."
+              "description": "The 'press - (or +) to confirm speed limit' prompt shows the limit it is asking about, with a dashed ring until you confirm it, beside the green - or +. A speed limit offset shows as a small number on the sign, as on sunnypilot's own sign. With Compact Speed Limit Prompts on, the dashed ring is on the sign top right instead, or in the banner when that sign is not shown - there the banner always shows the limit, with this on or off."
             },
             {
               "key": "HudCompactLimitPrompts",
