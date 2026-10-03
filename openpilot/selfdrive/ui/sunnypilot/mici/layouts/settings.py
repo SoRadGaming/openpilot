@@ -75,7 +75,7 @@ class SettingsLayoutSP(OP.SettingsLayout):
     vehicle_btn = SettingsBigButton(tr("vehicle"), "",
                                     gui_app.texture("../../sunnypilot/selfdrive/assets/offroad/icon_vehicle.png", ICON_SIZE, ICON_SIZE))
     vehicle_btn.set_click_callback(lambda: gui_app.push_widget(vehicle_panel))
-    # shown on a Honda, and on a car that has not been recognised yet; never
+    # shown on a Honda, and on a car that has not been recognized yet; never
     # hidden by a brand lookup that came back empty
     vehicle_btn.set_visible(lambda: car_brand() in ("", "honda"))
 

@@ -8,7 +8,7 @@ FORK(HUD): drawing primitives for the comma 4 HUD (536x240; sizes are device pix
 
 Ported from the approved mockups (2026-10-03), which were drawn with these same raylib calls over the real onroad
 view. What they need that the stock widgets do not do:
-  * text placed by its INK box, not its line box: the digits of a 60 px sign sit in its centre, and a 35 px number lines
+  * text placed by its INK box, not its line box: the digits of a 60 px sign sit in its center, and a 35 px number lines
     up with the sign beside it whatever the font's ascent;
   * condensed digits - each glyph squeezed horizontally to ~0.8 - so "110" reaches ~24 px tall inside a 60 px sign, as
     on an Australian sign.
@@ -93,7 +93,7 @@ def ink(txt: str, size: float, sx: float = 1.0, w: FontWeight = FontWeight.BOLD)
 
 def text_ink(txt: str, size: float, x: float, cy: float, color: rl.Color, sx: float = 1.0, w: FontWeight = FontWeight.BOLD,
              anchor: str = "center", shadow: float = 0.0) -> tuple[float, float]:
-  """Draw txt with its ink box centred vertically on cy; anchor = center | right | left on x. sx < 1 squeezes the glyphs
+  """Draw txt with its ink box centered vertically on cy; anchor = center | right | left on x. sx < 1 squeezes the glyphs
   horizontally (condensed digits). shadow > 0 adds a 1.5 px drop shadow at that fraction of the colour's alpha.
   Returns (ink width, ink height)."""
   f = gui_app.font(w)
@@ -323,14 +323,14 @@ def pending_icon(bx: float, by: float, size: float, value: int, lower: bool, key
 
 # ------------------------------------------------------------------------------------------- the right rail
 # The glyphs of the approved style-B rail mockup (hud2/design/glyphs.py: SVGs on a 100x100 box), drawn here with raylib
-# primitives instead of PNGs: round-capped strokes are a line plus a disc at each end and joint. Every colour is opaque,
-# so the overlaps never show - fading in and out included: the strip is black, so a fade is the colour dimmed toward
+# primitives instead of PNGs: round-capped strokes are a line plus a disc at each end and joint. Every color is opaque,
+# so the overlaps never show - fading in and out included: the strip is black, so a fade is the color dimmed toward
 # black (dim()), still opaque.
 RAIL_GREY = rl.Color(143, 143, 143, 255)  # the model's plan, which openpilot is not following
 
 
 def dim(c: rl.Color, k: float) -> rl.Color:
-  """c at k (0..1) over the black strip, as an opaque colour."""
+  """c at k (0..1) over the black strip, as an opaque color."""
   k = max(0.0, min(1.0, k))
   return rl.Color(int(round(c.r * k)), int(round(c.g * k)), int(round(c.b * k)), 255)
 
@@ -386,7 +386,7 @@ def curve_glyph(cx: float, top: float, size: float, left: bool, col: rl.Color = 
 
 
 def rail_figure(num: str, unit: str, cx: float, cy: float, cap: float, max_w: float, col: rl.Color) -> float:
-  """Condensed bold figures (cap px tall in ink) centred on cx, and their unit ('m', 'km/h') smaller after them on the
+  """Condensed bold figures (cap px tall in ink) centered on cx, and their unit ('m', 'km/h') smaller after them on the
   same baseline; both squeezed together if they would be wider than max_w - the figures never lose height for their
   unit. Returns the total width."""
   size, sx = fit_digits(num, round(cap, 2), round(max_w, 2), sx=0.9, min_sx=0.72)

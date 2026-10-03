@@ -256,7 +256,7 @@ T_IDXS = tuple(float(t) for t in ModelConstants.T_IDXS)
 @dataclass
 class RailFrame:
   kind: int = RAIL_NONE
-  stop_m: float = 0.0       # RAIL_STOP: metres to where the plan stops, as the figure shows it (stop_figure)
+  stop_m: float = 0.0       # RAIL_STOP: meters to where the plan stops, as the figure shows it (stop_figure)
   solid: bool = False       # RAIL_STOP: openpilot is driving the speed on the model's plan (else: grey, dashed)
   curve_v: float = 0.0      # RAIL_CURVE: m/s, openpilot's target speed for the curve (smoothed, not stepped)
   curve_left: bool = False  # RAIL_CURVE: the curve turns left
@@ -348,7 +348,7 @@ def curve_figure(v: float, is_metric: bool, prev: int | None) -> int:
 
 
 def fmt_stop_dist(d: float, is_metric: bool) -> tuple[str, str]:
-  """(figures, unit) for the stop distance: whole metres under 20 m (a 5 m step drew 12.7 m as '15'), then 5 m steps,
+  """(figures, unit) for the stop distance: whole meters under 20 m (a 5 m step drew 12.7 m as '15'), then 5 m steps,
   10 m steps from 100 m; imperial in feet (whole under 30 ft, then 10 ft steps, 50 ft from 300 ft) and miles from
   3000 ft."""
   if is_metric:
@@ -482,7 +482,7 @@ class RailState:
     moving = fresh(sm, 'carState', started_frame) and not sm['carState'].standstill
 
     # openpilot driving the speed on the model's plan: the plan source settles like the items do; longActive counts on
-    # the frame, so braking out of it greys the stop at once
+    # the frame, so braking out of it grays the stop at once
     e2e = fresh(sm, 'longitudinalPlan', started_frame) and \
       _enum(sm['longitudinalPlan'].longitudinalPlanSource) == PlanSource.e2e
     in_control = self._e2e_on.update(e2e, now)

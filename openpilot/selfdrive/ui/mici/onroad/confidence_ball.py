@@ -29,7 +29,7 @@ class ConfidenceBall(Widget, ConfidenceBallSP):
     ConfidenceBallSP.__init__(self)
     self._demo = demo
     self._confidence_filter = FirstOrderFilter(-0.5, 0.5, 1 / gui_app.target_fps)
-    self.hud_floor_y = -math.inf  # FORK(HUD): the ball's centre stays at or below this; the right rail sets it (hud_rail.py)
+    self.hud_floor_y = -math.inf  # FORK(HUD): the ball's center stays at or below this; the right rail sets it (hud_rail.py)
 
   def update_filter(self, value: float):
     self._confidence_filter.update(value)

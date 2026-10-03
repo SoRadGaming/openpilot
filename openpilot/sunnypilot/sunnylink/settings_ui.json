@@ -1650,7 +1650,7 @@
               "key": "HudSpeedCluster",
               "widget": "toggle",
               "title": "Speed and Speed Limit",
-              "description": "Your speed, as the car's speedometer shows it, beside the speed limit sign, top right. The sign is hidden when Speed Limit is Off, and greyed while the limit is only being held from earlier. While the set speed shows after a change the speed hides, and the whole group fades out while an alert is up."
+              "description": "Your speed, as the car's speedometer shows it, beside the speed limit sign, top right. The sign is hidden when Speed Limit is Off, and shown in grey while the limit is only being held from earlier. While the set speed shows after a change the speed hides, and the whole group fades out while an alert is up."
             },
             {
               "key": "HudNextLimit",

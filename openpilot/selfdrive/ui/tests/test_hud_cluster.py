@@ -487,7 +487,7 @@ class TestRailRules(OpenpilotTestCase):
   def test_a_parked_car_past_the_line_does_not_blink_the_countdown(self):
     # route 110, t 406-414, engaged: the plan stopped 40 m ahead with nothing in front; from 7 m out a stationary car
     # 8-12 m past the stop came and went on the radar, in and out of the stop + 10 m. The countdown went 7 m, blank for
-    # 0.65 s, 4 m. Now it counts down to the last metre without a gap.
+    # 0.65 s, 4 m. Now it counts down to the last meter without a gap.
     r, figures = Rail(), []
     r.step(rail_sm(stop_m=40.0), 1.0)
     for i, stop in enumerate(x / 2 for x in range(14, 2, -1)):   # 7.0 .. 1.5 m
@@ -678,7 +678,7 @@ class TestRailRules(OpenpilotTestCase):
         assert f.kind == HM.RAIL_STOP and not f.solid, f"stale {svc}: grey"
 
   def test_units(self):
-    # whole metres under 20 m: 5 m steps drew 12.7 m as '15' and 18.7 m as '20'
+    # whole meters under 20 m: 5 m steps drew 12.7 m as '15' and 18.7 m as '20'
     assert [HM.fmt_stop_dist(d, True) for d in (1.2, 4.4, 9.6, 12.7, 18.7, 19.6, 23.0, 97.0, 123.0, 1500.0)] == \
       [("1", "m"), ("4", "m"), ("10", "m"), ("13", "m"), ("19", "m"), ("20", "m"), ("25", "m"), ("95", "m"), ("120", "m"),
        ("1.5", "km")]

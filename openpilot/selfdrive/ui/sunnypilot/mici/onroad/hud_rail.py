@@ -16,7 +16,7 @@ A planned stop wins over a curve. Never a reason: no message knows whether the p
 the radar has not locked onto, so there are no light or sign icons. The rules are hud_model.RailState; this file draws.
 
 The approved style-B rail (2026-10-03 mockups): a 48 px glyph from y 6, ~18 px figures under it. While an item shows,
-the stock confidence ball - same size, maths and colours - rides only the strip below it: its centre is held at or
+the stock confidence ball - same size, math and colors - rides only the strip below it: its center is held at or
 below BALL_FLOOR, so it moves down only when it would otherwise reach the item. An item fades in over FADE_S while the
 ball eases down out of its way (a 90 px jump in one frame read like a sudden drop in confidence), and fades out while
 the ball eases back. With both settings off nothing is drawn and the ball is not touched: the strip is the stock one,
@@ -41,7 +41,7 @@ ITEM_BOTTOM = TOP + GLYPH + FIG_GAP + FIG_CAP   # 76
 BALL_R = 24             # the stock ball's radius (mici/onroad/confidence_ball.py)
 BALL_GAP = 14           # clear space between the item and the ball's top; > 11 px, so the ball's black corner ring
                         # (radius 35) never reaches the item either
-BALL_FLOOR = ITEM_BOTTOM + BALL_GAP + BALL_R    # 114: the ball's centre is never above this while an item shows
+BALL_FLOOR = ITEM_BOTTOM + BALL_GAP + BALL_R    # 114: the ball's center is never above this while an item shows
 FADE_S = 0.15           # an item fades in (out) over this while the ball eases down (back up), on the UI's clock
 
 
@@ -79,7 +79,7 @@ class HudRail(Widget):
 
   def _ball_floor(self, rect: rl.Rectangle, k: float):
     """Hold the ball under the item: its floor eases from the strip's top down to BALL_FLOOR as the item fades in, and
-    back as it fades out. At 0 the floor is the strip's top, which the ball (centre >= its radius) never goes above: the
+    back as it fades out. At 0 the floor is the strip's top, which the ball (center >= its radius) never goes above: the
     stock position, exactly."""
     if self._ball is not None:
       self._ball.hud_floor_y = rect.y + BALL_FLOOR * k

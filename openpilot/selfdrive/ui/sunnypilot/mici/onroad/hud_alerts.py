@@ -10,7 +10,7 @@ the settings off those lines fall through to the stock drawing.
 
 1. THE STANDSTILL PROMPT AS A COMPACT BANNER (HudStoppedBanner). On this Honda every stop raises 'TAKE CONTROL / Resume
    Driving Manually' (manualRestart: userPrompt, mid, silent, low priority), drawn over the whole screen for the whole
-   stop. With the setting on it is a 66 px banner top left in the alert's own colour instead, and the road - and the
+   stop. With the setting on it is a 66 px banner top left in the alert's own color instead, and the road - and the
    cluster's stop time - stay visible. The FULL alert comes back when the car ahead moves off (hud_model.StandstillBanner):
    the one moment in a stop the prompt is for. It stays full until the prompt clears; the next stop starts compact.
 

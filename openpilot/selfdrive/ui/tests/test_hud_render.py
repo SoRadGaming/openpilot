@@ -6,7 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 
 FORK(HUD): the comma 4 onroad view, drawn for real in a headless raylib window, per HUD state:
 
-  * with the settings on, each piece is where it should be (colours sampled in its box);
+  * with the settings on, each piece is where it should be (colors sampled in its box);
   * with every setting off, the frame is PIXEL-IDENTICAL to the stock drawing, i.e. the same view with the FORK(HUD)
     call sites neutralised (cluster and rail renders no-ops - so the ball's floor stays unset - and both alert hooks
     answering "not mine");
@@ -14,7 +14,7 @@ FORK(HUD): the comma 4 onroad view, drawn for real in a headless raylib window, 
   * the right rail: its item only in the ball's strip, white or grey as openpilot drives the plan or not, the ball held
     under it and back where the stock one is once it has gone, and with its two settings off the stock strip.
 
-The real AugmentedRoadView, fed synthetic messages (no camera: the placeholder is black, which keeps the colour
+The real AugmentedRoadView, fed synthetic messages (no camera: the placeholder is black, which keeps the color
 sampling honest). It runs in a child process: a raylib that cannot open a headless window must not take the test
 runner's worker down with it. No window at all is a skip; anything after the window opened is a real result.
 Set HUD_RENDER_OUT=<dir> to keep the PNGs.
