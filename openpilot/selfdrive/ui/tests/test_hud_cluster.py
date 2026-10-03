@@ -350,9 +350,10 @@ def stopping_plan(stop_m: float | None, v0: float = 8.0):
   return vx, px
 
 
-def rail_sm(stop_m=None, v=8.0, standstill=False, lead_d=None, long_active=True, src='e2e', scc=None, scc_src=None,
+def rail_sm(stop_m=None, v=50 / KPH, standstill=False, lead_d=None, long_active=True, src='e2e', scc=None, scc_src=None,
             v_target=37 / KPH, map_turning=False, yaw=-0.1, plan_v0=8.0, missing=()):
-  """Every message the rail reads, this drive's and arriving; `missing` leaves services out."""
+  """Every message the rail reads, this drive's and arriving; `missing` leaves services out. The car at 50 km/h, so the
+  default 37 km/h curve target is one it is slowing for."""
   sm = FakeSM()
   if 'carState' not in missing:
     cs = sm.put('carState')
@@ -386,14 +387,14 @@ def rail_sm(stop_m=None, v=8.0, standstill=False, lead_d=None, long_active=True,
 
 class Rail:
   """A RailState driven at 20 Hz on a sim clock, as HudRail drives it."""
-  def __init__(self, settings=HS.ALL_ON):
-    self.s, self.t, self.settings = HM.RailState(), 100.0, settings
+  def __init__(self, settings=HS.ALL_ON, metric=True):
+    self.s, self.t, self.settings, self.metric = HM.RailState(), 100.0, settings, metric
 
   def step(self, sm, seconds=0.05) -> HM.RailFrame:
     f = HM.RailFrame()
     for _ in range(max(1, int(round(seconds / 0.05)))):
       self.t += 0.05
-      f = self.s.update(sm, self.settings, started_frame=STARTED, now=self.t)
+      f = self.s.update(sm, self.settings, started_frame=STARTED, now=self.t, is_metric=self.metric)
     return f
 
   def frames(self, sm, seconds) -> list[HM.RailFrame]:
@@ -424,7 +425,9 @@ class TestRailRules(OpenpilotTestCase):
     assert all(f.kind == HM.RAIL_NONE for f in early), "not before it has held 0.3 s"
     f, d = r.step(sm), HM.plan_stop_m(sm['modelV2'])
     assert d is not None and f.kind == HM.RAIL_STOP and abs(f.stop_m - d) < 1e-6
-    assert HM.fmt_stop_dist(f.stop_m, True) == ("25", "m")
+    assert HM.fmt_stop_dist(f.stop_m, True) == (f.num, f.unit) == ("25", "m")
+    f = Rail(metric=False).step(sm, 1.0)
+    assert (f.num, f.unit) == HM.fmt_stop_dist(d, False) == ("80", "ft"), "feet when the comma is set to imperial"
 
   def test_solid_only_while_openpilot_drives_the_speed_on_the_plan(self):
     assert Rail().step(rail_sm(stop_m=25.0), 1.0).solid, "longActive and the e2e plan in control: white"
@@ -468,6 +471,33 @@ class TestRailRules(OpenpilotTestCase):
     assert all(f.kind == HM.RAIL_STOP for f in held), "drawn with its last distance while it settles"
     assert r.step(rail_sm(stop_m=25.0, lead_d=15.0), 0.1).kind == HM.RAIL_NONE
 
+  def test_a_shown_stop_is_hidden_only_by_a_car_inside_it_plus_5m(self):
+    d = HM.plan_stop_m(rail_sm(stop_m=25.0)['modelV2'])
+    assert d is not None
+    r = Rail()
+    assert r.step(rail_sm(stop_m=25.0), 1.0).kind == HM.RAIL_STOP
+    # a car 8 m past the plan's stop: it would have kept a stop from appearing (+10 m), but it does not hide one
+    assert all(f.kind == HM.RAIL_STOP for f in r.frames(rail_sm(stop_m=25.0, lead_d=d + 8.0), 2.0))
+    # a car inside the stop + 5 m: the plan stops behind it - gone after the debounce ...
+    assert r.step(rail_sm(stop_m=25.0, lead_d=d + HM.LEAD_KEEP_M - 1.0), HM.RAIL_OFF_S + 0.05).kind == HM.RAIL_NONE
+    # ... and back only once no car is inside the stop + 10 m again
+    assert all(f.kind == HM.RAIL_NONE for f in r.frames(rail_sm(stop_m=25.0, lead_d=d + 8.0), 2.0))
+    assert r.step(rail_sm(stop_m=25.0, lead_d=d + HM.LEAD_MARGIN_M + 2.0), HM.RAIL_ON_S + 0.05).kind == HM.RAIL_STOP
+
+  def test_a_parked_car_past_the_line_does_not_blink_the_countdown(self):
+    # route 110, t 406-414, engaged: the plan stopped 40 m ahead with nothing in front; from 7 m out a stationary car
+    # 8-12 m past the stop came and went on the radar, in and out of the stop + 10 m. The countdown went 7 m, blank for
+    # 0.65 s, 4 m. Now it counts down to the last metre without a gap.
+    r, figures = Rail(), []
+    r.step(rail_sm(stop_m=40.0), 1.0)
+    for i, stop in enumerate(x / 2 for x in range(14, 2, -1)):   # 7.0 .. 1.5 m
+      gap = 8.0 + 4.0 * (i % 3) / 2                               # the car 8, 10, 12 m past the stop
+      for lead in (stop + gap, None, stop + gap):
+        f = r.step(rail_sm(stop_m=stop, lead_d=lead, plan_v0=3.0), 0.1)
+        assert f.kind == HM.RAIL_STOP, (stop, lead)
+        figures.append(int(f.num))
+    assert figures == sorted(figures, reverse=True) and figures[-1] <= 2, figures
+
   def test_no_flicker(self):
     r = Rail()
     # the plan dips under 0.5 m/s for a moment, four times: never shown
@@ -498,12 +528,59 @@ class TestRailRules(OpenpilotTestCase):
     target = HM.plan_stop_m(rail_sm(stop_m=30.0)['modelV2'])
     assert target is not None and abs(d[-1] - target) < 0.3, "and settles on the plan's own number within half a second"
 
+  def test_the_figure_counts_up_only_for_5m_or_more(self):
+    # the queue on route 10f (t 2676-2678): the plan's stop went 10-9-10-9, then 8-7-6-7-8 m
+    assert [HM.stop_figure(d, p)[0] for d, p in ((9.0, 10.0), (10.0, 9.0), (14.9, 10.0), (15.0, 10.0), (20.0, None))] == \
+      [9.0, 9.0, 10.0, 15.0, 20.0]
+    assert HM.stop_figure(15.0, 10.0) == (15.0, True) and HM.stop_figure(15.5, 15.0, True) == (15.5, True), \
+      "after a jump it follows the distance all the way up ..."
+    assert HM.stop_figure(15.4, 15.5, True) == (15.4, False) and HM.stop_figure(15.6, 15.4) == (15.4, False), \
+      "... and counts down again once it stops rising"
+    r, figures = Rail(), []
+    for stop in (10.0, 9.0, 10.0, 9.0, 8.0, 7.0, 6.0, 7.0, 8.0, 7.5):
+      figures.append(r.step(rail_sm(stop_m=stop, plan_v0=4.0), 0.5).num)
+    assert figures == ["10", "9", "9", "9", "8", "7", "6", "6", "6", "6"], figures
+    f = r.step(rail_sm(stop_m=14.0, plan_v0=4.0), 1.0)
+    assert f.num == HM.fmt_stop_dist(HM.plan_stop_m(rail_sm(stop_m=14.0, plan_v0=4.0)['modelV2']) or 0, True)[0], \
+      "a stop 5 m or more further than shown is news: it counts up"
+
   def test_a_curve(self):
     f = Rail().step(rail_sm(scc='entering'), 1.0)
     assert f.kind == HM.RAIL_CURVE and abs(f.curve_v - 37 / KPH) < 1e-4 and f.curve_left
-    assert HM.fmt_speed(f.curve_v, True) == ("37", "km/h")
+    assert (f.num, f.unit) == ("35", "km/h"), "5 km/h steps"
     f = Rail().step(rail_sm(scc='turning', yaw=0.1), 1.0)
     assert f.kind == HM.RAIL_CURVE and not f.curve_left, "a positive yaw rate (z down) is a right curve"
+    f = Rail(metric=False).step(rail_sm(scc='entering', v_target=38 / KPH), 1.0)
+    assert (f.num, f.unit) == ("25", "mph"), "38 km/h = 23.6 mph: 5 mph steps"
+
+  def test_a_curve_only_while_the_car_is_slowing_for_it(self):
+    # route 10f t 2050: the motorway, a lane change, smart cruise control limiting with a target AT or over the car's speed ('87 km/h'
+    # at 83 km/h, accelerating) - nothing to slow for, nothing shown
+    for target in (83, 84, 87, 89):
+      assert Rail().step(rail_sm(scc='entering', v=83 / KPH, v_target=target / KPH), 2.0).kind == HM.RAIL_NONE, target
+    # it appears 2 km/h under the car's speed ...
+    r = Rail()
+    assert r.step(rail_sm(scc='entering', v=50 / KPH, v_target=49 / KPH), 1.0).kind == HM.RAIL_NONE
+    assert r.step(rail_sm(scc='entering', v=50 / KPH, v_target=47 / KPH), 1.0).kind == HM.RAIL_CURVE
+    # ... stays while the car settles on the target and a little over (turning) ...
+    assert all(f.kind == HM.RAIL_CURVE for f in r.frames(rail_sm(scc='turning', v=47 / KPH, v_target=49.5 / KPH), 2.0))
+    # ... and goes, after the debounce, once the target is 3 km/h or more over the car's speed
+    held = r.frames(rail_sm(scc='turning', v=47 / KPH, v_target=51 / KPH), HM.RAIL_OFF_S - 0.05)
+    assert all(f.kind == HM.RAIL_CURVE for f in held)
+    assert r.step(rail_sm(scc='turning', v=47 / KPH, v_target=51 / KPH), 0.1).kind == HM.RAIL_NONE
+
+  def test_the_curve_figure_holds_between_steps(self):
+    assert [HM.curve_figure(v / KPH, True, None) for v in (37.4, 37.6, 2.0, 112.4)] == [35, 40, 5, 110]
+    assert HM.curve_figure(58.0 / KPH, True, 55) == 55 and HM.curve_figure(59.1 / KPH, True, 55) == 60
+    assert HM.curve_figure(51.6 / KPH, True, 55) == 55 and HM.curve_figure(51.4 / KPH, True, 55) == 50
+    assert HM.curve_figure(38 / KPH, False, None) == 25, "mph"
+    # route 10f t 336: the target ran 58-57-58-57 within half a second, and the whole-unit figure with it
+    r, figures = Rail(), []
+    for target in (55.0, 58.0, 57.0, 58.4, 57.2, 59.0, 56.9, 58.2) * 3:
+      f = r.step(rail_sm(scc='entering', v=62 / KPH, v_target=target / KPH), 0.1)
+      if f.kind == HM.RAIL_CURVE:
+        figures.append(f.num)
+    assert figures and set(figures) == {"55"}, figures
 
   def test_a_curve_only_while_it_is_the_limit(self):
     for state in ('disabled', 'enabled', 'leaving', 'overriding'):
@@ -518,7 +595,7 @@ class TestRailRules(OpenpilotTestCase):
 
   def test_a_map_curve(self):
     f = Rail().step(rail_sm(map_turning=True, v_target=45 / KPH), 1.0)
-    assert f.kind == HM.RAIL_CURVE and HM.fmt_speed(f.curve_v, True) == ("45", "km/h")
+    assert f.kind == HM.RAIL_CURVE and (f.num, f.unit) == ("45", "km/h") and abs(f.curve_v - 45 / KPH) < 1e-4
     assert Rail().step(rail_sm(map_turning=True, scc_src='cruise'), 1.0).kind == HM.RAIL_NONE
 
   def test_the_curve_keeps_its_direction_when_the_model_sees_none(self):
@@ -528,11 +605,31 @@ class TestRailRules(OpenpilotTestCase):
     assert Rail().step(rail_sm(scc='entering', missing=('modelV2',)), 1.0).kind == HM.RAIL_CURVE, \
       "the curve needs no model: the arrow just keeps its last direction"
 
-  def test_a_driver_override_flicker_does_not_flash_the_curve(self):
+  def test_the_driver_taking_the_speed_hides_the_curve_on_the_frame(self):
+    # route 10f: the gas at t 338.0, the brake at t 2285.4 - it used to stay 0.5 s
     r = Rail()
     assert r.step(rail_sm(scc='entering'), 1.0).kind == HM.RAIL_CURVE
-    assert all(f.kind == HM.RAIL_CURVE for f in r.frames(rail_sm(scc='overriding', scc_src='cruise'), 0.4))
-    assert r.step(rail_sm(scc='overriding', scc_src='cruise'), 0.2).kind == HM.RAIL_NONE
+    assert r.step(rail_sm(scc='overriding', scc_src='cruise')).kind == HM.RAIL_NONE, "the gas: smart cruise overriding"
+    r = Rail()
+    assert r.step(rail_sm(scc='entering'), 1.0).kind == HM.RAIL_CURVE
+    assert r.step(rail_sm(scc='entering', long_active=False)).kind == HM.RAIL_NONE, "the brake: openpilot lets go"
+    sm = rail_sm(map_turning=True)
+    sm['longitudinalPlanSP'].smartCruiseControl.map.state = 'overriding'
+    assert Rail().step(sm, 1.0).kind == HM.RAIL_NONE, "the map's own override state too"
+    # back only through the debounce, as at first
+    assert r.step(rail_sm(scc='entering')).kind == HM.RAIL_NONE
+    assert r.step(rail_sm(scc='entering'), HM.RAIL_ON_S).kind == HM.RAIL_CURVE
+    # stale carControl says nothing about the driver: the curve stays
+    sm = rail_sm(scc='entering', long_active=False)
+    sm.alive['carControl'] = False
+    assert Rail().step(sm, 1.0).kind == HM.RAIL_CURVE
+
+  def test_a_moment_out_of_its_states_does_not_flash_the_curve(self):
+    r = Rail()
+    assert r.step(rail_sm(scc='entering'), 1.0).kind == HM.RAIL_CURVE
+    assert all(f.kind == HM.RAIL_CURVE for f in r.frames(rail_sm(scc='enabled', scc_src='cruise'), 0.4))
+    assert r.step(rail_sm(scc='entering')).kind == HM.RAIL_CURVE
+    assert r.step(rail_sm(scc='enabled', scc_src='cruise'), HM.RAIL_OFF_S + 0.05).kind == HM.RAIL_NONE
 
   def test_a_planned_stop_wins_over_a_curve(self):
     r = Rail()
@@ -581,8 +678,10 @@ class TestRailRules(OpenpilotTestCase):
         assert f.kind == HM.RAIL_STOP and not f.solid, f"stale {svc}: grey"
 
   def test_units(self):
-    assert [HM.fmt_stop_dist(d, True) for d in (1.2, 4.4, 9.6, 23.0, 97.0, 123.0, 1500.0)] == \
-      [("1", "m"), ("4", "m"), ("10", "m"), ("25", "m"), ("95", "m"), ("120", "m"), ("1.5", "km")]
+    # whole metres under 20 m: 5 m steps drew 12.7 m as '15' and 18.7 m as '20'
+    assert [HM.fmt_stop_dist(d, True) for d in (1.2, 4.4, 9.6, 12.7, 18.7, 19.6, 23.0, 97.0, 123.0, 1500.0)] == \
+      [("1", "m"), ("4", "m"), ("10", "m"), ("13", "m"), ("19", "m"), ("20", "m"), ("25", "m"), ("95", "m"), ("120", "m"),
+       ("1.5", "km")]
     assert [HM.fmt_stop_dist(d, False) for d in (2.0, 25.0, 120.0, 1200.0)] == \
       [("7", "ft"), ("80", "ft"), ("400", "ft"), ("0.7", "mi")]
     assert HM.fmt_speed(37 / KPH, True) == ("37", "km/h") and HM.fmt_speed(37 / KPH, False) == ("23", "mph")

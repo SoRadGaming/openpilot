@@ -28,18 +28,24 @@ stop before a curve, and what a missing message does:
   modelV2               the speed plan (velocity.x / position.x, 33 points over 10 s): it STOPS where its speed first
                         drops under 0.5 m/s, at position.x there. Also the predicted yaw rate, for the curve's direction.
   radarState            the car ahead: a lead inside the stop distance (+10 m) means the plan is stopping behind a car,
-                        which the Accord's own HUD already shows - nothing is drawn.
+                        which the Accord's own HUD already shows - nothing is drawn. Once a stop shows, only a lead inside
+                        the stop + 5 m hides it (a band, so a car parked just past the line cannot blink it).
   carControl            longActive, and
   longitudinalPlan      longitudinalPlanSource == e2e: openpilot is driving the speed AND the model's plan is what it
                         follows (the lowest accel of the candidates). Only then is the stop drawn solid white; otherwise
                         grey with a dashed line - the model's plan, which openpilot is not braking for.
   longitudinalPlanSP    smart cruise control: the curve while vision is entering/turning, or the map is turning, AND it
                         is the target the cruise speed is limited by (longitudinalPlanSource sccVision / sccMap), with
-                        its vTarget - openpilot's own target speed for the curve.
-  carState              standstill: nothing (the stopwatch has it).
+                        its vTarget - openpilot's own target speed for the curve - and only while that target is under
+                        the car's speed (it appears 2 km/h under, goes 3 km/h over: the car is slowing for it).
+                        The driver taking over (smart cruise control overriding, or carControl.longActive off) hides it
+                        on the frame.
+  carState              standstill: nothing (the stopwatch has it); vEgo, for the curve.
 Missing or stale (not this drive, or no longer arriving): modelV2, radarState or carState - no stop; longitudinalPlanSP
-- no curve; carControl or longitudinalPlan - the stop can still be shown, but only grey. Nothing ever says WHY the plan
-stops (a light, a sign, a queue the radar has not locked onto): no message knows.
+or carState - no curve; carControl or longitudinalPlan - the stop can still be shown, but only grey. Nothing ever says
+WHY the plan stops (a light, a sign, a queue the radar has not locked onto): no message knows.
+The figures are held so they can be read: the stop's distance counts down freely but up only by 5 m or more, the
+curve's target moves in 5 km/h (5 mph) steps with a margin before it changes.
 """
 import math
 from dataclasses import dataclass
@@ -225,9 +231,18 @@ def pending_limit(sm, is_metric: bool) -> tuple[int, int]:
 STOP_V_MS = 0.5         # the plan stops where its speed first drops under this ...
 STOP_HORIZON_S = 10.0   # ... within this much of it (modelV2's plan is 33 points over 0..10 s)
 STOP_MIN_M = 1.0        # a stop closer than this is here: not drawn (and at a standstill the stopwatch has it)
-LEAD_MARGIN_M = 10.0    # a radar lead within the stop distance + this: the plan stops behind a car, not at a line
+LEAD_MARGIN_M = 10.0    # a radar lead within the stop distance + this: the plan stops behind a car, not at a line ...
+LEAD_KEEP_M = 5.0       # ... but once the stop shows, only a lead within the stop + this hides it. One threshold blinked
+                        # it: route 110 t 411-413, engaged, a stationary car 8-12 m past the plan's stop went in and out
+                        # of +10 m, and the countdown went 7 m, blank for 0.65 s, 4 m. (openpilot stops ~6 m behind a car)
+STOP_UP_M = 5.0         # the stop's figure follows the plan down freely, but goes UP only for a jump of this or more
 CURVE_V_MAX_MS = 70.0   # a curve target above this is not one (smart cruise control's 'unset' is 255 m/s)
 CURVE_DIR_MIN = 0.3     # m/s^2: below this predicted lateral accel the model shows no curve to point the arrow at
+CURVE_UNDER_MS = 2.0 / 3.6  # the curve appears once its target is this far under the car's speed (it is slowing for it)
+CURVE_OVER_MS = 3.0 / 3.6   # ... and goes once the target is this far over it: route 10f t 2050, on the motorway, it
+                            # showed '87 km/h' at 83 km/h through a lane change while the car sped up
+CURVE_STEP = 5          # the curve's figure in 5 km/h (5 mph) steps, as Australian curve advisory signs are ...
+CURVE_HOLD = 1.0        # ... and it changes only once the target is this far past the half step (display units)
 RAIL_ON_S = 0.3         # an item shows once its condition has held this long ...
 RAIL_OFF_S = 0.5        # ... and goes once it has been false this long, so neither flickers
 STOP_DIST_TAU_S = 0.15  # the distance and the target speed are smoothed a little: the plan is re-solved 20 times a second
@@ -241,10 +256,12 @@ T_IDXS = tuple(float(t) for t in ModelConstants.T_IDXS)
 @dataclass
 class RailFrame:
   kind: int = RAIL_NONE
-  stop_m: float = 0.0       # RAIL_STOP: metres to where the plan stops
+  stop_m: float = 0.0       # RAIL_STOP: metres to where the plan stops, as the figure shows it (stop_figure)
   solid: bool = False       # RAIL_STOP: openpilot is driving the speed on the model's plan (else: grey, dashed)
-  curve_v: float = 0.0      # RAIL_CURVE: m/s, openpilot's target speed for the curve
+  curve_v: float = 0.0      # RAIL_CURVE: m/s, openpilot's target speed for the curve (smoothed, not stepped)
   curve_left: bool = False  # RAIL_CURVE: the curve turns left
+  num: str = ""             # the figures as drawn ('14', '35') ...
+  unit: str = ""            # ... and their unit ('m', 'km/h'), in the units the cluster uses
 
 
 def _enum(v) -> int:
@@ -297,11 +314,45 @@ def curve_target(sm, started_frame: int) -> float | None:
   return v if v is not None and 0.0 < v < CURVE_V_MAX_MS else None
 
 
+def driver_has_speed(sm, started_frame: int) -> bool:
+  """The driver has taken the speed back: smart cruise control says it is overriding (the gas), or openpilot is not
+  driving the speed any more (carControl.longActive off: the brake, a disengagement). Only what fresh messages say."""
+  if fresh(sm, 'carControl', started_frame) and not sm['carControl'].longActive:
+    return True
+  if fresh(sm, 'longitudinalPlanSP', started_frame):
+    scc = sm['longitudinalPlanSP'].smartCruiseControl
+    return _enum(scc.vision.state) == VisionState.overriding or _enum(scc.map.state) == MapState.overriding
+  return False
+
+
+def stop_figure(d: float, prev: float | None, rising: bool = False) -> tuple[float, bool]:
+  """(the distance the stop's figure shows (m), rising). It follows the (smoothed) plan down freely, but goes UP only
+  for a jump of STOP_UP_M or more - and then all the way up, for as long as the distance keeps rising (rising=True),
+  not stuck where the smoothing was when it crossed the 5 m. The plan is re-solved 20 times a second; 10-9-10 or
+  8-7-6-7-8 m (route 10f, the queue at t 2676) is noise, not news."""
+  if prev is None or d < prev:
+    return d, False
+  if rising or d >= prev + STOP_UP_M:
+    return d, True
+  return prev, False
+
+
+def curve_figure(v: float, is_metric: bool, prev: int | None) -> int:
+  """The curve's target speed as drawn, in display units: CURVE_STEP steps, as curve advisory signs are, and held until
+  the target is CURVE_HOLD past the half step - smart cruise control's target is re-solved 20 times a second, and on
+  route 10f (t 336) the whole-unit figure changed up to 8.6 times a second, 58-57-58-57."""
+  x = v * (CV.MS_TO_KPH if is_metric else CV.MS_TO_MPH)
+  if prev is not None and abs(x - prev) <= CURVE_STEP / 2 + CURVE_HOLD:
+    return prev
+  return max(CURVE_STEP, CURVE_STEP * math.floor(x / CURVE_STEP + 0.5))
+
+
 def fmt_stop_dist(d: float, is_metric: bool) -> tuple[str, str]:
-  """(figures, unit) for the stop distance: whole metres under 10 m, then 5 m steps, 10 m steps from 100 m;
-  imperial in feet (whole under 30 ft, then 10 ft steps, 50 ft from 300 ft) and miles from 3000 ft."""
+  """(figures, unit) for the stop distance: whole metres under 20 m (a 5 m step drew 12.7 m as '15'), then 5 m steps,
+  10 m steps from 100 m; imperial in feet (whole under 30 ft, then 10 ft steps, 50 ft from 300 ft) and miles from
+  3000 ft."""
   if is_metric:
-    if d < 9.5:
+    if d < 19.5:
       return str(max(1, int(round(d)))), "m"
     if d < 97.5:
       return str(int(5 * round(d / 5))), "m"
@@ -321,6 +372,10 @@ def fmt_stop_dist(d: float, is_metric: bool) -> tuple[str, str]:
 def fmt_speed(v: float, is_metric: bool) -> tuple[str, str]:
   """(figures, unit) for a target speed in m/s, in the units the cluster uses."""
   return (str(int(round(v * CV.MS_TO_KPH))), "km/h") if is_metric else (str(int(round(v * CV.MS_TO_MPH))), "mph")
+
+
+def speed_unit(is_metric: bool) -> str:
+  return "km/h" if is_metric else "mph"
 
 
 class Debounce:
@@ -350,28 +405,34 @@ def _smooth(prev: float | None, x: float, dt: float, tau: float) -> float:
 
 
 class RailState:
-  """The right rail's item this frame: update() every frame, on a steady clock. It holds the debounces and the
-  smoothing, so there is one per view (hud_rail.HudRail).
+  """The right rail's item this frame: update() every frame, on a steady clock. It holds the debounces, the smoothing
+  and the figures' holds, so there is one per view (hud_rail.HudRail).
 
-  HARD hides, on the frame: the setting off, a standstill, a message missing, a stop closer than STOP_MIN_M. Everything
-  else - the plan no longer stopping inside 10 s, a lead appearing in front of the stop, smart cruise control leaving its
-  curve states - goes through the debounce: on after RAIL_ON_S, off after RAIL_OFF_S (drawn with its last value)."""
+  HARD hides, on the frame: the setting off, a standstill, a message missing, a stop closer than STOP_MIN_M, and for the
+  curve the driver taking the speed back. Everything else - the plan no longer stopping inside 10 s, a lead appearing in
+  front of the stop, smart cruise control leaving its curve states or its target rising over the car's speed - goes
+  through the debounce: on after RAIL_ON_S, off after RAIL_OFF_S (drawn with its last value)."""
   def __init__(self):
     self._t: float | None = None
     self._stop_on = Debounce(RAIL_ON_S, RAIL_OFF_S)
     self._e2e_on = Debounce(RAIL_ON_S, RAIL_OFF_S)
     self._curve_on = Debounce(RAIL_ON_S, RAIL_OFF_S)
-    self._stop_m: float | None = None
+    self._stop_m: float | None = None     # the plan's stop distance, smoothed
+    self._stop_fig: float | None = None   # ... and as the figure shows it (stop_figure) ...
+    self._stop_rising = False             # ... while it climbs after a jump of 5 m or more
     self._curve_v: float | None = None
+    self._curve_fig: int | None = None    # the curve's figure (curve_figure), in ...
+    self._curve_fig_metric = True         # ... these units
     self._curve_left = False
 
   def _stop_off(self):
     self._stop_on.reset()
-    self._stop_m = None
+    self._stop_m = self._stop_fig = None
+    self._stop_rising = False
 
   def _curve_off(self):
     self._curve_on.reset()
-    self._curve_v = None
+    self._curve_v = self._curve_fig = None
 
   def _stop(self, sm, started_frame: int, now: float, dt: float) -> float | None:
     if not (fresh(sm, 'modelV2', started_frame) and fresh(sm, 'radarState', started_frame)):
@@ -382,29 +443,40 @@ class RailState:
       self._stop_off()
       return None
     lead = sm['radarState'].leadOne
-    raw = d is not None and not (lead.present and lead.dRel <= d + LEAD_MARGIN_M)
+    margin = LEAD_KEEP_M if self._stop_on.state else LEAD_MARGIN_M
+    raw = d is not None and not (lead.present and lead.dRel <= d + margin)
     if raw:
       self._stop_m = _smooth(self._stop_m, d, dt, STOP_DIST_TAU_S)
+      self._stop_fig, self._stop_rising = stop_figure(self._stop_m, self._stop_fig, self._stop_rising)
     if self._stop_on.update(raw, now):
-      return self._stop_m
+      return self._stop_fig
     if not raw:
-      self._stop_m = None
+      self._stop_m = self._stop_fig = None
+      self._stop_rising = False
     return None
 
-  def _curve(self, sm, started_frame: int, now: float, dt: float) -> float | None:
+  def _curve(self, sm, started_frame: int, now: float, dt: float, v_ego: float, is_metric: bool) -> float | None:
+    if driver_has_speed(sm, started_frame):
+      self._curve_off()
+      return None
     v = curve_target(sm, started_frame)
+    if v is not None and v > v_ego + (CURVE_OVER_MS if self._curve_on.state else -CURVE_UNDER_MS):
+      v = None  # not slower than the car: openpilot is not slowing for it
     if v is not None:
       self._curve_v = _smooth(self._curve_v, v, dt, CURVE_V_TAU_S)
+      if self._curve_fig_metric != is_metric:
+        self._curve_fig = None
+      self._curve_fig, self._curve_fig_metric = curve_figure(self._curve_v, is_metric, self._curve_fig), is_metric
       left = curve_left(sm['modelV2']) if fresh(sm, 'modelV2', started_frame) else None
       if left is not None:
         self._curve_left = left
     if self._curve_on.update(v is not None, now):
       return self._curve_v
     if v is None:
-      self._curve_v = None
+      self._curve_v = self._curve_fig = None
     return None
 
-  def update(self, sm, s: HudSettings, *, started_frame: int, now: float) -> RailFrame:
+  def update(self, sm, s: HudSettings, *, started_frame: int, now: float, is_metric: bool = True) -> RailFrame:
     dt = 0.0 if self._t is None else now - self._t
     self._t = now
     moving = fresh(sm, 'carState', started_frame) and not sm['carState'].standstill
@@ -424,12 +496,16 @@ class RailState:
 
     curve = None
     if s.curve and moving:
-      curve = self._curve(sm, started_frame, now, dt)
+      curve = self._curve(sm, started_frame, now, dt, max(0.0, float(sm['carState'].vEgo)), is_metric)
     else:
       self._curve_off()
 
     if stop is not None:
-      return RailFrame(kind=RAIL_STOP, stop_m=stop, solid=long_active and in_control)
+      num, unit = fmt_stop_dist(stop, is_metric)
+      return RailFrame(kind=RAIL_STOP, stop_m=stop, solid=long_active and in_control, num=num, unit=unit)
     if curve is not None:
-      return RailFrame(kind=RAIL_CURVE, curve_v=curve, curve_left=self._curve_left)
+      if self._curve_fig is None or self._curve_fig_metric != is_metric:  # the units changed while it was held
+        self._curve_fig, self._curve_fig_metric = curve_figure(curve, is_metric, None), is_metric
+      return RailFrame(kind=RAIL_CURVE, curve_v=curve, curve_left=self._curve_left, num=str(self._curve_fig),
+                       unit=speed_unit(is_metric))
     return RailFrame()

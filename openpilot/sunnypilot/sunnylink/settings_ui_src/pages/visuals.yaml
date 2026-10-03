@@ -147,8 +147,9 @@ sections:
   - key: HudCurve
     widget: toggle
     title: Curve Speed
-    description: Top of the right strip - a curve arrow and openpilot's target speed for the curve while Smart Cruise
-      Control is slowing for it or about to. A planned stop takes the place first.
+    description: Top of the right strip - a curve arrow and openpilot's target speed for the curve, in 5 km/h (5 mph)
+      steps, while Smart Cruise Control is slowing the car for it. It goes as soon as you take over the speed. A
+      planned stop takes the place first.
 - id: developer_ui
   title: Developer UI Info
   description: Speedometer and debug display options

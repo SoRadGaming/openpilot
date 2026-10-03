@@ -389,15 +389,20 @@ for name, label, prm in (("rail_stop", "stop_off", {**ON, HS.PARAM_PLANNED_STOP:
 out["rail_toggles"] = toggles
 out["rail_both_vs_stop"] = strip_diff(images["rail_both"], images["rail_stop"])
 
-# one drive: cruising, a stop appears (debounced), stays a moment after the plan stops stopping, goes; the ball returns
+# one drive: cruising, a stop appears (debounced) and fades in as the ball eases down, stays a moment after the plan
+# stops stopping, fades out, goes; the ball returns
 CRUISE_RAIL = dict(v=30 / KPH, limit=50, ahead=0, ahead_dist=0.0, rail=dict(stop_m=None, confident=True))
 steps = [(CRUISE_RAIL, 40, "rail_seq_1_cruise_on"), (states["rail_stop"], 4, "rail_seq_2_debounce_on"),
-         (states["rail_stop"], 20, "rail_seq_3_stop_on"), (CRUISE_RAIL, 6, "rail_seq_4_held_on"),
-         (CRUISE_RAIL, 40, "rail_seq_5_gone_on")]
+         (states["rail_stop"], 3, "rail_seq_3_fade_in_on"), (states["rail_stop"], 17, "rail_seq_4_stop_on"),
+         (CRUISE_RAIL, 6, "rail_seq_5_held_on"), (CRUISE_RAIL, 6, "rail_seq_6_fade_out_on"),
+         (CRUISE_RAIL, 40, "rail_seq_7_gone_on")]
 seq_on, seq_stock = run(ON, steps), run(ON, steps, stock=True)
 out["rail_seq"] = {"strip_vs_stock": [strip_diff(a, b) for a, b in zip(seq_on, seq_stock, strict=True)],
                    "rail_white": [count(g, RAIL, "white") for g in seq_on],
-                   "ballhi_green": [count(g, BALL_HIGH, "green") for g in seq_on]}
+                   "rail_grey": [count(g, RAIL, "grey") for g in seq_on],
+                   "ballhi_green": [count(g, BALL_HIGH, "green") for g in seq_on],
+                   "balllo_green": [count(g, BALL_LOW, "green") for g in seq_on],
+                   "stock_ballhi_green": [count(g, BALL_HIGH, "green") for g in seq_stock]}
 
 # the stop time's size: full up to 59:59, shrunk beyond
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_cluster import timer_size
@@ -636,8 +641,12 @@ class TestHudRender(OpenpilotTestCase):
 
   def test_the_rail_through_a_drive(self):
     s = self.r["rail_seq"]
-    cruise, debounce, stop, held, gone = s["strip_vs_stock"]
+    cruise, debounce, fade_in, stop, held, fade_out, gone = s["strip_vs_stock"]
     assert cruise == 0 and debounce == 0, f"nothing while cruising, nor in the first 0.2 s of a stop: {s}"
-    assert stop > 0 and s["rail_white"][2] > 250 and s["ballhi_green"][2] == 0, s
-    assert held > 0, f"kept a moment after the plan stops stopping: {s}"
+    assert fade_in > 0 and s["rail_white"][2] == 0 and s["rail_grey"][2] > 50, \
+      f"its first frame: the white item dimmed toward the black strip, not drawn at once {s}"
+    assert s["ballhi_green"][2] == s["stock_ballhi_green"][2] > 100, f"and the ball not dropped in one frame {s}"
+    assert stop > 0 and s["rail_white"][3] > 250 and s["ballhi_green"][3] == 0 and s["balllo_green"][3] > 100, s
+    assert held > 0 and s["rail_white"][4] > 250, f"kept a moment after the plan stops stopping: {s}"
+    assert fade_out > 0 and s["rail_white"][5] == 0 and s["rail_grey"][5] > 20, f"then fades out: {s}"
     assert gone == 0, f"then gone, and the ball back exactly where the stock one is: {s}"

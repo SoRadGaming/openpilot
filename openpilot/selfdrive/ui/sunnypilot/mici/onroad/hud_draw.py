@@ -324,8 +324,15 @@ def pending_icon(bx: float, by: float, size: float, value: int, lower: bool, key
 # ------------------------------------------------------------------------------------------- the right rail
 # The glyphs of the approved style-B rail mockup (hud2/design/glyphs.py: SVGs on a 100x100 box), drawn here with raylib
 # primitives instead of PNGs: round-capped strokes are a line plus a disc at each end and joint. Every colour is opaque,
-# so the overlaps never show.
+# so the overlaps never show - fading in and out included: the strip is black, so a fade is the colour dimmed toward
+# black (dim()), still opaque.
 RAIL_GREY = rl.Color(143, 143, 143, 255)  # the model's plan, which openpilot is not following
+
+
+def dim(c: rl.Color, k: float) -> rl.Color:
+  """c at k (0..1) over the black strip, as an opaque colour."""
+  k = max(0.0, min(1.0, k))
+  return rl.Color(int(round(c.r * k)), int(round(c.g * k)), int(round(c.b * k)), 255)
 
 
 def _tri(p0: rl.Vector2, p1: rl.Vector2, p2: rl.Vector2, col: rl.Color):
@@ -343,11 +350,12 @@ def _stroke(points: list[rl.Vector2], w: float, col: rl.Color):
     rl.draw_circle_v(p, w / 2, col)
 
 
-def stop_glyph(cx: float, top: float, size: float, solid: bool):
+def stop_glyph(cx: float, top: float, size: float, solid: bool, fade: float = 1.0):
   """The planned stop: an arrow coming down onto a stop line, in a size x size box. solid = openpilot is driving the
-  speed and stopping on this plan: white, a solid line. Otherwise grey with the line dashed: the model's plan only."""
+  speed and stopping on this plan: white, a solid line. Otherwise grey with the line dashed: the model's plan only.
+  fade < 1 dims it toward the black strip."""
   k = size / 100.0
-  col = WHITE if solid else RAIL_GREY
+  col = dim(WHITE if solid else RAIL_GREY, fade)
 
   def p(x: float, y: float) -> rl.Vector2:
     return rl.Vector2(cx + (x - 50) * k, top + y * k)
@@ -384,12 +392,23 @@ def rail_figure(num: str, unit: str, cx: float, cy: float, cap: float, max_w: fl
   size, sx = fit_digits(num, round(cap, 2), round(max_w, 2), sx=0.9, min_sx=0.72)
   nw, nh, _, _ = ink(num, size, sx)
   usize, usx, gap = size * 0.66, 0.95, 1.5
-  uw, uh, _, _ = ink(unit, usize, usx, FontWeight.SEMI_BOLD)
+  uw, uh, _, uy0 = ink(unit, usize, usx, FontWeight.SEMI_BOLD)
   total = nw + gap + uw
   if total > max_w:
     f = max_w / total
     sx, usx, nw, uw, total = sx * f, usx * f, nw * f, uw * f, max_w
   x0 = cx - total / 2
   text_ink(num, size, x0, cy, col, sx=sx, anchor="left")
-  text_ink(unit, usize, x0 + nw + gap, cy + nh / 2 - uh / 2, col, sx=usx, w=FontWeight.SEMI_BOLD, anchor="left")
+  # the unit's BASELINE on the figures' (their ink bottom: digits have no descenders) - not its ink bottom, which for
+  # 'mph' is the p's descender and lifted the whole unit above the digits
+  base = cy + nh / 2
+  ucy = base - unit_baseline(usize, FontWeight.SEMI_BOLD) + uy0 + uh / 2
+  text_ink(unit, usize, x0 + nw + gap, ucy, col, sx=usx, w=FontWeight.SEMI_BOLD, anchor="left")
   return total
+
+
+def unit_baseline(size: float, w: FontWeight) -> float:
+  """Where the baseline is, below the top of the text's line box, at a nominal size: the ink bottom of 'm', which sits
+  on it (ink() measures from the line box's top)."""
+  _, h, _, y0 = ink("m", size, 1.0, w)
+  return y0 + h
