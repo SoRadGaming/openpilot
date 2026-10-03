@@ -25,7 +25,8 @@ on, from the next car start:
   frame passes between the car and the radar, both ways (panda safety param 68). openpilot sends only its steering
   (`0x0E4`) and the board's HUD frame (`0x500`), so lateral is as before, through the board.
 * **CMBS is unaffected** - the radar's brake frame always reaches the car - and the CMBS-off switch still works.
-* **openpilot follows stock ACC**: it engages when you SET (stock ACC works above about 30 km/h) and shows "Speed too
+* **openpilot follows stock ACC**: it engages when you SET (stock ACC works above about 30 km/h) - that only drives
+  its alerts and HUD state; steering is MADS, the LKAS button, exactly as today - and shows "Speed too
   low" when stock ACC lets go by itself at about 22 km/h. That is the normal disengage, not a take-control alarm, and
   **lateral stays on**. If stock ACC lets go by itself at speed (37.8 km/h or more: a fault), openpilot says "TAKE
   CONTROL IMMEDIATELY / Cruise Is Off", with or without MADS - gas and brake are gone. A SET below 30.6 km/h that
@@ -49,8 +50,9 @@ The toggle can only be changed with the car off - the device refuses it from sun
 once at ignition, so the mode never changes during a drive) - and it is not part of a sunnylink backup, so a restore
 can never turn it on. No board change.
 
-**First drive with it on:** `pandaStates.safetyParam` 68 and no relay malfunction; `0x1FA`/`0x30C` never with src 0 in
-`can` (only src 2 and the forwarded src 128); parked, the accelerator moves `PEDAL_GAS` with `GAS_SENSOR` `STATE` 5;
+**First drive with it on:** `pandaStates.safetyParam` 68 and no relay malfunction; from ~2 s after the panda reports
+68 until key-off, `0x1FA`/`0x30C` never with src 0 in `can` (only src 2 and the forwarded src 128; src 0 during the
+~10 s start-up window and just after key-off is normal); parked, the accelerator moves `PEDAL_GAS` with `GAS_SENSOR` `STATE` 5;
 only `0x0E4` and `0x500` in `sendcan`; the radar's `0x1FA` (50 Hz) and `0x30C` (10 Hz) forwarded onto bus 0; no
 `ACC_PROBLEM`, `TSA_ERROR` or `BRAKE_ERROR`.
 The full list is `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` section 15.8; the design, section 15.
