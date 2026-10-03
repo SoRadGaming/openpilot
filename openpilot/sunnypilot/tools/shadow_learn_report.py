@@ -4,15 +4,19 @@ FORK(HONDA_ACCORD_9G_AU): print what the SHADOW learners learned, from one or mo
 
     python openpilot/sunnypilot/tools/shadow_learn_report.py ROUTE [ROUTE ...] [--all-lines]
 
-ROUTE is a route folder as the owner keeps them (<dongle>_<route>/ with parquet/logMessage.parquet, or raw/*rlog*
-read through LogReader), a single rlog/qlog file, or a text file of logged lines (one line per row, optionally
-prefixed by a time). It reads two tags out of logMessage:
+ROUTE is a route folder as the owner keeps them (<dongle>_<route>/ with parquet/logMessage.parquet, read with pandas,
+or raw/*rlog* read through LogReader - used whenever pandas is not installed, as in the repo's own venv), a single
+rlog/qlog file, or a text file of logged lines (one line per row, optionally prefixed by a time). Any Python with the
+repo on PYTHONPATH runs it; pandas only makes route folders faster. It reads two tags out of logMessage:
 
   hondashadow  opendbc/sunnypilot/car/honda/shadow_learn.py (card): the brake response table (speed band x command
                band: achieved - commanded accel, and what the table would apply), the coast deceleration per speed
-               band, and the launch ratio and multiplier
+               band, and the launch ratio and multiplier (no lead; launches behind a lead apart). Written only on
+               the Elesys Accord with the gas interceptor AND Dynamic Tuning (HondaDynamicTuningEnabled) on
   latsplit     openpilot/sunnypilot/selfdrive/locationd/lat_speed_split.py (torqued): torqued's fit below and above
                70 km/h
+
+Routes driven before batch 2 (2026-10-04; 115 and earlier) have neither line: the report says so and moves on.
 
 Both are DRIVE TOTALS (they start from zero at ignition), so the last line of a route is that route, and routes are
 combined by their counts: brake cells and coast bands by sample-weighted means, the launch by summing its two least-
@@ -67,15 +71,24 @@ def _msg_text(raw: str) -> str:
   return ""
 
 
+def _parquet_messages(pq: str) -> list | None:
+  """logMessage.parquet's messages, or None without pandas (the repo's venv has none): then the rlogs are read."""
+  try:
+    import pandas as pd
+  except ImportError:
+    return None
+  return [v for v in pd.read_parquet(pq, columns=["value"])["value"] if isinstance(v, str)]
+
+
 def _iter_raw(path: str):
   if os.path.isfile(path) and path.endswith(".txt"):
     with open(path) as f:
       yield from f
     return
   pq = os.path.join(path, "parquet", "logMessage.parquet")
-  if os.path.isdir(path) and os.path.isfile(pq):
-    import pandas as pd
-    yield from (v for v in pd.read_parquet(pq, columns=["value"])["value"] if isinstance(v, str))
+  msgs = _parquet_messages(pq) if os.path.isdir(path) and os.path.isfile(pq) else None
+  if msgs is not None:
+    yield from msgs
     return
   from openpilot.tools.lib.logreader import LogReader
   if os.path.isdir(path):
@@ -151,11 +164,17 @@ def report_long(name: str, d: dict) -> None:
     n = d["cn"][i]
     if n:
       print(f"    {r:12s} {d['cacc'][i]:+.3f} / {d['cerr'][i]:+.3f}  ({n / RATE_HZ:.1f}s)")
+  if "bgain" in d:
+    print(f"  measured at a live brake gain of {fmt(d['bgain'][0], '.3f')} (mean over the brake samples): the table is " +
+          "the law's error at that gain, its counts the law's, before the gain")
   lrows = _bands(d["lspd"], " m/s", open_last=False)
-  print(f"  LAUNCH (L2b): achieved/commanded (gravity removed), {int(d['lep'])} episode(s)")
+  print(f"  LAUNCH (L2b): achieved/commanded (gravity removed), no lead, pedal seen by the PCM, {int(d['lep'])} episode(s)")
   for i, r in enumerate(lrows):
     print(f"    {r:12s} ratio {fmt(d['lratio'][i], '.3f')}  ({d['ln'][i] / RATE_HZ:.1f}s)")
   print(f"    pooled multiplier it would apply: {d['lmult']:.3f}  (1.0 = none; bounded 0.6-1.0, needs 2 s)")
+  if "lnl" in d:
+    print(f"    behind a lead (never in the multiplier), {int(d['lepl'])} episode(s): " +
+          "  ".join(f"{r} {fmt(d['lratiol'][i], '.3f')} ({d['lnl'][i] / RATE_HZ:.1f}s)" for i, r in enumerate(lrows)))
 
 
 def combine_long(per_route: dict) -> dict | None:
@@ -184,6 +203,14 @@ def combine_long(per_route: dict) -> dict | None:
   out["lep"] = sum(d["lep"] for d in ds)
   ln, ra, rr = sum(out["ln"]), sum(out["lra"]), sum(out["lrr"])
   out["lmult"] = 1.0 if (ln < 100 or ra <= 0 or rr <= 0) else min(max(rr / ra, 0.6), 1.0)
+  if all("lnl" in d for d in ds):
+    for k in ("lnl", "lral", "lrrl"):
+      out[k] = sum(np.array(d[k]) for d in ds).tolist()
+    out["lratiol"] = [ra / rr if rr > 0 else float("nan") for ra, rr in zip(out["lral"], out["lrrl"], strict=True)]
+    out["lepl"] = sum(d["lepl"] for d in ds)
+  if all("bgain" in d for d in ds):
+    w = [sum(d["bn"]) for d in ds]
+    out["bgain"] = [sum(np.nan_to_num(d["bgain"][0]) * x for d, x in zip(ds, w, strict=True)) / sum(w)] if sum(w) else [float("nan")]
   return out
 
 
@@ -263,6 +290,16 @@ def combine_lat(per_route: dict) -> dict | None:
   return out
 
 
+def route_name(path: str, taken) -> str:
+  """'00000115' for a route folder or segment (<dongle>_<route>--...), the file's own name for anything else; never one
+  already taken, so routes cannot overwrite each other in the combined tables."""
+  base = os.path.basename(os.path.normpath(path))
+  name = base.split("--")[0][-8:] if "--" in base else os.path.splitext(base)[0]
+  while name in taken:
+    name += "'"
+  return name
+
+
 def main(argv=None) -> int:
   ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   ap.add_argument("routes", nargs="+")
@@ -271,7 +308,7 @@ def main(argv=None) -> int:
 
   long_last, lat_last = {}, {}
   for path in args.routes:
-    name = os.path.basename(os.path.normpath(path)).split("--")[0][-8:]
+    name = route_name(path, long_last)
     lines = read_route(path)
     print(f"\n=== {path}: {len(lines['hondashadow'])} hondashadow line(s), {len(lines['latsplit'])} latsplit line(s)")
     long_last[name] = lines["hondashadow"][-1] if lines["hondashadow"] else None

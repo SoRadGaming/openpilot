@@ -14,7 +14,11 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.locationd.helpers import PointBuckets, ParameterEstimator, PoseCalibrator, Pose
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.selfdrive.locationd.torqued_ext import TorqueEstimatorExt
-from openpilot.sunnypilot.selfdrive.locationd.lat_speed_split import make_lat_speed_split  # FORK(HONDA_ACCORD_9G_AU)
+try:  # FORK(HONDA_ACCORD_9G_AU): a shadow (lat_speed_split.py); if it cannot be imported, torqued runs as upstream
+  from openpilot.sunnypilot.selfdrive.locationd.lat_speed_split import make_lat_speed_split
+except Exception:
+  def make_lat_speed_split(CP, prior_factor, decimated):
+    return None
 
 HISTORY = 5  # secs
 POINTS_PER_BUCKET = 1500

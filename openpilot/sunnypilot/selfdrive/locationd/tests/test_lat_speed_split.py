@@ -131,6 +131,21 @@ class TestLatSpeedSplit(OpenpilotTestCase):
     self.assertIsNone(TorqueEstimator(_cp(), decimated=True).lat_split)
     self.assertIsNone(TorqueEstimator(_cp(HONDA.HONDA_CIVIC)).lat_split)
 
+  def test_torqued_runs_as_upstream_if_the_shadow_cannot_be_imported(self):
+    # torqued's lateralTorqueParameters feed the controller: a broken shadow module must not take torqued down
+    import importlib.util
+    import sys
+    name = 'openpilot.sunnypilot.selfdrive.locationd.lat_speed_split'
+    with mock.patch.dict(sys.modules, {name: None}):     # None in sys.modules: the import raises ImportError
+      spec = importlib.util.spec_from_file_location('torqued_without_shadow', torqued.__file__)
+      assert spec is not None and spec.loader is not None
+      mod = importlib.util.module_from_spec(spec)
+      spec.loader.exec_module(mod)
+    est = mod.TorqueEstimator(_cp())
+    self.assertIsNone(est.lat_split)
+    _drive(est, [(30, 25.0, 0.3, 1.4)])
+    self.assertGreater(len(est.filtered_points), 0)
+
   def test_log_cadence_and_line(self):
     lines = []
     with mock.patch.object(ls.cloudlog, 'info', lambda msg, *a, **k: lines.append(msg)):

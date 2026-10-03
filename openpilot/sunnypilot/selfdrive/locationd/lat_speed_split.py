@@ -44,8 +44,8 @@ HALVES = ("lo", "hi")
 DT = 0.05                     # torqued's loop (DT_MDL, driven by deviceMotion at 20 Hz)
 LOG_INTERVAL = int(60 / DT)   # frames: one line a minute
 
-# torqued's own constants (selfdrive/locationd/torqued.py). Copied rather than imported, because torqued
-# imports this module through torqued_ext; test_lat_speed_split.py fails if they ever drift apart.
+# torqued's own constants (selfdrive/locationd/torqued.py). Copied rather than imported from torqued.py, which
+# imports this module (a cycle); test_lat_speed_split.py fails if they ever drift apart.
 STEER_BUCKET_BOUNDS = [(-0.5, -0.3), (-0.3, -0.2), (-0.2, -0.1), (-0.1, 0), (0, 0.1), (0.1, 0.2), (0.2, 0.3), (0.3, 0.5)]
 MIN_BUCKET_POINTS = [100, 300, 500, 500, 500, 500, 300, 100]
 MIN_POINTS_TOTAL = 4000
