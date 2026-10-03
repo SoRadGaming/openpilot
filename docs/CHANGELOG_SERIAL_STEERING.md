@@ -15,7 +15,7 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
-## 2026-10-03 — the comma 4 HUD: speed and speed limit, the next lower limit, a stop timer; the gateway icon
+## 2026-10-03 — the comma 4 HUD: speed and speed limit, the next lower limit, a stop timer, the planned stop and curve on the right; the gateway icon
 
 **The comma 4 now shows your speed and the speed limit**, top right beside the
 confidence ball: your speed as the Accord's own speedometer reads it
@@ -64,17 +64,54 @@ condensed black digits). This is the design you picked from the mockups (Layout 
   starting. Should it ever fail to load anyway, the tile falls back to the old
   icon.
 
+**Your right-side request, done as you settled it: "planned stop + curve".** At
+the top of the right strip, above the confidence ball, one thing at a time:
+
+* **Planned stop:** an arrow onto a stop line and how far ahead the driving
+  model's speed plan comes to a standstill (`20 m`), when that is within the
+  next 10 seconds and no car is in front of it (the radar's car inside that
+  distance + 10 m means the plan stops behind a car - your dashboard shows
+  that). **White with a solid line only while openpilot is driving your speed
+  and the model's plan is the one it follows; grey with a dashed line when it is
+  only the model's plan** and openpilot is not braking for it (disengaged, chill
+  mode, or another target in charge). It appears after 0.3 s and goes 0.5 s
+  after, so it does not flicker, and it goes at once in the last metre and at a
+  standstill, where the stopwatch takes over. Metres (5 m steps, whole metres
+  under 10 m), or feet if the comma is set to imperial.
+* **It never says why.** Nothing on the comma - the model or any other message -
+  knows whether the plan stops for a red light, a stop line, a give-way or a
+  queue the radar has not picked up yet, let alone a light's colour (the
+  research went through every field). So there are no light or sign icons, as
+  you decided.
+* **Curve:** a curve arrow, left or right (from the model's predicted path), and
+  openpilot's own target speed for the curve (`37 km/h`), while Smart Cruise
+  Control is slowing for a curve or about to (vision: entering or turning; map:
+  turning) AND it is what limits your speed. Not while you hold the gas, not when
+  your set speed is already lower.
+* A planned stop comes before a curve.
+* **The confidence ball keeps its size, colours and maths.** While an item shows
+  it is held just under it - it moves down only if it would otherwise reach the
+  item - and glides back after. With both settings off the strip is today's,
+  pixel for pixel.
+* **On your 1 Oct drive** (49 min) it would have shown 2 planned stops and 6
+  curves, nothing else. The red light on Bringelly Rd: `20 m` grey 4.4 s before
+  you stopped, counting down to `2 m` - grey because you were driving; engaged on
+  the model's plan it is white. Creeping in the Pyrmont queue at 13 km/h: grey
+  `10 m` (you did not stop: the plan is the model's intent, not a promise). The
+  plan touching a stop for one frame 11 s later, engaged: ignored. The Northern
+  Road curve: a left arrow, the target falling from `58` to `32 km/h`.
+
 **Everything is a setting**, in sunnylink under **Visuals → HUD** (shown for a
 comma 4 only), all on by default: Speed and Speed Limit, Next Lower Limit
 (Off / Bar / Distance / Both), School Zone Lights, Electronic Sign in Variable
-Zones, Stop Timer, Compact Take Control Banner When Stopped, and Show the Limit
-in the Confirm Prompt. Changes show within a second (the screen reads them once
-a second, never per frame). **All of them off is today's screen, pixel for
-pixel** - checked over the five real moments of your 1 Oct drive and in the
-tests.
+Zones, Stop Timer, Compact Take Control Banner When Stopped, Show the Limit
+in the Confirm Prompt, Planned Stop and Curve Speed. Changes show within a second
+(the screen reads them once a second, never per frame). **All of them off is
+today's screen, pixel for pixel** - checked over eleven real moments of your
+1 Oct drive and in the tests.
 
-* **What it never covers:** the 60 px strip with the confidence ball (unchanged
-  in this build - see "Not in this build"), the driver-monitor icon (except under
+* **What it never covers:** the confidence ball itself (only held under the
+  right rail's item), the driver-monitor icon (except under
   the stop banner), the wheel, the lanes. The whole group fades out while any
   alert is up and comes back only once the alert has faded away, so the two never
   overlap; and the speed hides for the 2.5 s the stock "MAX" number shows after a
@@ -88,34 +125,37 @@ tests.
   mapd deliberately does not publish one there (it reported drops that never came
   on your tunnel passes). The mockup showed one, from the logged look-ahead; the
   build does not.
-* **Not in this build - your right-side request is still open.** You asked for
-  the right side to show, in our own design rather than StarPilot's and each
-  switchable in sunnylink: a traffic light in the colour the model detects, stop
-  and give-way signs, and what the AI is seeing (but not the car ahead, which
-  your dashboard already shows). None of that is here yet. That was our decision,
-  not yours: a separate job is first working out which of those the model and the
-  car actually report, so that nothing on screen is a guess. Until then the
-  confidence-ball strip is exactly as before. The car-ahead icon is dropped, as
-  you asked. The mockups' "set 70" line (set speed below the limit) was not among
-  your picks and is not built.
+* **Not built, as you decided:** no left-side bar, no traffic lights or light
+  colours, no stop or give-way signs (from the map or otherwise), no following
+  distance, no lane-change item - the right rail is the planned stop and the
+  curve, and nothing else. The car-ahead icon is dropped, as you asked. The
+  mockups' "set 70" line (set speed below the limit) was not among your picks and
+  is not built.
 * **What does not change:** no alert's text, sound, priority or timing; nothing
   that drives the car. The screen only.
-* **Tests:** 45 (the rules, the settings and their once-a-second read, the
-  banner through two stops in the order the screen really calls it, sunnylink,
-  the markers, the icon - including that git holds the PNG itself) and 16 that
-  draw the real onroad view in a headless window per state - including "every
-  setting off = the stock pixels", "an alert's own setting off = that alert as
-  stock", two stops in one drive, an alert fading out, an hour-long stop, and the
-  gateway icon replaced by an LFS pointer.
+* **Tests:** 65 (the rules, the settings and their once-a-second read, the
+  banner through two stops in the order the screen really calls it, the right
+  rail's rules - where the plan stops, the debounce both ways, white vs grey, a
+  car inside the stop, standstill, the curve states, priority, each toggle, every
+  message missing or stale - sunnylink, the markers, the icon - including that
+  git holds the PNG itself) and 24 that draw the real onroad view in a headless
+  window per state - including "every setting off = the stock pixels", "an
+  alert's own setting off = that alert as stock", two stops in one drive, an
+  alert fading out, an hour-long stop, the gateway icon replaced by an LFS
+  pointer, the rail's item only in the ball's strip, the ball held under it and
+  back after, and "Planned Stop and Curve Speed off = the stock strip".
 * **New params:** `HudSpeedCluster`, `HudNextLimit`, `HudSchoolZoneCue`,
   `HudVariableLimitSign`, `HudStoppedTimer`, `HudStoppedBanner`,
-  `HudConfirmLimit` (backed up with your settings). The first start after this
-  update rebuilds, as any `params_keys.h` change does.
+  `HudConfirmLimit`, `HudPlannedStop`, `HudCurve` (backed up with your settings).
+  The first start after this update rebuilds, as any `params_keys.h` change does.
 * **Watch on the next drive:** the speed matches the dashboard; the next-limit
   sign appears only for drops and only in the last 15 s / 500 m; at every stop
   behind a car - the second and third too - the small banner, the timer
   counting, and the full prompt when that car moves off. A school zone in its
-  hours, if your route has one.
+  hours, if your route has one. Engaged in experimental mode, at a red light with
+  no car ahead: the planned stop white and counting down; disengaged, the same
+  grey and dashed. A sharp curve engaged: the arrow points the right way and the
+  speed is close to what the car slows to.
 
 ---
 
