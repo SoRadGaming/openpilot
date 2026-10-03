@@ -9,12 +9,17 @@ from openpilot.cereal import log, custom
 from opendbc.car import structs
 
 from opendbc.car.chrysler.values import RAM_DT
+from opendbc.sunnypilot.car.honda.values_ext import HondaFlagsSP  # FORK(HONDA_ACCORD_9G_AU): stock ACC mode
+from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.selfdrived.events import Events
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 
 EventName = log.OnroadEvent.EventName
 EventNameSP = custom.OnroadEventSP.EventName
 GearShifter = structs.CarState.GearShifter
+
+# FORK(HONDA_ACCORD_9G_AU): how long stock ACC mode names itself on screen at the start of a drive
+STOCK_ACC_ANNOUNCE_FRAMES = int(5. / DT_CTRL)
 
 
 class CarSpecificEventsSP:
@@ -23,6 +28,9 @@ class CarSpecificEventsSP:
     self.CP_SP = CP_SP
 
     self.low_speed_alert = False
+    # FORK(HONDA_ACCORD_9G_AU): stock ACC mode (HondaElesysStockAcc) only; 0 on every other car and with the toggle off
+    stock_acc = CP.brand == 'honda' and bool(CP_SP.flags & HondaFlagsSP.ELESYS_STOCK_ACC)
+    self.stock_acc_announce = STOCK_ACC_ANNOUNCE_FRAMES if stock_acc else 0
 
   def update(self, CS: structs.CarState, events: Events):
     events_sp = EventsSP()
@@ -47,5 +55,10 @@ class CarSpecificEventsSP:
         if CS.cruiseState.standstill and not CS.brakePressed and self.CP_SP.enableGasInterceptor:
           if events.has(EventName.resumeRequired):
             events.remove(EventName.resumeRequired)
+
+    # FORK(HONDA_ACCORD_9G_AU): the startup indication of stock ACC mode, so the screen says which mode is running
+    if self.stock_acc_announce > 0:
+      self.stock_acc_announce -= 1
+      events_sp.add(EventNameSP.hondaElesysStockAcc)
 
     return events_sp

@@ -341,4 +341,14 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       AlertStatus.userPrompt, AlertSize.mid,
       Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 3.5),
   },
+
+  # FORK(HONDA_ACCORD_9G_AU): stock ACC mode (HondaElesysStockAcc), raised by car_specific.py for the first seconds of
+  # every drive in that mode only. PERMANENT and silent: it shows engaged or not, and refuses or disengages nothing.
+  EventNameSP.hondaElesysStockAcc: {
+    ET.PERMANENT: Alert(
+      "Stock ACC Mode",
+      "Car's cruise does gas and brake, openpilot steers",
+      AlertStatus.normal, AlertSize.mid,
+      Priority.LOW, VisualAlert.none, AudibleAlert.none, 1.),
+  },
 }

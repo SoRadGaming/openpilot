@@ -2455,6 +2455,19 @@
               "type": "offroad_only"
             }
           ]
+        },
+        {
+          "key": "HondaElesysStockAcc",
+          "widget": "toggle",
+          "needs_onroad_cycle": true,
+          "title": "Stock ACC (testing)",
+          "description": "The car's own cruise control does gas and brake; openpilot steers only. Takes effect at the next car start. Stock ACC works above about 30 km/h. openpilot cannot cancel stock ACC - use the car's CANCEL button or the brake. CMBS is unaffected. 2013-15 Accord (Elesys) only.",
+          "details": "Every frame passes between the car and the radar, so the factory ACC and CMBS work as on a car without a comma; openpilot keeps steering through the LKAS board. Experimental Mode, Dynamic Experimental Control, custom ACC increments, Smart Cruise Control and Speed Limit Assist need openpilot longitudinal and are unavailable in this mode; they come back as they were at the first drive after it is turned off.",
+          "enablement": [
+            {
+              "type": "offroad_only"
+            }
+          ]
         }
       ]
     },

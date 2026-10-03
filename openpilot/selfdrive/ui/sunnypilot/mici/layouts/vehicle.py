@@ -23,6 +23,7 @@ import pyray as rl
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigMultiToggle, BigParamControl
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.vehicle.brands.honda import (
+  STOCK_ACC_PARAM,
   TUNING_PARAM,
   MODE_SLOTS,
   gas_law_applies,
@@ -189,6 +190,11 @@ class VehicleLayoutMici(NavScroller):
     # onroad would just be undone
     self._reset_btn.set_enabled(ui_state.is_offroad)
 
+    # FORK(HONDA_ACCORD_9G_AU): stock ACC mode. The car reads it once at ignition, so it is offroad only like the
+    # reset; the big UI's panel and sunnylink say what it does.
+    self._stock_acc_toggle = BigParamControl(tr("stock acc (testing)"), STOCK_ACC_PARAM)
+    self._stock_acc_toggle.set_enabled(ui_state.is_offroad)
+
     # the fast-wheel takeover: on/off, then the rate. mads.py re-reads both every 0.1 s, so
     # neither is gated on offroad. The title names the action, so ON reads as "steering turns
     # off on a swerve" and cannot be read as "the fast-wheel feature is off"
@@ -197,7 +203,7 @@ class VehicleLayoutMici(NavScroller):
     self._fast_wheel_rate = FastWheelRateToggle()
 
     self._scroller.add_widgets([self._learned_info, self._learning_toggle, self._reset_btn,
-                                self._fast_wheel_toggle, self._fast_wheel_rate])
+                                self._stock_acc_toggle, self._fast_wheel_toggle, self._fast_wheel_rate])
 
     self._refreshed = 0.0
 
@@ -224,6 +230,7 @@ class VehicleLayoutMici(NavScroller):
     # sunnylink app, and each toggle only reads its param when it is built
     self._refreshed = time.monotonic()
     self._learning_toggle.refresh()
+    self._stock_acc_toggle.refresh()
     self._fast_wheel_toggle.refresh()
     self._fast_wheel_rate.refresh()
     self._fast_wheel_rate.set_enabled(ui_state.params.get_bool(FAST_WHEEL_PARAM))

@@ -90,6 +90,7 @@ def sp_stats(end_event):
     'HondaDynModeSecECON',
     'HondaDynModeSecS',
     'HondaElesysGasLawV2',
+    'HondaElesysStockAcc',  # FORK(HONDA_ACCORD_9G_AU): stock ACC mode, so a graph can tell those drives apart
   ]
 
   while not end_event.is_set():

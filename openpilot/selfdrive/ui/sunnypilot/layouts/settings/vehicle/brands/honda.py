@@ -54,6 +54,16 @@ GAS_LAW_DEFAULT = True
 # LEARNED_DEFAULTS; test_honda_dynamic_settings.py keeps it in sync with opendbc.
 GAS_LAW_PLATFORMS = ("HONDA_ACCORD_9G_AU",)
 
+# FORK(HONDA_ACCORD_9G_AU): stock ACC mode, read once at ignition by opendbc's _initialize_honda. Offroad only, so the
+# mode never changes under a drive - and no OnroadCycleRequested (Toyota's pattern), which would drop lateral while
+# moving. Not BACKUP in params_keys.h: a sunnylink restore never turns it on.
+STOCK_ACC_PARAM = "HondaElesysStockAcc"
+STOCK_ACC_TITLE = tr_noop("Stock ACC (testing)")
+STOCK_ACC_DESC = tr_noop("The car's own cruise control does gas and brake; openpilot steers only. Takes effect at the " +
+                         "next car start. Stock ACC works above about 30 km/h. openpilot cannot cancel stock ACC: use " +
+                         "the car's CANCEL button or the brake. CMBS is unaffected. 2013-15 Accord (Elesys) only.")
+STOCK_ACC_OFFROAD_NOTE = tr_noop("Can only be changed while the car is off.")
+
 # reading 13 params at 60 fps would be 13 file reads a frame; once a second is
 # plenty for a readout that only changes once a minute anyway
 LEARNED_REFRESH_S = 1.0
@@ -171,10 +181,17 @@ class HondaSettings(BrandSettings):
       # onroad would just be overwritten by what is already in memory
       enabled=ui_state.is_offroad)
 
-    self.items = [self.dynamic_tuning_toggle, self.learned_values_item]
+    self.stock_acc_toggle = toggle_item_sp(
+      title=tr(STOCK_ACC_TITLE),
+      description=tr(STOCK_ACC_DESC),
+      param=STOCK_ACC_PARAM,
+      enabled=ui_state.is_offroad)
+
+    self.items = [self.dynamic_tuning_toggle, self.learned_values_item, self.stock_acc_toggle]
 
     self._toggle_params = {
       TUNING_PARAM: self.dynamic_tuning_toggle.action_item.get_state(),
+      STOCK_ACC_PARAM: self.stock_acc_toggle.action_item.get_state(),
     }
 
   def _on_reset_clicked(self) -> None:
@@ -206,7 +223,7 @@ class HondaSettings(BrandSettings):
     # Edge triggered on the param, never level: a tap writes its param
     # non-blocking, so a level sync would drag the toggle back to the old value
     # for the frame or two before that write lands.
-    for param, item in ((TUNING_PARAM, self.dynamic_tuning_toggle),):
+    for param, item in ((TUNING_PARAM, self.dynamic_tuning_toggle), (STOCK_ACC_PARAM, self.stock_acc_toggle)):
       value = ui_state.params.get_bool(param)
       if value != self._toggle_params[param]:
         self._toggle_params[param] = value
@@ -223,6 +240,11 @@ class HondaSettings(BrandSettings):
     if self.dynamic_tuning_toggle.description != dyn_desc:
       self.dynamic_tuning_toggle.set_description(dyn_desc)
     self.dynamic_tuning_toggle.show_description(True)
+
+    stock_acc_desc = tr(STOCK_ACC_DESC) + ("" if ui_state.is_offroad() else "<br>" + tr(STOCK_ACC_OFFROAD_NOTE))
+    if self.stock_acc_toggle.description != stock_acc_desc:
+      self.stock_acc_toggle.set_description(stock_acc_desc)
+    self.stock_acc_toggle.show_description(True)
 
     now = time.monotonic()
     if not self._learned_text or now - self._learned_updated > LEARNED_REFRESH_S:

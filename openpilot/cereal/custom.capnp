@@ -364,6 +364,9 @@ struct OnroadEventSP @0xda96579883444c35 {
     vsaFault @28;
     vsaStoredFault @29;
     vsaFaultAnnounce @30;
+    # FORK(HONDA_ACCORD_9G_AU): stock ACC mode (HondaElesysStockAcc), shown for a few seconds at the start of a drive.
+    # Same rule as above if upstream takes this ordinal.
+    hondaElesysStockAcc @31;
   }
 }
 
