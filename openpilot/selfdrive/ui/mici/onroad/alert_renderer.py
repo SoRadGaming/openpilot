@@ -243,8 +243,8 @@ class AlertRenderer(Widget, SpeedLimitAlertRenderer):
         self._prev_alert = None
         return False
 
-    # FORK(HUD): at a standstill 'take control / resume driving manually' can be a compact banner (hud_alerts.py)
-    if hud_alerts.draw_compact_standstill(self, alert):
+    # FORK(HUD): the standstill prompt and named normal alerts can be drawn compact (hud_alerts.py)
+    if hud_alerts.draw_compact(self, alert):
       SpeedLimitAlertRenderer.update(self)
       return True
 

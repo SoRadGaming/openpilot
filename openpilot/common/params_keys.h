@@ -189,10 +189,17 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // FORK(HUD): the comma 4 HUD, one setting per piece (sunnylink Visuals > HUD). All default on; all off is the stock
     // screen. HudNextLimit: 0 off, 1 bar, 2 distance, 3 both. Read by the UI at most once a second.
     // FORK(HUD): HudPlannedStop and HudCurve are the right strip's two items (hud_rail.py).
+    // FORK(HUD): HudCompact* draw named normal alerts small (hud_model.COMPACT_EVENTS). HudLimitSign: 0 off, 1 school and
+    // variable zones only, 2 always.
+    {"HudCompactDisengage", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"HudCompactLimitPrompts", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"HudCompactTurn", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudConfirmLimit", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCurve", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"HudLimitSign", {PERSISTENT | BACKUP, INT, "2"}},
     {"HudNextLimit", {PERSISTENT | BACKUP, INT, "3"}},
     {"HudPlannedStop", {PERSISTENT | BACKUP, BOOL, "1"}},
+    // FORK(HUD): the two zone cues only style a sign that is shown (HudLimitSign).
     {"HudSchoolZoneCue", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudSpeedCluster", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudStoppedBanner", {PERSISTENT | BACKUP, BOOL, "1"}},

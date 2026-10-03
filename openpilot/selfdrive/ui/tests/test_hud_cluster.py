@@ -43,7 +43,10 @@ KPH = 3.6
 
 DEFAULTS = {HS.PARAM_SPEED_CLUSTER: True, HS.PARAM_NEXT_LIMIT: HS.NEXT_BOTH, HS.PARAM_SCHOOL_CUE: True,
             HS.PARAM_VARIABLE_SIGN: True, HS.PARAM_STOPPED_TIMER: True, HS.PARAM_STOPPED_BANNER: True,
-            HS.PARAM_CONFIRM_LIMIT: True, HS.PARAM_PLANNED_STOP: True, HS.PARAM_CURVE: True}
+            HS.PARAM_CONFIRM_LIMIT: True, HS.PARAM_PLANNED_STOP: True, HS.PARAM_CURVE: True,
+            HS.PARAM_COMPACT_LIMIT: True, HS.PARAM_COMPACT_DISENGAGE: True, HS.PARAM_COMPACT_TURN: True,
+            HS.PARAM_LIMIT_SIGN: HS.SIGN_ALWAYS}
+INT_DEFAULTS = {HS.PARAM_NEXT_LIMIT: '"3"', HS.PARAM_LIMIT_SIGN: '"2"'}
 
 
 # ------------------------------------------------------------------------------------------- a SubMaster stand-in
@@ -131,8 +134,9 @@ class TestHudParams(OpenpilotTestCase):
       assert m, f"{key} is not in params_keys.h; Params would raise UnknownKeyName"
       flags = m.group(1)
       assert "PERSISTENT" in flags and "BACKUP" in flags, f"{key}: a setting, kept and backed up"
-      if key == HS.PARAM_NEXT_LIMIT:
-        assert "INT" in flags and '"3"' in flags, "the next limit defaults to both (bar and distance)"
+      if key in INT_DEFAULTS:
+        # the next limit defaults to both (bar and distance); the sign to always (the HUD before the setting)
+        assert "INT" in flags and INT_DEFAULTS[key] in flags, key
       else:
         assert "BOOL" in flags and '"1"' in flags, f"{key} defaults to on"
 
@@ -147,8 +151,9 @@ class TestHudParams(OpenpilotTestCase):
     fields = {HS.PARAM_SPEED_CLUSTER: "speed_cluster", HS.PARAM_SCHOOL_CUE: "school_cue",
               HS.PARAM_VARIABLE_SIGN: "variable_sign", HS.PARAM_STOPPED_TIMER: "stopped_timer",
               HS.PARAM_STOPPED_BANNER: "stopped_banner", HS.PARAM_CONFIRM_LIMIT: "confirm_limit",
-              HS.PARAM_PLANNED_STOP: "planned_stop", HS.PARAM_CURVE: "curve"}
-    assert set(fields) | {HS.PARAM_NEXT_LIMIT} == set(HS.ALL_PARAMS), "every setting is switched here"
+              HS.PARAM_PLANNED_STOP: "planned_stop", HS.PARAM_CURVE: "curve", HS.PARAM_COMPACT_LIMIT: "compact_limit",
+              HS.PARAM_COMPACT_DISENGAGE: "compact_disengage", HS.PARAM_COMPACT_TURN: "compact_turn"}
+    assert set(fields) | set(HS.INT_PARAMS) == set(HS.ALL_PARAMS), "every setting is switched here"
     for key, field in fields.items():
       params.put_bool(key, False, block=True)
       s = HS.read_settings(params)
@@ -157,14 +162,23 @@ class TestHudParams(OpenpilotTestCase):
       params.put_bool(key, True, block=True)
     for mode in HS.NEXT_MODES:
       params.put(HS.PARAM_NEXT_LIMIT, mode, block=True)
-      assert HS.read_settings(params).next_limit == mode
+      assert HS.read_settings(params) == with_(next_limit=mode)
+    for mode in HS.SIGN_MODES:
+      params.put(HS.PARAM_LIMIT_SIGN, mode, block=True)
+      assert HS.read_settings(params) == with_(limit_sign=mode)
 
   def test_unreadable_params_draw_the_stock_screen(self):
     # a build whose params library predates the keys: everything off, not half a HUD
     assert HS.read_settings(FakeParams(fail=True)) == HS.ALL_OFF
+    assert HS.ALL_OFF.limit_sign == HS.SIGN_OFF and not (HS.ALL_OFF.compact_limit or HS.ALL_OFF.compact_disengage or
+                                                         HS.ALL_OFF.compact_turn)
 
   def test_a_next_limit_value_sunnylink_never_writes_is_the_default(self):
     assert HS.read_settings(FakeParams({HS.PARAM_NEXT_LIMIT: 7})).next_limit == HS.NEXT_BOTH
+
+  def test_a_sign_value_sunnylink_never_writes_is_the_default(self):
+    assert HS.read_settings(FakeParams({HS.PARAM_LIMIT_SIGN: 7})).limit_sign == HS.SIGN_ALWAYS
+    assert HS.ALL_ON.limit_sign == HS.SIGN_ALWAYS and HS.read_settings(FakeParams()) == HS.ALL_ON
 
   def test_params_are_read_at_most_once_a_second(self):
     t = [0.0]
@@ -332,6 +346,98 @@ class TestClusterRules(OpenpilotTestCase):
   def test_imperial(self):
     f = frame(drive(v=30.0, limit=100, ahead=90, ahead_dist=300.0), metric=False)
     assert f.speed == round(30.0 * 2.23694) and f.limit == round(100 / KPH * 2.23694) and f.next_limit == 56
+
+
+# ------------------------------------------------------------------------------------------- the sign setting
+SIGN_SCENES = ({}, {'limit': 40, 'school': 2}, {'limit': 50, 'school': 1}, {'limit': 80, 'variable': True},
+               {'valid': False, 'last_valid': True}, {'valid': False, 'last_valid': False}, {'lmd': False}, {'lp': False},
+               {'v': 0.0, 'standstill': True}, {'source': 'car'}, {'limit': 80, 'variable': True, 'nsw_state': 1})
+ZONES = dataclasses.replace(HS.ALL_ON, limit_sign=HS.SIGN_ZONES)
+
+
+class SignSim:
+  """A cluster's SignSlot on a 20 Hz sim clock, as HudCluster drives it."""
+  def __init__(self, settings=ZONES):
+    self.slot, self.t, self.settings = HM.SignSlot(), 100.0, settings
+
+  def step(self, sm, seconds=0.05, **kw) -> HudFrame:
+    f = HudFrame()
+    for _ in range(max(1, int(round(seconds / 0.05)))):
+      self.t += 0.05
+      f = self.slot.apply(frame(sm, self.settings, **kw), self.settings, self.t)
+    return f
+
+
+class TestSignSetting(OpenpilotTestCase):
+  def test_always_is_the_hud_before_the_setting(self):
+    # the sign whenever there is a limit, its place kept while SpeedLimitMode is on: exactly the old rules
+    for kw in SIGN_SCENES:
+      for sl_mode_on in (True, False):
+        f = frame(drive(**kw), sl_mode_on=sl_mode_on)
+        assert f.sign_slot == sl_mode_on and f.sign_shown == (f.limit > 0), (kw, sl_mode_on)
+        g = SignSim(HS.ALL_ON).step(drive(**kw), 1.0, sl_mode_on=sl_mode_on)
+        assert g == f, "SignSlot passes Always through untouched"
+
+  def test_off_keeps_the_limit_and_the_next_limit_but_draws_no_sign(self):
+    on = frame(drive(v=30.3))
+    f = frame(drive(v=30.3), with_(limit_sign=HS.SIGN_OFF))
+    assert not f.sign_slot and not f.sign_shown, "no sign, and the speed takes its place"
+    assert (f.limit, f.next_limit, f.next_dist, f.speed) == (on.limit, on.next_limit, on.next_dist, on.speed) == \
+      (110, 100, 339.0, round(30.3 * KPH)), "the limit is still known: the next lower limit stays"
+    f = frame(drive(v=0.0, standstill=True), with_(limit_sign=HS.SIGN_OFF), stopped_s=30.0)
+    assert f.timer_s == 30.0 and not f.sign_slot, "the stop time in the corner"
+    for kw in SIGN_SCENES:
+      f = frame(drive(**kw), with_(limit_sign=HS.SIGN_OFF))
+      assert not f.sign_slot and not f.sign_shown, kw
+
+  def test_zones_needs_a_school_zone_that_is_on_or_a_variable_zone(self):
+    z = with_(limit_sign=HS.SIGN_ZONES)
+    assert frame(drive(limit=40, school=2), z).zone and frame(drive(limit=80, variable=True), z).zone
+    for kw in ({}, {'limit': 50, 'school': 1}, {'limit': 50, 'school': 3}, {'limit': 40, 'school': 2, 'nsw_mode': 1},
+               {'limit': 80, 'variable': True, 'nsw_limit': 60}, {'limit': 80, 'variable': True, 'source': 'car'},
+               {'limit': 80, 'variable': True, 'lmd_alive': False}, {'limit': 80, 'variable': True, 'nsw_state': 3}):
+      f = frame(drive(**kw), z)
+      assert not f.zone and not f.sign_slot and not f.sign_shown, kw
+    assert frame(drive(limit=80, variable=True, nsw_state=4), z).zone, "dead reckoning in a tunnel: still the zone"
+
+  def test_zones_ignores_the_cue_settings(self):
+    # the two cues only style a sign that is shown; whether it is shown is the zone's
+    plain = with_(limit_sign=HS.SIGN_ZONES, school_cue=False, variable_sign=False)
+    f = frame(drive(limit=40, school=2), plain)
+    assert f.zone and f.sign_shown and f.school == SCHOOL_NONE
+    f = frame(drive(limit=80, variable=True), plain)
+    assert f.zone and f.sign_shown and not f.electronic
+    f = frame(drive(limit=80, variable=True), with_(limit_sign=HS.SIGN_ZONES))
+    assert f.sign_shown and f.electronic
+
+  def test_zones_is_debounced(self):
+    s, zone, plain = SignSim(), drive(limit=80, variable=True), drive(limit=80)
+    assert not any(s.step(zone).sign_slot for _ in range(round(HM.SIGN_ZONE_ON_S / 0.05) - 1)), "not on a moment of zone"
+    f = s.step(zone, 0.1)
+    assert f.sign_slot and f.sign_shown and f.electronic and f.limit == 80
+    # route 10f: the Variable zone broke up at limit changes, gaps of 2-19 s: the sign holds through them
+    for gap in (2.0, 4.0, 8.0, 11.0):
+      held = [s.step(plain) for _ in range(round(gap / 0.05))]
+      assert all(h.sign_slot and h.sign_shown for h in held), gap
+      assert not any(h.electronic for h in held), "the plain sign in the gap, as the limit is then"
+      assert s.step(zone).sign_shown
+    gone = [s.step(plain) for _ in range(round(HM.SIGN_ZONE_OFF_S / 0.05) + 1)]
+    assert gone[-2].sign_slot and not gone[-1].sign_slot and not gone[-1].sign_shown, "out of the zone for good"
+
+  def test_zones_held_without_a_limit_keeps_the_place_draws_no_sign(self):
+    s = SignSim()
+    s.step(drive(limit=80, variable=True), 1.0)
+    f = s.step(drive(valid=False, last_valid=False))
+    assert f.sign_slot and not f.sign_shown and f.limit == 0
+
+  def test_zones_starts_over_when_switched(self):
+    s = SignSim()
+    s.step(drive(limit=80, variable=True), 1.0)
+    s.settings = HS.ALL_ON
+    assert s.step(drive(limit=80)).sign_shown
+    s.settings = with_(limit_sign=HS.SIGN_ZONES)
+    assert not s.step(drive(limit=80)).sign_slot, "no zone held over from before"
+    assert not SignSim(with_(limit_sign=HS.SIGN_ZONES, speed_cluster=False)).step(drive(limit=80, variable=True), 1.0).sign_slot
 
 
 # ------------------------------------------------------------------------------------------- the right rail's rules
@@ -806,6 +912,166 @@ class TestAlertRules(OpenpilotTestCase):
     assert pending_limit(FakeSM(), True) == (0, 0)
 
 
+# ------------------------------------------------------------------------------------------- compact alerts
+def ui_alert(name, et, a):
+  """The alert as the UI gets it from selfdriveState (alert_renderer.get_alert)."""
+  return SimpleNamespace(alert_type=f"{name}/{et}", text1=a.alert_text_1, text2=a.alert_text_2, size=int(a.alert_size),
+                         status=int(a.alert_status), visual_alert=int(a.visual_alert), priority=int(a.priority))
+
+
+def pre_active_alerts():
+  """speedLimitPreActive's alert is a callback: both its branches (non-PCM: '+', '-', none; PCM long), metric and not."""
+  from openpilot.sunnypilot.selfdrive.selfdrived import events as ev_sp
+  out = []
+  for pcm in (False, True):
+    for set_kph, limit_kph in ((50, 80), (80, 50), (60, 60)):
+      for metric in (True, False):
+        cp = SimpleNamespace(openpilotLongitudinalControl=True, pcmCruise=pcm)
+        cs = SimpleNamespace(vCruiseCluster=float(set_kph))
+        res = SimpleNamespace(speedLimitFinalLast=limit_kph / KPH)
+        sm = {'longitudinalPlanSP': SimpleNamespace(speedLimit=SimpleNamespace(resolver=res)),
+              'controlsState': SimpleNamespace(deprecated=SimpleNamespace(vCruise=0.0))}
+        for mici in (True, False):
+          saved, ev_sp.IS_MICI = ev_sp.IS_MICI, mici
+          try:
+            out.append(ev_sp.speed_limit_pre_active_alert(cp, cs, sm, metric, 0, None))  # ty: ignore[invalid-argument-type]
+          finally:
+            ev_sp.IS_MICI = saved
+  return out
+
+
+def every_alert():
+  """(event name, event type, Alert) for every alert of every event, openpilot's and sunnypilot's - the callbacks
+  only where they can be evaluated without a car (speedLimitPreActive's, the one on the lists)."""
+  from openpilot.selfdrive.selfdrived.events import EVENTS, EVENT_NAME
+  from openpilot.sunnypilot.selfdrive.selfdrived.events import EVENTS_SP, EVENT_NAME_SP
+  from openpilot.sunnypilot.selfdrive.selfdrived.events_base import Alert
+  out = []
+  for table, names in ((EVENTS, EVENT_NAME), (EVENTS_SP, EVENT_NAME_SP)):
+    for ev, by_type in table.items():
+      for et, a in by_type.items():
+        if isinstance(a, Alert):
+          out.append((names[ev], et, a))
+        elif names[ev] == HM.CONFIRM_EVENT:
+          out += [(names[ev], et, x) for x in pre_active_alerts()]
+  return out
+
+
+LISTED = HM.COMPACT_LIMIT | HM.COMPACT_DISENGAGE | HM.COMPACT_TURN
+VISUALS = [v for k, v in HM.VisualAlert.schema.enumerants.items() if k != 'none']   # fcw, steerRequired, ...
+
+
+class TestCompactAlerts(OpenpilotTestCase):
+  def test_the_lists(self):
+    assert HM.COMPACT_LIMIT == {'speedLimitPreActive', 'speedLimitActive', 'speedLimitChanged', 'speedLimitPending'}
+    assert HM.COMPACT_QUIET == HM.COMPACT_LIMIT - {HM.CONFIRM_EVENT}
+    assert HM.COMPACT_DISENGAGE == {'manualLongitudinalRequired', 'manualSteeringRequired'}
+    assert HM.COMPACT_TURN == {'laneTurnLeft', 'laneTurnRight'}
+    names = {n for n, _, _ in every_alert()}
+    assert LISTED <= names, f"a listed event no longer exists: {LISTED - names}"
+
+  def test_SAFETY_every_listed_alert_is_normal_low_and_asks_for_no_visual(self):
+    from openpilot.sunnypilot.selfdrive.selfdrived.events_base import AlertStatus, Priority, VisualAlert
+    seen = set()
+    for name, et, a in every_alert():
+      if name not in LISTED:
+        continue
+      seen.add(name)
+      assert a.alert_status == AlertStatus.normal, f"{name}/{et}: {a.alert_status}"
+      assert a.priority <= Priority.LOW, f"{name}/{et}: {a.priority}"
+      assert a.visual_alert == VisualAlert.none, f"{name}/{et}: {a.visual_alert}"
+    assert seen == LISTED
+
+  def test_SAFETY_no_critical_prompt_or_steer_required_alert_is_ever_compact(self):
+    # every alert of every event, with every compact setting on: compact only if listed AND normal / LOW / none
+    from openpilot.sunnypilot.selfdrive.selfdrived.events_base import AlertStatus, Priority, VisualAlert
+    n_compact = n_stock = 0
+    for name, et, a in every_alert():
+      kind = HM.compact_kind(ui_alert(name, et, a), HS.ALL_ON)
+      if kind != HM.COMPACT_NONE:
+        n_compact += 1
+        assert name in LISTED and a.alert_status == AlertStatus.normal and a.priority <= Priority.LOW and \
+          a.visual_alert == VisualAlert.none, f"{name}/{et} would be compact"
+      else:
+        n_stock += 1
+        assert name not in LISTED, f"{name}/{et}: listed, yet drawn as stock"
+      if a.alert_status != AlertStatus.normal or a.visual_alert != VisualAlert.none or a.priority > Priority.LOW:
+        assert kind == HM.COMPACT_NONE, f"{name}/{et}: {a.alert_status} {a.visual_alert} {a.priority}"
+    assert n_compact > 10 and n_stock > 100, (n_compact, n_stock)
+    # by name too: AEB, FCW, take control, steer required, the disengage-immediately ones, the gateway's own
+    for name, et, a in every_alert():
+      if name in ('aeb', 'stockAeb', 'fcw', 'stockFcw', 'steerSaturated', 'controlsMismatchLateral', 'steerUnavailable',
+                  'driverDistracted3', 'driverUnresponsive3', 'manualRestart', 'speedTooLow', 'pedalPressedAlertOnly',
+                  'lkasGatewayEpsLatched', 'lkasGatewayEpsLatchedReminder', 'vsaFault', 'vsaFaultAnnounce'):
+        assert HM.compact_kind(ui_alert(name, et, a), HS.ALL_ON) == HM.COMPACT_NONE, f"{name}/{et}"
+
+  def test_SAFETY_a_listed_name_raised_otherwise_is_drawn_as_stock(self):
+    # an upstream table change tomorrow: the same name, but critical, a prompt, or a visual - stock
+    for name in LISTED:
+      for status in (1, 2):   # userPrompt, critical
+        assert HM.compact_kind(SimpleNamespace(alert_type=f"{name}/warning", status=status, visual_alert=0),
+                               HS.ALL_ON) == HM.COMPACT_NONE, (name, status)
+      for visual in VISUALS:
+        assert HM.compact_kind(SimpleNamespace(alert_type=f"{name}/warning", status=0, visual_alert=visual),
+                               HS.ALL_ON) == HM.COMPACT_NONE, (name, visual)
+
+  def test_SAFETY_the_uis_own_critical_alerts_are_never_compact(self):
+    # ALERT_CRITICAL_TIMEOUT / _REBOOT and 'waiting to start' carry no event name
+    src = ALERTS.read_text(encoding="utf-8")
+    for const in ("ALERT_STARTUP_PENDING", "ALERT_CRITICAL_TIMEOUT", "ALERT_CRITICAL_REBOOT"):
+      body = src[src.index(f"{const} = Alert("):]
+      body = body[:body.index(")\n")]
+      assert "alert_type" not in body, const
+    for status in (0, 2):
+      assert HM.compact_kind(SimpleNamespace(alert_type="", status=status, visual_alert=0), HS.ALL_ON) == HM.COMPACT_NONE
+
+  def test_each_group_has_its_own_setting(self):
+    def kind(name, s):
+      return HM.compact_kind(SimpleNamespace(alert_type=f"{name}/warning", status=0, visual_alert=0), s)
+    for name in HM.COMPACT_LIMIT:
+      assert kind(name, HS.ALL_ON) == HM.COMPACT_LIMIT_KIND and kind(name, with_(compact_limit=False)) == HM.COMPACT_NONE
+      assert kind(name, with_(compact_disengage=False, compact_turn=False)) == HM.COMPACT_LIMIT_KIND
+    for name in HM.COMPACT_DISENGAGE:
+      assert kind(name, HS.ALL_ON) == HM.COMPACT_DISENGAGE_KIND
+      assert kind(name, with_(compact_disengage=False)) == HM.COMPACT_NONE
+    for name in HM.COMPACT_TURN:
+      assert kind(name, HS.ALL_ON) == HM.COMPACT_TURN_KIND and kind(name, with_(compact_turn=False)) == HM.COMPACT_NONE
+    for name in LISTED:
+      assert kind(name, HS.ALL_OFF) == HM.COMPACT_NONE
+    assert kind("manualRestart", HS.ALL_ON) == HM.COMPACT_NONE, "the standstill banner is its own (HudStoppedBanner)"
+
+  def test_only_a_set_speed_change_frees_the_max_number(self):
+    def a(name):
+      return SimpleNamespace(alert_type=f"{name}/warning", status=0, visual_alert=0)
+    for name in HM.COMPACT_QUIET:
+      assert HM.frees_top_icons(a(name), HS.ALL_ON) and not HM.frees_top_icons(a(name), with_(compact_limit=False))
+    for name in (HM.CONFIRM_EVENT, *HM.COMPACT_DISENGAGE, *HM.COMPACT_TURN, "steerSaturated"):
+      assert not HM.frees_top_icons(a(name), HS.ALL_ON), "a banner and the MAX number would share the top left"
+
+  def test_the_cluster_sign_is_pending_only_for_the_compact_confirm(self):
+    confirm = SimpleNamespace(alert_type="speedLimitPreActive/warning", status=0, visual_alert=0)
+    assert HM.confirm_pending(confirm, HS.ALL_ON)
+    assert not HM.confirm_pending(confirm, with_(confirm_limit=False))
+    assert not HM.confirm_pending(confirm, with_(compact_limit=False)), "full screen: the pending sign is in the alert"
+    changed = SimpleNamespace(alert_type="speedLimitChanged/warning", status=0, visual_alert=0)
+    assert not HM.confirm_pending(changed, HS.ALL_ON) and not HM.confirm_pending(None, HS.ALL_ON)
+
+  def test_banner_words(self):
+    def a(name, t1="x", t2=""):
+      return SimpleNamespace(alert_type=f"{name}/warning", text1=t1, text2=t2)
+    assert HM.compact_text(a('manualLongitudinalRequired')) == ("CRUISE OFF", "manual speed control")
+    assert HM.compact_text(a('manualSteeringRequired')) == ("LANE CENTERING OFF", "manual steering")
+    assert HM.compact_text(a('laneTurnRight')) == ("TURNING RIGHT", "")
+    assert HM.compact_text(a('other', "Some Text", "Line Two")) == ("Some Text", "line two")
+    assert set(HM.COMPACT_TEXT) == HM.COMPACT_DISENGAGE | HM.COMPACT_TURN
+    assert HM.confirm_text("Press + to confirm speed limit") == "press + to confirm"
+    assert HM.confirm_text("Press - to confirm speed limit") == "press - to confirm"
+    assert HM.confirm_text("Speed Limit Assist: set to 60 km/h to engage") == "speed limit assist: set to 60 km/h to engage"
+    assert HM.confirm_lower("Press - to confirm speed limit") is True
+    assert HM.confirm_lower("Press + to confirm speed limit") is False
+    assert HM.confirm_lower("Speed Limit Assist: set to 60 km/h to engage") is None
+
+
 # ------------------------------------------------------------------------------------------- sunnylink
 def hud_section():
   ui = json.loads(SETTINGS_JSON.read_text(encoding="utf-8"))
@@ -828,6 +1094,10 @@ class TestSunnylink(OpenpilotTestCase):
         assert it["widget"] == "multiple_button"
         assert [o["value"] for o in it["options"]] == list(HS.NEXT_MODES)
         assert [o["label"] for o in it["options"]] == ["Off", "Bar", "Distance", "Both"]
+      elif it["key"] == HS.PARAM_LIMIT_SIGN:
+        assert it["widget"] == "multiple_button"
+        assert [o["value"] for o in it["options"]] == list(HS.SIGN_MODES)
+        assert [o["label"] for o in it["options"]] == ["Off", "School & Variable Zones", "Always"]
       else:
         assert it["widget"] == "toggle", it["key"]
       assert it.get("title") and it.get("description"), it["key"]
@@ -840,11 +1110,18 @@ class TestSunnylink(OpenpilotTestCase):
     _, sec = hud_section()
     rule = [{"type": "param", "key": HS.PARAM_SPEED_CLUSTER, "equals": True}]
     by_key = {it["key"]: it for it in sec["items"]}
-    for key in (HS.PARAM_NEXT_LIMIT, HS.PARAM_SCHOOL_CUE, HS.PARAM_VARIABLE_SIGN):
+    for key in (HS.PARAM_NEXT_LIMIT, HS.PARAM_LIMIT_SIGN):
       assert by_key[key].get("visibility") == rule, key
+    # the cues style a sign: dimmed with the sign Off too
+    for key in (HS.PARAM_SCHOOL_CUE, HS.PARAM_VARIABLE_SIGN):
+      assert by_key[key].get("visibility") == rule + [{"type": "param_compare", "key": HS.PARAM_LIMIT_SIGN, "op": ">",
+                                                        "value": 0}], key
     for key in (HS.PARAM_SPEED_CLUSTER, HS.PARAM_STOPPED_TIMER, HS.PARAM_STOPPED_BANNER, HS.PARAM_CONFIRM_LIMIT,
-                HS.PARAM_PLANNED_STOP, HS.PARAM_CURVE):
+                HS.PARAM_PLANNED_STOP, HS.PARAM_CURVE, HS.PARAM_COMPACT_LIMIT, HS.PARAM_COMPACT_DISENGAGE,
+                HS.PARAM_COMPACT_TURN):
       assert "visibility" not in by_key[key], f"{key} works without the cluster"
+    keys = [it["key"] for it in sec["items"]]
+    assert keys.index(HS.PARAM_LIMIT_SIGN) == keys.index(HS.PARAM_SPEED_CLUSTER) + 1, "the sign's setting under the cluster's"
 
   def test_the_rail_items_say_what_they_cannot_know(self):
     _, sec = hud_section()
@@ -867,9 +1144,10 @@ def marked(path: Path, needles, window=3):
 class TestUpstreamHunks(OpenpilotTestCase):
   def test_every_hook_in_an_upstream_file_is_marked(self):
     marked(ROAD_VIEW, ("hud_cluster import HudCluster", "self._hud_cluster = HudCluster(", "self._hud_cluster.render(",
-                       "hud_rail import HudRail", "self._hud_rail = HudRail(", "self._hud_rail.render("))
+                       "hud_rail import HudRail", "self._hud_rail = HudRail(", "self._hud_rail.render(",
+                       "import hud_alerts", "hud_alerts.frees_top_icons("))
     marked(BALL, ("self.hud_floor_y = -math.inf", "max(dot_height, self.hud_floor_y)"), window=0)
-    marked(ALERTS, ("import hud_alerts", "hud_alerts.draw_compact_standstill(", "hud_alerts.draw_pending_limit("))
+    marked(ALERTS, ("import hud_alerts", "hud_alerts.draw_compact(", "hud_alerts.draw_pending_limit("))
     marked(PARAMS_KEYS, [f'"{k}"' for k in HS.ALL_PARAMS], window=10)
     marked(VISUALS_YAML, ("id: hud_comma4",))
     marked(MICI_SETTINGS, ("import cloudlog", "def gateway_icon():", "icons_mici/gateway.png", "gateway_icon())"), window=5)
@@ -878,9 +1156,12 @@ class TestUpstreamHunks(OpenpilotTestCase):
   def test_the_hooks_fall_through_to_the_stock_drawing(self):
     src = ALERTS.read_text(encoding="utf-8")
     render = src[src.index("  def _render(self, rect"):src.index("  def _draw_icons")]
-    hook = render.index("hud_alerts.draw_compact_standstill(self, alert)")
+    hook = render.index("hud_alerts.draw_compact(self, alert)")
     assert render.index("self._draw_background(alert)") > hook, "the stock drawing still runs after the hook"
     assert "SpeedLimitAlertRenderer.update(self)\n      return True" in render[hook:], "the banner keeps the confirm fade running"
+    road = ROAD_VIEW.read_text(encoding="utf-8")
+    assert "set_can_draw_top_icons(alert_to_render is None or hud_alerts.frees_top_icons(alert_to_render))" in road, \
+      "no alert: the stock answer, untouched"
     icons = src[src.index("  def _draw_icons"):src.index("  def _draw_background")]
     assert icons.index("hud_alerts.draw_pending_limit(") > icons.index("self._turn_signal_alpha_filter.update(255 * 0.2)"), \
       "the turn-signal blink advances exactly as before"
