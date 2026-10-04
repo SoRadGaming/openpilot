@@ -436,7 +436,7 @@ Five of them arrived after the 2026-09 sync, with the 2026-10 work: `elesys_gas.
 | M | `opendbc/safety/tests/common.py` | C (+B) | Scanned-range exceptions for `TestHondaElesys` and `0x1A6`, and `0x500` between the two `TestHondaElesys*` classes only. | 0 | auto |
 | M | `opendbc/safety/tests/libsafety/libsafety_py.py` | C | Declares `get_honda_elesys_stock_acc()` (2026-10-04, stock ACC mode). | 0 | new |
 | M | `opendbc/safety/tests/libsafety/safety.c` | C | `get_honda_elesys_stock_acc()`, the test getter for the stock ACC flag, which has no other observable effect after a Bosch init (2026-10-04). | 0 | new |
-| M | `opendbc/safety/tests/test_honda.py` | C+UF | `TestHondaElesysScmStanddownSafety`, `TestHondaElesysStanddownGasInterceptorSafety`. Since 2026-10-04 `TestHondaElesysStockAccSafety` (param 68: TX list, forward-all, interceptor ignored, engagement, flag reset, the relay check on the radar's frames with `honda_elesys_wire()` open and closed) and `TestHondaElesysStockAccStanddownConflictSafety` (4\|32\|64: transmit nothing, forward everything, the same relay check). Since 2026-10-04 (UF, `FORK(UPSTREAM-FIX)`) `test_route_114_lkas_regrant_survives_the_next_heartbeat_tick` with route 114's 50 real `0x1A6` frames. | 0 | clean |
+| M | `opendbc/safety/tests/test_honda.py` | C+UF | `TestHondaElesysScmStanddownSafety`, `TestHondaElesysStanddownGasInterceptorSafety`. Since 2026-10-04 `TestHondaElesysStockAccSafety` (param 68: TX list, forward-all, interceptor ignored, engagement, flag reset, the relay check on the radar's frames with `honda_elesys_wire()` open and closed) and `TestHondaElesysStockAccStanddownConflictSafety` (4\|32\|64: transmit nothing, forward everything, the same relay check). Since 2026-10-04 (UF, `FORK(UPSTREAM-FIX)`) `test_route_114_lkas_regrant_survives_the_next_heartbeat_tick` with route 114's 50 real `0x1A6` frames, since 2026-10-05 in the mixin `HondaElesysRoute114Regrant`, so it runs under the stand-down (36) and stock ACC mode (68). | 0 | clean |
 | M | `opendbc/safety/sunnypilot/mads.h` | UF | `m_update_control_state()`: the lateral grant zeroes `heartbeat_engaged_mads_mismatches` (2026-10-04, `FORK(UPSTREAM-FIX)`), as upstream's `safety.h` does for the longitudinal count; a grant inside the tick interval after a heartbeat exit was revoked by the stale count (route 114, `controlsMismatchLateral`). Every MADS car; needs a panda flash. Offer upstream. | 0 | new (2026-10-04) |
 | M | `opendbc/safety/tests/mads_common.py` | UF | `test_heartbeat_engaged_mads_regrant_is_not_revoked_by_a_stale_count`, `..._still_exits_on_three_fresh_mismatches`, and `test_heartbeat_engaged_mads_exits_with_can_traffic_between_ticks` / `..._regrant_exits_with_can_traffic_between_ticks` (a second of CAN before each 1 Hz tick: a reset on every received frame would switch the exit off) (2026-10-04, `FORK(UPSTREAM-FIX)`), inherited by every MADS safety test class. | 0 | new (2026-10-04) |
 | M | `opendbc/sunnypilot/car/car_list.json` | C | `"Honda Accord 2013-15"` → `HONDA_ACCORD_9G_AU`. | 0 | auto |
@@ -552,7 +552,8 @@ or sunnypilot key starts with `Hud`, and the duplicate check below still prints 
 entries (288 on `nsw-live` at `8b7ec463a`, plus the nine HUD keys); the `grep -oE` below prints one more, the
 `{"phase"` inside the `UpdaterDownloadProgress` comment. Batch 2 (2026-10-04) adds four HUD keys to the same block, still
 alphabetical (`HudCompact*` before `HudConfirmLimit`, `HudLimitSign` between `HudCurve` and `HudNextLimit`), with two
-more marker comments so every key has one within ten lines (`test_hud_cluster.py` checks it).
+more marker comments so every key has one within ten lines (`test_hud_cluster.py` checks it). With stock ACC mode's two
+`HondaElesysStockAcc*` keys beside them (2026-10-05 merge) the file has 303 entries and no duplicate.
 
 **Why a name collision would be silent.** The table is an `std::unordered_map` initializer list. A duplicate key
 compiles without complaint, and only one entry survives. After every merge, check:
@@ -912,7 +913,7 @@ Then the content conflicts, callee before callers. The shape each fork hunk has 
 Then review these auto-merged files by reading the fork hunks, not only the conflict list:
 
 * `openpilot/cereal/custom.capnp`: ordinals as in the table above.
-* `openpilot/common/params_keys.h`: every key in the params table above present (7 A, 9 C, 2 B), plus the 3 SL keys
+* `openpilot/common/params_keys.h`: every key in the params table above present (7 A, 8 C, 2 B, 1 UPD, 13 HUD), plus the 3 SL keys
   and the 5 `FORK(NSW-ZONES)` keys; the duplicate check above prints nothing.
 * `openpilot/selfdrive/car/card.py`: `skip_fw_query=`, `stage_board_firmware(CS_SP)` at the end of `state_publish`,
   and `write_board_firmware()` plus `log_flash_trace()` in `params_thread`.
@@ -988,13 +989,13 @@ python -m unittest opendbc.sunnypilot.car.honda.test_elesys_gas                 
 python -m unittest opendbc.sunnypilot.car.honda.test_elesys_stop                           # 28 tests: the soft final stop
 python -m unittest opendbc.car.honda.tests.test_elesys_stock_acc                          # 17 tests: stock ACC mode
 python -m unittest opendbc.sunnypilot.car.honda.test_shadow_learn                          # 21 tests: the shadow learners
-python -m unittest opendbc.safety.tests.test_honda                                          # builds libsafety; 1090 run, OK (skipped=73) (2026-10-05, stock ACC mode + batch 2)
+python -m unittest opendbc.safety.tests.test_honda                                          # builds libsafety; 1091 run, OK (skipped=73) (2026-10-05, stock ACC mode + batch 2)
 python -m unittest opendbc.car.tests.test_car_interfaces -k HONDA_ACCORD_9G_AU
 python -m unittest discover -s opendbc/sunnypilot/car -t .                                  # 143 tests (2026-10-05, stock ACC mode + batch 2), including the integration script
 python opendbc/sunnypilot/car/honda/test_dynamic_tuning.py                                  # ALL CHECKS PASSED
 python opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py                      # ALL CHECKS PASSED; §15 SKIPs without openpilot
 PYTHONPATH=$HOME/sp-merge python opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py   # §15 runs
-python -m unittest discover                                                                 # 10230 run, OK (skipped=1272) (2026-10-05, stock ACC mode + batch 2)
+python -m unittest discover                                                                 # 10231 run, OK (skipped=1272) (2026-10-05, stock ACC mode + batch 2)
 ./test.sh                                                                                   # everything, as lefthook runs it
 ```
 

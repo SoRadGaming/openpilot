@@ -54,7 +54,7 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `opendbc/car/honda/fingerprints.py` | M | `FW_VERSIONS[CAR.HONDA_ACCORD_9G_AU]` | - |
 | `opendbc/car/honda/interface.py` | M | transmission detection, longitudinal tuning (no `vEgoStopping` since the 2026-09 merge), `steerActuatorDelay`, `steerAtStandstill`, the `latAccelOffset` seed, safety param, `minEnableSpeed`, and its exemption from the gas-interceptor `-1` in `_get_params_sp()` | the two lateral values exist because of the gateway (B) |
 | `opendbc/car/honda/radar_interface.py` | M | Elesys radar parsing | - |
-| `opendbc/car/honda/carstate.py` | M | gear decode (`update_gear_elesys()`, taken only when the gearbox frame has `GEAR`), `LKAS_PROBLEM` bus, `stockAeb`, `scm_buttons`, `econ_on`; `VEHICLE_DYNAMICS` registered liveness-exempt for the VSA fault monitor (6.6, 2026-10-03); `accFaulted` from `BRAKE_ERROR` also in stock ACC mode (15) | B/A: `get_can_parsers()` registration of `GW_*`/`EPS_LIN_RAW`; `CarStateExt.update(..., ret_sp, ...)` |
+| `opendbc/car/honda/carstate.py` | M | gear decode (`update_gear_elesys()`, taken only when the gearbox frame has `GEAR`), `LKAS_PROBLEM` bus, `stockAeb`, `scm_buttons`, `econ_on`; `VEHICLE_DYNAMICS` registered liveness-exempt for the VSA fault monitor (6.6, 2026-10-03); `accFaulted` from `BRAKE_ERROR` also in stock ACC mode (15); `STEER_STATUS` 1 at a standstill in P is not a steering fault (6.4, 2026-10-04) | B/A: `get_can_parsers()` registration of `GW_*`/`EPS_LIN_RAW`; `CarStateExt.update(..., ret_sp, ...)` |
 | `opendbc/car/honda/carcontroller.py` | M | `compute_gb_honda_elesys()`, `brake_pump_hysteresis_elesys()`, dynamic-tuner hooks, 32-count brake release limit, the soft final stop's call (7.8), the NaN-`vEgo` guard in the brake block (7.8), the `CRUISE_OVERRIDE` decision comment (7.7), SCM_BUTTONS re-send, no `LKAS_HUD`; stock ACC mode sends only `0x0E4` and `0x500` (15) | B: `brake_release_scale()`, LDW bits, the `create_sp_hud_status()` block, the reported torque (`linbus_gateway_actuating()`) |
 | `opendbc/car/honda/hondacan.py` | M | `create_brake_command()` units bit, `create_scm_buttons_no_cruise()` | B: `create_steering_control()` LDW, `create_sp_hud_status()` |
 | `opendbc/car/car_helpers.py` | M | `skip_fw_query` | - |
@@ -68,14 +68,18 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `opendbc/sunnypilot/car/honda/carstate_ext.py` | M | `fuelGauge`; `_update_vsa_fault()` (6.6) | B (gateway decode, driver torque), A (`_update_linbus_firmware`) |
 | `opendbc/sunnypilot/car/honda/vsa_fault.py` | A (2026-10-03) | `VsaFaultMonitor`: the VSA's own fault from provisional bits (6.6) | - |
 | `opendbc/sunnypilot/car/honda/test_vsa_fault.py`, `opendbc/sunnypilot/car/honda/fixtures/vsa_fault_frames.json.gz` | A (2026-10-03) | all (6.6) | - |
-| `opendbc/sunnypilot/car/honda/dynamic_tuning.py` | A | all (since 2026-10 also `filtered_pitch()`, read by the soft final stop) | - |
-| `opendbc/sunnypilot/car/honda/elesys_gas.py` | A (2026-10) | the gas law v1/v2, `HondaElesysGasLawV2`, drive-mode slots and crossfade (9.2) | - |
+| `opendbc/sunnypilot/car/honda/dynamic_tuning.py` | A | all (since 2026-10 also `filtered_pitch()`, read by the soft final stop; since 2026-10-04 it builds and feeds the shadow learners, `_build_shadow()`, 9.3) | - |
+| `opendbc/sunnypilot/car/honda/shadow_learn.py` | A (2026-10-04) | the shadow longitudinal learners, logged as `hondashadow` lines and applied to nothing (9.3) | - |
+| `opendbc/sunnypilot/car/honda/test_shadow_learn.py` | A (2026-10-04) | all (9.3) | - |
+| `opendbc/sunnypilot/car/honda/elesys_gas.py` | A (2026-10) | the gas law v1/v2, `HondaElesysGasLawV2`, drive-mode slots and crossfade; the v2 launch cap (2026-10-04) (9.2) | - |
 | `opendbc/sunnypilot/car/honda/elesys_stop.py` | A (2026-10) | the soft final stop: `soft_stop_ceiling()`, `ElesysSoftStop`, `SOFT_STOP_*` (7.8) | - |
 | `opendbc/sunnypilot/car/honda/gas_interceptor.py` | M | the import and the one call into `elesys_gas.py`, and the tuner's `observe_pedal` hook | - |
 | `opendbc/car/honda/tests/test_elesys.py` | A | all | - |
 | `opendbc/car/honda/tests/test_elesys_stock_acc.py` | A (2026-10-04) | all (15.7) | - |
 | `opendbc/sunnypilot/car/honda/values_ext.py` | M (2026-10-04) | `HondaFlagsSP.ELESYS_STOCK_ACC` = 8 (15) | - |
 | `opendbc/sunnypilot/car/interfaces.py` | M (2026-10-04) | `_initialize_honda()`, the stock ACC mode's one writer (15.2) | - |
+| `opendbc/safety/tests/libsafety/safety.c`, `opendbc/safety/tests/libsafety/libsafety_py.py` | M (2026-10-04) | the test getter `get_honda_elesys_stock_acc()` (15.7) | - |
+| `opendbc/safety/sunnypilot/mads.h`, `opendbc/safety/tests/mads_common.py` | M (2026-10-04) | none: upstream files, every MADS car (8.5) | UF (`FORK(UPSTREAM-FIX)`): a lateral grant zeroes `heartbeat_engaged_mads_mismatches`; the regrant and heartbeat-traffic tests, inherited by every MADS safety class |
 | `opendbc/sunnypilot/car/honda/test_dynamic_tuning.py` | A | all | - |
 | `opendbc/sunnypilot/car/honda/test_elesys_gas.py` | A (2026-10) | all (9.2) | - |
 | `opendbc/sunnypilot/car/honda/test_elesys_stop.py` | A (2026-10) | all (7.8) | - |
@@ -90,7 +94,9 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `openpilot/cereal/custom.capnp` | M | `CarStateSP.vsaFault @3`, `vsaStoredFault @4`; `OnroadEventSP.EventName` `vsaFault @28`, `vsaStoredFault @29`, `vsaFaultAnnounce @30` (6.6, 10.6; 2026-10-03); `hondaElesysStockAcc @31` (15, 2026-10-04). Area C code also reads `CarStateSP.driverTorqueStale` | B, A |
 | `openpilot/selfdrive/car/card.py` | M | `skip_fw_query=bool(fixed_fingerprint)`; `finish_long_settings_restore()` right after `CarParamsPersistent` is written (15.5, 2026-10-04) | A: firmware identity staging/writing, flash trace |
 | `openpilot/selfdrive/car/helpers.py` | M | none. The `lateralControl` rebuild in `convert_carControlSP()` is area B; it is described in 10.5 because its failure took down the car's radar path | B |
-| `openpilot/selfdrive/locationd/torqued.py` | M (2026-10) | the initial `latAccelOffset` from `CarParams` (2.4) | - |
+| `openpilot/selfdrive/locationd/torqued.py` | M (2026-10) | the initial `latAccelOffset` from `CarParams` (2.4); since 2026-10-04 the shadow speed split's four marked places (9.3) | - |
+| `openpilot/sunnypilot/selfdrive/locationd/lat_speed_split.py` | A (2026-10-04) | the shadow speed-split lateral factor, logged as `latsplit` lines and applied to nothing (9.3) | - |
+| `openpilot/sunnypilot/tools/shadow_learn_report.py` | A (2026-10-04) | reads the `hondashadow` and `latsplit` lines out of routes and prints what the shadow learners learned; read-only (9.3) | - |
 | `openpilot/sunnypilot/selfdrive/car/interfaces.py` | M (2026-10) | `_initialize_torque_lateral_control()` keeps `latAccelOffset` across the EnforceTorqueControl / NNLC re-run of `configure_torque_tune()` (2.4); `preserve_long_settings()` before `_cleanup_unsupported_params()`, and `HondaElesysStockAcc` in `initialize_params()` (15, 2026-10-04) | - |
 | `openpilot/sunnypilot/selfdrive/car/honda_stock_acc.py` | A (2026-10-04) | the stock ACC mode's settings snapshot and restore (15.5) | - |
 | `openpilot/sunnypilot/selfdrive/car/car_specific.py` | M (2026-10-04) | `STOCK_ACC_ANNOUNCE_FRAMES`: the stock ACC mode's startup banner (15.5) | - |
@@ -112,7 +118,9 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/cruise.yaml`, `.../vehicle.yaml`, `openpilot/sunnypilot/sunnylink/settings_ui.json` | M | sunnylink rows; `HondaElesysStockAcc` (15.6) | - |
 | `openpilot/sunnypilot/sunnylink/statsd.py` | M | tuner telemetry; `HondaElesysStockAcc` | - |
 | `openpilot/sunnypilot/sunnylink/tools/compile_settings_ui.py` | M | UTF-8 fix (Other, 13.2) | - |
-| `openpilot/selfdrive/controls/tests/test_stopping_debounce.py`, `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py`, `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py`, `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py`, `openpilot/selfdrive/locationd/test/test_torqued_elesys.py`, `openpilot/selfdrive/locationd/test/test_lagd_elesys.py`, `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_vsa_fault_alert.py`, `openpilot/sunnypilot/selfdrive/car/tests/test_honda_stock_acc.py`, `openpilot/sunnypilot/mads/tests/test_mads_honda_stock_acc.py` | A | see section 12 and 15.7 | B: `test_latcontrol_reported_torque.py` |
+| `openpilot/sunnypilot/sunnylink/athena/sunnylinkd.py`, `openpilot/sunnypilot/sunnylink/athena/tests/test_sunnylinkd.py` | M (2026-10-04) | `OFFROAD_ONLY_PARAMS` = `HondaElesysStockAcc`: `saveParams()` refuses it unless `IsOffroad` is set; `test_saveParams_offroad_only` (15.6) | - |
+| `openpilot/selfdrive/car/cruise.py`, `openpilot/sunnypilot/selfdrive/car/cruise_ext.py`, `openpilot/sunnypilot/selfdrive/car/tests/test_speed_limit_confirm_buttons.py` | M / A (2026-10-04, narrowed 2026-10-05) | none: Speed Limit Assist, every non-PCM car; listed because 15.9 relies on it being non-PCM only | SL: a wrong-way press at the confirm prompt may lower the set speed, never raise it |
+| `openpilot/selfdrive/controls/tests/test_stopping_debounce.py`, `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py`, `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py`, `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py`, `openpilot/selfdrive/locationd/test/test_torqued_elesys.py`, `openpilot/selfdrive/locationd/test/test_lagd_elesys.py`, `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_vsa_fault_alert.py`, `openpilot/sunnypilot/selfdrive/car/tests/test_honda_stock_acc.py`, `openpilot/sunnypilot/mads/tests/test_mads_honda_stock_acc.py`, `openpilot/sunnypilot/selfdrive/locationd/tests/test_lat_speed_split.py`, `openpilot/sunnypilot/tools/tests/test_shadow_learn_report.py` | A | see section 12 and 15.7 | B: `test_latcontrol_reported_torque.py` |
 | `CHANGELOG-elesys.md`, `FEATURES-elesys.md`, `docs/CHANGELOG_SERIAL_STEERING.md` | A | history, listed at the top | - |
 | `docs/fork/UPSTREAM-2026-09.md` | A | what the 2026-09 sync brought, and what it does on this car | all |
 
@@ -795,7 +803,8 @@ tick, before pandad's 10 Hz heartbeat could report MADS engaged, revoked the gra
 on the rising edge of `controls_allowed`; three fresh mismatches still exit. Not car-specific (every MADS car), the
 panda's code, so it reaches the car only with a panda flash (pandad flashes the panda when its firmware differs from
 the build's). Tests: `test_heartbeat_engaged_mads_regrant_*` in `mads_common.py` (every MADS safety test class) and
-`test_route_114_lkas_regrant_survives_the_next_heartbeat_tick` (114's real `0x1A6` frames) in `test_honda.py`;
+`test_route_114_lkas_regrant_survives_the_next_heartbeat_tick` (114's real `0x1A6` frames) in `test_honda.py`, run
+under the stand-down (param 36) and stock ACC mode (68) from one mixin, `HondaElesysRoute114Regrant`;
 coverage 100% on `mads.h`, MISRA clean. What the tests pin, checked by hand-made mutants rather than the operator
 mutation run (which only flips increments, comparisons, boundaries, bitwise and arithmetic operators and negations,
 so it never deletes or moves this statement): with the reset taken out, the three regrant tests fail; with it moved
@@ -1332,16 +1341,16 @@ Adds `HondaDynamicTuningEnabled`, `HondaDynBrakeGain`, the three `HondaDynModeSe
 | `opendbc/car/honda/tests/test_elesys.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys` (76 tests) | category membership and dispatch (`compute_gas_brake(accel, speed, CP)`); the upstream Nidec map untouched; the Elesys gas/brake golden table; the pump (20 cases); the gas curve; the units bit (`create_brake_command(..., is_metric=, elesys=)`); the gear dwell; the stock AEB truth table and DBC signal names (not the `carstate.py` branch, 6.3). Since 2026-10 also the lateral tune (2.4, 5.1): `TestElesysTorquePrior`, `TestElesysSteerDelay`, and the area-B `TestElesysReportedTorque`, `TestElesysReportedTorqueSeam`, `TestElesysTorqueScale`; since 2026-10-04 `TestElesysKeyOffSteerStatus` (6.4) |
 | `opendbc/sunnypilot/car/honda/test_elesys_gas.py` | opendbc | `python -m unittest opendbc.sunnypilot.car.honda.test_elesys_gas` (38 tests) | the gas law and the launch cap, 9.2 |
 | `opendbc/sunnypilot/car/honda/test_elesys_stop.py` | opendbc | `python -m unittest opendbc.sunnypilot.car.honda.test_elesys_stop` (28 tests) | the soft final stop, 7.8 |
-| `opendbc/safety/tests/test_honda.py` (`TestHondaElesysScmStanddownSafety`, `TestHondaElesysStanddownGasInterceptorSafety`) and `common.py` | opendbc | `python -m unittest opendbc.safety.tests.test_honda`; builds `libsafety` on import (942 run, OK, after the merge) | section 8 |
+| `opendbc/safety/tests/test_honda.py` (`TestHondaElesysScmStanddownSafety`, `TestHondaElesysStanddownGasInterceptorSafety`; since 2026-10-04 `TestHondaElesysStockAccSafety`, `TestHondaElesysStockAccStanddownConflictSafety`) and `common.py` | opendbc | `python -m unittest opendbc.safety.tests.test_honda`; builds `libsafety` on import (1091 run, OK, skipped=73, 2026-10-05, with stock ACC mode and batch 2; 942 after the 2026-09 merge) | section 8, 15.7 |
 | `opendbc/sunnypilot/car/honda/test_dynamic_tuning.py` | opendbc | **standalone script**: `python <file>` with opendbc on `PYTHONPATH` | the tuner on its own, sections 1-5 and 10-16: toggle off is a no-op, pitch, the retired pedal and aero learners stay retired, the per-mode data counter, brake, params, importing without openpilot, three rounds of review regressions, drive-mode gating, the `hondadyn` line |
 | `opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py` | opendbc | **standalone script**, or unittest discovery through its `TestDynamicTuningIntegration` wrapper | the real `CarController`, frame by frame: [1] toggle off matches stock, [2] toggle on, [3] gas and brake never together, [4] the standstill hold is not scaled by the learned gain, [5] a disengage unwinds the brake gain, [6] the interceptor owns the gas at every speed (decodes `PCM_GAS`), [9] fuel and odometer, [16] the gas law v1/v2 through `CarController` with the brake command identical under both, [17] `update()` never raises on odd inputs and 0x1FA goes out every even frame, [17b] a NaN `vEgo` in the brake block, [18] `CRUISE_OVERRIDE` on every `BRAKE_COMMAND`, brake 0 when `longActive` drops and at most one nonzero `BRAKE_COMMAND` after a pedal edge, [19] the soft final stop through `CarController` (only lowers, the hold byte for byte, the gate, the learners untouched, never raises). Sections 7, 8, 10-15 and 14b are area B |
 | `openpilot/selfdrive/controls/tests/test_stopping_debounce.py` | sunnypilot | `python tools/test_runner.py <file>` (17 tests) | 10.1 |
 | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | sunnypilot | runner (9 tests) | 10.2 |
 | `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | sunnypilot | runner (1 test) | 10.5 |
 | `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py` | sunnypilot | runner (22 tests) | section 11, and 15.6 |
-| `opendbc/car/honda/tests/test_elesys_stock_acc.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys_stock_acc` (14 tests) | 15.2-15.3 |
-| `openpilot/sunnypilot/selfdrive/car/tests/test_honda_stock_acc.py` | sunnypilot | runner (9 tests) | 15.5 |
-| `openpilot/sunnypilot/mads/tests/test_mads_honda_stock_acc.py` | sunnypilot | runner (9 tests) | 15.5 |
+| `opendbc/car/honda/tests/test_elesys_stock_acc.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys_stock_acc` (17 tests) | 15.2-15.3, 15.9 |
+| `openpilot/sunnypilot/selfdrive/car/tests/test_honda_stock_acc.py` | sunnypilot | runner (15 tests) | 15.5 |
+| `openpilot/sunnypilot/mads/tests/test_mads_honda_stock_acc.py` | sunnypilot | runner (14 tests) | 15.5 |
 | `openpilot/selfdrive/locationd/test/test_torqued_elesys.py` | sunnypilot | runner (11 tests) | 2.4: prior and seed before any point, a zero offset as upstream, a changed prior discards the cache, a reported 0 adds no point, the seed survives EnforceTorqueControl / NNLC while other cars match upstream's re-run |
 | `openpilot/selfdrive/locationd/test/test_lagd_elesys.py` | sunnypilot | runner (5 tests) | 5.1: the lag fallbacks are 0.38 s, a learned cache survives |
 | `openpilot/sunnypilot/selfdrive/locationd/tests/test_lat_speed_split.py` | sunnypilot | runner (10 tests) | 9.3 lateral: the moment fit equals `estimate_params()`, exact combination across drives, the 70 km/h split, torqued's points only, `lateralTorqueParameters` identical with and without, the gating, the log cadence, never raising, torqued as upstream when the module cannot be imported |
@@ -1606,5 +1615,6 @@ written apart and merged together. What each part of batch 2 does in stock mode,
   in the replay changed.
 - **The MADS heartbeat reset (8.5): applies.** It is `mads.h`, every mode: the panda's MADS tests
   (`mads_common.py`, including the four new regrant and heartbeat-traffic tests) run under param 68 in
-  `TestHondaElesysStockAccSafety`.
+  `TestHondaElesysStockAccSafety`, and so does route 114's real-frame regrant test (`HondaElesysRoute114Regrant`,
+  shared with the stand-down class since 2026-10-05).
 
