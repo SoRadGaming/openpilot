@@ -741,6 +741,31 @@ Tests: `test_elesys_stop.py` (28: every timer, the grade term, the gate and the 
 
 ---
 
+### 7.9 Brake lamps during openpilot braking: no CAN path (2026-10-05)
+
+The problem: when openpilot brakes, the stop lamps stay dark. Stock ACC braking lights them.
+
+- **openpilot already sends the lamp bit, and it does nothing.** `BRAKE_LIGHTS` (`0x1FA` bit 39) is set on every
+  openpilot braking frame (100% on routes 10f and 113). The VSA acts on those frames (`0x1A4` bit 23,
+  `COMPUTER_BRAKING`, on about 99% of them), yet the lamps stay dark, so this VSA ignores bit 39. The radar never sets
+  it: 0 of 6465 braking frames on the six stock-ACC drives (0e, 44, 48, 61, 81, 82).
+- **Stock lights them outside CAN.** Per the 2026-09-29 investigation (archived section 7.8, below), the lamp relay line
+  runs to the ACC unit. That unit is on bus 2 and never receives openpilot's `0x1FA` (the stand-down, 7.5). Log mining
+  over 161 routes found no `0x1FA` bit that stock sets on most braking frames and openpilot does not; bit 28 rides with
+  `AEB_REQ_1` and was never offered. No CAN signal on this car reports lamp state, so the logs alone cannot prove the
+  wiring.
+- **The VSA's own hill hold does not light them either** (owner, 2026-10-05). The hold shows as `0x1A4` bit 49 with
+  `0x1B0` bit 41, about 1.1 s after the pedal is released on grades of 8% or more. That shows the VSA does not light
+  lamps for its own holds. It does not, on its own, rule out a lamp command.
+- **Decision (owner, 2026-10-05):** no CAN bit openpilot can send will light them. The test branch `brake-lamp-test`
+  (a bit sweep at a standstill, param `HondaBrakeLampTest`, never driven on any route on disk) was deleted from the
+  sunnypilot, openpilot and opendbc repos. It is kept as tag `archive/brake-lamp-test`: sunnypilot and openpilot
+  `80a752eb`, opendbc `6002ac59`. That commit's section 7.8 has the full candidate list and the reasons for each
+  exclusion; `opendbc/sunnypilot/car/honda/brake_lamp_test.py` has the code.
+- **If lamps are still wanted, the route is hardware:** drive the lamp relay line from a spare EPS-LKAS board pin,
+  keyed on `0x1A4` bit 23 (VSA `COMPUTER_BRAKING`, bus 0) or on openpilot's `COMPUTER_BRAKE > 0`. The wiring has not
+  been checked.
+
 ## 8. Panda safety (`opendbc/safety/modes/honda.h`)
 
 This is the highest-risk code in the fork. It runs in the panda and decides what openpilot may put on the car's buses. Every change is gated on `honda_elesys_scm_standdown`. That flag is false for every other car, and `honda_bosch_init()` explicitly resets it to false.
