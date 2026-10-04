@@ -14,6 +14,11 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.locationd.helpers import PointBuckets, ParameterEstimator, PoseCalibrator, Pose
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.selfdrive.locationd.torqued_ext import TorqueEstimatorExt
+try:  # FORK(HONDA_ACCORD_9G_AU): a shadow (lat_speed_split.py); if it cannot be imported, torqued runs as upstream
+  from openpilot.sunnypilot.selfdrive.locationd.lat_speed_split import make_lat_speed_split
+except Exception:
+  def make_lat_speed_split(CP, prior_factor, decimated):
+    return None
 
 HISTORY = 5  # secs
 POINTS_PER_BUCKET = 1500
@@ -87,6 +92,9 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     self.calibrator = PoseCalibrator()
 
     TorqueEstimatorExt.initialize_custom_params(self, decimated)
+    # FORK(HONDA_ACCORD_9G_AU): a shadow speed-split factor (lat_speed_split.py) that logs and applies nothing.
+    # None on every other car and for the decimated estimator.
+    self.lat_split = make_lat_speed_split(CP, self.offline_latAccelFactor, decimated)
 
     self.reset()
 
@@ -212,6 +220,8 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
         if all(lat_active) and not any(steer_override) and (vego > MIN_VEL) and (abs(steer) > STEER_MIN_THRESHOLD):
           if abs(lateral_acc) <= LAT_ACC_THRESHOLD:
             self.filtered_points.add_point(steer, lateral_acc)
+            if self.lat_split is not None:  # FORK(HONDA_ACCORD_9G_AU): shadow only, never raises
+              self.lat_split.add_point(vego, steer, lateral_acc)
 
           if self.track_all_points:
             self.all_torque_points.append([steer, lateral_acc])
@@ -274,6 +284,8 @@ def main(demo=False):
           estimator.handle_log(t, which, sm[which])
 
     TorqueEstimatorExt.update_use_params(estimator)
+    if estimator.lat_split is not None:  # FORK(HONDA_ACCORD_9G_AU): the shadow's once-a-minute log line
+      estimator.lat_split.tick(estimator.filtered_params['latAccelFactor'].x)
 
     # 4Hz driven by deviceMotion
     if sm.frame % 5 == 0:

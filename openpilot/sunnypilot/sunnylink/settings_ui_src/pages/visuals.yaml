@@ -62,13 +62,13 @@ sections:
     - $ref: '#/macros/hide_on_mici'
     enablement:
     - $ref: '#/macros/longitudinal'
-# FORK(HUD): the comma 4's speed cluster, next limit, school-zone cue, stop timer, the two alert changes and the right
-# strip's planned stop and curve (selfdrive/ui/sunnypilot/mici/onroad/hud_*.py). Shown for a comma 4 only: nothing else
-# draws them. Every item off gives exactly the stock comma 4 screen.
+# FORK(HUD): the comma 4's speed cluster, its sign setting, next limit, school-zone cue, stop timer, the alert changes
+# (compact banners) and the right strip's planned stop and curve (selfdrive/ui/sunnypilot/mici/onroad/hud_*.py). Shown for
+# a comma 4 only: nothing else draws them. Every item off gives exactly the stock comma 4 screen.
 - id: hud_comma4
   title: HUD
-  description: The comma 4 driving screen - speed, speed limit, next limit, stops, and the planned stop or curve in the
-    right strip. Changes show within a second.
+  description: The comma 4 driving screen - speed, speed limit, next limit, stops, smaller alerts, and the planned stop
+    or curve in the right strip. Changes show within a second.
   visibility:
   - type: capability
     field: device_type
@@ -77,9 +77,29 @@ sections:
   - key: HudSpeedCluster
     widget: toggle
     title: Speed and Speed Limit
-    description: Your speed, as the car's speedometer shows it, beside the speed limit sign, top right. The sign is
-      hidden when Speed Limit is Off, and shown in grey while the limit is only being held from earlier. While the set speed
-      shows after a change the speed hides, and the whole group fades out while an alert is up.
+    description: Your speed, as the car's speedometer shows it, beside the speed limit sign, top right. Speed Limit
+      Sign below says when the sign shows; it is always hidden when Speed Limit is Off, and shown in grey while the limit
+      is only being held from earlier. While the set speed shows after a change the speed hides, and the whole group
+      fades out while a full-screen alert is up.
+  - key: HudLimitSign
+    widget: multiple_button
+    title: Speed Limit Sign
+    description: When the sign beside your speed is drawn. Always - whenever there is a limit. School & Variable Zones -
+      only in a NSW school zone while it is on, or a variable speed limit zone, and for about 12 seconds after, so it does
+      not blink at a limit change; this needs NSW Speed Zones on Live and Speed Limit not Off. Off - never. With no sign,
+      your speed, the stop time and the next lower limit slide into its place in the corner, and the confirm prompt
+      shows the limit it asks about itself.
+    options:
+    - value: 0
+      label: 'Off'
+    - value: 1
+      label: School & Variable Zones
+    - value: 2
+      label: Always
+    visibility:
+    - type: param
+      key: HudSpeedCluster
+      equals: true
   - key: HudNextLimit
     widget: multiple_button
     title: Next Lower Limit
@@ -104,21 +124,30 @@ sections:
     widget: toggle
     title: School Zone Lights
     description: When the limit shown is a NSW school zone, two amber lights on the sign flash in turn and SCHOOL
-      shows under it while the zone is on; outside its hours the lights are grey. Needs NSW Speed Zones on Live.
+      shows under it while the zone is on; outside its hours the lights are grey. Needs NSW Speed Zones on Live, and
+      Speed Limit Sign not Off.
     visibility:
     - type: param
       key: HudSpeedCluster
       equals: true
+    - type: param_compare
+      key: HudLimitSign
+      op: '>'
+      value: 0
   - key: HudVariableLimitSign
     widget: toggle
     title: Electronic Sign in Variable Zones
     description: In a NSW variable speed limit zone (motorways and tunnels with overhead signs) the sign is drawn like
       the electronic one - black, with white digits - because the overhead sign can show less than the limit here.
-      Needs NSW Speed Zones on Live.
+      Needs NSW Speed Zones on Live, and Speed Limit Sign not Off.
     visibility:
     - type: param
       key: HudSpeedCluster
       equals: true
+    - type: param_compare
+      key: HudLimitSign
+      op: '>'
+      value: 0
   - key: HudStoppedTimer
     widget: toggle
     title: Stop Timer
@@ -136,7 +165,25 @@ sections:
     title: Show the Limit in the Confirm Prompt
     description: The 'press - (or +) to confirm speed limit' prompt shows the limit it is asking about, with a dashed
       ring until you confirm it, beside the green - or +. A speed limit offset shows as a small number on the sign, as
-      on sunnypilot's own sign.
+      on sunnypilot's own sign. With Compact Speed Limit Prompts on, the dashed ring is on the sign top right instead,
+      or in the banner when that sign is not shown - there the banner always shows the limit, with this on or off.
+  - key: HudCompactLimitPrompts
+    widget: toggle
+    title: Compact Speed Limit Prompts
+    description: '''Auto adjusting to speed limit'' and ''set speed changed'' no longer cover the road: the new set speed
+      shows as MAX top left, as after any change, and your speed and sign stay. ''Press + (or -) to confirm'' is a
+      one-line banner top left with the green key. The sounds are unchanged.'
+  - key: HudCompactDisengage
+    widget: toggle
+    title: Compact Disengage Notices
+    description: '''Cruise off'' and ''lane centering off'', after you switch them off yourself, are a small banner top
+      left instead of covering the screen. Anything openpilot ends by itself, every warning and every ''take control''
+      still covers the screen.'
+  - key: HudCompactTurn
+    widget: toggle
+    title: Compact Turn Notices
+    description: '''Turning left'' and ''turning right'', while the blinker is on below lane-change speed, are a small
+      banner top left instead of covering the screen.'
   - key: HudPlannedStop
     widget: toggle
     title: Planned Stop

@@ -485,6 +485,16 @@ This is a different definition from the one the panda uses to forward the stock 
 - `self.scm_buttons = cp.vl["SCM_BUTTONS"]` (Elesys only, inside the non-Bosch block). It is kept for the re-send (7.5).
 - `self.econ_on`: `None` by default, meaning not observable. On Elesys it is `bool(cp.vl["ECON_STATUS"]["ECON_ON"])`. It is not a `CarState` field; `elesys_gas.econ_state()` (which `HondaDynamicTuner._econ_state()` calls) reads it straight off the `CarState` object, for the brake learner's gate and the drive-mode slot.
 - `ret.fuelGauge = min(cp.vl["SCM_BUTTONS"]["FUEL_LEVEL"] / FUEL_LEVEL_FULL, 1.0)` with `FUEL_LEVEL_FULL = 105.0`, set in `CarStateExt.update()` (`carstate_ext.py`). It is a fraction of the gauge, not of the tank. Test: integration section 9.
+- **The key-off `STEER_STATUS` 1 (2026-10-04, owner decision 2, `FORK(HONDA_ELESYS)`).** This EPS sends
+  `STEER_STATUS` 1 (`DRIVER_STEERING`) in its first frames at key-on and its last at key-off. Upstream's rule takes 1 as
+  both a temporary and a permanent fault, so every key-off raised "LKAS Fault: Restart the car", or TAKE CONTROL
+  IMMEDIATELY while MADS was still on (115 at 1032.48, `steerUnavailable/immediateDisable`). On `HONDA_ELESYS`, and only
+  at a standstill AND in P, 1 is no longer a fault; moving, or in D/R/N, it is the fault it always was, and 5/6/7 are
+  faults in P too. Across 88 routes, 187 runs of 1, all at key-on or key-off at a standstill, none moving (route 011 has
+  one 0.27 s run at a standstill in D, still a fault). Replayed through the real `CarInterface`, old tree against new,
+  the only `CarState` difference on 115 and 10f is `steerFaultTemporary`/`steerFaultPermanent` on those parked frames
+  (12 and 18), and with it `SP_HUD_STATUS.OP_STATE` (0x500) on the one or two key-off frames that carried FAULTED.
+  Tests: `TestElesysKeyOffSteerStatus` in `test_elesys.py` (real frames through the real `CarInterface`).
 - `CarStateExt.update()` now takes `(ret, ret_sp, can_parsers)`, and on Elesys `get_can_parsers()` registers `GW_ACTIVE`, `GW_STEER_GRANT`, `EPS_LIN_RAW`, `GW_VERSION` and `GW_BUILD` with `float("nan")`. Both changes belong to areas B and A, but the call site in `carstate.py` must keep passing `ret_sp`.
 
 ### 6.5 `opendbc/car/structs.py`
@@ -776,6 +786,27 @@ Upstream `honda.h` and `test_honda.py` were unchanged between the old fork point
 
 Then run the full safety suite and MISRA/cppcheck. The device's panda firmware is built from this file, so a change here only takes effect after a panda flash.
 
+### 8.5 The MADS heartbeat race (`opendbc/safety/sunnypilot/mads.h`, 2026-10-04, `FORK(UPSTREAM-FIX)`)
+
+Route 114 at 805.2: an LKAS press granted lateral in the panda inside the one tick interval after a heartbeat exit, when
+`heartbeat_engaged_mads_mismatches` still read 3 (it is only cleared by a 1 Hz tick that finds no mismatch). The next
+tick, before pandad's 10 Hz heartbeat could report MADS engaged, revoked the grant: 200 `0xE4` blocked and
+`controlsMismatchLateral` at 807.53. The grant now zeroes the count, as `safety.h` zeroes `heartbeat_engaged_mismatches`
+on the rising edge of `controls_allowed`; three fresh mismatches still exit. Not car-specific (every MADS car), the
+panda's code, so it reaches the car only with a panda flash (pandad flashes the panda when its firmware differs from
+the build's). Tests: `test_heartbeat_engaged_mads_regrant_*` in `mads_common.py` (every MADS safety test class) and
+`test_route_114_lkas_regrant_survives_the_next_heartbeat_tick` (114's real `0x1A6` frames) in `test_honda.py`;
+coverage 100% on `mads.h`, MISRA clean. What the tests pin, checked by hand-made mutants rather than the operator
+mutation run (which only flips increments, comparisons, boundaries, bitwise and arithmetic operators and negations,
+so it never deletes or moves this statement): with the reset taken out, the three regrant tests fail; with it moved
+to the top of `m_update_control_state()`, i.e. run on EVERY received frame - which on the car would switch the
+heartbeat exit off, CAN arriving at ~100 Hz between the 1 Hz ticks - `test_heartbeat_engaged_mads_exits_with_can_traffic_between_ticks`
+and `..._regrant_exits_with_can_traffic_between_ticks` fail (100 frames before each of three ticks; lateral must still
+exit on the third). So the fix is no weaker than upstream's long-standing reset on the rising edge of `controls_allowed`. A replay of 114 and 115 through both builds of the
+safety code with the panda's 1 Hz heartbeat checks simulated (the tick's place in its 100 ms window scanned): the old
+code reproduces 114's 200 blocked `0xE4` exactly, the new code blocks none of them and keeps lateral from 805.24; 115
+and every other moment of 114 are identical.
+
 ---
 
 ## 9. Dynamic tuning and the gas interceptor
@@ -848,7 +879,7 @@ Tests: `test_dynamic_tuning.py` (sections 1-5 and 10-16; 6-8 went with the PCM b
 
 - net >= 0: `pedal = off(v) + gas * gm2(v) / MODE_K[slot]`
 - net < 0: `pedal = off(v) * (1 - brake / (0.75 * wb))`, which is zero at net = -1.95 wb, v1's pedal-zero point
-- `gm2(v) = 4.8 / k(v)` with the measured `k` at `ELESYS_FF_BP = [0, 3, 6, 10, 15, 20, 25, 30]` m/s = `[8.73, 5.65, 6.8, 4.7, 3.4, 2.9, 2.0, 2.0]` m/s^2 per unit pedal. 0 and 3 m/s are v1's values exactly (4.8/0.55 and 4.8/0.85), and the table is interpolated in the same quantity v1 interpolates (`ELESYS_FF_GM`), so 0-3 m/s is v1's law: the same gain bit for bit, and the same pedal to within float rounding (the sum is grouped differently; tested to 1e-12).
+- `gm2(v) = 4.8 / k(v)` with the measured `k` at `ELESYS_FF_BP = [0, 3, 6, 10, 15, 20, 25, 30]` m/s = `[8.73, 5.65, 6.8, 4.7, 3.4, 2.9, 2.0, 2.0]` m/s^2 per unit pedal. 0 and 3 m/s are v1's values exactly (4.8/0.55 and 4.8/0.85), and the table is interpolated in the same quantity v1 interpolates (`ELESYS_FF_GM`), so 0-3 m/s is v1's law up to the launch cap below: the same gain bit for bit, and the same pedal to within float rounding (the sum is grouped differently; tested to 1e-12).
 - `off(v) = min(G0(v), 0.75 * wb * gm1(v))` with the measured cruise pedal `ELESYS_FF_G0 = [0.045, 0.045, 0.080, 0.102, 0.110, 0.122, 0.150, 0.211]`. Below about 16.9 m/s v1's offset is the smaller, so the offset, and the whole zero-crossing window, is v1's; above it the measured G0 takes over and the window is gentler (0.76 against 1.06 pedal per m/s^2 at 20 m/s).
 
 | speed (m/s) | 3 | 6 | 10 | 15 | 20 | 25 | 30 |
@@ -871,7 +902,164 @@ Fit: 51 routes (99..103), engaged, D, pedal steady for 1 s and lagged 0.4 s, res
 
 **Never raises.** `ElesysGasLaw.update()` runs inside `CarController.update()`. NaN, None and missing inputs fall back to v1 and then to 0.0; the result is always a finite float in [0, 1], and 0.0 when not `longActive`.
 
-Tests: `test_elesys_gas.py` (31 tests: golden pedal per breakpoint for net in {-0.5, -0.1, 0, 0.5, 1, 2}; continuity at 0 and at the pedal-zero point; monotonic in net; zero at and below the brake-on point; v2 equal to v1 at or below 3 m/s; the negative-branch slope never steeper than v1's and equal below 16.8 m/s; the crossfade bound; the slot rule; the param read; non-Elesys bit identity); integration sections 16 (both laws through the real `CarController`, the brake command identical under both) and 17 (`update()` never raises, 0x1FA on every even frame); `TestElesysGasMultiplier` in `test_elesys.py` for the v1 curve.
+**The launch cap (2026-10-04, owner decision 8, A_synth L2a).** Route 115 t 511 asked 1.6-2.0 m/s^2 from a stop and
+got 2.4-2.7 (aEgo), with openpilot's integrator wound down to -0.8. Below `LAUNCH_CAP_V_END` = 6 m/s, v2 is now also
+capped: `pedal = min(v2, LAUNCH_CAP_P0 + net / K(v))`, `P0` 0.08, `K` = 13.0 / 12.0 / 6.8 at 0 / 3 / 6 m/s
+(`LAUNCH_CAP_BP`, `LAUNCH_CAP_K`; the 6.8 is the table's own k at 6 m/s), `k_mult` scaling `K` as it scales k. The car
+answers the pedal like a hinge at launch speeds: creep up to ~0.08-0.09 pedal, then ~13 m/s^2 per unit at 1.5-3 m/s,
+10.7 at 3-4.5 and 8.1 at 4.5-6 (48 routes, 099..115); v1's line through zero under-asks below ~1 m/s^2 and over-asks
+above. The cap only binds above that crossing, never below net 0.85, from net 2.13 at 0 m/s, 1.70 at 0.5, 1.42 at 1.0,
+1.22 at 1.5, 1.07 at 2, 0.86 at 3, 1.15 at 4, 2.01 at 5 and 3.7 at 5.5: demands below ~0.85 m/s^2 get v2's pedal
+exactly, but above that, at 1-5 m/s, it can bind behind a lead too (19.5% of the replayed lead frames below 6 m/s, from
+a 0.84 command up; 27.6% with no lead). It never asks for more than v2; at net <= 0 it is P0, above v2's offset, so the pedal-zero window and the brake-on point
+do not move; it is continuous in speed and net and identical to v2 from 6 m/s. The single-number alternative (3 m/s
+k = 8.7) was rejected: it cuts every demand and made launches behind a lead under-deliver (0.94 of target) and 0.11 s
+slower to 6 m/s. Offline closed-loop replay (openpilot's PI, the fitted hinge as the plant, each launch's logged target
+and grade) of the 13 clean engaged launches from a stop on 099..115 (6 with no lead, 7 behind one): achieved / target
+at 0.5-4.5 m/s 1.18 -> 1.04 (no lead) and 1.11 -> 1.02 (lead), peak aEgo 2.32 -> 1.85 and 1.76 -> 1.55 m/s^2, lowest
+integrator -0.44 -> -0.04, time to 6 m/s 4.04 -> 3.97 s and 5.21 -> 5.18 s; 115 t 511: 2.11 -> 1.88 m/s^2 against
+1.70. Replaying 115 and 10f through the real `CarInterface`, old tree against new, the only interceptor commands that
+change are 102 (115, its one launch) and 382 (10f, three episodes) frames, all at 1.3-5.0 m/s, all lower. Caution, not from the cap: in
+the same model v2 itself reaches 6 m/s about 0.5 s later than v1 did, from its 3-6 m/s segment.
+
+What the cap does NOT do, and what still needs the owner:
+* **It reduces the over-delivery; it does not remove it.** Below ~1.4 m/s a normal 1.1-1.6 m/s^2 launch demand is not
+  capped at all (115 t 511 at 1.0 m/s asked 1.13 and got 1.62; the cap leaves that frame alone). The model still has
+  115 t 511 at 1.88 against 1.70 asked, peak 2.18 (2.82 before). The fitted hinge for 0.3-1.5 m/s has a 0.88 m/s^2
+  intercept and P0 0.12, which P0 0.08 / K 13 does not represent.
+* **The evidence is in-sample.** The closed-loop plant is the 48-route hinge that `LAUNCH_CAP_K` came from, only 1 of
+  the 13 launches ran v2, and 10f / 110-113 have no clean no-lead launch (10f t 302 had a lead). The next drives'
+  launches, and the shadow launch ratio at 0.5-3 m/s (9.3), are the real check before P0 or K is tuned. First-drive
+  check: a launch behind a car pulling away must not feel sluggish.
+* **Scope: 0-6 m/s, not 0-3.** Owner decision 8 named the 0-3 m/s segment, "continuous with the v2 table above 3 m/s".
+  A cap ending at 3 m/s would step off v2 there (at 3 m/s and net 2.0 the capped pedal is 0.247 against v2's 0.354),
+  so it runs to `LAUNCH_CAP_V_END` = 6 m/s and meets v2 on the table's own k: at 4.5 m/s, net 2.0, 0.324 -> 0.293; at
+  5 m/s, net 2.5, 0.393 -> 0.373; nothing from ~5.3 m/s. It applies to any pull-away below 6 m/s above the line (a
+  roundabout exit), not only from a stop. The replays change `0x200` up to 3.81 m/s (115) and 4.99 m/s (10f). The
+  single-number alternative (A_synth L2a option (a), k 8.7 at 3 m/s) was rejected for the reason above. **Needs the
+  owner's sign-off.**
+* **v2 only.** `ElesysGasLaw.update()` sends v1 when `HondaElesysGasLawV2` is off, and falls back to v1 if v2 raises
+  (it does not: `elesys_pedal_v2` catches everything and returns 0.0). v1 is kept as the exact pre-2026-10 law to go
+  back to, so it is not capped: switching the measured law off brings back the uncapped launch.
+
+Tests: `test_elesys_gas.py` (38 tests: golden pedal per breakpoint for net in {-0.5, -0.1, 0, 0.5, 1, 2}, 3 m/s with the cap; continuity at 0 and at the pedal-zero point; monotonic in net; zero at and below the brake-on point; v2 equal to v1 at or below 3 m/s up to the launch cap; `TestLaunchCap` (never more pedal than before, identical from 6 m/s, every demand up to 0.8 m/s^2 and the braking side untouched, binding on a launch, continuity in speed and net, `k_mult`, route 115's launch frames); the negative-branch slope never steeper than v1's and equal below 16.8 m/s; the crossfade bound; the slot rule; the param read; non-Elesys bit identity); integration sections 16 (both laws through the real `CarController`, the brake command identical under both) and 17 (`update()` never raises, 0x1FA on every even frame); `TestElesysGasMultiplier` in `test_elesys.py` for the v1 curve.
+
+### 9.3 Shadow learners (2026-10-04): measured and logged, applied to nothing
+
+Owner decision 9 after routes 114/115: the three learners A_synth proposed (L1 brake table, L2b launch multiplier,
+L3 speed-split lateral factor) run in **shadow** first. They compute what they would learn and write it into the
+route; nothing actuated reads them. No param, no capnp field, no setting: the longitudinal pair rides on
+`HondaDynamicTuningEnabled` (default off: with it off no `hondashadow` line is written - it was on for 115 and 10f)
+and on the gas interceptor, the lateral one on the car.
+
+**Where.** `opendbc/sunnypilot/car/honda/shadow_learn.py` (`HondaShadowLearners`, imported and built by
+`HondaDynamicTuner._build_shadow()` under a try, only on `HONDA_ELESYS` with the interceptor and the toggle on) and `openpilot/sunnypilot/selfdrive/locationd/lat_speed_split.py`
+(`LatSpeedSplitShadow`, built by `TorqueEstimator` only on `HONDA_ELESYS`, torque tuning, not the decimated estimator).
+`carcontroller.py` is not touched: the tuner records copies of the frame's brake fraction (`brake_gain()`) and
+interceptor command (`observe_pedal()`), and `update_wind()` - the last tuner call of the 50 Hz gas/brake block, kept
+when the aero learner was retired - hands them to the shadow. `torqued.py` carries four marked places (its import
+guarded: if `lat_speed_split.py` cannot be imported, torqued runs as upstream). `carstate_ext.py` records 0x17C
+`PEDAL_GAS` as `pcm_pedal_gas` for the launch gate.
+
+**The longitudinal signal.** Achieved net accel `aEgo + g*sin(pitch)` (gravity removed with the tuner's filtered
+pitch) against the command the law was given (`actuators.accel` + the pitch term) through the tuner's 0.3 s plant
+model (`cmd_ref`). **This departs from A_synth L1**, which learns from openpilot's integrator (`uiAccelCmd`) on
+brake frames: the integrator is not visible in card. In a steady state the two are the same number (the integrator
+settles where achieved = target, so the error is -(uiAccelCmd + the P term)); off it they are not, so this was
+checked rather than assumed. A one-off replay of 115 and 10f through the real `CarInterface` (round-1 review, scratch
+`integ/xcheck.py`) took every brake sample the shadow admitted and the `controlsState` at or before it:
+
+| cell (>= 5 s, both routes) | n | `be` (plant error) | -`uiAccelCmd` |
+|---|---|---|---|
+| 1-5 m/s, > 100 counts | 5.0 s | -0.23 | -0.21 |
+| 5-10 m/s, > 100 | 8.1 s | -0.29 | -0.11 |
+| 10-15 m/s, > 100 | 8.1 s | -0.03 | +0.11 |
+| 15-20 m/s, <= 60 | 12.3 s | -0.00 | +0.05 |
+| 20-25 m/s, <= 60 | 69.3 s | +0.01 | +0.03 |
+| 20-25 m/s, 60-100 | 5.6 s | +0.18 | +0.24 |
+| > 25 m/s, <= 60 | 27.6 s | +0.14 | +0.12 |
+| > 25 m/s, 60-100 | 6.5 s | +0.26 | +0.30 |
+
+(`upAccelCmd` is 0 throughout, so -(ui + up) = -ui.) Above 20 m/s, where the only would-apply corrections are, they
+agree within 0.06 m/s^2 and per sample they correlate 0.5-0.9. Below 15 m/s the plant error reads more over-braking
+than the integrator, by up to 0.18 (5-10 m/s, firm), and at 10-15 m/s firm the two differ in sign (-0.03 floored to 0
+against +0.11, which would ask for 0.11 more brake). So: **not validated below 15 m/s**. Before any brake cell is
+applied, its value must be read against the integrator, not taken from `be` alone.
+
+**Gates.** All: a clean second (`CLEAN_HOLD`, 50 consecutive 50 Hz frames) of `longActive`, PID state, D with ECON
+off (`mode_ok`), no driver pedal, no stock AEB and a fresh pose - not just the current frame: after the driver lifts
+off the gas, aEgo carries the throttle for 0.38 s median, 0.76 s p90 on 10f (56 releases), and the first version took
+a +1.17 m/s^2 "coast" at 10f t 2425.8 from exactly that - and the pedal/brake command held for 0.4 s (`WINDOW`, the
+measured 0.25-0.40 s plant delay).
+
+| table | admitted when | cells | would apply |
+|---|---|---|---|
+| brake (L1) | brake 4+ counts, steady within 20 counts and one band over the window, no pedal, plant-model ramp <= 0.5 m/s^3 for 0.2 s, \|pitch\| < 2 deg, v >= 1 | speed 1-5-10-15-20-25-up m/s x command <=60 / 60-100 / >100 counts | per cell `-mean error`, floored at 0 (never less braking than the law), at most -0.5 m/s^2, only from 5 s of samples, faded in over 1-2 m/s |
+| coast | neither pedal nor brake over the window, same ramp/pitch gates, v >= 3 | speed bands | the drag / brake-on-point term (logged as measured coast accel and its error) |
+| launch (L2b) | pedal >= 0.01 over the window and the PCM seeing it (0x17C `PEDAL_GAS` >= 1 over the window), no brake, 0.5-6 m/s, lagged command >= 0.3, ramp <= 1.0 m/s^3 for 0.2 s, \|pitch\| < 4 deg; no lead (`hudControl.leadVisible`) - behind a lead into separate sums, logged, never in the multiplier | 0.5-3 and 3-6 m/s | pooled `1 / (achieved/commanded)` of the no-lead launches, bounded 0.6-1.0 (pedal only ever taken away), only from 2 s of samples |
+
+The jerk hold is 0.2 s rather than the tuner's 1 s `SETTLE_FRAMES`: on 115 that takes the brake table from 18.5 s to
+27 s of the 107 s of brake-commanded PID time with cell means within 0.03 m/s^2 (27.2 s with the clean second too).
+The launch pitch limit is wider because 115's only launch was on a -2.7 deg downhill (see below).
+
+**The brake counts are the law's.** `brake_frac` is recorded in `brake_gain()`, before the live scalar gain, the soft
+final stop ceiling and the 32-count release limiter (`carcontroller.py`), so `bcb` is not the 0x1FA count on the wire
+and the error is the law's error at the gain then in force - which `bgain` logs (the mean gain over the brake
+samples: 0.99-1.00 on the six routes). A table applied on top of the gain would partly double-count what the gain
+corrects; read it against `bgain`.
+
+**Lateral.** Every point torqued accepts (its own gates, so the low half is 15-19.4 m/s) is filed below or above
+70 km/h. Each half keeps six running moments; torqued's total-least-squares fit is the smallest eigenvector of their
+3x3 Gram matrix, so the fit is torqued's exactly (`test_lat_speed_split.py` checks it against `estimate_params()`) and
+the sums add across drives. Reported raw, clipped to torqued's window around the prior, with torqued's validity rule.
+
+**Log.** `hondashadow` (card, via carlog): once a minute while anything was admitted and at every disengage; fields
+`bn` `be` `bsd` `bcorr` `bcb` `bacc` (18 cells, speed-major), `cn` `cacc` `cerr` (6 bands), `ln` `lra` `lrr` `lratio`
+`lep` `lmult` (no-lead launches), `lnl` `lral` `lrrl` `lratiol` `lepl` (behind a lead) and `bgain`. `latsplit`
+(torqued, via cloudlog): once a minute while points arrive; `n` `fac` `clip` `off` `fric` `cal` `valid` per half,
+`mom_lo`/`mom_hi`, `bins_lo`/`bins_hi`, and torqued's own factor as `main`. Both are drive totals. `hondashadow` is
+about 0.9 KB a line, so 1-2 KB a minute depending on how often the drive disengages (a line at each; replays: 0.7 on
+115, 1.2 on 10f, 1.4 on 113); `hondadyn` is about 4 KB a minute. Read them with
+`python openpilot/sunnypilot/tools/shadow_learn_report.py <route> [<route> ...]`, which also combines routes. It runs in
+the repo's own venv: without pandas it reads the route's rlogs instead of `parquet/logMessage.parquet`. Routes before
+batch 2 (115 and earlier) have no lines; it says so.
+
+**Proven not to actuate.** Replaying routes 115, 10f and 113 through the real `CarInterface` with the shadow and with
+`dynamic_tuning.py` at HEAD and no `shadow_learn.py` (one opendbc snapshot each): every CAN frame of 249,474 / 713,406
+/ 92,552 identical, and the actuator outputs. torqued replayed over 115, 10f, 113, 110, 112 and 114 against the
+reference tree: every `lateralTorqueParameters` field identical. The shadow did switch itself off once in a replay
+(a harness bug fed it a wrong argument) and the CAN stayed identical, which is the never-raise path working. After the
+round-1 review fixes (the clean second, the lead split, the 0x17C confirmation, `bgain`, the guarded imports), 115 and
+10f replayed again against the pre-batch tree: the only differing frames are the launch cap's `0x200` (102 / 380, all
+below 5 m/s, all less pedal) and `0x500` `OP_STATE` on the key-off frames (2 / 4); `CarState` identical bar the
+parked key-off `steerFault*`; 110, 112, 113 and 114 replayed with no exception and the shadow on to the end; torqued
+on 115 again identical in every field.
+
+**Cost.** Longitudinal: 11-13 us per 50 Hz call on the PC (CarController.update about 280 us per 100 Hz frame), about
+2% of card's controller time. Lateral: 3 us per point (at most 20 a second) and under 1 us per loop.
+
+**What it would have learned** (replays, after the round-1 review fixes, of 115 on this code and of 10f/110/112/113/114,
+which ran older builds, so those numbers describe the law that ran then):
+
+* *Brake.* Below 20 m/s the law over-brakes slightly or is on target (115: -0.33 at 5-10 m/s > 100 counts, -0.17 at
+  10-15 m/s 60-100; all six: -0.29 at 5-10 m/s > 100, 12 s): floored, nothing applied - but see the integrator check
+  above, which does not confirm the sign at 10-15 m/s. Above 20 m/s (10f only) it under-brakes at light and mid
+  commands: +0.14 (>25 m/s, <= 60 counts, 28 s), +0.26 (>25, 60-100), +0.18 (20-25, 60-100) - would apply -0.14 / -0.26
+  / -0.18, and the integrator agrees there. Per count beyond coast that is 0.69-0.80x the 2.6/256 law, A_learning's
+  0.5-0.8x; the light-command weakness only turns into an error at highway speed because below it the law's small
+  coast credit (`wind_brake`) hides it.
+* *Coast.* -0.26 to -0.35 m/s^2 at 10-36 m/s (A_learning: -0.26 to -0.39), 0.07-0.17 more than commanded. (The first
+  version had a +1.17 "coast" at 10-15 m/s on 10f: the driver's throttle after a release.)
+* *Launch.* With the lead split and the 0x17C confirmation, the six routes hold ONE no-lead launch: 115 t 511, 1.43 /
+  1.35 (0.5-3 / 3-6 m/s, 2.7 s of samples) -> multiplier 0.72. Behind a lead (logged, never used): 1.13 / 1.24 over
+  five episodes (10f 1.13 / 1.29). The first version pooled both (1.25 / 1.26 -> 0.80). One launch is not evidence;
+  these all ran without the launch cap (9.2), which reduces the same over-delivery, so drives with the cap measure
+  what it leaves.
+  **115's launch was on a -2.7 deg downhill**: gravity gave +0.46 of the 2.4-2.7 m/s^2 aEgo, so the over-delivery
+  against the command was ~1.4x, not the ~1.8x aEgo suggests.
+* *Lateral.* 115 below 70: 0.854 (3,805 points, 97% calibrated), above 1.004 (402). 10f below 1.306 (822), above
+  2.019 (12,390, valid). All routes summed: 1.19 below, 1.85 above. The two halves separate on 115, 10f and 110; the
+  TLS slope runs above A_learning's secant fits (0.54-0.76 / 1.42-1.49) because TLS is what torqued fits.
 
 ---
 
@@ -1085,6 +1273,20 @@ The comma 4 runs the small UI. It has no Cruise or Vehicle panel, so neither pag
 - `openpilot/selfdrive/ui/sunnypilot/mici/layouts/vehicle.py` (new): `VehicleLayoutMici(NavScroller)`, with `HondaLearnedInfo`, the toggle as a `BigParamControl`, and reset behind `BigConfirmationDialog`. `car_brand()` gets the brand from `CarPlatformBundle` first and `CP.brand` second, cached on a 1 s tick. `HondaLearnedInfo` shows two pairs: `gas law` with `v2 next drive   brake x1.02` (the gas-law setting the car reads at the next ignition, and the brake value as a gain; the value scrolls in the 340 px card), and `D / ECON / S` with the engaged minutes (`412 / 1.4 / 1.3 min`, which fits). On a car the gas law does not apply to (`gas_law_applies()` above) the first pair is `brake` with `x1.02`. Rendered headless; they used to be the six pedal gains, which could not move, and the brake offset with the aero factor.
 - `openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py`: a `vehicle` `SettingsBigButton` (icon `icon_vehicle.png`) inserted with `items.insert(2, vehicle_btn)`, right after upstream's models row (index 3 before the 2026-09 merge, when sunnylink came first). It is visible when `car_brand() in ("", "honda")`, so a fingerprint that has not resolved yet never hides it. The `gateway` button at index 3 in the same hunk belongs to area A. `VehicleLayoutMici` is built without `back_callback`, following upstream `099143ad9`; `NavWidget` pops itself on swipe-down.
 
+- **The speed-limit confirm on this car (2026-10-04, not car-gated: see `README.md`, area SL).** The Accord's RES/+
+  maps to `accelCruise` and SET/- to `decelCruise` (`carstate.py`, `values.py`), and it runs non-PCM cruise, so the
+  prompt is the comma 4's "Press + (or -) to confirm speed limit". Its text now says the button the confirm accepts
+  (it said "-" for every "+", routes 114/115), and while it asks, a press the other way that would RAISE the set
+  speed is ignored: on 114 a SET/- under the gas took the set speed from 50 to vEgo, 72.5 km/h (`cruise.py` clips a SET
+  under the gas up to vEgo); now it stays 50 until the `+`. A wrong-way press that lowers the set speed, or leaves it,
+  works as upstream's (115: SET/- during a `+` prompt, 60 -> 59), so for the prompt's 5 s (`PRE_ACTIVE_GUARD_PERIOD`,
+  re-armed by every `speed_limit_changed`, so a flapping limit can chain prompts) the driver can always lower the set
+  speed, with SET/- or with SET under the gas below it. That is owner decision 5, narrowed on 2026-10-05 (as written
+  on 2026-10-04 it also blocked those lowering presses). With the comma 4 HUD's compact prompts on (default), the
+  confirm is a banner top left and "set speed changed" draws nothing, so the MAX number shows the new set speed.
+  Brake, cancel, main and the gas pedal are untouched, and engaging from MADS-only is not affected (the check sits in
+  `_update_v_cruise_non_pcm`, which returns before it when not enabled).
+
 ### 11.4 sunnylink
 
 - `settings_ui_src/pages/vehicle.yaml`: a section with `id: honda` (it compiles to `vehicle_settings.honda` in `settings_ui.json`) holding the two toggles, `HondaDynamicTuningEnabled` and `HondaElesysGasLawV2` ("Measured Gas Pedal Law (2013-15 Accord)", whose description says what it does and that it applies at the next drive, and whose details say the per-mode time is counted only with the learning toggle on), each with `needs_onroad_cycle: true` and offroad-only enablement. The 2026-10 hunks there, in `cruise.yaml`, `params_keys.h` and `statsd.py` carry `FORK(HONDA_ELESYS)`.
@@ -1127,8 +1329,8 @@ Adds `HondaDynamicTuningEnabled`, `HondaDynBrakeGain`, the three `HondaDynModeSe
 
 | test | repo | how to run | what it pins |
 |---|---|---|---|
-| `opendbc/car/honda/tests/test_elesys.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys` (72 tests) | category membership and dispatch (`compute_gas_brake(accel, speed, CP)`); the upstream Nidec map untouched; the Elesys gas/brake golden table; the pump (20 cases); the gas curve; the units bit (`create_brake_command(..., is_metric=, elesys=)`); the gear dwell; the stock AEB truth table and DBC signal names (not the `carstate.py` branch, 6.3). Since 2026-10 also the lateral tune (2.4, 5.1): `TestElesysTorquePrior`, `TestElesysSteerDelay`, and the area-B `TestElesysReportedTorque`, `TestElesysReportedTorqueSeam`, `TestElesysTorqueScale` |
-| `opendbc/sunnypilot/car/honda/test_elesys_gas.py` | opendbc | `python -m unittest opendbc.sunnypilot.car.honda.test_elesys_gas` (31 tests) | the gas law, 9.2 |
+| `opendbc/car/honda/tests/test_elesys.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys` (76 tests) | category membership and dispatch (`compute_gas_brake(accel, speed, CP)`); the upstream Nidec map untouched; the Elesys gas/brake golden table; the pump (20 cases); the gas curve; the units bit (`create_brake_command(..., is_metric=, elesys=)`); the gear dwell; the stock AEB truth table and DBC signal names (not the `carstate.py` branch, 6.3). Since 2026-10 also the lateral tune (2.4, 5.1): `TestElesysTorquePrior`, `TestElesysSteerDelay`, and the area-B `TestElesysReportedTorque`, `TestElesysReportedTorqueSeam`, `TestElesysTorqueScale`; since 2026-10-04 `TestElesysKeyOffSteerStatus` (6.4) |
+| `opendbc/sunnypilot/car/honda/test_elesys_gas.py` | opendbc | `python -m unittest opendbc.sunnypilot.car.honda.test_elesys_gas` (38 tests) | the gas law and the launch cap, 9.2 |
 | `opendbc/sunnypilot/car/honda/test_elesys_stop.py` | opendbc | `python -m unittest opendbc.sunnypilot.car.honda.test_elesys_stop` (28 tests) | the soft final stop, 7.8 |
 | `opendbc/safety/tests/test_honda.py` (`TestHondaElesysScmStanddownSafety`, `TestHondaElesysStanddownGasInterceptorSafety`) and `common.py` | opendbc | `python -m unittest opendbc.safety.tests.test_honda`; builds `libsafety` on import (942 run, OK, after the merge) | section 8 |
 | `opendbc/sunnypilot/car/honda/test_dynamic_tuning.py` | opendbc | **standalone script**: `python <file>` with opendbc on `PYTHONPATH` | the tuner on its own, sections 1-5 and 10-16: toggle off is a no-op, pitch, the retired pedal and aero learners stay retired, the per-mode data counter, brake, params, importing without openpilot, three rounds of review regressions, drive-mode gating, the `hondadyn` line |
@@ -1142,6 +1344,9 @@ Adds `HondaDynamicTuningEnabled`, `HondaDynBrakeGain`, the three `HondaDynModeSe
 | `openpilot/sunnypilot/mads/tests/test_mads_honda_stock_acc.py` | sunnypilot | runner (9 tests) | 15.5 |
 | `openpilot/selfdrive/locationd/test/test_torqued_elesys.py` | sunnypilot | runner (11 tests) | 2.4: prior and seed before any point, a zero offset as upstream, a changed prior discards the cache, a reported 0 adds no point, the seed survives EnforceTorqueControl / NNLC while other cars match upstream's re-run |
 | `openpilot/selfdrive/locationd/test/test_lagd_elesys.py` | sunnypilot | runner (5 tests) | 5.1: the lag fallbacks are 0.38 s, a learned cache survives |
+| `openpilot/sunnypilot/selfdrive/locationd/tests/test_lat_speed_split.py` | sunnypilot | runner (10 tests) | 9.3 lateral: the moment fit equals `estimate_params()`, exact combination across drives, the 70 km/h split, torqued's points only, `lateralTorqueParameters` identical with and without, the gating, the log cadence, never raising, torqued as upstream when the module cannot be imported |
+| `openpilot/sunnypilot/tools/tests/test_shadow_learn_report.py` | sunnypilot | runner (4 tests) | 9.3 the report: no pandas reads the rlogs, real lines parse and combine by counts, routes never overwrite each other, older lines read |
+| `opendbc/sunnypilot/car/honda/test_shadow_learn.py` | opendbc | `python -m unittest opendbc.sunnypilot.car.honda.test_shadow_learn` (21 tests) | 9.3 longitudinal: byte-identical CAN through the real `CarController` with and without the shadow, a raising shadow switched off, one that cannot be built, bands and bounds, every gate, the clean second after an override or engagement, the 0x17C pedal confirmation, lead launches apart, the interceptor gate, the grade, the log cadence and `bgain`, garbage in |
 | `opendbc/sunnypilot/car/honda/test_vsa_fault.py` | opendbc | `python -m unittest opendbc.sunnypilot.car.honda.test_vsa_fault` (33 tests) | 6.6: real frames from 110 and 112 (vsaFault on the frame accFaulted first is), 111 and 113 (stored 0.5 s after b4.0 first appears, also with card starting 2.1 s late; 113's clear), 10f (a bulb check sets nothing, nor one held 4.08 s) and comma route 69 (the b3.5+b4.1 lamp state sets nothing), all through the real `CarInterface`; the DBC decode of the onset, stored and bulb-check frames and of 0x1AA/0x3D9; `VEHICLE_DYNAMICS` liveness-exempt on this car only, its counter unchecked and its checksum checked; other Hondas read False; garbage, checksum-valid random and missing frames, and a monitor that raises, never make `update()` raise; the window (bulb bits only), debounces and silence |
 | `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_vsa_fault_alert.py` | sunnypilot | runner (47 tests) | 10.6: the helper's events, `cleared`, filter (both lists, the EPS-latch alerts) and `late_alerts()`; the onset with `vsaFault` one frame late (engaged, not engaged, a press on that frame); a live fault with CAN invalid (refused, live texts); the EPS-latch alert across route 113's clear (no restart advice, a real latch afterwards still announced); card sending `carStateSP` first; event classes (live adds nothing `accFaulted` does not; stored is NO_ENTRY and PERMANENT only; `carNotReady` stays NO_ENTRY only); texts (sanity rules, ASCII, no "restart", the mici renderer's fit with the real fonts); selfdrived's state machine (live disengages as before with the VSA text, stored refuses SET with the VSA text and clears, never disengages); MADS refused but never disabled; the `AlertManager` path (one sound per fault, driver monitoring keeps the screen, the EPS banner does not take over); selfdrived's wiring; the `CarStateSP` capnp/dataclass agreement and round trip |
 
@@ -1248,7 +1453,7 @@ File by file:
 | params | see 11.1 |
 | capnp fields area C code reads | `CarStateSP.driverTorqueStale @2`; `CarControlSP.lateralControl @5` (rebuilt in `helpers.py`) |
 | markers | `FORK(HONDA_ELESYS)`, `FORK(HONDA_ACCORD_9G_AU)`, `FORK(LKAS-GATEWAY)`, `FORK(GATEWAY-UPDATE)`, `FORK:`, and `HONDA_ACCORD_9G_AU` in `honda.h`. Incomplete; see Baseline |
-| log tags | `hondadyn`, `hondastop` |
+| log tags | `hondadyn`, `hondastop`, `hondashadow`, `latsplit` |
 
 ### 14.5 After every merge
 
@@ -1268,6 +1473,7 @@ File by file:
    - the car does not engage below 19 mph
    - with `HondaElesysStockAcc` off, `pandaStates.safetyParam == 36` and the stand-down `0x1A6` goes out on bus 2; once per merge, one drive with it on and the checks in 15.8
    - `hondadyn` lines appear if the tuner is on, with `gaslaw=v2` (or `v1` if the setting is off) and `modesec` growing in the slot being driven
+   - with the tuner on, `hondashadow` lines appear (once a minute while engaged and at each disengage), and `latsplit` lines once a minute while steering above 54 km/h; `shadow_learn_report.py` reads them (9.3)
 
 ---
 
@@ -1349,7 +1555,7 @@ Title "Stock ACC (testing)" in three places, all offroad only, none with an onro
 
 | test | pins |
 |---|---|
-| `opendbc/car/honda/tests/test_elesys_stock_acc.py` (14) | toggle off: CarParams bytes and CarParamsSP identical to no hook at all, with and without the pedal, for every "off" spelling; the running values (36, SP 2, interceptor, pcmCruise False); on: 68, SP 0, no bit 32, pcmCruise, no interceptor, `autoResumeSng` False, flag 8, `minEnableSpeed` kept, and only those fields changed; never 32 and 64 together; other Hondas ignore the param; CarController over 1200 frames with cancel, resume and both alternating: only `0x0E4` every frame and `0x500` every 10th, no empty frame; toggle off still sends the long frames and the stand-down, byte-identical with and without the hook; `accFaulted` from `STANDSTILL.BRAKE_ERROR_1` in stock mode, unchanged toggle off, and not for a pcmCruise car without the flag |
+| `opendbc/car/honda/tests/test_elesys_stock_acc.py` (17) | toggle off: CarParams bytes and CarParamsSP identical to no hook at all, with and without the pedal, for every "off" spelling; the running values (36, SP 2, interceptor, pcmCruise False); on: 68, SP 0, no bit 32, pcmCruise, no interceptor, `autoResumeSng` False, flag 8, `minEnableSpeed` kept, and only those fields changed; never 32 and 64 together; other Hondas ignore the param; CarController over 1200 frames with cancel, resume and both alternating: only `0x0E4` every frame and `0x500` every 10th, no empty frame; toggle off still sends the long frames and the stand-down, byte-identical with and without the hook; `accFaulted` from `STANDSTILL.BRAKE_ERROR_1` in stock mode, unchanged toggle off, and not for a pcmCruise car without the flag; since the merge with batch 2 (`TestStockAccBesideBatch2`, 15.9): with the dynamic tuner's toggle on, stock mode builds no tuner and no shadow learners and still sends only `0x0E4` and `0x500`, while toggle off builds both |
 | `openpilot/sunnypilot/selfdrive/car/tests/test_honda_stock_acc.py` (15) | the param reaches the hook through `initialize_params()`; with a UI model that reads `CarParamsPersistent` and deletes later in its tick, and manager's default loop as `reboot()`: a stock drive and back restores every setting; a reboot between (and between two stock drives) loses nothing; a UI tick that read the stock CarParams deleting at any params-thread tick before the settle cannot win; the snapshot stays until `CarParamsPersistent` has held this drive's bytes for `SETTLE_FRAMES`; a drive that ends sooner keeps it for the next start; a left-over snapshot is refreshed at the next stock start; a choice made in between stands; a start without openpilot long keeps the snapshot; absent settings stay absent; a broken snapshot (a wrong type, not a dict) never raises and is dropped; the banner for exactly `STOCK_ACC_ANNOUNCE_FRAMES` in stock mode only, PERMANENT and silent |
 | `openpilot/sunnypilot/mads/tests/test_mads_honda_stock_acc.py` (14) | selfdrived.step in miniature (real `CarEvents`, real `StateMachine`, MADS, alerts): MADS on at 0, 1 m/s, 20 and 29 km/h and off/on again at a standstill; MADS on at 35, 29, 25 and 10 km/h while openpilot is engaged on stock ACC; upstream's refusal without the flag; `pcmEnable` engages openpilot and MADS; no engagement below 19 mph, and the refused edge shows the NO_ENTRY alert once, MADS off or on, unified engagement or not; the 22 km/h drop-out gives "openpilot Canceled / Speed too low", normal status, MADS still active for 300 frames with no critical alert; at 39, 80 and 100 km/h "Cruise Is Off" with MADS on or off; the two alerts meet at 37.8 km/h; a brake cancel (edge before the drop) is never critical; MADS off: upstream's alert; without the flag: upstream's strip |
 | `openpilot/sunnypilot/sunnylink/athena/tests/test_sunnylinkd.py` (+1) | `saveParams()` refuses `HondaElesysStockAcc` onroad and while `IsOffroad` is unknown, and writes it offroad |
@@ -1374,3 +1580,31 @@ Driving:
 8. CMBS: the CMBS-off switch still works (the driver's `0x1A6` reaches the radar).
 
 Then turn the toggle off, offroad, and check on the next drive that Experimental Mode, DEC, the custom ACC increments, Smart Cruise Control and Speed Limit Assist are back as they were, and that the stand-down is back (`safetyParam == 36`, `0x1A6` on bus 2 in `sendcan` with `MAIN_ON = 0`).
+
+### 15.9 Beside batch 2 (merged 2026-10-05)
+
+Stock ACC mode and batch 2 (sections 6.4, 8.5, 9.2, 9.3 and the comma 4 HUD's compact alerts and sign setting) were
+written apart and merged together. What each part of batch 2 does in stock mode, checked on the merged tree:
+
+- **Launch cap and shadow learners: nothing.** Both live in the dynamic tuner, whose `_is_applicable()` needs openpilot
+  long, so in stock mode the tuner is off even with its toggle on, builds no shadow learners (they also need the
+  interceptor) and no soft stop; the cap only shapes `0x200`, which this mode never sends. Pinned by
+  `TestStockAccBesideBatch2` (`test_elesys_stock_acc.py`), which fails if `_is_applicable()` stops requiring openpilot
+  long. No `hondashadow` line is written in stock mode. The steering split (`latsplit`, `lat_speed_split.py`) is
+  lateral and runs as on any drive.
+- **Speed Limit Assist and the wrong-way press: nothing.** With openpilot long off and `pcmCruiseSpeed`, sunnypilot
+  makes assist unavailable and saves `SpeedLimitMode` as warning (the snapshot puts assist back afterwards), so the
+  confirm prompt never comes up; and the wrong-way rule is non-PCM only, a path a pcmCruise car never takes
+  (`cruise.py` and `update_speed_limit_assist_pre_active_raise_blocked()` both check).
+- **Compact alerts.** None of this mode's own alerts is compact: `speedTooLow` (the drop-out), `cruiseDisabled`,
+  `belowEngageSpeed` (a refused SET) and `hondaElesysStockAcc` (the startup banner) are not on the allow-list and draw
+  full screen as designed. Replaying stock routes 0e and 61 with every HUD setting on, the only compact alerts were the
+  driver's own MADS disengage, `manualSteeringRequired` (5 and 16 frames), and once on 0e `manualLongitudinalRequired`
+  ("Smart/Adaptive Cruise Control: OFF"), a cancel with lane centering kept - normal, informational, the driver's doing.
+- **Key-off `STEER_STATUS` (6.4): applies.** It is carstate's, in both modes. On the same replays it removes the parked
+  key-on/key-off "LKAS Fault: Restart the car to engage" banners (0e 253 -> 147 frames, 61 144 -> 125); nothing else
+  in the replay changed.
+- **The MADS heartbeat reset (8.5): applies.** It is `mads.h`, every mode: the panda's MADS tests
+  (`mads_common.py`, including the four new regrant and heartbeat-traffic tests) run under param 68 in
+  `TestHondaElesysStockAccSafety`.
+

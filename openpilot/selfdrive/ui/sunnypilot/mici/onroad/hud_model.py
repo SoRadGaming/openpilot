@@ -22,6 +22,20 @@ a car-sourced limit is never paired with a map look-ahead.
 The school cue and the electronic sign are shown only when the limit on screen IS the NSW limit mapd published (live
 mode, source map, the same number, nswZone.state matched or dead reckoning): in log-only mode, where the resolver holds
 another value, or in an ambiguous or unmatched state, nswZone describes a limit that is not the one shown.
+WHETHER THE SIGN IS DRAWN (HudLimitSign): always (whenever there is a limit), off, or only in a zone - a school zone that
+is on, or a Variable zone, by those same rules and whatever the two cue settings say (they only style a sign that is
+shown). Zone matching flickers at limit changes (route 10f: one Variable zone broke into 10 pieces, gaps of 2-58 s), so
+the zone is debounced (SignSlot): on after SIGN_ZONE_ON_S, off after SIGN_ZONE_OFF_S. Without the sign the limit is still
+known: the next lower limit is still shown, and the speed takes the sign's place.
+
+COMPACT ALERTS (HudCompactLimitPrompts / HudCompactDisengage / HudCompactTurn, drawn by hud_alerts.py): an alert is drawn
+small only when its FULL ALERT TYPE (event name AND event type, COMPACT_TYPES) is in an enabled group below AND it is
+AlertStatus.normal AND VisualAlert.none AND it is not an 'openpilot Unavailable'. Anything else - any critical or
+userPrompt alert, any 'take control' or steer-required one, AEB / FCW, a no-entry ('openpilot unavailable', which is
+itself normal / LOW / none, so the status test alone would not stop it), the UI's own 'system unresponsive' alerts (no
+event name), an alert upstream adds tomorrow, under a new name or a new type of a listed one - is drawn exactly as stock.
+test_hud_cluster walks every event, proves no listed one can be anything but normal / LOW / none, and fails if a listed
+name gains or loses an event type.
 
 WHAT FEEDS THE RIGHT RAIL (RailState, drawn by hud_rail.py in the confidence ball's strip), one item at a time, a planned
 stop before a curve, and what a missing message does:
@@ -52,14 +66,17 @@ from dataclasses import dataclass
 
 from openpilot.common.constants import CV
 from openpilot.cereal import custom, log
+from opendbc.car.structs import car
 from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import HudSettings, NEXT_OFF
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import HudSettings, NEXT_OFF, SIGN_ALWAYS, SIGN_ZONES
 
 SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
 PlanSource = log.LongitudinalPlan.LongitudinalPlanSource
 PlanSourceSP = custom.LongitudinalPlanSP.LongitudinalPlanSource
 VisionState = custom.LongitudinalPlanSP.SmartCruiseControl.VisionState
 MapState = custom.LongitudinalPlanSP.SmartCruiseControl.MapState
+AlertStatus = log.SelfdriveState.AlertStatus
+VisualAlert = car.CarControl.HUDControl.VisualAlert
 
 NEXT_MAX_M = 500.0      # the next lower limit shows from the earlier of 500 m ...
 NEXT_MAX_S = 15.0       # ... or 15 s of travel at the current speed
@@ -76,13 +93,48 @@ STANDSTILL_EVENT = 'manualRestart'
 LEAD_DEPART_MS = 1.0    # m/s: the car ahead is moving off ...
 LEAD_DEPART_S = 0.4     # ... continuously for this long (radarState is 20 Hz: 8 frames), so radar noise cannot do it
 
+SIGN_ZONE_ON_S = 0.3    # HudLimitSign = zones: the sign appears once the zone has held this long ...
+SIGN_ZONE_OFF_S = 12.0  # ... and goes once it has been gone this long - the gaps in one zone on route 10f were 2-19 s,
+                        # bar one of 58 s
+
+# the compact alerts, by event name (hud_alerts.py draws them), each only under the one event type it has today
+# (COMPACT_TYPES): a new type of a listed name - a '/noEntry' 'openpilot Unavailable', which is normal / LOW / none like
+# these - would otherwise be drawn compact, under these banners' words or as nothing at all.
+CONFIRM_EVENT = 'speedLimitPreActive'   # 'press + (or -) to confirm speed limit': a banner
+# the set speed was changed: nothing over the road - the stock MAX number shows the new set speed, the cluster stays
+COMPACT_QUIET = frozenset({'speedLimitActive', 'speedLimitChanged', 'speedLimitPending'})
+COMPACT_LIMIT = COMPACT_QUIET | {CONFIRM_EVENT}
+# The driver's own disengagement, which these normal alerts spell out: the cancel button ending cruise with lane
+# centering kept (mads.py), the LKAS button ending lane centering with cruise on. Every other normal alert that ends or refuses
+# something is not the driver's doing (speedTooLow 'openpilot Canceled', HIGH), refuses an engagement
+# (pedalPressedAlertOnly, 'openpilot Unavailable'), or is a fault (lkasGatewayEpsLatchedReminder, steerUnavailable,
+# accFaulted): those stay full screen. lkasDisable, buttonCancel and pcmDisable draw nothing anyway (AlertSize.none).
+COMPACT_DISENGAGE = frozenset({'manualLongitudinalRequired', 'manualSteeringRequired'})
+COMPACT_TURN = frozenset({'laneTurnLeft', 'laneTurnRight'})
+# the one event type each listed name is raised with (events.py / sunnypilot's events.py); test_hud_cluster fails if
+# either table gives a listed name any other
+COMPACT_TYPES = dict.fromkeys(COMPACT_LIMIT | COMPACT_TURN | {'manualLongitudinalRequired'}, 'warning')
+COMPACT_TYPES['manualSteeringRequired'] = 'userDisable'
+NO_ENTRY_TEXT = 'openpilot unavailable'   # NoEntryAlert's words: never compact, whatever its type
+COMPACT_NONE, COMPACT_LIMIT_KIND, COMPACT_DISENGAGE_KIND, COMPACT_TURN_KIND = 0, 1, 2, 3
+# the banners' words: the stock texts, shortened to fit top left ('Smart/Adaptive Cruise Control: OFF / Manual Speed
+# Control Required', 'Automatic Lane Centering is OFF / Manual Steering Required', 'Turning Left')
+COMPACT_TEXT = {
+  'manualLongitudinalRequired': ("CRUISE OFF", "manual speed control"),
+  'manualSteeringRequired': ("LANE CENTERING OFF", "manual steering"),
+  'laneTurnLeft': ("TURNING LEFT", ""),
+  'laneTurnRight': ("TURNING RIGHT", ""),
+}
+
 
 @dataclass
 class HudFrame:
   speed: int | None = None        # display units; None = no digits
   timer_s: float | None = None    # seconds stopped, when the stopwatch replaces the speed
-  sign_slot: bool = False         # the sign's place is kept (SpeedLimitMode is not off)
-  limit: int = 0                  # display units; 0 = no sign
+  sign_slot: bool = False         # the sign's place is kept (SpeedLimitMode is not off; HudLimitSign)
+  sign_shown: bool = False        # the sign is drawn: a limit, and HudLimitSign says so
+  zone: bool = False              # a NSW school zone that is on, or a Variable zone, and it is the limit shown
+  limit: int = 0                  # display units; 0 = none (the next lower limit needs one, the sign drawn or not)
   limit_held: bool = False        # the resolver's last limit, not a current one
   electronic: bool = False
   school: int = SCHOOL_NONE
@@ -134,7 +186,17 @@ def build_frame(sm, s: HudSettings, *, started_frame: int, is_metric: bool, spee
   if not s.speed_cluster:
     return f
 
-  f.sign_slot = speed_limit_mode_on
+  _limit_and_zone(f, sm, s, cs, conv, v_ego, standstill, started_frame=started_frame,
+                  speed_limit_mode_on=speed_limit_mode_on, map_age_s=map_age_s)
+  if s.limit_sign == SIGN_ALWAYS:
+    f.sign_slot, f.sign_shown = speed_limit_mode_on, f.limit > 0
+  elif s.limit_sign == SIGN_ZONES:
+    f.sign_slot = f.sign_shown = f.zone  # undebounced: SignSlot.apply does that
+  return f
+
+
+def _limit_and_zone(f: HudFrame, sm, s: HudSettings, cs, conv: float, v_ego: float, standstill: bool, *,
+                    started_frame: int, speed_limit_mode_on: bool, map_age_s: float) -> None:
   res = None
   if speed_limit_mode_on and fresh(sm, 'longitudinalPlanSP', started_frame):
     res = sm['longitudinalPlanSP'].speedLimit.resolver
@@ -144,7 +206,7 @@ def build_frame(sm, s: HudSettings, *, started_frame: int, is_metric: bool, spee
         f.limit = limit
         f.limit_held = not res.speedLimitValid
   if not f.limit or not fresh(sm, 'liveMapDataSP', started_frame):
-    return f
+    return
 
   lmd = sm['liveMapDataSP']
   z = lmd.nswZone
@@ -155,6 +217,7 @@ def build_frame(sm, s: HudSettings, *, started_frame: int, is_metric: bool, spee
     f.electronic = True
   if nsw_shown and s.school_cue and int(z.schoolZone) in (SCHOOL_ACTIVE, SCHOOL_INACTIVE):
     f.school = int(z.schoolZone)
+  f.zone = nsw_shown and (bool(z.variable) or int(z.schoolZone) == SCHOOL_ACTIVE)
 
   if s.next_limit != NEXT_OFF and not standstill and from_map and lmd.speedLimitAheadValid:
     ahead = int(round(lmd.speedLimitAhead * conv))
@@ -165,12 +228,81 @@ def build_frame(sm, s: HudSettings, *, started_frame: int, is_metric: bool, spee
       f.next_limit = ahead
       f.next_dist = dist
       f.next_frac = dist / window
-  return f
+
+
+class SignSlot:
+  """HudLimitSign = zones: the sign, and the place it keeps, follow the zone debounced - on after SIGN_ZONE_ON_S, off
+  after SIGN_ZONE_OFF_S - so the speed does not move every time the zone match blinks. One per cluster; apply() every
+  frame, on a steady clock. The other modes pass through untouched."""
+  def __init__(self):
+    self._on = Debounce(SIGN_ZONE_ON_S, SIGN_ZONE_OFF_S)
+
+  def apply(self, f: HudFrame, s: HudSettings, now: float) -> HudFrame:
+    if not s.speed_cluster or s.limit_sign != SIGN_ZONES:
+      self._on.reset()
+      return f
+    f.sign_slot = self._on.update(f.zone, now)
+    f.sign_shown = f.sign_slot and f.limit > 0
+    return f
 
 
 # ------------------------------------------------------------------------------------------- alerts
 def event_name(alert) -> str:
   return alert.alert_type.split('/')[0] if alert is not None and alert.alert_type else ''
+
+
+def _says_unavailable(alert) -> bool:
+  """A NoEntryAlert: 'openpilot Unavailable' is its first line, or on the comma 4 its second (events_base swaps them)."""
+  return any(str(getattr(alert, t, '') or '').strip().lower() == NO_ENTRY_TEXT for t in ('text1', 'text2'))
+
+
+def compact_kind(alert, s: HudSettings) -> int:
+  """Which compact group draws this alert (COMPACT_*_KIND), or COMPACT_NONE: the stock drawing. Only a listed EVENT NAME
+  under its one recorded EVENT TYPE (COMPACT_TYPES) with its group's setting on, and only while the alert is normal, asks
+  for no visual and is not an 'openpilot Unavailable': a listed event raised critical, userPrompt, steer-required or as a
+  no-entry by some future table is drawn as stock."""
+  if alert is None or not alert.alert_type:
+    return COMPACT_NONE
+  name, _, event_type = alert.alert_type.partition('/')
+  if COMPACT_TYPES.get(name) != event_type or _enum(alert.status) != AlertStatus.normal or \
+     _enum(alert.visual_alert) != VisualAlert.none or _says_unavailable(alert):
+    return COMPACT_NONE
+  if s.compact_limit and name in COMPACT_LIMIT:
+    return COMPACT_LIMIT_KIND
+  if s.compact_disengage and name in COMPACT_DISENGAGE:
+    return COMPACT_DISENGAGE_KIND
+  if s.compact_turn and name in COMPACT_TURN:
+    return COMPACT_TURN_KIND
+  return COMPACT_NONE
+
+
+def frees_top_icons(alert, s: HudSettings) -> bool:
+  """Drawn as nothing at all (the set speed changed): the stock MAX number may show, as with no alert."""
+  return compact_kind(alert, s) == COMPACT_LIMIT_KIND and event_name(alert) in COMPACT_QUIET
+
+
+def confirm_pending(alert, s: HudSettings) -> bool:
+  """The compact confirm prompt is up and shows the limit it asks about (HudConfirmLimit): the cluster's sign is that
+  limit, drawn pending (a dashed ring)."""
+  return s.confirm_limit and compact_kind(alert, s) == COMPACT_LIMIT_KIND and event_name(alert) == CONFIRM_EVENT
+
+
+def compact_text(alert) -> tuple[str, str]:
+  """(line 1, line 2) of a compact disengage or turn banner: COMPACT_TEXT, or the alert's own words."""
+  return COMPACT_TEXT.get(event_name(alert), (alert.text1, alert.text2.lower()))
+
+
+def confirm_text(text1: str) -> str:
+  """The confirm banner's words: 'Press + to confirm speed limit' as 'press + to confirm' - the key and the sign beside
+  it say which limit."""
+  t = text1.lower()
+  return t[:-len(" speed limit")] if t.endswith(" to confirm speed limit") else t
+
+
+def confirm_lower(text1: str) -> bool | None:
+  """The direction the confirm text asks for: True '-', False '+', None neither (the PCM text)."""
+  t = text1.lower()
+  return True if "press -" in t else False if "press +" in t else None
 
 
 def short_line2(text2: str) -> str:

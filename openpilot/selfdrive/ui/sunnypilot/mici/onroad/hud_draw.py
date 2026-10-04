@@ -290,6 +290,77 @@ def standstill_banner(x: float, y: float, line1: str, line2: str, color: rl.Colo
   return w, h
 
 
+BANNER_LINE_H = 40   # a one-line compact alert
+CONFIRM_H = 46       # the compact confirm, with room for the pending sign
+CONFIRM_SIGN_D = 36  # the pending sign it carries when the cluster draws none (the next limit's size)
+KEY_W, KEY_H = 22, 10
+
+
+def _fit(txt: str, size: float, max_w: float, w: FontWeight = FontWeight.BOLD) -> tuple[float, float]:
+  """(nominal size, squeeze) so txt is no wider than max_w: squeezed down to 0.8 first, then smaller."""
+  iw = ink(txt, size, 1.0, w)[0]
+  if iw <= max_w or iw <= 0:
+    return size, 1.0
+  sx = max(0.8, max_w / iw)
+  return (size if iw * sx <= max_w else size * max_w / (iw * sx)), sx
+
+
+def compact_banner(x: float, y: float, line1: str, line2: str, color: rl.Color, alpha: float = 1.0,
+                   max_w: float | None = None) -> tuple[float, float]:
+  """A compact alert, in the standstill banner's style: line1 in ~16 px caps and, when there is one, line2 under it in
+  ~15 px. One line is BANNER_LINE_H tall, two BANNER_H. Wider than max_w: the text is squeezed, then shrunk.
+  Returns (w, h)."""
+  pad = 14
+  s1, sx1 = _fit(line1, 24, (max_w or 1e9) - 2 * pad)
+  w1 = ink(line1, s1, sx1)[0]
+  w2 = 0.0
+  if line2:
+    s2, sx2 = _fit(line2, 22, (max_w or 1e9) - 2 * pad, FontWeight.MEDIUM)
+    w2 = ink(line2, s2, sx2, FontWeight.MEDIUM)[0]
+  w, h = max(w1, w2) + 2 * pad, (BANNER_H if line2 else BANNER_LINE_H)
+  rl.draw_rectangle_rounded(rl.Rectangle(x, y, w, h), 0.3, 10, rl.Color(color.r, color.g, color.b, int(238 * alpha)))
+  text_ink(line1, s1, x + pad, y + (21 if line2 else h / 2), a(WHITE, alpha), sx=sx1, anchor="left")
+  if line2:
+    text_ink(line2, s2, x + pad, y + 47, rl.Color(255, 255, 255, int(235 * alpha)), sx=sx2, w=FontWeight.MEDIUM,
+             anchor="left")
+  return w, h
+
+
+def key_glyph(x: float, cy: float, lower: bool, alpha: float = 1.0):
+  """The green '-' (or '+') of sunnypilot's confirm arrow, KEY_W wide, its left edge at x."""
+  col = a(KEY_GREEN, alpha)
+  rl.draw_rectangle_rounded(rl.Rectangle(x, cy - KEY_H / 2, KEY_W, KEY_H), 0.5, 6, col)
+  if not lower:
+    rl.draw_rectangle_rounded(rl.Rectangle(x + KEY_W / 2 - KEY_H / 2, cy - KEY_W / 2, KEY_H, KEY_W), 0.5, 6, col)
+
+
+def confirm_banner(x: float, y: float, text: str, lower: bool | None, color: rl.Color, alpha: float = 1.0,
+                   key_alpha: float = 1.0, value: int = 0, offset: int = 0, max_w: float | None = None) -> tuple[float, float]:
+  """The speed-limit confirm as a compact banner: 'press + to confirm', the green key (blinking as the arrow does;
+  none while the direction is not known) and, with value > 0, the pending limit as a dashed sign with its offset badge
+  - for when the cluster draws no sign of its own to show it. Returns (w, h)."""
+  pad, gap = 14, 12
+  h = CONFIRM_H if value > 0 else BANNER_LINE_H
+  extra = (gap + KEY_W if lower is not None else 0) + (gap + CONFIRM_SIGN_D if value > 0 else 0)
+  size, sx = _fit(text, 24, (max_w or 1e9) - 2 * pad - extra)
+  tw = ink(text, size, sx)[0]
+  w = pad + tw + extra + pad
+  cy = y + h / 2
+  rl.draw_rectangle_rounded(rl.Rectangle(x, y, w, h), 0.3, 10, rl.Color(color.r, color.g, color.b, int(238 * alpha)))
+  text_ink(text, size, x + pad, cy, a(WHITE, alpha), sx=sx, anchor="left")
+  cx = x + pad + tw
+  if lower is not None:
+    key_glyph(cx + gap, cy, lower, key_alpha)
+    cx += gap + KEY_W
+  if value > 0:
+    scx = cx + gap + CONFIRM_SIGN_D / 2
+    sign(scx, cy, CONFIRM_SIGN_D, value, alpha=alpha, dashed=True, shadow=False)
+    if offset:
+      r = CONFIRM_SIGN_D / 2
+      offset_badge(scx + r * 0.60, cy - r * 0.80, CONFIRM_SIGN_D * 0.2, offset, alpha=alpha)
+  return w, h
+
+
 def offset_badge(cx: float, cy: float, r: float, offset: int, alpha: float = 1.0):
   """A speed-limit offset on a sign, as sunnypilot's own sign shows it: a small black disc with a grey rim and the
   offset in white - '5' for +5, '-5' for -5."""

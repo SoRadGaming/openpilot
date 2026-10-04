@@ -18,20 +18,27 @@ as the electronic sign.
 WHAT IS SHOWN, from which message, and what a missing message does: hud_model.py decides; this file only draws.
 
 WHERE IT IS DRAWN: under the alerts, and the whole cluster fades out (fast) while an alert is up, and comes back only
-once the alert has finished fading out, so the two never overlap - except the compact standstill banner (hud_alerts.py),
-which leaves the top right free. The 60 px strip on the right (the confidence ball)
-is outside the content rect and is never painted. While the stock MAX number shows (2.5 s after a set-speed change) the
-speed digits hide, so two big numbers are never on screen together.
+once the alert has finished fading out, so the two never overlap - except a compact alert (hud_alerts.py), which leaves
+the top right free: its banner stops short of what the cluster drew (it reads hud_alerts.cluster_edge, filled in here),
+and while the compact confirm is up the sign is drawn pending (dashed). The 60 px strip on the right (the confidence
+ball) is outside the content rect and is never painted. While the stock MAX number shows (2.5 s after a set-speed change)
+the speed digits hide, so two big numbers are never on screen together.
+WITHOUT THE SIGN (HudLimitSign off, or zones and not in one) the speed, the stop time and the next lower limit take its
+place in the corner; they slide there and back rather than jump.
 
 Every piece has its own param (hud_settings.py); all of them off draws nothing at all.
 """
+import math
+
 import pyray as rl
 
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_draw as hd
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import HudFrame, build_frame, received, SCHOOL_NONE, SCHOOL_ACTIVE
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (HudFrame, SignSlot, build_frame, compact_kind,
+                                                                     confirm_pending, pending_limit, received,
+                                                                     COMPACT_NONE, SCHOOL_NONE, SCHOOL_ACTIVE)
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import HudSettings, hud_settings, NEXT_BAR, NEXT_TEXT, NEXT_BOTH
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_alerts import standstill_banner
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_alerts import cluster_edge, standstill_banner
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import Widget
@@ -47,6 +54,8 @@ NEXT_D = 36
 STOPWATCH_SIZE = 28
 TIMER_WIDEST = "59:59"  # the stop time up to this is drawn at full size; "1:00:00" and up shrink to its width, so the
                         # stopwatch never reaches into the compact banner
+SLIDE_RC = 0.12         # s: the speed sliding into the sign's place and back (HudLimitSign)
+SIGN_FADE_PX = 25       # the sign fades in over the digits' last 25 px out of its place
 
 
 def timer_size(txt: str) -> float:
@@ -75,6 +84,9 @@ class HudCluster(Widget):
     self._now = 0.0
     self.settings: HudSettings = hud_settings.settings
     self.frame = HudFrame()
+    self._sign_slot = SignSlot()
+    self._speed_r: FirstOrderFilter | None = None
+    self._pending = False
 
   def _max_visible(self) -> bool:
     return bool(self._hud_renderer is not None and self._hud_renderer.drawing_top_icons())
@@ -84,7 +96,7 @@ class HudCluster(Widget):
     once it has gone - and it is not the compact banner."""
     alert = self._alert
     return alert is not None and not standstill_banner.compact(alert, self.settings, ui_state.sm, ui_state.started_frame,
-                                                               self._now)
+                                                               self._now) and compact_kind(alert, self.settings) == COMPACT_NONE
 
   def _update_state(self):
     self.settings = hud_settings.get()
@@ -109,12 +121,25 @@ class HudCluster(Widget):
     else:
       self._stop_start = None
     stopped_s = (now - self._stop_start) if self._stop_start is not None else None
-    self.frame = build_frame(sm, self.settings, started_frame=ui_state.started_frame, is_metric=ui_state.is_metric,
-                             speed_limit_mode_on=ui_state.speed_limit_mode != 0, stopped_s=stopped_s,
-                             v_ego_cluster_seen=self._v_ego_cluster_seen, max_visible=self._max_visible(),
-                             map_age_s=now - self._map_t)
+    self.frame = self._sign_slot.apply(
+      build_frame(sm, self.settings, started_frame=ui_state.started_frame, is_metric=ui_state.is_metric,
+                  speed_limit_mode_on=ui_state.speed_limit_mode != 0, stopped_s=stopped_s,
+                  v_ego_cluster_seen=self._v_ego_cluster_seen, max_visible=self._max_visible(), map_age_s=now - self._map_t),
+      self.settings, now)
+    self._pending = confirm_pending(self._alert, self.settings)
+
+  def _slide(self, target: float) -> float:
+    """The digits' right edge, sliding to target (the sign's place coming or going); exactly target once there."""
+    if self._speed_r is None:
+      self._speed_r = FirstOrderFilter(target, SLIDE_RC, 1 / gui_app.target_fps)
+    elif self._speed_r.x != target:
+      self._speed_r.update(target)
+      if abs(self._speed_r.x - target) < 0.25:
+        self._speed_r.x = target
+    return self._speed_r.x
 
   def _render(self, rect: rl.Rectangle):
+    cluster_edge.reset()
     f = self.frame
     if not f.visible:
       return
@@ -125,24 +150,40 @@ class HudCluster(Widget):
     sign_cx = rect.x + rect.width - SIGN_MARGIN - SIGN_D / 2
     cy = rect.y + ROW_CY
     # the digits keep their place while the limit comes and goes; with no sign at all they take the sign's place
-    speed_r = sign_cx - SIGN_D / 2 - GAP if f.sign_slot else rect.x + rect.width - SIGN_MARGIN
+    slot_r, corner_r = sign_cx - SIGN_D / 2 - GAP, rect.x + rect.width - SIGN_MARGIN
+    speed_r = self._slide(slot_r if f.sign_slot else corner_r)
+    row1 = math.inf
 
     if f.next_limit:
       hd.soft_disc(speed_r - 40, rect.y + ROW2_CY, 52, 0.35 * alpha)
 
-    if f.limit:
-      hd.sign(sign_cx, cy, SIGN_D, f.limit, alpha=alpha, electronic=f.electronic, held=f.limit_held)
+    if f.limit and f.sign_shown:
+      # a sign coming back fades in over the last SIGN_FADE_PX of the digits' slide out of its place, so the two barely
+      # overlap
+      sa = alpha if speed_r <= slot_r else alpha * max(0.0, 1.0 - (speed_r - slot_r) / SIGN_FADE_PX)
+      hd.sign(sign_cx, cy, SIGN_D, f.limit, alpha=sa, electronic=f.electronic, held=f.limit_held, dashed=self._pending)
+      if self._pending:
+        _, offset = pending_limit(ui_state.sm, ui_state.is_metric)
+        if offset:
+          hd.offset_badge(sign_cx + SIGN_D * 0.30, cy - SIGN_D * 0.40, SIGN_D * 0.2, offset, alpha=sa)
       if f.school != SCHOOL_NONE:
-        hd.school_cue(sign_cx, cy, SIGN_D, f.school == SCHOOL_ACTIVE, rl.get_time(), alpha=alpha)
+        hd.school_cue(sign_cx, cy, SIGN_D, f.school == SCHOOL_ACTIVE, rl.get_time(), alpha=sa)
+      # the banner (hud_alerts) carries the pending sign itself until this one is at least half faded in, so while it
+      # slides back there is always one limit on screen
+      row1, cluster_edge.sign = sign_cx - SIGN_D / 2, sa > 0.5 * alpha
 
     if f.timer_s is not None:
       txt = hd.fmt_mmss(f.timer_s)
       w, _ = hd.big_digits(speed_r, cy, txt, timer_size(txt), alpha=alpha)
-      hd.stopwatch_glyph(speed_r - w - GAP, cy, size=STOPWATCH_SIZE, alpha=alpha)
+      sw = hd.stopwatch_glyph(speed_r - w - GAP, cy, size=STOPWATCH_SIZE, alpha=alpha)
+      row1 = min(row1, speed_r - w - GAP - sw)
     elif f.speed is not None:
-      hd.big_digits(speed_r, cy, str(f.speed), SPEED_SIZE, alpha=alpha)
+      w, _ = hd.big_digits(speed_r, cy, str(f.speed), SPEED_SIZE, alpha=alpha)
+      row1 = min(row1, speed_r - w)
+    cluster_edge.row1 = row1
 
     if f.next_limit:
-      hd.next_row(speed_r, rect.y + ROW2_CY, f.next_limit, f.next_frac, _format_dist(f.next_dist),
-                  bar=f.next_mode in (NEXT_BAR, NEXT_BOTH), text=f.next_mode in (NEXT_TEXT, NEXT_BOTH), d=NEXT_D,
-                  alpha=alpha)
+      cluster_edge.row2 = hd.next_row(speed_r, rect.y + ROW2_CY, f.next_limit, f.next_frac, _format_dist(f.next_dist),
+                                      bar=f.next_mode in (NEXT_BAR, NEXT_BOTH), text=f.next_mode in (NEXT_TEXT, NEXT_BOTH),
+                                      d=NEXT_D, alpha=alpha)
+      cluster_edge.row2_top = rect.y + ROW2_CY - NEXT_D / 2

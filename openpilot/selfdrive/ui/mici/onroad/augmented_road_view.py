@@ -13,6 +13,7 @@ from openpilot.selfdrive.ui.mici.onroad.confidence_ball import ConfidenceBall
 from openpilot.selfdrive.ui.mici.onroad.cameraview import CameraView
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_cluster import HudCluster  # FORK(HUD)
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_rail import HudRail  # FORK(HUD)
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_alerts  # FORK(HUD)
 from openpilot.system.ui.lib.application import FontWeight, gui_app, MousePos, MouseEvent, TextAlignment, TextAlignmentVertical
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.system.ui.widgets import Widget
@@ -236,10 +237,11 @@ class AugmentedRoadView(CameraView):
     self._driver_state_renderer.set_position(self._rect.x + 16, self._rect.y + 10)
     self._driver_state_renderer.render()
 
-    self._hud_renderer.set_can_draw_top_icons(alert_to_render is None)
+    # FORK(HUD): a compact 'set speed changed' draws nothing, so the MAX number shows the new set speed (hud_alerts.py)
+    self._hud_renderer.set_can_draw_top_icons(alert_to_render is None or hud_alerts.frees_top_icons(alert_to_render))
     self._hud_renderer.set_wheel_critical_icon(alert_to_render is not None and not not_animating_out and
                                                alert_to_render.visual_alert == car.CarControl.HUDControl.VisualAlert.steerRequired)
-    self._hud_cluster.render(self._content_rect)  # FORK(HUD): under the alerts; it fades out while one is up
+    self._hud_cluster.render(self._content_rect)  # FORK(HUD): under the alerts; it fades out while a full one is up
     self._alert_renderer.render(self._content_rect)
     self._hud_renderer.render(self._content_rect)
 

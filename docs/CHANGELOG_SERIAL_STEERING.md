@@ -15,6 +15,193 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-04 — batch 2 after review: what changed, and two things for you to decide
+
+A review of batch 2 (the three entries below, already corrected) found these; all fixed
+before anything reached the car.
+
+* **Decide: the launch cap reaches 3-6 m/s.** You named 0-3 m/s. Stopping it at 3 m/s would
+  make the pedal jump there, so it fades into the measured law by 6 m/s instead. It only
+  ever takes pedal away. It reduces the launch surge rather than removing it, and it is
+  part of the "Measured Gas Pedal Law" only. Please confirm, and on the first drive check
+  that pulling away behind a car does not feel sluggish.
+* **Narrowed: the wrong-way button during the confirm prompt.** While the prompt
+  is up, the other button is ignored only when it would RAISE the set speed ("-" under
+  the gas above your set speed, as on 114, or "+" while it asks for "-"). A press that lowers
+  the set speed always works, so "-", and SET under the gas below your set speed, still slow
+  you down (115's 60 -> 59 happens again). Brake and cancel work as always.
+* **Decide later: the brake table below 54 km/h.** It measures the brake differently from
+  openpilot's own integrator, and the two only agree at highway speed (entry below).
+* **Compact alerts can no longer be fooled by a new alert type.** Each listed alert is
+  allowed only as the one kind it is today, and never when it says "openpilot unavailable";
+  a test fails if sunnypilot ever adds another kind under a listed name. (Before, an
+  "unavailable" alert under a listed name would have been drawn small, or not at all.)
+* **The confirm banner.** Its green key now always matches its words (they could disagree for
+  a frame at a .5 km/h set speed); with no words (set speed already the limit) nothing is
+  drawn instead of an empty black box; with the sign hidden it always shows the limit, also
+  with "Show the Limit in the Confirm Prompt" off, and also while the sign is still fading in.
+* **The panda's heartbeat fix is now tested with CAN traffic** between its once-a-second
+  checks, so a test fails if the fix were ever to switch the check off.
+* **The shadow learners take cleaner data:** a full clean second after you touch a pedal or
+  re-engage (your throttle was being counted as coasting), launches only with no car ahead
+  and with the pedal confirmed by the engine computer, and the brake gain in force logged
+  with the brake table. They can no longer take the car's controls down if their own code
+  fails to load. Still nothing the car does reads them.
+* **The report tool** runs in the repo's own Python (no pandas: it reads the rlogs) and no
+  longer mixes up routes whose file names end alike.
+
+---
+
+## 2026-10-04 — batch 2, the car: lane keeping that stays on after a quick re-press, no fault at key-off, a gentler launch
+
+From routes 114 and 115 (`A_synth` F1, F5, L2a; your decisions 1, 2 and 8).
+
+* **A quick LKAS re-press no longer loses the steering two seconds later** (114 at 805 s:
+  "TAKE CONTROL IMMEDIATELY", controls mismatch). After the panda drops lane keeping
+  because openpilot turned it off, its mismatch count stays full until its next once-a-second
+  check; a press inside that second was granted and then taken away by that check, before
+  openpilot's own "on" could reach the panda. The grant now starts the count from zero, the way
+  the panda already does for cruise. Three real mismatches in a row still turn it off. This is
+  the panda's own code (`mads.h`), so it takes effect when the panda is flashed with the new
+  build - pandad does that by itself at start-up when the panda's firmware differs. Replayed
+  through the old and new panda code: 114's 200 blocked steering frames become 0, nothing else
+  on 114 or 115 changes.
+* **No "LKAS Fault" at key-off.** The EPS sends a "driver steering" status in its last frames
+  as you switch off (and its first as you switch on), which openpilot read as a steering fault.
+  It is now ignored only when the car is stopped AND in P; moving, or in any other gear, it is a
+  fault as before.
+* **A gentler launch from a stop.** At 115 t 511 the car asked for 1.6-2.0 m/s^2 and pulled
+  2.4-2.7. Below 6 m/s the pedal is now capped by a line measured on 48 routes. It never adds
+  pedal; demands below about 0.85 m/s^2 get exactly the pedal they got before, but above that,
+  between 1 and 5 m/s, it can trim the pedal behind a car too (on about a fifth of the lead
+  frames below 6 m/s in the replay). It **reduces** the over-delivery, it does not remove it:
+  below ~1.4 m/s a normal launch demand is not capped at all, and the model still has 115's
+  launch at 1.88 against 1.70 asked (peak 2.18, was 2.82). Over the 13 clean launches from a
+  stop on 099-115 (modeled, with the same fit the cap came from): achieved/asked 1.18 -> 1.04
+  with no car ahead and 1.11 -> 1.02 behind one, peak 2.32 -> 1.85 m/s^2, and 6 m/s reached no
+  later (0.03-0.07 s sooner). Replaying 115 and 10f through the car code, the gas command
+  changes only on 102 / 382 frames, all below 5 m/s, all less pedal. **It reaches 3-6 m/s**,
+  not only the 0-3 m/s you named, so that it meets the measured law at 6 m/s instead of
+  stepping off it at 3 - please confirm that is acceptable. **It is part of the measured law
+  (v2) only**: with "Measured Gas Pedal Law" off the launch is uncapped, as before. First
+  drive: a launch behind a car pulling away must not feel sluggish.
+
+---
+
+## 2026-10-04 — batch 2, learning in shadow: a brake table, a launch multiplier and a split steering factor, logged and not used
+
+From routes 114 and 115 (`A_synth` L1, L2b, L3; your decision 9). **Nothing the car does
+changes.** Three learners now watch the drives and write what they WOULD learn into the
+route; no command, setting or stored value reads them. The brake and launch ones run only with
+**Dynamic Tuning (learning) on** - they read its pitch and plant model - and the gas
+interceptor fitted; the steering one runs on every drive. After a few drives the numbers say
+whether each one is worth switching on.
+
+* **Brakes (L1).** One brake gain cannot describe this brake: light presses deliver less
+  per count than firm ones. A table now measures, per speed band and per brake strength
+  (up to 60 counts, 60-100, over 100), how far the car's real deceleration is from what
+  was asked for, and what it would add - only ever more braking, at most 0.5 m/s^2, and
+  only from a cell with 5 s of clean data. It also measures how fast the car slows with
+  neither pedal nor brake (the coasting drag), which decides where the brake should come
+  on. It collects about 34 s a drive on 115 (the old gain learner took 7 s).
+* **Launches (L2b).** It measures how much harder the car pulls away from a stop than it
+  was told to, from 0.5 to 6 m/s, and the pedal multiplier that would cancel it - only
+  ever less pedal, at most 40% less. Only launches with no car ahead and with the pedal
+  confirmed by the engine computer count; launches behind a car are logged apart.
+* **Clean data only.** Nothing is taken until a full second of engaged control with no pedal
+  of yours: after you lift off the gas, your throttle stays in the car's acceleration for up
+  to ~0.8 s (10f), and the first version counted that as the brake law's coasting.
+* **Steering (L3).** It runs the same fit openpilot's steering learner does, but separately
+  below and above 70 km/h, to see whether town and highway really need different factors
+  (one factor swings 1.13 after town to 1.41 after highway).
+
+**What it would have learned on your last drives** (replayed offline; 10f, 110-114 ran the
+older build):
+
+* Brakes: below 72 km/h the brakes are on target or slightly strong, so nothing would be
+  added. Above 72 km/h (10f) light and medium presses are weak: it would add 0.14-0.26 m/s^2.
+  Coasting slows the car 0.26-0.35 m/s^2, a little more than the brake law assumes. Checked
+  against openpilot's own longitudinal integrator on the same moments: above 72 km/h the two
+  agree within 0.06; below 54 km/h they do not (up to 0.18 apart, and of opposite sign at
+  36-54 km/h with firm braking), so nothing below that should be applied from this table alone.
+* Launches: of the six routes only one launch counts (no car ahead, pedal confirmed): 115's,
+  1.4x harder than asked, so it would cut the launch pedal to 0.72. Behind a car the car pulls
+  1.1-1.2x (kept apart, never used). One launch is not enough to act on. These drives ran before the launch cap (entry above), which reduces the same
+  over-delivery, so from the next drive this number shows what the cap leaves. **115's launch was on a 2.7 degree downhill**: the slope gave 0.46 m/s^2 of the
+  2.4-2.7 the car showed, more than half of what looked like over-acceleration there.
+* Steering: on 115, 0.85 below 70 km/h and 1.00 above (few points); on 10f 1.31 below and
+  2.02 above. Town and highway do separate, by about a third.
+
+**Proven not to change anything:** routes 115, 10f and 113 replayed through the real car
+code with and without the learners send the same bytes on every one of 1.05 million CAN
+frames (115 and 10f again after the review fixes); the steering learner's published values are identical on six routes. Cost: about
+2% of the car-control loop's time, and 1-2 KB of log a minute (more on a drive with many
+disengagements: a line goes out at each).
+
+**To read them:** `python openpilot/sunnypilot/tools/shadow_learn_report.py <route folder>
+[more routes]` prints each route's tables and all of them combined. The log lines are
+`hondashadow` (needs dynamic learning on) and `latsplit`. Details: `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 9.3.
+
+---
+
+## 2026-10-04 — batch 2, the screen: "Press +" when it means +, a wrong button cannot raise the set speed, smaller alerts, a speed limit sign setting
+
+From routes 114 and 115 (`A_synth` F4, F4b, U1, U2). Nothing here touches steering,
+braking or the ACC stand-down; the cruise change only ignores a button.
+
+* **The confirm prompt says the right button.** "Press - to confirm speed limit"
+  showed every time "+" was needed - all four such prompts on 114 and 115, and
+  "Press +" never once in nine routes. The text compared your set speed (already
+  km/h) converted again as if it were m/s, so 50 km/h read as 180. It now uses the
+  exact comparison the confirm itself accepts, so the words say the button the confirm
+  takes (a test checks every set speed from 8 to 145 km/h in 0.1 steps, km/h and mph),
+  and the compact banner's green key follows the words. The bug is upstream
+  sunnypilot's; worth offering them.
+* **A press the wrong way while it asks cannot raise the set speed.** On 114 you
+  pressed "-" while it wanted "+", with your foot on the gas: the set speed jumped
+  from 50 to 72.5 (SET under the gas takes the current speed) and the prompt stayed.
+  Now, while the prompt is up, a press the other way that would RAISE the set speed
+  does nothing - no change, no confirm: "-" under the gas above your set speed, or "+"
+  while it asks for "-". A press that lowers the set speed works as always, so you can
+  always slow down: on 115, "-" while it asked for "+" took 60 to 59, and still does,
+  and SET under the gas below your set speed lowers it as before. A wrong-way press
+  never confirms, so the prompt stays until the right press or it times out; the right
+  one confirms as before. Outside the prompt the buttons are exactly as they were.
+* **Smaller alerts** (three new settings in sunnylink Visuals > HUD, all on):
+  * **Compact Speed Limit Prompts.** "Auto adjusting to speed limit" and "Set speed
+    changed" no longer cover the road for 5 s: nothing is drawn, the new set speed
+    shows as the MAX number top left (as after any change - the full alert used to
+    hide it), and your speed and sign stay. On 115 that was 57 of the 77 seconds of
+    full-screen speed-limit prompts; the other 20 were the confirm prompts, now a
+    one-line banner: "press + to confirm" top left with the blinking green key, and the sign top right turns dashed until you
+    confirm. The sounds are unchanged.
+  * **Compact Disengage Notices.** "Cruise off" (the cancel button with lane
+    centering kept) and "lane centering off" (the LKAS button) are a small banner
+    top left.
+  * **Compact Turn Notices.** "Turning left / right" is a small one-line banner -
+    these were the longest full-screen alerts on 114 (95 s).
+  * **What can never be small:** anything red or orange, "take control", anything
+    that wants the wheel, AEB, FCW, "openpilot unavailable", openpilot ending it by
+    itself ("speed too low"), any fault. Only alerts named on a short list qualify,
+    each only as the one kind it is today, and only while they are the plain black
+    kind and not an "openpilot unavailable"; a test walks every alert openpilot and
+    sunnypilot have and fails if that ever stops being true, or if a listed alert
+    gains another kind. A critical alert during a compact one takes the screen as
+    before.
+* **Speed Limit Sign** (new setting, under Speed and Speed Limit): **Always** (the
+  default - the screen exactly as before), **School & Variable Zones** (the sign
+  only in a NSW school zone while it is on, or a variable limit zone; it stays
+  ~12 s after, so the speed does not jump at every limit change - one zone on 10f
+  broke up 10 times), or **Off**. Without the sign, your speed, the stop time and
+  the next lower limit slide into the corner, and the confirm banner carries the
+  limit it is asking about (whatever "Show the Limit in the Confirm Prompt" says). On 114 and 115 there was no school or variable zone,
+  so in Zones mode the speed would have sat in the corner the whole way.
+* **New params:** `HudCompactLimitPrompts`, `HudCompactDisengage`,
+  `HudCompactTurn` (BOOL, "1") and `HudLimitSign` (INT, "2"), backed up with your
+  settings. All HUD settings off is still the stock screen pixel for pixel.
+
+---
+
 ## 2026-10-04 — Stock ACC mode: the car's own cruise does gas and brake, openpilot steers
 
 **A new toggle, "Stock ACC (testing)"** (Settings > Vehicle > Honda on both screens, and sunnylink's Vehicle > Honda
@@ -56,6 +243,11 @@ can never turn it on. No board change.
 only `0x0E4` and `0x500` in `sendcan`; the radar's `0x1FA` (50 Hz) and `0x30C` (10 Hz) forwarded onto bus 0; no
 `ACC_PROBLEM`, `TSA_ERROR` or `BRAKE_ERROR`.
 The full list is `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` section 15.8; the design, section 15.
+
+**With batch 2 (merged 2026-10-05):** in this mode the launch cap, the shadow brake and launch learners and the
+speed-limit confirm prompt (with its wrong-way rule) do nothing - they all need openpilot's longitudinal - and none of
+this mode's own alerts ("Speed too low", "Cruise Is Off", "drive above", the startup banner) is drawn compact. The
+key-off fix and the lane-keeping re-press fix apply here too. Details: section 15.9.
 
 ---
 
