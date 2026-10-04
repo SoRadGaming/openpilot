@@ -10,6 +10,7 @@ from opendbc.car import structs
 from opendbc.car.interfaces import CarInterfaceBase
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
+from openpilot.sunnypilot.selfdrive.car.honda_stock_acc import preserve_long_settings  # FORK(HONDA_ACCORD_9G_AU)
 from openpilot.sunnypilot.selfdrive.controls.lib.nnlc.helpers import get_nn_model_path
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.helpers import set_speed_limit_assist_availability
 
@@ -108,6 +109,8 @@ def setup_interfaces(CI: CarInterfaceBase, params: Params | None = None) -> None
   nnlc_enabled = _initialize_neural_network_lateral_control(CI.CP, CI.CP_SP, params)
   _initialize_intelligent_cruise_button_management(CI.CP, CI.CP_SP, params)
   _initialize_torque_lateral_control(CI, CI.CP, enforce_torque, nnlc_enabled)
+  # FORK(HONDA_ACCORD_9G_AU): stock ACC mode's settings snapshot/restore, before the cleanup can delete them
+  preserve_long_settings(CI.CP, CI.CP_SP, params)
   _cleanup_unsupported_params(CI.CP, CI.CP_SP)
 
   try:
@@ -129,6 +132,11 @@ def initialize_params(params) -> list[dict[str, Any]]:
   keys.extend([
     "SubaruStopAndGo",
     "SubaruStopAndGoManualParkingBrake",
+  ])
+
+  # honda
+  keys.extend([
+    "HondaElesysStockAcc",  # FORK(HONDA_ACCORD_9G_AU): stock ACC mode, opendbc _initialize_honda
   ])
 
   # tesla

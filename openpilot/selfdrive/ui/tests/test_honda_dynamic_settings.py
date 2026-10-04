@@ -36,6 +36,11 @@ MICI_SETTINGS = ROOT / "selfdrive/ui/sunnypilot/mici/layouts/settings.py"
 TOGGLE_PARAMS = ("HondaDynamicTuningEnabled",)
 # the HONDA_ELESYS gas law: a setting like the toggle above, but ON by default
 GAS_LAW_PARAM = "HondaElesysGasLawV2"
+# FORK(HONDA_ACCORD_9G_AU): stock ACC mode. A setting, but deliberately NOT backed up, and offroad only everywhere
+STOCK_ACC_PARAM = "HondaElesysStockAcc"
+STOCK_ACC_SNAPSHOT = "HondaElesysStockAccSaved"
+OPENDBC_HOOKS = REPO / "opendbc_repo/opendbc/sunnypilot/car/interfaces.py"
+SP_CAR_INTERFACES = ROOT / "sunnypilot/selfdrive/car/interfaces.py"
 # retired in 2026-10 with the pedal and aero learners; nothing may read, write or show them
 RETIRED_RE = re.compile(r"HondaDynPedalGain\d*|HondaDynWindFactor")
 
@@ -285,6 +290,56 @@ class TestHondaDynamicSettings(unittest.TestCase):
       assert key in registered, f"{key} is in settings_ui.json but not in params_keys.h"
       # keys may live in at most one panel; the brand section is separate
       assert key not in panel_keys, f"{key} appears in both a panel and the honda vehicle section"
+
+  def test_stock_acc_is_registered_off_and_never_restored_from_a_backup(self):
+    registered = _registered_params()
+    flags, key_type, key_default = registered[STOCK_ACC_PARAM]
+    assert key_type == "BOOL" and key_default == "0", f"{STOCK_ACC_PARAM} must be a BOOL defaulting to off"
+    assert "PERSISTENT" in flags
+    assert "BACKUP" not in flags, f"{STOCK_ACC_PARAM}: a sunnylink restore must never turn stock ACC mode on"
+    flags, key_type, _ = registered[STOCK_ACC_SNAPSHOT]
+    assert key_type == "JSON" and "PERSISTENT" in flags and "BACKUP" not in flags
+    assert _panel_constant("STOCK_ACC_PARAM") == STOCK_ACC_PARAM
+
+  def test_stock_acc_reaches_the_hook_under_one_name(self):
+    # card hands initialize_params() to opendbc's _initialize_honda; a typo on either side is a dead toggle
+    assert f'"{STOCK_ACC_PARAM}"' in SP_CAR_INTERFACES.read_text()
+    if OPENDBC_HOOKS.is_file():
+      assert f'"{STOCK_ACC_PARAM}"' in OPENDBC_HOOKS.read_text()
+
+  def test_stock_acc_toggle_is_offroad_only_on_both_screens(self):
+    # the mode is read once at ignition; offroad only, and never an onroad cycle (that would drop lateral moving)
+    tree = ast.parse(HONDA_PANEL.read_text())
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "toggle_item_sp"
+             and any(k.arg == "param" and isinstance(k.value, ast.Name) and k.value.id == "STOCK_ACC_PARAM" for k in n.keywords)]
+    assert len(calls) == 1, "the big panel needs exactly one STOCK_ACC_PARAM toggle"
+    enabled = {k.arg: ast.unparse(k.value) for k in calls[0].keywords}.get("enabled")
+    assert enabled == "ui_state.is_offroad", f"the big panel toggle must be offroad only, got {enabled}"
+    assert "self.stock_acc_toggle" in ast.unparse(next(n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                                                       and any(isinstance(t, ast.Attribute) and t.attr == "items" for t in n.targets)))
+
+    mici = MICI_PANEL.read_text()
+    assert "STOCK_ACC_PARAM" in mici, "the mici page must import the param from the brand panel"
+    assert "self._stock_acc_toggle.set_enabled(ui_state.is_offroad)" in mici
+    assert "self._stock_acc_toggle.refresh()" in mici
+    assert re.search(r"add_widgets\(\[[^\]]*self\._stock_acc_toggle", mici, re.DOTALL), "the mici toggle is never shown"
+    for src in (HONDA_PANEL.read_text(), mici):
+      code = " ".join(line.split("#")[0] for line in src.splitlines())   # a comment may say why not
+      assert "OnroadCycleRequested" not in code
+
+  def test_sunnylink_stock_acc_is_offroad_only_and_never_the_longitudinal_macro(self):
+    items = {i["key"]: i for i in _sdui_honda_items()}
+    assert STOCK_ACC_PARAM in items, f"{STOCK_ACC_PARAM} is missing from the honda section of settings_ui.json"
+    item = items[STOCK_ACC_PARAM]
+    assert item["widget"] == "toggle"
+    assert item["title"] == "Stock ACC (testing)"
+    assert item.get("needs_onroad_cycle") is True
+    assert item.get("enablement") == [{"type": "offroad_only"}], item.get("enablement")
+    # has_longitudinal_control is False in this mode: gating on it would lock the toggle ON
+    assert "has_longitudinal_control" not in json.dumps(item)
+    desc = item.get("description", "")
+    for words in ("steers only", "next car start", "30 km/h", "cannot cancel", "CMBS"):
+      assert words in desc, f"the description must say '{words}'"
 
   def test_panel_defaults_match_the_tuner(self):
     # opendbc is a submodule; skip when it isn't checked out

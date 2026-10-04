@@ -186,6 +186,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // FORK(HONDA_ELESYS): the gas law. 1 = v2, the measured pedal response; 0 = v1, the law before it.
     // A setting, so BACKUP; read once at ignition (elesys_gas.py).
     {"HondaElesysGasLawV2", {PERSISTENT | BACKUP, BOOL, "1"}},
+    // FORK(HONDA_ACCORD_9G_AU): stock ACC mode - the car's ACC does gas and brake, openpilot steers only. Read once at
+    // ignition (opendbc _initialize_honda). Not BACKUP: a sunnylink restore must never turn it on behind the driver's
+    // back. HondaElesysStockAccSaved holds the longitudinal settings sunnypilot deletes while openpilot long is off,
+    // from the first stock-mode start until they are put back (sunnypilot/selfdrive/car/honda_stock_acc.py).
+    {"HondaElesysStockAcc", {PERSISTENT, BOOL, "0"}},
+    {"HondaElesysStockAccSaved", {PERSISTENT, JSON}},
     // FORK(HUD): the comma 4 HUD, one setting per piece (sunnylink Visuals > HUD). All default on; all off is the stock
     // screen. HudNextLimit: 0 off, 1 bar, 2 distance, 3 both. Read by the UI at most once a second.
     // FORK(HUD): HudPlannedStop and HudCurve are the right strip's two items (hud_rail.py).

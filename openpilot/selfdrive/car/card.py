@@ -25,6 +25,7 @@ from openpilot.selfdrive.car.helpers import convert_carControlSP, convert_to_cap
 
 from openpilot.sunnypilot.mads.helpers import set_alternative_experience, set_car_specific_params
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
+from openpilot.sunnypilot.selfdrive.car.honda_stock_acc import LongSettingsRestore  # FORK(HONDA_ACCORD_9G_AU)
 
 REPLAY = "REPLAY" in os.environ
 
@@ -186,6 +187,9 @@ class Car:
     self.params.put("CarParamsSP", cp_sp_bytes, block=True)
     self.params.put("CarParamsSPCache", cp_sp_bytes)
     self.params.put("CarParamsSPPersistent", cp_sp_bytes)
+    # FORK(HONDA_ACCORD_9G_AU): stock ACC mode's settings, put back for good from params_thread once the UI has seen this
+    # drive's CarParams
+    self.long_settings_restore = LongSettingsRestore(self.CP, self.CP_SP, cp_bytes, self.params)
 
     self.v_cruise_helper = VCruiseHelper(self.CP, self.CP_SP)
 
@@ -413,6 +417,7 @@ class Car:
       self.v_cruise_helper.read_custom_set_speed_params()
       self.write_board_firmware()
       self.log_flash_trace()
+      self.long_settings_restore.update()  # FORK(HONDA_ACCORD_9G_AU)
 
       time.sleep(0.1)
 

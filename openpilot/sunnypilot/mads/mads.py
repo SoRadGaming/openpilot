@@ -9,6 +9,7 @@ from openpilot.cereal import log, custom
 
 from opendbc.car import structs
 from opendbc.car.hyundai.values import HyundaiFlags
+from opendbc.sunnypilot.car.honda.values_ext import HondaFlagsSP  # FORK(HONDA_ACCORD_9G_AU): stock ACC mode
 from openpilot.common.params import Params
 from openpilot.sunnypilot.mads.helpers import MadsSteeringModeOnBrake, read_steering_mode_param, MADS_NO_ACC_MAIN_BUTTON
 from openpilot.selfdrive.selfdrived.events import ET
@@ -104,6 +105,11 @@ class ModularAssistiveDrivingSystem:
     # FORK(LKAS-GATEWAY): the fast-wheel takeover's switch and threshold, re-read every 0.1 s below
     self.emergency_steer_disable = self.params.get_bool("MadsEmergencySteerDisable")
     self.emergency_steer_rate = read_emergency_steer_rate(self.params)
+    # FORK(HONDA_ACCORD_9G_AU): stock ACC mode (HondaElesysStockAcc): pcmCruise on a Nidec Honda, so selfdrived follows
+    # the car's ACC_STATUS. See update_events() and update().
+    self.elesys_stock_acc = self.CP.brand == "honda" and bool(self.CP_SP.flags & HondaFlagsSP.ELESYS_STOCK_ACC)
+    self._stock_acc_drop_alerts: list[int] = []
+    self._stock_acc_refused = False
 
   def read_params(self):
     self.main_enabled_toggle = self.params.get_bool("MadsMainCruiseAllowed")
@@ -177,6 +183,18 @@ class ModularAssistiveDrivingSystem:
       self.lateral_mismatch_counter += 1
 
   def update_events(self, CS: structs.CarState):
+    # FORK(HONDA_ACCORD_9G_AU): stock ACC mode. Stock ACC dropping out by itself disengages openpilot on this frame with
+    # upstream's alert: the non-critical speedTooLow below minEnableSpeed + 2 m/s (it lets go at ~22 km/h), the
+    # critical cruiseDisabled above (a fault at speed: gas and brake are gone). The strip just below would take that
+    # alert away with the event while MADS keeps lateral, so it is put back in update(), after MADS's own state
+    # machine has run and cannot read it - the same alert as with MADS off. A drop the driver causes (brake, CANCEL)
+    # follows its edge by 0.03 s or more, and openpilot disengages on the edge: by the drop frame it is already off.
+    drop = self.elesys_stock_acc and self.enabled and not self.selfdrive.enabled and self.selfdrive.enabled_prev
+    self._stock_acc_drop_alerts = [e for e in (EventName.speedTooLow, EventName.cruiseDisabled) if drop and self.events.has(e)]
+    # and a stock engagement below minEnableSpeed that openpilot refused keeps its NO_ENTRY alert (see below)
+    self._stock_acc_refused = (self.elesys_stock_acc and not self.selfdrive.enabled and
+                               self.events.has(EventName.pcmEnable) and self.events.has(EventName.belowEngageSpeed))
+
     if not self.selfdrive.enabled and self.enabled:
       if CS.standstill:
         if self.events.has(EventName.doorOpen):
@@ -208,6 +226,14 @@ class ModularAssistiveDrivingSystem:
       self.events.remove(EventName.cruiseDisabled)
       self.events.remove(EventName.manualRestart)
       self.events.remove(EventName.espActive)
+
+    # FORK(HONDA_ACCORD_9G_AU): stock ACC mode. pcmCruise raises belowEngageSpeed (NO_ENTRY) on every frame below
+    # minEnableSpeed (19 mph), and upstream strips it only once MADS is on, so MADS could not be switched on below
+    # 30 km/h or at a standstill - with openpilot off, or engaged on stock ACC and slowing. Lateral has no cruise
+    # speed floor: MADS turns on at any speed, as with the toggle off. openpilot's own refusal is unchanged -
+    # selfdrived's state machine has already run on this frame - and its alert comes back in update().
+    if self.elesys_stock_acc:
+      self.events.remove(EventName.belowEngageSpeed)
 
     selfdrive_enable_events = self.events.has(EventName.pcmEnable) or self.events.has(EventName.buttonEnable)
     set_speed_btns_enable = any(be.type in SET_SPEED_BUTTONS for be in CS.buttonEvents)
@@ -351,6 +377,14 @@ class ModularAssistiveDrivingSystem:
 
     if not self.CP.passive and self.selfdrive.initialized:
       self.enabled, self.active = self.state_machine.update()
+
+    # FORK(HONDA_ACCORD_9G_AU): stock ACC mode's alerts, back for selfdrived's alerts now that MADS has decided without
+    # them (update_events): the drop-out's while MADS keeps lateral, and a refused engagement's "drive above"
+    if self.enabled:
+      for e in self._stock_acc_drop_alerts:
+        self.events.add(e)
+    if self._stock_acc_refused:
+      self.events.add(EventName.belowEngageSpeed)
 
     # Copy of previous SelfdriveD states for MADS events handling
     self.selfdrive.enabled_prev = self.selfdrive.enabled

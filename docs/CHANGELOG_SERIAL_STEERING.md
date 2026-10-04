@@ -15,6 +15,50 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-04 — Stock ACC mode: the car's own cruise does gas and brake, openpilot steers
+
+**A new toggle, "Stock ACC (testing)"** (Settings > Vehicle > Honda on both screens, and sunnylink's Vehicle > Honda
+Settings). Off by default, and with it off nothing changes - not one byte of what the car or the panda sees. With it
+on, from the next car start:
+
+* **The car's own ACC drives the speed.** The Elesys radar does gas and brake exactly as it does without a comma: every
+  frame passes between the car and the radar, both ways (panda safety param 68). openpilot sends only its steering
+  (`0x0E4`) and the board's HUD frame (`0x500`), so lateral is as before, through the board.
+* **CMBS is unaffected** - the radar's brake frame always reaches the car - and the CMBS-off switch still works.
+* **openpilot follows stock ACC**: it engages when you SET (stock ACC works above about 30 km/h) - that only drives
+  its alerts and HUD state; steering is MADS, the LKAS button, exactly as today - and shows "Speed too
+  low" when stock ACC lets go by itself at about 22 km/h. That is the normal disengage, not a take-control alarm, and
+  **lateral stays on**. If stock ACC lets go by itself at speed (37.8 km/h or more: a fault), openpilot says "TAKE
+  CONTROL IMMEDIATELY / Cruise Is Off", with or without MADS - gas and brake are gone. A SET below 30.6 km/h that
+  openpilot does not follow shows its "drive above" alert; press SET/RES again above that speed to have it follow.
+* **MADS can be switched on and off at any speed**, standstill included, also while openpilot follows stock ACC.
+* **openpilot cannot cancel stock ACC.** If openpilot disengages, or refuses to engage (between 29 and 30.6 km/h, a VSA
+  fault), stock ACC keeps going: cancel it with the car's CANCEL button or the brake. Keep "disengage on accelerator"
+  off in this mode.
+* **Your settings come back.** Experimental Mode, Dynamic Experimental Control, the custom ACC increments, Smart Cruise
+  Control and Speed Limit Assist need openpilot's longitudinal and are unavailable in this mode. They are saved at the
+  first stock drive and put back as they were at the first drive after you turn the mode off - also across a reboot
+  or an update in between.
+* **A harness relay that did not open is caught.** The panda checks for the radar's own frames on the car's side, so a
+  loose cable or a failed relay is a relay malfunction (the car then runs as without a comma) instead of every frame
+  being sent back onto the same wire.
+* **Every stock drive says so**: "Stock ACC Mode" on screen for about 5 s at the start, `carParamsSP.flags & 8`,
+  `pandaStates.safetyParam` 68, and a log line `Honda ELESYS stock ACC mode: openpilot longitudinal off, all frames
+  forwarded`.
+
+The toggle can only be changed with the car off - the device refuses it from sunnylink while driving too (it is read
+once at ignition, so the mode never changes during a drive) - and it is not part of a sunnylink backup, so a restore
+can never turn it on. No board change.
+
+**First drive with it on:** `pandaStates.safetyParam` 68 and no relay malfunction; from ~2 s after the panda reports
+68 until key-off, `0x1FA`/`0x30C` never with src 0 in `can` (only src 2 and the forwarded src 128; src 0 during the
+~10 s start-up window and just after key-off is normal); parked, the accelerator moves `PEDAL_GAS` with `GAS_SENSOR` `STATE` 5;
+only `0x0E4` and `0x500` in `sendcan`; the radar's `0x1FA` (50 Hz) and `0x30C` (10 Hz) forwarded onto bus 0; no
+`ACC_PROBLEM`, `TSA_ERROR` or `BRAKE_ERROR`.
+The full list is `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` section 15.8; the design, section 15.
+
+---
+
 ## 2026-10-03 — the comma 4 HUD: speed and speed limit, the next lower limit, a stop timer, the planned stop and curve on the right; the gateway icon
 
 **The comma 4 now shows your speed and the speed limit**, top right beside the

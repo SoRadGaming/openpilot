@@ -50,12 +50,12 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 
 | file | status | area C content | other areas in the same file |
 |---|---|---|---|
-| `opendbc/car/honda/values.py` | M | `HondaSafetyFlags.ELESYS_SCM_STANDDOWN`, `HondaFlags.ELESYS`, `CAR.HONDA_ACCORD_9G_AU`, `HONDA_ELESYS`, `STEER_THRESHOLD` entry, `FW_QUERY_CONFIG` non-essential ECUs | - |
+| `opendbc/car/honda/values.py` | M | `HondaSafetyFlags.ELESYS_SCM_STANDDOWN`, `HondaSafetyFlags.ELESYS_STOCK_ACC` (64, section 15), `HondaFlags.ELESYS`, `CAR.HONDA_ACCORD_9G_AU`, `HONDA_ELESYS`, `STEER_THRESHOLD` entry, `FW_QUERY_CONFIG` non-essential ECUs | - |
 | `opendbc/car/honda/fingerprints.py` | M | `FW_VERSIONS[CAR.HONDA_ACCORD_9G_AU]` | - |
 | `opendbc/car/honda/interface.py` | M | transmission detection, longitudinal tuning (no `vEgoStopping` since the 2026-09 merge), `steerActuatorDelay`, `steerAtStandstill`, the `latAccelOffset` seed, safety param, `minEnableSpeed`, and its exemption from the gas-interceptor `-1` in `_get_params_sp()` | the two lateral values exist because of the gateway (B) |
 | `opendbc/car/honda/radar_interface.py` | M | Elesys radar parsing | - |
-| `opendbc/car/honda/carstate.py` | M | gear decode (`update_gear_elesys()`, taken only when the gearbox frame has `GEAR`), `LKAS_PROBLEM` bus, `stockAeb`, `scm_buttons`, `econ_on`; `VEHICLE_DYNAMICS` registered liveness-exempt for the VSA fault monitor (6.6, 2026-10-03) | B/A: `get_can_parsers()` registration of `GW_*`/`EPS_LIN_RAW`; `CarStateExt.update(..., ret_sp, ...)` |
-| `opendbc/car/honda/carcontroller.py` | M | `compute_gb_honda_elesys()`, `brake_pump_hysteresis_elesys()`, dynamic-tuner hooks, 32-count brake release limit, the soft final stop's call (7.8), the NaN-`vEgo` guard in the brake block (7.8), the `CRUISE_OVERRIDE` decision comment (7.7), SCM_BUTTONS re-send, no `LKAS_HUD` | B: `brake_release_scale()`, LDW bits, the `create_sp_hud_status()` block, the reported torque (`linbus_gateway_actuating()`) |
+| `opendbc/car/honda/carstate.py` | M | gear decode (`update_gear_elesys()`, taken only when the gearbox frame has `GEAR`), `LKAS_PROBLEM` bus, `stockAeb`, `scm_buttons`, `econ_on`; `VEHICLE_DYNAMICS` registered liveness-exempt for the VSA fault monitor (6.6, 2026-10-03); `accFaulted` from `BRAKE_ERROR` also in stock ACC mode (15) | B/A: `get_can_parsers()` registration of `GW_*`/`EPS_LIN_RAW`; `CarStateExt.update(..., ret_sp, ...)` |
+| `opendbc/car/honda/carcontroller.py` | M | `compute_gb_honda_elesys()`, `brake_pump_hysteresis_elesys()`, dynamic-tuner hooks, 32-count brake release limit, the soft final stop's call (7.8), the NaN-`vEgo` guard in the brake block (7.8), the `CRUISE_OVERRIDE` decision comment (7.7), SCM_BUTTONS re-send, no `LKAS_HUD`; stock ACC mode sends only `0x0E4` and `0x500` (15) | B: `brake_release_scale()`, LDW bits, the `create_sp_hud_status()` block, the reported torque (`linbus_gateway_actuating()`) |
 | `opendbc/car/honda/hondacan.py` | M | `create_brake_command()` units bit, `create_scm_buttons_no_cruise()` | B: `create_steering_control()` LDW, `create_sp_hud_status()` |
 | `opendbc/car/car_helpers.py` | M | `skip_fw_query` | - |
 | `opendbc/car/structs.py` | M | `CarStateSP.vsaFault`, `vsaStoredFault` (6.6, 2026-10-03); described in 6.5 because of the capnp rule | B (`LateralControl`, `LinbusGateway` 0x704/0x70B fields, `driverTorqueStale`), A (`fw*` fields) |
@@ -63,7 +63,7 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `opendbc/car/torque_data/override.toml`, `opendbc/car/torque_data/substitute.toml` | M | the car's own torqued prior; the substitute line is gone (2.4) | - |
 | `opendbc/sunnypilot/car/car_list.json` | M | car list entry | - |
 | `opendbc/dbc/generator/honda/*.dbc`, `opendbc/dbc/honda_accord_2015au_radar.dbc` | A/M | all of them, except the two in the next column | `_sunnypilot_linbus_gw.dbc` (B, A); byte 2 of 0x0E4 in `_steering_control_e.dbc` (B) |
-| `opendbc/safety/modes/honda.h` | M | the stand-down safety mode | 0x500 on its TX list is B's frame |
+| `opendbc/safety/modes/honda.h` | M | the stand-down safety mode; stock ACC mode, param 64 (15) | 0x500 on its TX list is B's frame |
 | `opendbc/safety/tests/common.py`, `opendbc/safety/tests/test_honda.py` | M | safety tests | B: the Elesys-only `0x500` exemption in `common.py` |
 | `opendbc/sunnypilot/car/honda/carstate_ext.py` | M | `fuelGauge`; `_update_vsa_fault()` (6.6) | B (gateway decode, driver torque), A (`_update_linbus_firmware`) |
 | `opendbc/sunnypilot/car/honda/vsa_fault.py` | A (2026-10-03) | `VsaFaultMonitor`: the VSA's own fault from provisional bits (6.6) | - |
@@ -73,6 +73,9 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `opendbc/sunnypilot/car/honda/elesys_stop.py` | A (2026-10) | the soft final stop: `soft_stop_ceiling()`, `ElesysSoftStop`, `SOFT_STOP_*` (7.8) | - |
 | `opendbc/sunnypilot/car/honda/gas_interceptor.py` | M | the import and the one call into `elesys_gas.py`, and the tuner's `observe_pedal` hook | - |
 | `opendbc/car/honda/tests/test_elesys.py` | A | all | - |
+| `opendbc/car/honda/tests/test_elesys_stock_acc.py` | A (2026-10-04) | all (15.7) | - |
+| `opendbc/sunnypilot/car/honda/values_ext.py` | M (2026-10-04) | `HondaFlagsSP.ELESYS_STOCK_ACC` = 8 (15) | - |
+| `opendbc/sunnypilot/car/interfaces.py` | M (2026-10-04) | `_initialize_honda()`, the stock ACC mode's one writer (15.2) | - |
 | `opendbc/sunnypilot/car/honda/test_dynamic_tuning.py` | A | all | - |
 | `opendbc/sunnypilot/car/honda/test_elesys_gas.py` | A (2026-10) | all (9.2) | - |
 | `opendbc/sunnypilot/car/honda/test_elesys_stop.py` | A (2026-10) | all (7.8) | - |
@@ -83,12 +86,14 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | file | status | area C content | other areas |
 |---|---|---|---|
 | `.gitmodules`, `opendbc_repo` (gitlink) | M | points the submodule at the opendbc fork (Other, 13.1) | - |
-| `openpilot/common/params_keys.h` | M | 5 `HondaDyn*` keys and `HondaElesysGasLawV2` (11.1) | A: `EpsLkas*` keys |
-| `openpilot/cereal/custom.capnp` | M | `CarStateSP.vsaFault @3`, `vsaStoredFault @4`; `OnroadEventSP.EventName` `vsaFault @28`, `vsaStoredFault @29`, `vsaFaultAnnounce @30` (6.6, 10.6; 2026-10-03). Area C code also reads `CarStateSP.driverTorqueStale` | B, A |
-| `openpilot/selfdrive/car/card.py` | M | `skip_fw_query=bool(fixed_fingerprint)` | A: firmware identity staging/writing, flash trace |
+| `openpilot/common/params_keys.h` | M | 5 `HondaDyn*` keys and `HondaElesysGasLawV2` (11.1); `HondaElesysStockAcc`, `HondaElesysStockAccSaved` (15, 2026-10-04) | A: `EpsLkas*` keys |
+| `openpilot/cereal/custom.capnp` | M | `CarStateSP.vsaFault @3`, `vsaStoredFault @4`; `OnroadEventSP.EventName` `vsaFault @28`, `vsaStoredFault @29`, `vsaFaultAnnounce @30` (6.6, 10.6; 2026-10-03); `hondaElesysStockAcc @31` (15, 2026-10-04). Area C code also reads `CarStateSP.driverTorqueStale` | B, A |
+| `openpilot/selfdrive/car/card.py` | M | `skip_fw_query=bool(fixed_fingerprint)`; `finish_long_settings_restore()` right after `CarParamsPersistent` is written (15.5, 2026-10-04) | A: firmware identity staging/writing, flash trace |
 | `openpilot/selfdrive/car/helpers.py` | M | none. The `lateralControl` rebuild in `convert_carControlSP()` is area B; it is described in 10.5 because its failure took down the car's radar path | B |
 | `openpilot/selfdrive/locationd/torqued.py` | M (2026-10) | the initial `latAccelOffset` from `CarParams` (2.4) | - |
-| `openpilot/sunnypilot/selfdrive/car/interfaces.py` | M (2026-10) | `_initialize_torque_lateral_control()` keeps `latAccelOffset` across the EnforceTorqueControl / NNLC re-run of `configure_torque_tune()` (2.4) | - |
+| `openpilot/sunnypilot/selfdrive/car/interfaces.py` | M (2026-10) | `_initialize_torque_lateral_control()` keeps `latAccelOffset` across the EnforceTorqueControl / NNLC re-run of `configure_torque_tune()` (2.4); `preserve_long_settings()` before `_cleanup_unsupported_params()`, and `HondaElesysStockAcc` in `initialize_params()` (15, 2026-10-04) | - |
+| `openpilot/sunnypilot/selfdrive/car/honda_stock_acc.py` | A (2026-10-04) | the stock ACC mode's settings snapshot and restore (15.5) | - |
+| `openpilot/sunnypilot/selfdrive/car/car_specific.py` | M (2026-10-04) | `STOCK_ACC_ANNOUNCE_FRAMES`: the stock ACC mode's startup banner (15.5) | - |
 | `openpilot/sunnypilot/selfdrive/controls/lib/stopping_tune.py` | A (2026-09 merge) | `STOPPING_SPEED` and `STOPPING_DECEL_RATE`, keyed by fingerprint (10.1) | - |
 | `openpilot/selfdrive/controls/lib/drive_helpers.py` | M (2026-09 merge) | `should_stop(..., v_ego_stopping=None)` (10.1) | - |
 | `openpilot/selfdrive/controls/lib/longitudinal_planner.py` | M (2026-09 merge) | passes the car's stopping speed to both `should_stop()` calls (10.1) | - |
@@ -97,17 +102,17 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `openpilot/selfdrive/controls/lib/latcontrol.py`, `openpilot/selfdrive/controls/lib/latcontrol_torque.py`, `openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py`, `openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_ext_base.py` | M | documented in 10.3; the reason for them is the gateway | B |
 | `openpilot/selfdrive/controls/controlsd.py`, `openpilot/sunnypilot/selfdrive/controls/controlsd_ext.py` | M | documented in 10.4 | B |
 | `openpilot/selfdrive/selfdrived/selfdrived.py` | M | the VSA fault alert's three hunks (10.6, 2026-10-03) | B: `carStateSP` in the `SubMaster`, the EPS latch alert |
-| `openpilot/sunnypilot/selfdrive/selfdrived/vsa_fault_alert.py`, `openpilot/sunnypilot/selfdrive/selfdrived/events.py` (the three `vsa*` entries and their two callbacks) | A / M (2026-10-03) | `VsaFaultAlert` and its events (10.6) | B owns the rest of `events.py` |
+| `openpilot/sunnypilot/selfdrive/selfdrived/vsa_fault_alert.py`, `openpilot/sunnypilot/selfdrive/selfdrived/events.py` (the three `vsa*` entries and their two callbacks, and `hondaElesysStockAcc`) | A / M (2026-10-03) | `VsaFaultAlert` and its events (10.6); the stock ACC banner (15.5, 2026-10-04) | B owns the rest of `events.py` |
 | `openpilot/selfdrive/controls/lib/desire_helper.py`, `openpilot/selfdrive/modeld/modeld.py`, `openpilot/sunnypilot/modeld_v2/modeld.py` | M | `NUDGE_FIRM` | B: `driver_torque_stale` |
-| `openpilot/sunnypilot/mads/mads.py`, `openpilot/sunnypilot/mads/state.py` | M | none (10.7 notes one rule that applies to every car) | B |
+| `openpilot/sunnypilot/mads/mads.py`, `openpilot/sunnypilot/mads/state.py` | M | `mads.py` in stock ACC mode only: MADS on at any speed, and the drop-out's `speedTooLow` alert (15.5, 2026-10-04); 10.7 notes one rule that applies to every car | B |
 | `openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py` | M | Honda tuner toggle | - |
-| `openpilot/selfdrive/ui/sunnypilot/layouts/settings/vehicle/brands/honda.py` | M | Honda brand page | - |
-| `openpilot/selfdrive/ui/sunnypilot/mici/layouts/vehicle.py` | A | mici vehicle page | - |
+| `openpilot/selfdrive/ui/sunnypilot/layouts/settings/vehicle/brands/honda.py` | M | Honda brand page; the stock ACC toggle (15.6) | - |
+| `openpilot/selfdrive/ui/sunnypilot/mici/layouts/vehicle.py` | A | mici vehicle page; the stock ACC toggle (15.6) | - |
 | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py` | M | vehicle button | A: gateway button |
-| `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/cruise.yaml`, `.../vehicle.yaml`, `openpilot/sunnypilot/sunnylink/settings_ui.json` | M | sunnylink rows | - |
-| `openpilot/sunnypilot/sunnylink/statsd.py` | M | tuner telemetry | - |
+| `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/cruise.yaml`, `.../vehicle.yaml`, `openpilot/sunnypilot/sunnylink/settings_ui.json` | M | sunnylink rows; `HondaElesysStockAcc` (15.6) | - |
+| `openpilot/sunnypilot/sunnylink/statsd.py` | M | tuner telemetry; `HondaElesysStockAcc` | - |
 | `openpilot/sunnypilot/sunnylink/tools/compile_settings_ui.py` | M | UTF-8 fix (Other, 13.2) | - |
-| `openpilot/selfdrive/controls/tests/test_stopping_debounce.py`, `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py`, `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py`, `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py`, `openpilot/selfdrive/locationd/test/test_torqued_elesys.py`, `openpilot/selfdrive/locationd/test/test_lagd_elesys.py`, `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_vsa_fault_alert.py` | A | see section 12 | B: `test_latcontrol_reported_torque.py` |
+| `openpilot/selfdrive/controls/tests/test_stopping_debounce.py`, `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py`, `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py`, `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py`, `openpilot/selfdrive/locationd/test/test_torqued_elesys.py`, `openpilot/selfdrive/locationd/test/test_lagd_elesys.py`, `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_vsa_fault_alert.py`, `openpilot/sunnypilot/selfdrive/car/tests/test_honda_stock_acc.py`, `openpilot/sunnypilot/mads/tests/test_mads_honda_stock_acc.py` | A | see section 12 and 15.7 | B: `test_latcontrol_reported_torque.py` |
 | `CHANGELOG-elesys.md`, `FEATURES-elesys.md`, `docs/CHANGELOG_SERIAL_STEERING.md` | A | history, listed at the top | - |
 | `docs/fork/UPSTREAM-2026-09.md` | A | what the 2026-09 sync brought, and what it does on this car | all |
 
@@ -630,7 +635,7 @@ def create_scm_buttons_no_cruise(packer, bus, scm_buttons):
   return packer.make_can_msg("SCM_BUTTONS", bus, values)
 ```
 
-`CarController.update()` sends it under `if self.CP.carFingerprint in HONDA_ELESYS and self.CP.openpilotLongitudinalControl and self.frame % 4 == 0:` on `self.CAN.camera` (bus 2). That is 25 Hz, the stock frame's rate; the panda's RX check expects 25 Hz for 0x1A6 on bus 0. It works together with the panda blocking the driver's 0x1A6 from bus 0 to bus 2 (8.1).
+`CarController.update()` sends it under `if self.CP.carFingerprint in HONDA_ELESYS and self.CP.openpilotLongitudinalControl and self.frame % 4 == 0:` on `self.CAN.camera` (bus 2). That is 25 Hz. The stock frame runs at 50 Hz on bus 0 (route 10f); the panda's RX check declares 25 Hz for 0x1A6, which is a timeout bound and passes at 50 Hz. Not sent in stock ACC mode (15). It works together with the panda blocking the driver's 0x1A6 from bus 0 to bus 2 (8.1).
 
 Why: while the stock ACC believes the main switch is off it stays in standby. It then stops issuing comfort-braking commands that openpilot would block, which is what tripped the brake system (the code says it stops the blocked ACC brake that trips TSA; background in `S:/OP/TSA_acc_disengage_approach.md` and the other `TSA_*.md`). CMBS does not depend on MAIN, so collision braking and FCW keep working. The PCM on bus 0 still sees the real buttons, so openpilot engages normally.
 
@@ -1051,6 +1056,8 @@ There are two settings. `HondaDynamicTuningEnabled` can be reached from four pla
 | `HondaDynBrakeGain` | `PERSISTENT` | FLOAT | `0.0` |
 | `HondaDynModeSecD`, `HondaDynModeSecECON`, `HondaDynModeSecS` | `PERSISTENT` | FLOAT | `0.0` |
 | `HondaElesysGasLawV2` | `PERSISTENT`, `BACKUP` | BOOL | `1` |
+| `HondaElesysStockAcc` | `PERSISTENT` (deliberately not `BACKUP`) | BOOL | `0` |
+| `HondaElesysStockAccSaved` | `PERSISTENT` | JSON | - |
 
 `HondaDynPedalGain0`-`5` and `HondaDynWindFactor` were removed in 2026-10 with their learners. The learned values are not `BACKUP`. They change every 60 s and belong to one car, and a restored backup could bring back a tune learned on different hardware. The type must stay FLOAT: statsd depends on it to send numeric fields, and `_ParamWriter` counts write errors if a key is missing. The `EpsLkas*` keys in the same hunk belong to area A.
 
@@ -1110,6 +1117,7 @@ Adds `HondaDynamicTuningEnabled`, `HondaDynBrakeGain`, the three `HondaDynModeSe
 - `test_sunnylink_learned_values_are_read_only_and_on_a_page`
 - `test_sunnylink_keys_are_registered_and_unique`
 - `test_panel_defaults_match_the_tuner`
+- since 2026-10-04, for the stock ACC toggle (15.6): `test_stock_acc_is_registered_off_and_never_restored_from_a_backup`, `test_stock_acc_reaches_the_hook_under_one_name`, `test_stock_acc_toggle_is_offroad_only_on_both_screens`, `test_sunnylink_stock_acc_is_offroad_only_and_never_the_longitudinal_macro`
 
 `test_panel_defaults_match_the_tuner` also checks the panel's `MODE_SLOTS`, `GAS_LAW_PARAM` and `GAS_LAW_DEFAULT` against `elesys_gas.py`. None of them checks the display inconsistency in 11.4.
 
@@ -1128,7 +1136,10 @@ Adds `HondaDynamicTuningEnabled`, `HondaDynBrakeGain`, the three `HondaDynModeSe
 | `openpilot/selfdrive/controls/tests/test_stopping_debounce.py` | sunnypilot | `python tools/test_runner.py <file>` (17 tests) | 10.1 |
 | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | sunnypilot | runner (9 tests) | 10.2 |
 | `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | sunnypilot | runner (1 test) | 10.5 |
-| `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py` | sunnypilot | runner (11 tests) | section 11 |
+| `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py` | sunnypilot | runner (22 tests) | section 11, and 15.6 |
+| `opendbc/car/honda/tests/test_elesys_stock_acc.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys_stock_acc` (14 tests) | 15.2-15.3 |
+| `openpilot/sunnypilot/selfdrive/car/tests/test_honda_stock_acc.py` | sunnypilot | runner (9 tests) | 15.5 |
+| `openpilot/sunnypilot/mads/tests/test_mads_honda_stock_acc.py` | sunnypilot | runner (9 tests) | 15.5 |
 | `openpilot/selfdrive/locationd/test/test_torqued_elesys.py` | sunnypilot | runner (11 tests) | 2.4: prior and seed before any point, a zero offset as upstream, a changed prior discards the cache, a reported 0 adds no point, the seed survives EnforceTorqueControl / NNLC while other cars match upstream's re-run |
 | `openpilot/selfdrive/locationd/test/test_lagd_elesys.py` | sunnypilot | runner (5 tests) | 5.1: the lag fallbacks are 0.38 s, a learned cache survives |
 | `opendbc/sunnypilot/car/honda/test_vsa_fault.py` | opendbc | `python -m unittest opendbc.sunnypilot.car.honda.test_vsa_fault` (33 tests) | 6.6: real frames from 110 and 112 (vsaFault on the frame accFaulted first is), 111 and 113 (stored 0.5 s after b4.0 first appears, also with card starting 2.1 s late; 113's clear), 10f (a bulb check sets nothing, nor one held 4.08 s) and comma route 69 (the b3.5+b4.1 lamp state sets nothing), all through the real `CarInterface`; the DBC decode of the onset, stored and bulb-check frames and of 0x1AA/0x3D9; `VEHICLE_DYNAMICS` liveness-exempt on this car only, its counter unchecked and its checksum checked; other Hondas read False; garbage, checksum-valid random and missing frames, and a monitor that raises, never make `update()` raise; the window (bulb bits only), debounces and silence |
@@ -1255,4 +1266,111 @@ File by file:
    - `shouldStop` latches at about 0.8 m/s approaching a red light, and the car holds at `stopAccel` without crawling
    - with the tuner on, each stop logs one `hondastop` line, and the brake reaches the hold (189) about 0.8 s after the wheels read zero (7.8)
    - the car does not engage below 19 mph
+   - with `HondaElesysStockAcc` off, `pandaStates.safetyParam == 36` and the stand-down `0x1A6` goes out on bus 2; once per merge, one drive with it on and the checks in 15.8
    - `hondadyn` lines appear if the tuner is on, with `gaslaw=v2` (or `v1` if the setting is off) and `modesec` growing in the slot being driven
+
+---
+
+## 15. Stock ACC mode (`HondaElesysStockAcc`, 2026-10-04)
+
+The owner's request: drive on the car's own ACC with openpilot's lateral - "full stock, all bits pass through" - and log it. With the toggle on, openpilot does no longitudinal at all: the Elesys radar (panda bus 2) does gas and brake through its own `0x1FA`/`0x30C`, openpilot steers through the board (`0x0E4` and `0x500` on bus 0), and the panda forwards every frame between bus 0 and bus 2 in both directions. With the toggle off (the default) every byte is what it was: CarParams, CarParamsSP, every `sendcan` frame, every panda TX and forward decision, the stand-down included. No board change.
+
+The investigation behind it (five reports and a synthesis, 2026-10-04) was not kept in the repo; the facts that decided the design are repeated here, with the routes they came from.
+
+### 15.1 Why it needs its own mode
+
+`openpilotLongitudinalControl = False` on its own produces exactly the fault the owner fears:
+
+- if it is set late (after `_get_params`), bit 32 (`ELESYS_SCM_STANDDOWN`) is already in the safety param: the panda keeps blocking the driver's `0x1A6` to the radar while openpilot no longer re-sends it, so the radar hears no `SCM_BUTTONS` at all, and the radar's `0x1FA` (except during AEB) and `0x30C` stay blocked;
+- if it is set inside `_get_params`, bit 32 drops and the panda falls back to plain Nidec, whose TX list has `0x33D` relay-checked. The board's `0x33D` on bus 0 then raises a relay malfunction, which blocks all TX **and all forwarding** - CMBS included.
+
+So the mode is a new safety parameter bit with its own TX list and forwarding, and one hook that undoes everything `_get_params` decided from "openpilot long".
+
+### 15.2 The one writer: `_initialize_honda()` (`opendbc/sunnypilot/car/interfaces.py`)
+
+Called last in `setup_interfaces()`, after `get_params`/`get_params_sp` and before the `CarInterface` is built (`car_helpers.get_car`), the same slot as Toyota's `ToyotaEnforceStockLongitudinal`. It acts only when `CP.carFingerprint in HONDA_ELESYS` and the param is 1, and then sets, in one place:
+
+| field | stock mode | toggle off (unchanged) |
+|---|---|---|
+| `CP_SP.flags` | `\|= HondaFlagsSP.ELESYS_STOCK_ACC` (8) | no bit 8 |
+| `CP.openpilotLongitudinalControl` | False | True |
+| `CP.pcmCruise` | True | False with the pedal |
+| `CP.autoResumeSng` | False | True with the pedal |
+| `CP_SP.enableGasInterceptor` | False | True with the pedal |
+| `CP_SP.safetyParam` | `GAS_INTERCEPTOR` (2) cleared: 0 | 2 |
+| `CP.safetyConfigs[-1].safetyParam` | `NIDEC_ALT \| ELESYS_STOCK_ACC` = **68**, bit 32 cleared | 36 |
+| `CP.minEnableSpeed` | 19 mph, unchanged | 19 mph |
+
+It logs `Honda ELESYS stock ACC mode: openpilot longitudinal off, all frames forwarded` through `carlog`, which card forwards to cloudlog. `HondaSafetyFlags.ELESYS_STOCK_ACC = 64` (`values.py`) must equal `HONDA_PARAM_ELESYS_STOCK_ACC = 64U` (`honda.h`); `HondaFlagsSP.ELESYS_STOCK_ACC = 8` (`values_ext.py`) is the sunnypilot-side flag that MADS, the startup banner, the settings snapshot, CarController and CarState read. The param reaches the hook through `initialize_params()` (`openpilot/sunnypilot/selfdrive/car/interfaces.py`), read once per card start, so a change applies at the next ignition and never mid-drive.
+
+### 15.3 CarController and CarState
+
+- `carcontroller.py`: `self.elesys_stock_acc` from `CP_SP.flags`. The longitudinal block is `if not opLong and not self.elesys_stock_acc: ... elif opLong: ...`, so stock mode takes neither branch: no `0x1FA`, `0x200`, `0x30C`, no stand-down `0x1A6`, no Bosch supplemental `0xE5` (not in this car's DBC: the packer would build empty frames and log an error every frame), and **no CANCEL/RES_ACCEL spam**: controlsd asks for cancel whenever openpilot is not engaged, but the only cancel path is a `0x1A6` on bus 0, which no Nidec TX list allows and which would collide with the SCM's own frame. The stand-down line carries an explicit `not self.elesys_stock_acc` as well. What goes out: `0x0E4` at 100 Hz and `0x500` at 10 Hz (`LONG_ACTIVE` reads 0).
+- `carstate.py`: `accFaulted` from `BRAKE_ERROR_1/2` also when the flag is set, so the VSA's live fault still disengages (`vsa_fault_alert.py`); upstream computes it only with openpilot long.
+
+### 15.4 Panda safety (`honda.h`, param 64)
+
+- `honda_elesys_stock_acc` from `GET_FLAG(param, HONDA_PARAM_ELESYS_STOCK_ACC)`, reset in `honda_bosch_init()`.
+- TX list `HONDA_N_ELESYS_STOCK_ACC_TX_MSGS`: `{0xE4, 0, 5, relay}`, `{0x194, 0, 4, relay}`, `{0x500, 0, 8}` - the only frames openpilot may send - plus two relay checks, `HONDA_N_ELESYS_STOCK_ACC_RELAY_CHECK`: `{0x1FA, 0, 8}` and `{0x30C, 0, 8}`, both `check_relay` with `disable_static_blocking`, which `honda_tx_hook()` refuses in this mode (and a refused `0x1FA` leaves `honda_brake` alone). Nothing longitudinal goes out, no `0x1A6` on either bus, no `0x33D` (so the board's `0x33D` cannot raise a relay malfunction).
+- **Why the radar's frames are relay-checked.** The relay check (`safety.h`, `stock_ecu_check`) only looks at TX entries marked `check_relay`, and nothing on the car's side sends `0xE4` or `0x194` (0 frames of either on bus 0 on the passive routes 0e and 82). Without more, a harness relay that did not open - an undetected harness, a loose or flipped OBD-C cable, a failed relay; `set_intercept_relay()` does nothing while `harness.status` is `NC` - went unnoticed: bus 0 and bus 2 are then one wire, and every forward lands back on it (221,670 and 221,142 frames each way in two segments of routes 0e and 82, replayed through the first build). The radar sends only `0x1FA` (50 Hz) and `0x30C` (10 Hz), on bus 2; either one seen on bus 0 is that fault, as `0x30C` is in the stand-down list today. Now it is a relay malfunction as soon as the usual transition window has passed (`safety_mode_cnt > 1`, 1-2 s after the mode is set), which stops all TX and all forwarding - the car is then wired as without a comma - and `relayMalfunction` is raised. Replayed with the firmware's 1 Hz counter, routes 0e and 61 at param 68 trip at 2.01 s on the radar's `0x1FA` on bus 0 and forward nothing after it; the same routes made to look like an open relay (bus 2 only the radar's two IDs, bus 0 everything else) never trip and forward every frame both ways, decision for decision as the first build.
+- The gas interceptor is forced off (Toyota's stock-long pattern): no `0x201` RX check, gas from `0x17C`, PCM-cruise engagement.
+- `honda_nidec_fwd_hook()` blocks nothing: the radar's `0x1FA` (the ACC's brake and CMBS) and `0x30C` (the ACC's gas; relay-checked with `disable_static_blocking`, so not statically blocked either) reach bus 0, and the driver's `0x1A6` reaches the radar with the real `MAIN_ON`. `ALT_EXP_DISABLE_STOCK_AEB` has no effect in this mode.
+- **Bits 32 and 64 together** are not a valid input and are never sent (one writer, and `test_never_the_stand_down_and_the_stock_bit_together`). The panda maps them to "no stand-down, transmit nothing, forward everything" - a stock car with CMBS intact - rather than letting either side win. It keeps the relay check on the radar's frames (its TX list is `HONDA_N_ELESYS_STOCK_ACC_RELAY_CHECK` alone). That mapping rests on the TX list chosen at the end of `honda_nidec_init()` and on the override at the end of `honda_nidec_fwd_hook()`; clearing `honda_elesys_scm_standdown` in that case is defense in depth that no test can see through them (mutating it away passes every test), so review those three together.
+- The AEB latch reads bit 43 in this mode too; it only reports, since the forward is unconditional.
+
+### 15.5 sunnypilot
+
+- **Engagement follows stock ACC.** pcmCruise on a Honda: `car_events.py` raises `pcmEnable` on `ACC_STATUS` rising (measured: ACC_STATUS tracks the radar's engagement on 91.7-98.2% of engaged frames; lowest stock engagement 29.1 km/h). openpilot still refuses below `minEnableSpeed` (19 mph = 30.6 km/h), so a stock engagement at 29.1-30.6 km/h is not followed; lateral is still available.
+- **MADS at any speed** (`mads.py`). pcmCruise also raises `belowEngageSpeed` (NO_ENTRY) on every frame below 19 mph, and upstream strips it only once MADS is on - so MADS could not be switched on from off below 30 km/h or at a standstill, nor while openpilot is engaged on stock ACC and slowing in traffic (MADS off because unified engagement is off, or after a fast-wheel takeover; stock ACC holds down to ~22 km/h). In stock mode MADS strips it on every frame. selfdrived's state machine has already run on that frame, so openpilot's own refusal is unchanged, and NO_ENTRY alerts are cleared while openpilot is engaged anyway.
+- **A refused engagement says so.** On the frame `pcmEnable` arrives below 19 mph and openpilot refuses it, `belowEngageSpeed` is put back after MADS's own state machine has run (`_stock_acc_refused`), so selfdrived shows its NO_ENTRY "drive above" alert - with MADS off or on, and with unified engagement turning MADS on on that frame. `pcmEnable` is an edge (`ACC_STATUS` rising), so openpilot then stays disengaged for the rest of that stock ACC session, even above 30.6 km/h, and the later ~22 km/h drop-out has no openpilot alert (openpilot was never engaged); press SET/RES again above 30.6 km/h to have openpilot follow. Route 0e t=54.8 (29.1 km/h) is such an engagement.
+- **The drop-out.** Stock ACC lets go by itself at 21.9-22.3 km/h (routes 0e, 44, 61, 82). car_events raises `speedTooLow` (vEgo < minEnableSpeed + 2 m/s = 37.8 km/h): openpilot disengages with upstream's non-critical "openpilot Canceled / Speed too low". MADS strips that event when it keeps lateral, which also took the alert away; in stock mode it is put back on that one frame, after MADS's own state machine has run (`_stock_acc_drop_alerts`), so the driver hears the normal disengage and lateral stays. Never `cruiseDisabled`'s critical "TAKE CONTROL IMMEDIATELY" for this drop-out.
+- **A drop-out at speed** (37.8 km/h and above, by itself: a radar or VSA fault, gas and brake gone at speed) gives upstream's `cruiseDisabled`, the critical "TAKE CONTROL IMMEDIATELY / Cruise Is Off", with MADS off and - put back the same way - with MADS on, where lateral stays: the same alert either way, never silent. (With the Mads toggle on, as on this car, openpilot's engagement on SET only follows stock ACC - alerts and HUD state - and actuates nothing: lateral is MADS alone, the LKAS button, unchanged from toggle off, so "openpilot was steering and stops" applies only to a setup with the Mads toggle off.) A drop the driver caused is not one of these: on all six stock routes every drop above 37.8 km/h came 0.03-0.54 s after a brake rising edge or 0.04-0.51 s after a CANCEL press (`carState` on routes 0e, 44, 48, 61, 81, 82: 45 falling edges), and openpilot disengages on that edge (a USER_DISABLE), so it is already off when stock ACC lets go.
+- **Settings survive a stock drive** (`openpilot/sunnypilot/selfdrive/car/honda_stock_acc.py`). With openpilot long off, sunnypilot deletes `ExperimentalMode`, `DynamicExperimentalControl`, `CustomAccIncrementsEnabled`, `SmartCruiseControlVision`, `SmartCruiseControlMap` and saves `SpeedLimitMode` assist as warning (card, and the UI's speed limit panel while it is open). A stock start snapshots them into `HondaElesysStockAccSaved` (JSON, not BACKUP) in `setup_interfaces`, before `_cleanup_unsupported_params` and before CarParams are written.
+  - **"Deleted"** is what the deleters leave: the key gone, or - because manager writes the default of every unset key at each start, on every boot and update install - back at its default while the snapshot holds something else (DEC, the custom increments and both Smart Cruise Control keys are BOOL "0"); for `SpeedLimitMode`, warning where the snapshot holds assist. A first version restored only absent keys and lost four settings across any reboot between the stock drive and the next one.
+  - A later stock start keeps a snapshot value only for a key that looks deleted and takes the current value for the rest, so a second stock drive saves nothing it deleted itself, and a snapshot left behind by a drive that ended early is refreshed with anything changed since.
+  - A start with openpilot long again puts back what was deleted, and nothing else, so a choice made in between stands. It runs in `setup_interfaces` (before card reads DEC) and once more from card's params thread (`LongSettingsRestore`, 10 Hz) after `CarParamsPersistent` has held this drive's CarParams for 3 s (`SETTLE_S`): card writes it non-blocking, and the UI's params thread (5 Hz) reads it and deletes later in the same tick, so a tick that read the stock drive's CarParams can delete after any earlier restore. Only then is the snapshot forgotten; a drive that ends sooner keeps it, and the next start restores again. ExperimentalMode and DEC can read off for the first 3 s of that drive, parked.
+  - A start without openpilot long and without the mode (dashcam, unrecognized car) keeps the snapshot.
+  - Card never depends on it: every step is in a try/except that logs and drops the snapshot. With the toggle off and no snapshot, card init reads one param and the params thread does nothing more.
+- **Startup indication.** `OnroadEventSP.EventName.hondaElesysStockAcc @31`, raised by `CarSpecificEventsSP` (`car_specific.py`) for the first 5 s of car events of a stock drive only: a silent PERMANENT banner "Stock ACC Mode / Car's cruise does gas and brake, openpilot steers", `Priority.LOW`. It refuses and disengages nothing. The comma 4 shows no startup alert of its own, which is why this is an event and not a startup-alert variant.
+- **Logging.** Every stock route says so three ways: `carParamsSP.flags & 8`, `pandaStates.safetyParam == 68`, and the cloudlog line above; the banner is in `onroadEventsSP`.
+- **What it costs.** openpilot cannot cancel stock ACC: it keeps running after openpilot disengages or refuses (a refusal at 29.1-30.6 km/h, `carNotReady` from the VSA, a seatbelt) until the driver presses CANCEL or brakes. Keep **`DisengageOnAccelerator` off** in this mode (it is off on this car, route 115): with it on, any press of the accelerator disengages openpilot on the rising edge while stock ACC carries on under the driver's foot and resumes after, so openpilot shows disengaged while the car's ACC drives, until the next SET/RES. The comma 4 HUD's planned-stop rail is grey and dashed (openpilot is not driving the speed) and the curve item does not show. ICBM stays unavailable, as it always was on Nidec.
+
+### 15.6 UI and sunnylink
+
+Title "Stock ACC (testing)" in three places, all offroad only, none with an onroad cycle (Toyota's `OnroadCycleRequested` drops pandad to ELM327 pass-through and loses lateral for seconds while moving). The device enforces it for all three: sunnylink's `offroad` macro is advice to the app only, so `sunnylinkd.saveParams()` refuses `HondaElesysStockAcc` (`OFFROAD_ONLY_PARAMS`) unless `IsOffroad` is set - an onroad cycle requested from any other settings page would otherwise apply it mid-drive, re-imposing the stand-down and the `0x1FA` block under a braking stock ACC:
+
+- big UI: `HondaSettings.stock_acc_toggle` (`brands/honda.py`, `STOCK_ACC_PARAM`, `enabled=ui_state.is_offroad`), edge-synced like the tuner toggle;
+- comma 4: `VehicleLayoutMici._stock_acc_toggle`, a `BigParamControl` disabled onroad, refreshed with the others;
+- sunnylink: `vehicle.yaml` honda section, `needs_onroad_cycle: true`, `$ref: '#/macros/offroad'`. **Never the `longitudinal` macro**: `has_longitudinal_control` is false in this mode, which would lock the toggle on. `settings_ui.json` recompiled.
+
+`HondaElesysStockAcc` is not BACKUP: a sunnylink restore must never turn the mode on behind the driver's back. statsd reports it.
+
+### 15.7 Tests
+
+| test | pins |
+|---|---|
+| `opendbc/car/honda/tests/test_elesys_stock_acc.py` (14) | toggle off: CarParams bytes and CarParamsSP identical to no hook at all, with and without the pedal, for every "off" spelling; the running values (36, SP 2, interceptor, pcmCruise False); on: 68, SP 0, no bit 32, pcmCruise, no interceptor, `autoResumeSng` False, flag 8, `minEnableSpeed` kept, and only those fields changed; never 32 and 64 together; other Hondas ignore the param; CarController over 1200 frames with cancel, resume and both alternating: only `0x0E4` every frame and `0x500` every 10th, no empty frame; toggle off still sends the long frames and the stand-down, byte-identical with and without the hook; `accFaulted` from `STANDSTILL.BRAKE_ERROR_1` in stock mode, unchanged toggle off, and not for a pcmCruise car without the flag |
+| `openpilot/sunnypilot/selfdrive/car/tests/test_honda_stock_acc.py` (15) | the param reaches the hook through `initialize_params()`; with a UI model that reads `CarParamsPersistent` and deletes later in its tick, and manager's default loop as `reboot()`: a stock drive and back restores every setting; a reboot between (and between two stock drives) loses nothing; a UI tick that read the stock CarParams deleting at any params-thread tick before the settle cannot win; the snapshot stays until `CarParamsPersistent` has held this drive's bytes for `SETTLE_FRAMES`; a drive that ends sooner keeps it for the next start; a left-over snapshot is refreshed at the next stock start; a choice made in between stands; a start without openpilot long keeps the snapshot; absent settings stay absent; a broken snapshot (a wrong type, not a dict) never raises and is dropped; the banner for exactly `STOCK_ACC_ANNOUNCE_FRAMES` in stock mode only, PERMANENT and silent |
+| `openpilot/sunnypilot/mads/tests/test_mads_honda_stock_acc.py` (14) | selfdrived.step in miniature (real `CarEvents`, real `StateMachine`, MADS, alerts): MADS on at 0, 1 m/s, 20 and 29 km/h and off/on again at a standstill; MADS on at 35, 29, 25 and 10 km/h while openpilot is engaged on stock ACC; upstream's refusal without the flag; `pcmEnable` engages openpilot and MADS; no engagement below 19 mph, and the refused edge shows the NO_ENTRY alert once, MADS off or on, unified engagement or not; the 22 km/h drop-out gives "openpilot Canceled / Speed too low", normal status, MADS still active for 300 frames with no critical alert; at 39, 80 and 100 km/h "Cruise Is Off" with MADS on or off; the two alerts meet at 37.8 km/h; a brake cancel (edge before the drop) is never critical; MADS off: upstream's alert; without the flag: upstream's strip |
+| `openpilot/sunnypilot/sunnylink/athena/tests/test_sunnylinkd.py` (+1) | `saveParams()` refuses `HondaElesysStockAcc` onroad and while `IsOffroad` is unknown, and writes it offroad |
+| `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py` (+4) | the key BOOL "0", PERSISTENT, not BACKUP, the snapshot key JSON; one name from the panels to the hook; both screens offroad only, no onroad cycle; sunnylink offroad only, never `has_longitudinal_control`, and the description's facts |
+
+The panda side is in `opendbc/safety/tests/test_honda.py` (8.3 and the stock-mode classes there): besides the TX list and forwarding, `RELAY_MALFUNCTION_ADDRS` includes the radar's `0x1FA`/`0x30C` on bus 0, `honda_elesys_wire()` feeds the car's and the radar's frames in the firmware's order with the relay open (no malfunction, everything forwarded) and closed (one wire, as on a passive route: the radar's first frame on bus 0 trips it, nothing forwarded after), the transition window is respected, a refused `0x1FA` does not move the AEB latch, and the 32|64 case keeps the same relay check.
+
+### 15.8 The first stock drive
+
+Parked, with the toggle on and the car started:
+
+1. `pandaStates[].safetyModel == hondaNidec` and **`safetyParam == 68`**; `carParamsSP.safetyParam == 0` (no interceptor). No `relayMalfunction`, no `controlsMismatch`. (A stale panda firmware would echo 68 too and fall back to the plain Nidec list, whose `0x33D` raises the relay malfunction - loud. pandad reflashes on a signature mismatch before the mode is set.) `relayMalfunction` is a real check here: a relay that did not open shows the radar's frames on bus 0 and trips it.
+2. **The relay is open**, independently of the panda's own check: from about 2 s after `pandaStates` shows hondaNidec/68 until ignition off, `0x1FA` and `0x30C` appear in `can` only with src 2 (the radar) and src 128 (forwarded onto bus 0), **never with src 0**. Outside that window src 0 is normal, because the relay is closed by design: about 450-500 `0x1FA` and 90-100 `0x30C` with src 0 during the ELM327 start-up window (until ControlsReady, ~9-10 s; routes 115, 113, 10f), and a few in the last 0.1-0.5 s after key-off, when pandad switches the panda to NO_OUTPUT (13 of 36 board-era routes).
+3. `carParams.openpilotLongitudinalControl == False`, `pcmCruise == True`; `carParamsSP.flags & 8`; the log has `Honda ELESYS stock ACC mode: openpilot longitudinal off, all frames forwarded`; "Stock ACC Mode" shows for about 5 s.
+4. **The accelerator works without the interceptor.** No `0x200` is sent in this mode, so the comma pedal must pass the driver's foot through: that was seen only at a standstill (178/178 and 441/441 frames with `GAS_SENSOR` `STATE` 5), and "output = input while faulted" is inferred from upstream pedal firmware that is not on disk; the stock routes 0e-82 had no pedal fitted. Press the accelerator: `0x17C` `PEDAL_GAS` follows and `GAS_SENSOR` `STATE` reads 5. Then confirm `carState.gasPressed` and that the car pulls during the first low-speed roll, before relying on it in traffic.
+
+Driving:
+
+5. The radar's `0x1FA` at 50 Hz and `0x30C` at 10 Hz forwarded onto bus 0: in `can` they are src 128 (the panda's transmissions on bus 0 - a forward is logged there like openpilot's own frames; src 130 holds the frames forwarded to bus 2, the real `0x1A6` at 50 Hz among them), as well as src 2 where the radar sends them. And **no** `0x1FA`, `0x30C`, `0x200` or `0x1A6` in `sendcan` - only `0x0E4` and `0x500`. The VSA never latches `BRAKE_ERROR` (a forward that stopped would latch it about 1 s after the last `0x1FA`) and stock ACC brakes.
+6. No `ACC_PROBLEM` (radar `ACC_HUD`), no `TSA_ERROR` (`0x1A4` bit 33), no `BRAKE_ERROR_1/2`, no `CRUISE_FAULT_CMD`.
+7. Stock ACC engages above ~30 km/h and openpilot follows (`selfdriveState.enabled` on `ACC_STATUS`); MADS can be switched on and off at any speed, standstill included, also while openpilot follows stock ACC; the drop-out at ~22 km/h gives "Speed too low" and lateral stays.
+8. CMBS: the CMBS-off switch still works (the driver's `0x1A6` reaches the radar).
+
+Then turn the toggle off, offroad, and check on the next drive that Experimental Mode, DEC, the custom ACC increments, Smart Cruise Control and Speed Limit Assist are back as they were, and that the stand-down is back (`safetyParam == 36`, `0x1A6` on bus 2 in `sendcan` with `MAIN_ON = 0`).

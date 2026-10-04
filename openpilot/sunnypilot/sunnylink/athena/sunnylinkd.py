@@ -57,6 +57,13 @@ BLOCKED_PARAMS = {
   "ParamsVersion",         # Device-managed version counter
 }
 
+# FORK(HONDA_ACCORD_9G_AU): changed only while offroad. Read once at ignition, so an onroad cycle requested from any
+# other settings page would apply it mid-drive: openpilot longitudinal on or off under a moving car. sunnylink's
+# offroad_only enablement is advice to the app; this is the device enforcing it.
+OFFROAD_ONLY_PARAMS = {
+  "HondaElesysStockAcc",
+}
+
 
 def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
   cloudlog.info("sunnylinkd.handle_long_poll started")
@@ -239,6 +246,9 @@ def saveParams(params_to_update: dict[str, str], compression: bool = False) -> N
     # disallow modifications to blocked parameters
     if key in BLOCKED_PARAMS:
       cloudlog.warning(f"sunnylinkd.saveParams.blocked: Attempted to modify blocked parameter '{key}'")
+      continue
+    if key in OFFROAD_ONLY_PARAMS and not params.get_bool("IsOffroad"):  # FORK(HONDA_ACCORD_9G_AU), unknown = onroad
+      cloudlog.warning(f"sunnylinkd.saveParams.onroad: '{key}' can only be changed offroad")
       continue
 
     try:
