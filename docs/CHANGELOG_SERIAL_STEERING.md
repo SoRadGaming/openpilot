@@ -15,7 +15,7 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
-## 2026-10-04 — batch 2 after review: what changed, and three things for you to decide
+## 2026-10-04 — batch 2 after review: what changed, and two things for you to decide
 
 A review of batch 2 (the three entries below, already corrected) found these; all fixed
 before anything reached the car.
@@ -25,10 +25,11 @@ before anything reached the car.
   ever takes pedal away. It reduces the launch surge rather than removing it, and it is
   part of the "Measured Gas Pedal Law" only. Please confirm, and on the first drive check
   that pulling away behind a car does not feel sluggish.
-* **Decide: the wrong-way button during the confirm prompt.** As you asked, the other button
-  does nothing while the prompt is up - which also means "-" cannot lower the set speed and
-  SET under the gas cannot take your current speed for those few seconds. Brake and cancel
-  work as always. It can be narrowed to presses that would raise the set speed.
+* **Narrowed: the wrong-way button during the confirm prompt.** While the prompt
+  is up, the other button is ignored only when it would RAISE the set speed ("-" under
+  the gas above your set speed, as on 114, or "+" while it asks for "-"). A press that lowers
+  the set speed always works, so "-", and SET under the gas below your set speed, still slow
+  you down (115's 60 -> 59 happens again). Brake and cancel work as always.
 * **Decide later: the brake table below 54 km/h.** It measures the brake differently from
   openpilot's own integrator, and the two only agree at highway speed (entry below).
 * **Compact alerts can no longer be fooled by a new alert type.** Each listed alert is
@@ -143,7 +144,7 @@ disengagements: a line goes out at each).
 
 ---
 
-## 2026-10-04 — batch 2, the screen: "Press +" when it means +, a wrong button ignored, smaller alerts, a speed limit sign setting
+## 2026-10-04 — batch 2, the screen: "Press +" when it means +, a wrong button cannot raise the set speed, smaller alerts, a speed limit sign setting
 
 From routes 114 and 115 (`A_synth` F4, F4b, U1, U2). Nothing here touches steering,
 braking or the ACC stand-down; the cruise change only ignores a button.
@@ -156,16 +157,16 @@ braking or the ACC stand-down; the cruise change only ignores a button.
   takes (a test checks every set speed from 8 to 145 km/h in 0.1 steps, km/h and mph),
   and the compact banner's green key follows the words. The bug is upstream
   sunnypilot's; worth offering them.
-* **A press the wrong way while it asks is ignored.** On 114 you pressed "-"
-  while it wanted "+", with your foot on the gas: the set speed jumped from 50 to
-  72.5 (SET under the gas takes the current speed) and the prompt stayed. On 115,
-  60 became 59. Now, while the prompt is up, the other button does nothing at all -
-  no change, no confirm - and the right one confirms as before. Outside the prompt
-  the buttons are exactly as they were. **What that means in practice:** while it asks
-  for "+" (up to 5 s, and again if the limit changes while you drive), "-" cannot lower
-  your set speed and SET under the gas cannot take your current speed; brake, cancel and
-  the gas pedal work as always. If you would rather keep "-" for lowering, the rule can be
-  narrowed to presses that would raise the set speed.
+* **A press the wrong way while it asks cannot raise the set speed.** On 114 you
+  pressed "-" while it wanted "+", with your foot on the gas: the set speed jumped
+  from 50 to 72.5 (SET under the gas takes the current speed) and the prompt stayed.
+  Now, while the prompt is up, a press the other way that would RAISE the set speed
+  does nothing - no change, no confirm: "-" under the gas above your set speed, or "+"
+  while it asks for "-". A press that lowers the set speed works as always, so you can
+  always slow down: on 115, "-" while it asked for "+" took 60 to 59, and still does,
+  and SET under the gas below your set speed lowers it as before. A wrong-way press
+  never confirms, so the prompt stays until the right press or it times out; the right
+  one confirms as before. Outside the prompt the buttons are exactly as they were.
 * **Smaller alerts** (three new settings in sunnylink Visuals > HUD, all on):
   * **Compact Speed Limit Prompts.** "Auto adjusting to speed limit" and "Set speed
     changed" no longer cover the road for 5 s: nothing is drawn, the new set speed

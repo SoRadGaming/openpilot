@@ -1269,16 +1269,16 @@ The comma 4 runs the small UI. It has no Cruise or Vehicle panel, so neither pag
 - **The speed-limit confirm on this car (2026-10-04, not car-gated: see `README.md`, area SL).** The Accord's RES/+
   maps to `accelCruise` and SET/- to `decelCruise` (`carstate.py`, `values.py`), and it runs non-PCM cruise, so the
   prompt is the comma 4's "Press + (or -) to confirm speed limit". Its text now says the button the confirm accepts
-  (it said "-" for every "+", routes 114/115), and while it asks, the other button is ignored rather than changing the
-  set speed: on 114 a SET/- under the gas took the set speed from 50 to vEgo, 72.5 km/h (`cruise.py` clips a SET
-  under the gas up to vEgo). With the comma 4 HUD's compact prompts on (default), the confirm is a banner top left and
-  "set speed changed" draws nothing, so the MAX number shows the new set speed. What owner decision 5 costs, by its own
-  terms: while the prompt asks for `+` (5 s, `PRE_ACTIVE_GUARD_PERIOD`, and re-armed by every `speed_limit_changed`,
-  so a flapping limit can chain prompts), SET/- cannot lower the set speed and SET under the gas cannot take vEgo (on
-  114 the driver, overriding at 72.5 km/h, would have kept a 50 km/h set speed until the `+`); brake, cancel, main and
-  the gas pedal are untouched, and engaging from MADS-only is not affected (the block sits in
-  `_update_v_cruise_non_pcm`, which returns before it when not enabled). If that is not wanted, the rule narrows to
-  presses that would RAISE the set speed.
+  (it said "-" for every "+", routes 114/115), and while it asks, a press the other way that would RAISE the set
+  speed is ignored: on 114 a SET/- under the gas took the set speed from 50 to vEgo, 72.5 km/h (`cruise.py` clips a SET
+  under the gas up to vEgo); now it stays 50 until the `+`. A wrong-way press that lowers the set speed, or leaves it,
+  works as upstream's (115: SET/- during a `+` prompt, 60 -> 59), so for the prompt's 5 s (`PRE_ACTIVE_GUARD_PERIOD`,
+  re-armed by every `speed_limit_changed`, so a flapping limit can chain prompts) the driver can always lower the set
+  speed, with SET/- or with SET under the gas below it. That is owner decision 5, narrowed on 2026-10-05 (as written
+  on 2026-10-04 it also blocked those lowering presses). With the comma 4 HUD's compact prompts on (default), the
+  confirm is a banner top left and "set speed changed" draws nothing, so the MAX number shows the new set speed.
+  Brake, cancel, main and the gas pedal are untouched, and engaging from MADS-only is not affected (the check sits in
+  `_update_v_cruise_non_pcm`, which returns before it when not enabled).
 
 ### 11.4 sunnylink
 

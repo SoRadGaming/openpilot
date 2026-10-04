@@ -127,15 +127,25 @@ class VCruiseHelperSP:
         return True
       if button_type == ButtonType.accelCruise and self.req_plus:
         return True
-      # FORK(SPEED-LIMIT): a press the OTHER way while the 'press + (or -) to confirm' prompt is up is ignored too, not a
-      # set-speed change: '-' with the gas down raised the set speed to vEgo (route 114, 50 -> 72.5 km/h, still asking
-      # for '+'). It confirms nothing either (the planner takes only the asked-for button), so the prompt stays until the
-      # right press or its timeout. Non-PCM cruise only: that prompt's flow (PCM long asks for a set speed instead).
-      if not self.CP.pcmCruise and button_type in (ButtonType.accelCruise, ButtonType.decelCruise) and \
-         (self.req_plus or self.req_minus):
-        return True
 
     return False
+
+  def update_speed_limit_assist_pre_active_raise_blocked(self, button_type: car.CarState.ButtonEvent.Type,
+                                                         v_cruise_kph_prev: float) -> bool:
+    """FORK(SPEED-LIMIT): True when a press the OTHER way while the 'press + (or -) to confirm' prompt is up would RAISE
+    the set speed; cruise.py then keeps the set speed it had. '-' with the gas down took the set speed UP to vEgo
+    (route 114, 50 -> 72.5 km/h, still asking for '+'), and '+' during a '-' prompt raises it. A wrong-way press that
+    lowers the set speed (115: '-', 60 -> 59), or leaves it, works as always, so the driver can always slow down. Neither
+    confirms (the planner takes only the asked-for button), so the prompt stays until the right press or its timeout.
+    The asked-for press is update_speed_limit_assist_pre_active_confirmed()'s, as upstream. Non-PCM cruise only: that
+    prompt's flow (PCM long asks for a set speed instead)."""
+    if self.CP.pcmCruise:
+      return False
+    if self.sla_state != SpeedLimitAssistState.preActive and self.prev_sla_state != SpeedLimitAssistState.preActive:
+      return False
+    wrong_way = (button_type == ButtonType.decelCruise and self.req_plus) or \
+                (button_type == ButtonType.accelCruise and self.req_minus)
+    return bool(wrong_way and self.v_cruise_kph > v_cruise_kph_prev)
 
   def update_speed_limit_assist_v_cruise_non_pcm(self) -> None:
     if self.sla_state in SLA_ACTIVE_STATES and (self.prev_sla_state not in SLA_ACTIVE_STATES or

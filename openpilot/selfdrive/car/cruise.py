@@ -114,6 +114,7 @@ class VCruiseHelper(VCruiseHelperSP):
     if self.update_speed_limit_assist_pre_active_confirmed(button_type):
       return
 
+    v_cruise_kph_prev = self.v_cruise_kph  # FORK(SPEED-LIMIT)
     long_press, v_cruise_delta = VCruiseHelperSP.update_v_cruise_delta(self, long_press, v_cruise_delta)
     if long_press and self.v_cruise_kph % v_cruise_delta != 0:  # partial interval
       self.v_cruise_kph = CRUISE_NEAREST_FUNC[button_type](self.v_cruise_kph / v_cruise_delta) * v_cruise_delta
@@ -125,6 +126,11 @@ class VCruiseHelper(VCruiseHelperSP):
       self.v_cruise_kph = max(self.v_cruise_kph, CS.vEgo * CV.MS_TO_KPH)
 
     self.v_cruise_kph = np.clip(round(self.v_cruise_kph, 1), self.v_cruise_min, V_CRUISE_MAX)
+
+    # FORK(SPEED-LIMIT): a press the other way while the speed-limit confirm prompt is up may lower the set speed, never
+    # raise it (cruise_ext.py)
+    if self.update_speed_limit_assist_pre_active_raise_blocked(button_type, v_cruise_kph_prev):
+      self.v_cruise_kph = v_cruise_kph_prev
 
   def update_button_timers(self, CS, enabled):
     # increment timer for buttons still pressed

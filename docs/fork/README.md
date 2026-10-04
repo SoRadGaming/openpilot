@@ -257,9 +257,9 @@ anything above 0 is where the next merge can conflict.
 * *modify/delete*: upstream deleted the old path; the fork's edits were re-applied to the new one.
 * *added in the merge*: the file carries a fork change for the first time, made during or after the merge.
 
-### sunnypilot: 105 files and the submodule pointer
+### sunnypilot: 106 files and the submodule pointer
 
-Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-specific, gated by `SpeedLimitMapStrict` and `OsmAutoUpdateWeekly`, markers `FORK(SPEED-LIMIT)`. Batch 2 (2026-10-04) adds two ungated fixes to the confirm prompt: its comma 4 text compared the set speed in the wrong unit and said "Press -" whenever "+" was needed (upstream bug, offer upstream), and a cruise button the other way while it asks is now ignored instead of changing the set speed (non-PCM cruise only).
+Area **SL** is the speed-limit hardening of 2026-09-29 (`2e7866503`): not car-specific, gated by `SpeedLimitMapStrict` and `OsmAutoUpdateWeekly`, markers `FORK(SPEED-LIMIT)`. Batch 2 (2026-10-04) adds two ungated fixes to the confirm prompt: its comma 4 text compared the set speed in the wrong unit and said "Press -" whenever "+" was needed (upstream bug, offer upstream), and a cruise button the other way while it asks is now ignored when it would raise the set speed (a press that lowers it works as upstream; non-PCM cruise only).
 
 Area **UF** is a fix to an upstream bug, carried until upstream fixes it, markers `FORK(UPSTREAM-FIX)`. On each merge,
 check whether upstream changed the same function; if it did, take upstream's version and drop ours.
@@ -303,6 +303,7 @@ exempts it from Git LFS by path, because LFS here is sunnypilot's GitLab, which 
 | M | `openpilot/common/params_keys.h` | A+B+C+SL+UPD | Adds 7 `EpsLkas*` keys (A), 5 `HondaDyn*` keys and `HondaElesysGasLawV2` (C; the 7 pedal-gain and aero keys were removed in 2026-10), and `SpeedLimitMapStrict`, `OsmAutoUpdateWeekly`, `OsmLastCompleteDate` (SL), and `MadsEmergencySteerDisable`, `MadsEmergencySteerRate` (B, the fast-wheel takeover's settings), and `UpdaterDownloadProgress` (UPD), and the nine `Hud*` settings (HUD, 2026-10-03) and four more (`HudCompactDisengage`, `HudCompactLimitPrompts`, `HudCompactTurn`, `HudLimitSign`; HUD, 2026-10-04). | 0 | auto |
 | M | `openpilot/common/tests/test_params.py` | UF | `test_params_all_keys_by_flag`: `all_keys(flag)` for `BACKUP`, `PERSISTENT` and `CLEAR_ON_MANAGER_START` equals the keys `params_keys.h` gives that flag, all ASCII. | 0 | added in the merge |
 | M | `openpilot/selfdrive/car/card.py` | A+C | A: `stage_board_firmware()`, `write_board_firmware()` and `log_flash_trace()`, called from `params_thread` (staging from `state_publish`). C: `get_car(..., skip_fw_query=bool(fixed_fingerprint))`; since 2026-10-03 (`FORK(HONDA_ACCORD_9G_AU)`) `state_publish()` sends `carStateSP` before `carState`, so selfdrived, which blocks on `carState` and polls `carStateSP` with `sm.update(0)`, never reads the previous frame's (the VSA fault's onset alert depends on it). | 0 | auto |
+| M | `openpilot/selfdrive/car/cruise.py` | SL | `_update_v_cruise_non_pcm()` (2026-10-05, `FORK(SPEED-LIMIT)`): keeps the set speed from before a button's change (`v_cruise_kph_prev`), and after upstream's clip restores it when `update_speed_limit_assist_pre_active_raise_blocked()` (`cruise_ext.py`) says a wrong-way press at the confirm prompt raised it. Two marked places; with no prompt up every press is upstream's. Upstream file. | 0 | new (2026-10-05) |
 | M | `openpilot/selfdrive/car/helpers.py` | B | `convert_carControlSP()` rebuilds `lateralControl`. | 0 | auto |
 | A | `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | B (+A) | Every nested `CarControlSP` struct, and the firmware fields, through the capnp→dataclass seam (1 test). | 0 | new→moved |
 | M | `openpilot/selfdrive/controls/controlsd.py` | B | Subscribes `carStateSP`, calls `LaC.set_linbus_gateway(present, actuating)` before `LaC.update()`, and calls `run_ext(sm, pm, lac_log, LaC)`. | 0 | CONFLICT |
@@ -349,8 +350,8 @@ exempts it from Git LFS by path, because LFS here is sunnypilot's GitLab, which 
 | A | `openpilot/sunnypilot/selfdrive/assets/icons_mici/gateway.png` | HUD | The gateway tile's icon, option "B, inline bridge" (128×88, white on transparent, the harness stubs at 50%). A plain git object, not Git LFS like the other PNGs here: `.gitattributes` exempts it (see that row). The update dialog keeps `icon_software.png`. | 0 | new |
 | A | `openpilot/sunnypilot/selfdrive/locationd/lat_speed_split.py` | C | SHADOW speed-split lateral factor (2026-10-04, owner decision 9, A_synth L3): torqued's own TLS fit below and above 70 km/h from six running moments per half (`SplitHalf`, `tls_fit`), logged as a `latsplit` line once a minute; applies nothing. Elesys Accord, live (not decimated) estimator only; never raises. | - | new (2026-10-04) |
 | A | `openpilot/sunnypilot/selfdrive/locationd/tests/test_lat_speed_split.py` | C | The moment fit equals `estimate_params()`, moments combine exactly across drives, the split, only torqued's points, `lateralTorqueParameters` identical with and without it, the gating, the log cadence, never raising, torqued running as upstream when the module cannot be imported (10 tests). | - | new (2026-10-04) |
-| M | `openpilot/sunnypilot/selfdrive/car/cruise_ext.py` | SL | `update_speed_limit_assist_pre_active_confirmed()` (2026-10-04): while the confirm prompt is up (preActive) on non-PCM cruise, a `+`/`-` press the OTHER way than asked is also swallowed, not a set-speed change (route 114: `-` under the gas raised 50 to 72.5 km/h). One `FORK(SPEED-LIMIT)` block after upstream's two lines; outside preActive, and on PCM cruise, nothing changes. Owner decision 5 as written, so while a `+` prompt is up (`PRE_ACTIVE_GUARD_PERIOD`, 5 s, re-armed by every limit change) `-` cannot lower the set speed and SET under the gas cannot take vEgo; brake, cancel, main and the gas pedal are untouched. | 0 | new (2026-10-04) |
-| A | `openpilot/sunnypilot/selfdrive/car/tests/test_speed_limit_confirm_buttons.py` | SL | The buttons while asked: routes 114 and 115's wrong presses ignored (with and without the gas, short and long), the right press confirms as before, also after a wrong one; outside preActive, at the limit and on a PCM car nothing changes (9 tests; 5 fail on the code before). | - | new (2026-10-04) |
+| M | `openpilot/sunnypilot/selfdrive/car/cruise_ext.py` | SL | `update_speed_limit_assist_pre_active_raise_blocked(button_type, v_cruise_kph_prev)` (2026-10-04, narrowed 2026-10-05), a new method; `update_speed_limit_assist_pre_active_confirmed()` is upstream's again. True while the confirm prompt is up (preActive, this or the previous frame) on non-PCM cruise when a `+`/`-` press the OTHER way than asked has RAISED the set speed (route 114: `-` under the gas, 50 to vEgo 72.5 km/h; `+` during a `-` prompt), and `cruise.py` then keeps the set speed it had. A wrong-way press that lowers the set speed or leaves it is upstream's set-speed change (115: `-`, 60 to 59; SET under the gas below the set speed), so for the prompt's `PRE_ACTIVE_GUARD_PERIOD` (5 s, re-armed by every limit change) the driver can still lower it. Neither confirms (the planner takes only the asked-for button). Outside preActive, and on PCM cruise, nothing changes; brake, cancel, main and the gas pedal are untouched. Owner decision 5, narrowed. | 0 | new (2026-10-04) |
+| A | `openpilot/sunnypilot/selfdrive/car/tests/test_speed_limit_confirm_buttons.py` | SL | The buttons while asked: a wrong-way press that would raise the set speed is ignored (114's `-` under the gas, `+` during a `-` prompt, SET under the gas just above the set speed, short and long), one that lowers it works (115's `-`, repeated `-`, a long `-`, SET under the gas below the set speed); the right press confirms as before, also after a wrong one; outside preActive, at the limit and on a PCM car nothing changes (12 tests; 5 fail on the code before batch 2, and 5 on the unnarrowed rule of 2026-10-04). | - | new (2026-10-04) |
 | M | `openpilot/sunnypilot/selfdrive/car/interfaces.py` | C | `FORK(HONDA_ACCORD_9G_AU)` in `_initialize_torque_lateral_control()`: keeps `latAccelOffset` across the EnforceTorqueControl / NNLC re-run of `configure_torque_tune()`, which resets it to 0.0 (2026-10). Only `HONDA_ELESYS` carries a nonzero seed (-0.43); every other car ends where upstream leaves it. | 0 | new |
 | M | `openpilot/sunnypilot/selfdrive/controls/controlsd_ext.py` | B | Fills `CC_SP.lateralControl` from `lac_log` and `LaC`. | 0 | auto |
 | M | `openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_ext_base.py` | B | `update_output_torque()` also freezes on the owning controller's `integrator_frozen`. | 0 | added in the merge |
@@ -677,7 +678,7 @@ window in a child process, about two minutes, skipping where none opens; `HUD_RE
 Batch 2 (2026-10-04, UI): `test_hud_cluster.py` is 90 after the round-1 review (88 before it; the sign setting and the compact alerts, with the allow-list's
 SAFETY walk of every event) and `test_hud_render.py` 35 (32 before; about four minutes now); new
 `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_speed_limit_pre_active_alert.py` (7) and
-`openpilot/sunnypilot/selfdrive/car/tests/test_speed_limit_confirm_buttons.py` (9).
+`openpilot/sunnypilot/selfdrive/car/tests/test_speed_limit_confirm_buttons.py` (12 since the 2026-10-05 narrowing; 9 before).
 
 `test_stopping_debounce.py` no longer stubs `sys.modules`; it imports the real `longcontrol`, `drive_helpers` and
 `stopping_tune`.
@@ -896,6 +897,9 @@ Then review these auto-merged files by reading the fork hunks, not only the conf
 * `openpilot/selfdrive/car/card.py`: `skip_fw_query=`, `stage_board_firmware(CS_SP)` at the end of `state_publish`,
   and `write_board_firmware()` plus `log_flash_trace()` in `params_thread`.
 * `openpilot/selfdrive/car/helpers.py`: the `lateralControl` rebuild.
+* `openpilot/selfdrive/car/cruise.py`: `v_cruise_kph_prev` taken just before the set-speed change in
+  `_update_v_cruise_non_pcm()`, and the `update_speed_limit_assist_pre_active_raise_blocked()` restore after the clip,
+  last in that method (`test_speed_limit_confirm_buttons.py` fails if either is lost).
 * `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_hook.py`: every param it reads still exists (the registration test
   checks this).
 * `latcontrol.py`, `latcontrol_torque.py`, `latcontrol_torque_v0.py` and `latcontrol_torque_ext_base.py`: the gate is
@@ -1125,8 +1129,8 @@ These are the hunks to look at first when judging whether a merge changed anothe
   electronic sign need NSW Speed Zones on Live, so they appear in NSW only. The compact alerts (2026-10-04) reach every
   comma 4 too, but only for the named normal alerts; nothing critical or asking for the wheel can be one.
 * **The speed-limit confirm fixes (SL, 2026-10-04)** reach every car with Speed Limit Assist: the comma 4 text (every
-  car with openpilot long on non-PCM cruise; PCM long keeps its own text), and the wrong-direction press (non-PCM cruise
-  only; a PCM car's buttons are as upstream's).
+  car with openpilot long on non-PCM cruise; PCM long keeps its own text), and the wrong-direction press that would raise the set
+  speed (non-PCM cruise only; a press that lowers it, and a PCM car's buttons, are as upstream's).
 * **`card.py` passes `skip_fw_query=bool(fixed_fingerprint)`.** Every car whose platform the user picked skips the
   VIN/FW query and runs with empty `carFw`/VIN, not just this car.
 * **`longcontrol.py`** reads a Honda parameter (`HondaDynamicTuningEnabled`) in a file every car runs. It is inert
