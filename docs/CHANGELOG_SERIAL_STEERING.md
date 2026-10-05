@@ -15,6 +15,42 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-05 — batch 3 after review (fix round 1): one pump change for you to confirm, the brake law is not accepted
+
+A review of batch 3 (the entry below, corrected where it was wrong) found these. Nothing has reached the car.
+
+* **Decide: the quieter pump now delivers the soft stop's hold.** With Dynamic Tuning on, the soft stop holds the brake
+  at about 125 counts while the car rolls and raises it to the full 189 hold half a second after the wheels stop. The
+  study's rule only let the pump run at a standstill to build a hold from under 100 counts, so that last rise was
+  never pumped and - since braking only rises while the pump runs - the car would have sat on ~125 for the whole stop,
+  never topped up. No logged stop has held that low. The rule now also runs one burst at a standstill when the brake
+  rises more than 15 counts above what was delivered, as the previous rule did; a steady hold is still never topped up.
+  On the 66 study routes that is one extra burst in 107 stops. Say if you would rather have the study's rule as
+  written (CAR doc 7.2).
+* **The measured brake law is not accepted, and the descriptions now say so.** It fails two of your acceptance
+  checks, both toward less brake: the 72-90 km/h band is off by 0.076 m/s² (limit 0.05), and in the simulator
+  openpilot's correction while braking misses its ±0.05 limit, slowing about 0.18 m/s² less than asked in the first
+  second of braking (0.09 today). The simulator cannot judge stops, holds or the pump (its coast-down is the law's
+  own, it gets the stop wrong by about 0.5 m/s², its pump model changes nothing), so "stops unchanged" was not
+  evidence and is gone. The suggested fixes were tried: braking 0.05 earlier passes the correction check on the
+  nominal plant (+8% brake applications) but brakes where coasting would do and still fails when the coast-down is
+  0.1 off - as today's law does; the soft-toe width changes nothing. Nothing adopted; it stays off and needs your
+  sign-off. "Stops are unchanged" now reads "stops use the current law with the learned correction at x1.00".
+* **The learned brake gain is saved only once a minute again.** Batch 3 also saved it at every disengage and at
+  ignition-off, which changes where the next drive starts - not "logging only". Now those two saves carry the
+  drive-mode counters only.
+* **The route check could not see a hold that rolls** - its creep verdict always read PASS: it ended a hold on the
+  first moving frame. A hold now runs from the stop for as long as it is held. Also fixed: driver brake take-overs
+  always read 0 (a press cancels openpilot, so those stops never counted; 115 has three); the final-approach number
+  now uses pump2's own method; a one-frame burst-edge jitter no longer fails a correct rule (115 sat 0.04% above the
+  line); the brake law is read from the route's own lines (the setting alone can be on without the law running);
+  `--rule` no longer overrides the log; the learner verdict compares each drive's own change; each hold shows the
+  brake pressure actually delivered.
+* **The two settings can no longer be changed from sunnylink while driving** (the device refuses, as for stock ACC
+  mode), so a later onroad cycle cannot switch the pump rule or the brake law mid-drive.
+* The end-of-drive log line is attempted at ignition-off but may not reach the route (loggerd stops in the same
+  pass); the saved counters are what to rely on. A sunnylink restore can bring the brake law setting back on.
+
 ## 2026-10-05 — batch 3: a quieter brake pump (on), and a measured brake law (off, for testing)
 
 * **The brake pump runs only to build pressure** ("Quieter brake pump", `HondaElesysPumpV6`, **on by default**;
@@ -24,7 +60,8 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
   braking above 9 km/h still runs it continuously, and braking at 100+ counts while moving gets a burst at
   least every 6 s - which also catches a hold that starts to roll. Gone: the 30 s top-up while stopped, the
   continuous run while creeping into a stop, and the light-braking backstop. Replayed over the 66 current
-  routes: 18% fewer pump starts for 2% less pump time; at stops, no re-pump once the car is held. The cost:
+  routes: 18% fewer pump starts for 2% less pump time; at stops, no re-pump once the car is held (corrected after
+  review: one burst still delivers the soft stop's rise to the hold, above). The cost:
   applications too light to matter (under about 0.1 m/s²) never pump. Turn it off to go back to the previous
   rule; pump2's abort list (7.2) says when.
 * **Replayed through the real controller** on routes 10f, 113 and 115: both rules reproduce the study's table,
@@ -45,8 +82,10 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
   - Fitted offline on routes up to 10f: held-out (110-115) error 0.158 m/s² against today's 0.284 (pass, <= 0.17);
     every speed band within 0.015 except 72-90 km/h at -0.076 on two routes (fails the 0.05 rule), and nothing held
     out above 90 km/h. In the closed-loop simulator: a third fewer brake applications, none of the light ones (87 ->
-    0), 37% less brake time while moving, 7% fewer pump starts and 13% less pump time, tracking as good or better,
-    stops unchanged. The cost: in the first second of braking it slows 0.18 m/s² less than asked (today 0.09).
+    0), 37% less brake time while moving, 7% fewer pump starts and 13% less pump time, overall tracking as good or
+    better (worse while braking). The cost: in the first second of braking it slows 0.18 m/s² less than asked (today
+    0.09), and openpilot's correction while braking misses B4's ±0.05 (corrected after review: it fails two
+    acceptance checks, and the simulator cannot judge stops; above).
   - The simulator was rerun with the real controller code in the loop: on all 17 routes it reproduces the fit's
     numbers exactly (pump bit on every frame, brake count on all but 4 of 2,027,232 frames, by one count). With the
     setting off, 115 and 10f replayed through the real car code give every CAN frame and output identical to before
@@ -67,7 +106,8 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
   `shadow_learn_report.py` will not pool different builds; route 115's 0.72 launch multiplier is discarded
   (measured without the cap). The shadow learners also run with Dynamic Tuning off (logging only), the launch is
   measured from the first wheel motion, the ECON/S time counts manual driving too (`modemov`, logged only), and
-  the drive's totals are saved at every disengage and at ignition-off rather than only once a minute. Replayed
+  the drive's totals are saved at every disengage and at ignition-off rather than only once a minute (corrected
+  after review: the counters only - the learned brake gain keeps its once-a-minute save). Replayed
   through the real controller on 115 and 10f with the tuner on and off: every CAN frame and actuator output
   identical with and without these changes, and against the pre-batch tree (392,010 control steps).
 
