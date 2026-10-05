@@ -15,6 +15,62 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-05 — batch 3: a quieter brake pump (on), and a measured brake law (off, for testing)
+
+* **The brake pump runs only to build pressure** ("Quieter brake pump", `HondaElesysPumpV6`, **on by default**;
+  rule C1, `CAR-HONDA-ACCORD-9G-AU.md` 7.2). Measured on this car: a rise in braking arrives only while the
+  pump runs, while a steady brake, a release and a built standstill hold need nothing. So each application gets
+  one short burst at about 12 counts, each further rise one more (after a 1 s gap unless it is big), firm
+  braking above 9 km/h still runs it continuously, and braking at 100+ counts while moving gets a burst at
+  least every 6 s - which also catches a hold that starts to roll. Gone: the 30 s top-up while stopped, the
+  continuous run while creeping into a stop, and the light-braking backstop. Replayed over the 66 current
+  routes: 18% fewer pump starts for 2% less pump time; at stops, no re-pump once the car is held. The cost:
+  applications too light to matter (under about 0.1 m/s²) never pump. Turn it off to go back to the previous
+  rule; pump2's abort list (7.2) says when.
+* **Replayed through the real controller** on routes 10f, 113 and 115: both rules reproduce the study's table,
+  the C1 code matches the study's reference rule on every frame, and the previous rule reproduces the pump bit
+  the car actually sent. With both new settings off, every CAN frame is the same as before batch 3 (432,675
+  control steps).
+* **"Measured brake law (testing)"** (`HondaElesysBrakeLawV2`, **off by default**; `elesys_brake.py`, CAR doc 7.10).
+  Today's law assumes the car coasts at almost nothing and that the first brake count already brakes; measured, the
+  car coasts at 0.3-0.5 m/s² above 18 km/h and the brake does nothing for its first ~20-40 counts. So a third of
+  openpilot's braking asked for slowing that coasting alone gives, at a few counts that only ran the pump. With the
+  setting on, above 14 km/h in normal control the brake comes on only below the measured coast-down, starts at the
+  low end of the dead zone (8-32 counts) and follows a measured slope per speed band; between the coast-down and the
+  point where any pedal would end coasting, neither pedal nor brake is sent. The pedal's zero point moves with it,
+  using a pedal offset re-measured after the pedal's own recalibration of 2026-09-16/17 (which also means gas law v2's
+  tables want a refit on routes from 000000dd). Below 14 km/h, in the stopping state and at a standstill nothing
+  changes, and the learned brake gain is held at x1.00 while the setting is on (the stored value is kept). It needs
+  gas law v2 and stays off without it.
+  - Fitted offline on routes up to 10f: held-out (110-115) error 0.158 m/s² against today's 0.284 (pass, <= 0.17);
+    every speed band within 0.015 except 72-90 km/h at -0.076 on two routes (fails the 0.05 rule), and nothing held
+    out above 90 km/h. In the closed-loop simulator: a third fewer brake applications, none of the light ones (87 ->
+    0), 37% less brake time while moving, 7% fewer pump starts and 13% less pump time, tracking as good or better,
+    stops unchanged. The cost: in the first second of braking it slows 0.18 m/s² less than asked (today 0.09).
+  - The simulator was rerun with the real controller code in the loop: on all 17 routes it reproduces the fit's
+    numbers exactly (pump bit on every frame, brake count on all but 4 of 2,027,232 frames, by one count). With the
+    setting off, 115 and 10f replayed through the real car code give every CAN frame and output identical to before
+    (392,010 control steps, tuner on and off). 29 tests.
+* Both settings are offroad only and take effect at the next drive: the car reads them once, at ignition, into
+  the drive's car parameters (flags 16 and 32), so every route records which pump rule and brake law it ran.
+  Never in stock ACC mode.
+* **A route check for the A/B** (`openpilot/sunnypilot/tools/brake_route_check.py`, CAR doc 9.4): give it route
+  folders (`S:\OP\sunny_logs\<route>`) and it prints the pump study's proof-plan metrics and a PASS / ABORT on
+  each abort criterion, plus the brake law's acceptance numbers; `--baseline` takes the other arm's routes. On
+  today's 10f, 113 and 115 it reproduces the study's table exactly, the logged pump bit matches today's rule on
+  99.5-99.8% of braking frames, nothing aborts, and three of the comparisons wait for C1 drives. One reading
+  differs from the plan: a hold counts as moved when the car's own wheel, gearbox or speed signal moves; the
+  radar and camera limits only flag a hold to look at, because today's held stops already read 0.2-0.3 m of radar
+  change with nothing moving.
+* **Logging you can trust, no change to how the car drives** (learnaudit B1, G5, G6): every `hondashadow` line now
+  says what it was measured on - commit, gas law, launch cap, pump rule, brake law, tuner on/off - and
+  `shadow_learn_report.py` will not pool different builds; route 115's 0.72 launch multiplier is discarded
+  (measured without the cap). The shadow learners also run with Dynamic Tuning off (logging only), the launch is
+  measured from the first wheel motion, the ECON/S time counts manual driving too (`modemov`, logged only), and
+  the drive's totals are saved at every disengage and at ignition-off rather than only once a minute. Replayed
+  through the real controller on 115 and 10f with the tuner on and off: every CAN frame and actuator output
+  identical with and without these changes, and against the pre-batch tree (392,010 control steps).
+
 ## 2026-10-04 — batch 2 after review: what changed, and two things for you to decide
 
 A review of batch 2 (the three entries below, already corrected) found these; all fixed
