@@ -880,7 +880,7 @@ def stops(F: dict) -> dict:
       continue
     if (F["gp"][w] == 1).any() or not (la[i - 50:i].all() and (cb[i - 25:i] > 0).all()):
       continue
-    ap = approach(F, i)
+    ap = approach(F, int(i))
     a_s = F["a"][i - 25:i + 50]
     jerk = np.abs(np.diff(rolling(a_s, 5, np.nanmean, min_periods=3, center=True))) / DT if len(a_s) > 6 else np.array([np.nan])
     j = i + 50

@@ -351,6 +351,7 @@ class TestHolds(unittest.TestCase):
     t = np.arange(n) * self.DT
     v = np.zeros(n)
     if roll_from is not None:
+      assert roll_to is not None
       v[(t >= roll_from) & (t < roll_to)] = v_roll
     cb = np.full(n, 189.0)
     if release_at is not None:

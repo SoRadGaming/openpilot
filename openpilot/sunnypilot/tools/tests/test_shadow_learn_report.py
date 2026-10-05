@@ -158,6 +158,7 @@ class TestShadowLearnReport(OpenpilotTestCase):
     pooled = comb.call_args[0][0]
     self.assertEqual(sorted(pooled), ["aaaa0001", "aaaa0002"])
     c = rep.combine_long(pooled)
+    assert c is not None
     i = max(range(len(c["bn"])), key=lambda k: c["bn"][k])
     self.assertAlmostEqual(c["be"][i], 0.2, places=3, msg="0.9 from the other build must not be in the mean")
     assert "pump=v6" in text
