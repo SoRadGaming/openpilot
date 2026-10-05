@@ -77,10 +77,11 @@ BRAKE_LAW_V2_PARAM = "HondaElesysBrakeLawV2"
 BRAKE_LAW_V2_TITLE = tr_noop("Measured brake law (testing)")
 BRAKE_LAW_V2_DESC = tr_noop("On: the brake command follows this car's measured coast-down and brake response in each " +
                             "speed band, and no brake is sent where coasting alone gives the slowing asked for. Stops " +
-                            "are unchanged, and the learned brake correction is held at x1.00 while it is on. Off: the " +
-                            "current brake law. Being tested - leave it off unless you are testing it. Needs the measured " +
-                            "gas pedal law; with that off, this stays off. sunnypilot longitudinal on the 2013-15 " +
-                            "Accord (Elesys) only. Takes effect at the next car start.")
+                            "use the current law, with the learned brake correction held at x1.00 while it is on. Off: " +
+                            "the current brake law. Being tested, and it does not yet pass all of its acceptance checks " +
+                            "(it brakes a little late as braking begins) - leave it off unless you are testing it. Needs " +
+                            "the measured gas pedal law; with that off, this stays off. sunnypilot longitudinal on the " +
+                            "2013-15 Accord (Elesys) only. Takes effect at the next car start.")
 
 # reading 13 params at 60 fps would be 13 file reads a frame; once a second is
 # plenty for a readout that only changes once a minute anyway

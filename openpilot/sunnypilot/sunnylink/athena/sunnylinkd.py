@@ -59,9 +59,12 @@ BLOCKED_PARAMS = {
 
 # FORK(HONDA_ACCORD_9G_AU): changed only while offroad. Read once at ignition, so an onroad cycle requested from any
 # other settings page would apply it mid-drive: openpilot longitudinal on or off under a moving car. sunnylink's
-# offroad_only enablement is advice to the app; this is the device enforcing it.
+# offroad_only enablement is advice to the app; this is the device enforcing it. The pump rule and the brake law
+# (batch 3) are read at ignition the same way: a later onroad cycle or card restart would switch them mid-drive.
 OFFROAD_ONLY_PARAMS = {
   "HondaElesysStockAcc",
+  "HondaElesysPumpV6",
+  "HondaElesysBrakeLawV2",
 }
 
 
