@@ -57,6 +57,38 @@ sections:
       this mode; they come back as they were at the first drive after it is turned off.
     enablement:
     - $ref: '#/macros/offroad'
+  # FORK(HONDA_ACCORD_9G_AU): HondaElesysPumpV6 and HondaElesysBrakeLawV2, read once at ignition (opendbc
+  # _initialize_honda), openpilot longitudinal only. Offroad only, and not the 'longitudinal' macro, like stock ACC.
+  - key: HondaElesysPumpV6
+    widget: toggle
+    needs_onroad_cycle: true
+    title: Quieter brake pump
+    description: On - the brake pump runs when the brake is applied or increased, and not otherwise - no top-ups while
+      stopped and no continuous run while creeping into a stop. About a fifth fewer pump starts for the same braking.
+      Off - the previous pump rule. sunnypilot longitudinal on the 2013-15 Accord (Elesys) only. Applies at the next
+      drive.
+    details: The pump builds brake pressure; measured on this car, a rise in braking arrives only while it runs, and a
+      steady brake or a built standstill hold keeps without it. On, each brake application gets one short burst at
+      about 12 counts and each further rise one more; firm braking (over 200 counts) above 9 km/h still runs it
+      continuously, and braking at 100 counts or more while moving runs it at least every 6 s. Very light
+      applications, peaking under about 0.1 m/s^2, never start it. Turn it off to go back to the previous rule if a
+      stop ever falls short or a hold creeps.
+    enablement:
+    - $ref: '#/macros/offroad'
+  - key: HondaElesysBrakeLawV2
+    widget: toggle
+    needs_onroad_cycle: true
+    title: Measured brake law (testing)
+    description: On - the brake command follows this car's measured coast-down and brake response in each speed band,
+      and no brake is sent where coasting alone gives the slowing asked for. Stops are unchanged, and the learned brake
+      correction is held at x1.00 while it is on. Off - the current brake law. Being tested; leave it off unless you
+      are testing it. Needs the Measured Gas Pedal Law; with that off, this stays off. sunnypilot longitudinal on
+      the 2013-15 Accord (Elesys) only. Applies at the next drive.
+    details: Applies at the next drive - the car reads it once when it goes onroad, and the drive's car parameters
+      record which law it ran. The gas pedal's zero point moves with it, so the hand-over between gas and brake stays
+      consistent.
+    enablement:
+    - $ref: '#/macros/offroad'
 - id: hyundai
   title: Hyundai / Kia / Genesis Settings
   description: ''

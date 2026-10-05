@@ -186,6 +186,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // FORK(HONDA_ELESYS): the gas law. 1 = v2, the measured pedal response; 0 = v1, the law before it.
     // A setting, so BACKUP; read once at ignition (elesys_gas.py).
     {"HondaElesysGasLawV2", {PERSISTENT | BACKUP, BOOL, "1"}},
+    // FORK(HONDA_ACCORD_9G_AU): the brake pump rule (1 = C1, the quieter rule; 0 = v5, the rule before it) and the brake
+    // law (1 = v2, the measured law; 0 = today's). Settings, so BACKUP; read once at ignition by opendbc's
+    // _initialize_honda, openpilot longitudinal only, into CarParamsSP.flags (ELESYS_PUMP_V6 / ELESYS_BRAKE_LAW_V2).
+    {"HondaElesysPumpV6", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"HondaElesysBrakeLawV2", {PERSISTENT | BACKUP, BOOL, "0"}},
     // FORK(HONDA_ACCORD_9G_AU): stock ACC mode - the car's ACC does gas and brake, openpilot steers only. Read once at
     // ignition (opendbc _initialize_honda). Not BACKUP: a sunnylink restore must never turn it on behind the driver's
     // back. HondaElesysStockAccSaved holds the longitudinal settings sunnypilot deletes while openpilot long is off,

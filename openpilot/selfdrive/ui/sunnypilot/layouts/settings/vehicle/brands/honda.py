@@ -64,6 +64,24 @@ STOCK_ACC_DESC = tr_noop("The car's own cruise control does gas and brake; openp
                          "the car's CANCEL button or the brake. CMBS is unaffected. 2013-15 Accord (Elesys) only.")
 STOCK_ACC_OFFROAD_NOTE = tr_noop("Can only be changed while the car is off.")
 
+# FORK(HONDA_ACCORD_9G_AU): the brake pump rule and the brake law, read once at ignition by opendbc's _initialize_honda
+# (openpilot longitudinal only, never in stock ACC mode) into CarParamsSP.flags. Offroad only like stock ACC, so the
+# route that follows records the setting it ran. Defaults as in params_keys.h: the quieter pump on, the law off.
+PUMP_V6_PARAM = "HondaElesysPumpV6"
+PUMP_V6_TITLE = tr_noop("Quieter brake pump")
+PUMP_V6_DESC = tr_noop("On: the brake pump runs when the brake is applied or increased, and not otherwise - no top-ups " +
+                       "while stopped and no continuous run while creeping into a stop. About a fifth fewer pump " +
+                       "starts for the same braking. Off: the previous pump rule. sunnypilot longitudinal on the " +
+                       "2013-15 Accord (Elesys) only. Takes effect at the next car start.")
+BRAKE_LAW_V2_PARAM = "HondaElesysBrakeLawV2"
+BRAKE_LAW_V2_TITLE = tr_noop("Measured brake law (testing)")
+BRAKE_LAW_V2_DESC = tr_noop("On: the brake command follows this car's measured coast-down and brake response in each " +
+                            "speed band, and no brake is sent where coasting alone gives the slowing asked for. Stops " +
+                            "are unchanged, and the learned brake correction is held at x1.00 while it is on. Off: the " +
+                            "current brake law. Being tested - leave it off unless you are testing it. Needs the measured " +
+                            "gas pedal law; with that off, this stays off. sunnypilot longitudinal on the 2013-15 " +
+                            "Accord (Elesys) only. Takes effect at the next car start.")
+
 # reading 13 params at 60 fps would be 13 file reads a frame; once a second is
 # plenty for a readout that only changes once a minute anyway
 LEARNED_REFRESH_S = 1.0
@@ -187,12 +205,25 @@ class HondaSettings(BrandSettings):
       param=STOCK_ACC_PARAM,
       enabled=ui_state.is_offroad)
 
-    self.items = [self.dynamic_tuning_toggle, self.learned_values_item, self.stock_acc_toggle]
+    self.pump_v6_toggle = toggle_item_sp(
+      title=tr(PUMP_V6_TITLE),
+      description=tr(PUMP_V6_DESC),
+      param=PUMP_V6_PARAM,
+      enabled=ui_state.is_offroad)
 
-    self._toggle_params = {
-      TUNING_PARAM: self.dynamic_tuning_toggle.action_item.get_state(),
-      STOCK_ACC_PARAM: self.stock_acc_toggle.action_item.get_state(),
-    }
+    self.brake_law_v2_toggle = toggle_item_sp(
+      title=tr(BRAKE_LAW_V2_TITLE),
+      description=tr(BRAKE_LAW_V2_DESC),
+      param=BRAKE_LAW_V2_PARAM,
+      enabled=ui_state.is_offroad)
+
+    self.items = [self.dynamic_tuning_toggle, self.learned_values_item, self.stock_acc_toggle,
+                  self.pump_v6_toggle, self.brake_law_v2_toggle]
+
+    # the toggles whose params can also change behind this panel (Settings > Cruise, sunnylink)
+    self._synced_toggles = ((TUNING_PARAM, self.dynamic_tuning_toggle), (STOCK_ACC_PARAM, self.stock_acc_toggle),
+                            (PUMP_V6_PARAM, self.pump_v6_toggle), (BRAKE_LAW_V2_PARAM, self.brake_law_v2_toggle))
+    self._toggle_params = {param: item.action_item.get_state() for param, item in self._synced_toggles}
 
   def _on_reset_clicked(self) -> None:
     gui_app.push_widget(ConfirmDialog(text=tr(RESET_CONFIRM), confirm_text=tr("Reset"), callback=self._on_reset_confirmed))
@@ -223,7 +254,7 @@ class HondaSettings(BrandSettings):
     # Edge triggered on the param, never level: a tap writes its param
     # non-blocking, so a level sync would drag the toggle back to the old value
     # for the frame or two before that write lands.
-    for param, item in ((TUNING_PARAM, self.dynamic_tuning_toggle), (STOCK_ACC_PARAM, self.stock_acc_toggle)):
+    for param, item in self._synced_toggles:
       value = ui_state.params.get_bool(param)
       if value != self._toggle_params[param]:
         self._toggle_params[param] = value
@@ -245,6 +276,12 @@ class HondaSettings(BrandSettings):
     if self.stock_acc_toggle.description != stock_acc_desc:
       self.stock_acc_toggle.set_description(stock_acc_desc)
     self.stock_acc_toggle.show_description(True)
+
+    # the pump rule and the brake law: offroad only, read at the next car start, like stock ACC
+    for item, desc in ((self.pump_v6_toggle, PUMP_V6_DESC), (self.brake_law_v2_toggle, BRAKE_LAW_V2_DESC)):
+      full_desc = tr(desc) + ("" if ui_state.is_offroad() else "<br>" + tr(STOCK_ACC_OFFROAD_NOTE))
+      if item.description != full_desc:
+        item.set_description(full_desc)
 
     now = time.monotonic()
     if not self._learned_text or now - self._learned_updated > LEARNED_REFRESH_S:
