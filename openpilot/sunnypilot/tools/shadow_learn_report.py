@@ -12,7 +12,8 @@ repo on PYTHONPATH runs it; pandas only makes route folders faster. It reads two
   hondashadow  opendbc/sunnypilot/car/honda/shadow_learn.py (card): the brake response table (speed band x command
                band: achieved - commanded accel, and what the table would apply), the coast deceleration per speed
                band, and the launch ratio and multiplier (no lead; launches behind a lead apart). Written only on
-               the Elesys Accord with the gas interceptor AND Dynamic Tuning (HondaDynamicTuningEnabled) on
+               the Elesys Accord with the gas interceptor and openpilot longitudinal (never in stock ACC mode);
+               since batch 3 with Dynamic Tuning (HondaDynamicTuningEnabled) on or off - the line says which
   latsplit     openpilot/sunnypilot/selfdrive/locationd/lat_speed_split.py (torqued): torqued's fit below and above
                70 km/h
 
@@ -22,6 +23,13 @@ Both are DRIVE TOTALS (they start from zero at ignition), so the last line of a 
 combined by their counts: brake cells and coast bands by sample-weighted means, the launch by summing its two least-
 squares sums, the lateral halves by summing their moments and refitting -- which is exact. The combined section also
 lists each brake cell per route, because a table should only ever be applied once separate drives agree.
+
+IT NEVER POOLS DIFFERENT BUILDS (batch 3). From v=2 every hondashadow line carries what it was measured on
+(shadow_learn.BUILD_KEYS: commit, gas law, launch cap, pump rule, brake law, and whether Dynamic Tuning's live parts
+were on). Routes are combined only with routes that match on every one of them; lines from before the tags (v=1, the
+batch-2 replay dumps) are a group of their own, "untagged". A launch measured without the launch cap (cap=0, or
+untagged: route 115's 0.72 came from a pre-cap build) is printed but never offered as a multiplier: applied on top of
+the cap it would correct twice. The lateral split does not depend on any of those, so latsplit lines still pool.
 
 Nothing the shadow learners log is used by the car. This script only reads.
 """
@@ -37,6 +45,9 @@ import numpy as np
 TAGS = ("hondashadow", "latsplit")
 MIN_CELL_SAMPLES = 250        # shadow_learn.MIN_CELL_SAMPLES (50 Hz samples)
 RATE_HZ = 50
+# shadow_learn.BUILD_KEYS, duplicated so the report reads lines without opendbc on the path
+BUILD_KEYS = ("commit", "gaslaw", "cap", "pump", "blaw", "tuner")
+UNTAGGED = ("untagged",)
 
 
 def parse_line(msg: str) -> tuple[str, dict]:
@@ -46,7 +57,9 @@ def parse_line(msg: str) -> tuple[str, dict]:
     if "=" not in tok:
       continue
     k, v = tok.split("=", 1)
-    if v.startswith("["):
+    if k in BUILD_KEYS:
+      out[k] = v            # text, always: a commit can be all digits
+    elif v.startswith("["):
       out[k] = [float(x) for x in v.strip("[]").split(",") if x]
     else:
       try:
@@ -119,6 +132,26 @@ def read_route(path: str) -> dict:
   return lines
 
 
+# --- builds ------------------------------------------------------------------------------------------
+
+def build_key(d: dict) -> tuple:
+  """What a hondashadow line was measured on: BUILD_KEYS in order, or UNTAGGED for a line from before the tags."""
+  if not d or float(d.get("v", 1)) < 2 or "commit" not in d:
+    return UNTAGGED
+  return tuple(str(d.get(k, "-")) for k in BUILD_KEYS)
+
+
+def build_label(key: tuple) -> str:
+  if key == UNTAGGED:
+    return "untagged (v=1: before batch 3 - build, laws and cap unknown)"
+  return " ".join(f"{k}={v}" for k, v in zip(BUILD_KEYS, key, strict=True))
+
+
+def launch_usable(d: dict) -> bool:
+  """A launch ratio may only be read as a multiplier for a capped car if it was measured WITH the cap."""
+  return build_key(d) != UNTAGGED and str(d.get("cap", "-")) == "1"
+
+
 # --- longitudinal ------------------------------------------------------------------------------------
 
 def _bands(edges, unit, open_last=True):
@@ -171,7 +204,11 @@ def report_long(name: str, d: dict) -> None:
   print(f"  LAUNCH (L2b): achieved/commanded (gravity removed), no lead, pedal seen by the PCM, {int(d['lep'])} episode(s)")
   for i, r in enumerate(lrows):
     print(f"    {r:12s} ratio {fmt(d['lratio'][i], '.3f')}  ({d['ln'][i] / RATE_HZ:.1f}s)")
-  print(f"    pooled multiplier it would apply: {d['lmult']:.3f}  (1.0 = none; bounded 0.6-1.0, needs 2 s)")
+  if launch_usable(d):
+    print(f"    pooled multiplier it would apply: {d['lmult']:.3f}  (1.0 = none; bounded 0.6-1.0, needs 2 s)")
+  else:
+    print(f"    pooled multiplier: DISCARDED ({fmt(d['lmult'], '.3f')} as measured) - not measured with the launch cap " +
+          f"(cap={d.get('cap', 'unknown')}); on a capped car it would correct twice")
   if "lnl" in d:
     print(f"    behind a lead (never in the multiplier), {int(d['lepl'])} episode(s): " +
           "  ".join(f"{r} {fmt(d['lratiol'][i], '.3f')} ({d['lnl'][i] / RATE_HZ:.1f}s)" for i, r in enumerate(lrows)))
@@ -313,7 +350,12 @@ def main(argv=None) -> int:
     print(f"\n=== {path}: {len(lines['hondashadow'])} hondashadow line(s), {len(lines['latsplit'])} latsplit line(s)")
     long_last[name] = lines["hondashadow"][-1] if lines["hondashadow"] else None
     lat_last[name] = lines["latsplit"][-1] if lines["latsplit"] else None
+    builds = {build_key(d) for d in lines["hondashadow"]}
+    if len(builds) > 1:
+      # one route, one ignition: a change mid-route is a log stitched from two drives; the last line is the last one
+      print(f"  WARNING: {len(builds)} different builds inside this route; only the last line's is reported")
     if long_last[name]:
+      print(f"  build: {build_label(build_key(long_last[name]))}")
       report_long(name, long_last[name])
     else:
       print("  no hondashadow line: tuner off, another car, a build without the shadow, or no admitted sample")
@@ -328,15 +370,37 @@ def main(argv=None) -> int:
         print(f"    lat: n {d['n']} fac {d['fac']}")
 
   if len(args.routes) > 1:
-    print(f"\n=== COMBINED over {len(args.routes)} routes (weighted by samples; lateral refit from summed moments)")
-    c = combine_long(long_last)
-    if c:
-      report_long("all", c)
-      agreement(long_last)
+    groups = group_by_build(long_last)
+    if len(groups) > 1:
+      print(f"\n=== NOT POOLED: the routes come from {len(groups)} different builds, and lines are only ever combined " +
+            "within one (commit, gas law, launch cap, pump rule, brake law, tuner on/off):")
+      for key, members in groups.items():
+        print(f"    {build_label(key)}: {', '.join(members)}")
+    for key, members in groups.items():
+      if len(members) < 2:
+        continue
+      print(f"\n=== COMBINED over {len(members)} routes of one build (weighted by samples): {', '.join(members)}")
+      print(f"  build: {build_label(key)}")
+      sub = {n: long_last[n] for n in members}
+      c = combine_long(sub)
+      if c:
+        report_long("all", c)
+        agreement(sub)
     c = combine_lat(lat_last)
     if c:
+      print(f"\n=== LATERAL COMBINED over {sum(1 for d in lat_last.values() if d)} routes (refit from summed moments; " +
+            "the split does not depend on the longitudinal build)")
       report_lat(c)
   return 0
+
+
+def group_by_build(long_last: dict) -> dict:
+  """route names per build key, in first-seen order; routes without a hondashadow line are left out."""
+  groups: dict = {}
+  for name, d in long_last.items():
+    if d:
+      groups.setdefault(build_key(d), []).append(name)
+  return groups
 
 
 if __name__ == "__main__":
