@@ -4,8 +4,11 @@ FORK(HONDA_ACCORD_9G_AU): brake_route_check.py reads a route and judges the pump
 * Its bit positions are the DBC's: frames packed by opendbc's own CANPacker decode to what was packed.
 * The rules it replays are the controller's own functions (and its fallback transcription of C1 is the same rule).
 * End to end on a synthetic route written as a real rlog: the rule is read from CarParamsSP, the replay of the rule the
-  car ran matches the pump bit it logged, a hold that does not move passes and one whose XMISSION_SPEED moves aborts,
-  the VSA's ripple onset, the learner and the JSON output come through.
+  car ran matches the pump bit it logged, a hold that does not move passes and one that rolls - as the car reports a
+  roll: XMISSION_SPEED, vEgo and WHEELS_MOVING up, standstill clear - aborts, an approach the driver ends with the brake
+  is an engaged arrival with a take-over, the VSA's ripple onset, the learner and the JSON output come through.
+* holds() on frame tables: 1 s and 3 s rolls at 0.3 m/s inside a hold (fix round 1: the old definition ended the hold
+  on the first moving frame and never saw them).
 * The parquet export reads to the same frames as the rlogs (when pyarrow is installed; the repo's venv has none).
 * The verdicts follow the plan's thresholds, and the comparative ones wait for a baseline arm.
 """
@@ -43,9 +46,13 @@ def _pump_stream(rule_fn, cb, v, t, v6):
   return np.array(on, dtype=bool) & (np.asarray(cb) > 0)
 
 
-def synth_route(d: str, flags: int = 16, creep: bool = False, brake_error: bool = False) -> str:
+def synth_route(d: str, flags: int = 16, creep: bool = False, brake_error: bool = False, press: bool = False,
+                blaw_tag: str = "") -> str:
   """A 50 s engaged drive written as a real rlog: cruise, a two-step brake application, a stop, a 15 s hold at 189
-  counts behind a stopped lead, a launch. The 0x1FA pump bit is what the rule the flags select would send."""
+  counts behind a stopped lead, a launch. The 0x1FA pump bit is what the rule the flags select would send.
+  creep: the hold rolls at 0.3 m/s from 30 to 31 s the way the car reports it (carstate.py: XMISSION_SPEED above its
+  floor clears standstill and is vEgo below 1 m/s; WHEELS_MOVING 1), 0.3 m toward the lead. press: the driver brakes
+  from 20 s (5 m/s), which cancels openpilot longitudinal; the stop at 25 s is the driver's."""
   packer = CANPacker(DBC)
   v6 = bool(flags & 16)
   rule = ccm.brake_pump_c1_elesys if v6 else ccm.brake_pump_hysteresis_elesys
@@ -53,9 +60,15 @@ def synth_route(d: str, flags: int = 16, creep: bool = False, brake_error: bool 
   t = np.arange(n) * 0.01
   v = np.where(t < 10, 15.0, np.where(t < 25, 15.0 * (25 - t) / 15, np.where(t < 40, 0.0, 1.0 * (t - 40))))
   v = np.clip(v, 0.0, None)
+  rolling = creep & (t >= 30.0) & (t < 31.0)
+  v = np.where(rolling, 0.3, v)
+  x_roll = np.cumsum(np.where(rolling, 0.3 * 0.01, 0.0))
   cb = np.where(t < 10, 0, np.where(t < 12, (t - 10) * 40, np.where(t < 15, 80, np.where(t < 17, 80 + (t - 15) * 35,
                 np.where(t < 25, 150, np.where(t < 26, 150 + (t - 25) * 39, np.where(t < 40, 189, 0)))))))
   cb = cb.astype(int)
+  la = ~(press & (t >= 20.0))
+  bp = press & (t >= 20.0) & (t < 25.0)
+  cb = np.where(la, cb, 0)
   a = np.r_[np.diff(v) / 0.01, 0.0]
   t0 = 1_000_000_000
   mono = t0 + 1000 + np.arange(n, dtype=np.int64) * 10_000_000
@@ -83,13 +96,14 @@ def synth_route(d: str, flags: int = 16, creep: bool = False, brake_error: bool 
     vi, ai = float(v[i]), float(a[i])
     stopped = vi < 0.01
 
-    def cs(o, vi=vi, ai=ai, stopped=stopped):
+    def cs(o, vi=vi, ai=ai, stopped=stopped, i=i):
       o.vEgo, o.aEgo, o.standstill = vi, ai, stopped
       o.cruiseState.enabled = True
+      o.brakePressed = bool(bp[i])
     add("carState", mono[i], cs)
 
     def cc(o, i=i, stopped=stopped):
-      o.longActive = True
+      o.longActive = bool(la[i])
       o.actuators.accel = float(-cb[i] / 100.0) if cb[i] else 0.5
       o.actuators.longControlState = "stopping" if stopped and cb[i] else "pid"
       o.orientationNED = [0.0, 0.0, 0.0]
@@ -101,7 +115,7 @@ def synth_route(d: str, flags: int = 16, creep: bool = False, brake_error: bool 
     elif ripple_from is None:
       ripple_from = i + 12
     ub = 102 if ripple_from is None or i < ripple_from else (101 if (i - ripple_from) % 2 == 0 else 103)
-    xm = 0.5 if (creep and 30.0 <= t[i] < 31.0) else vi * 3.6
+    xm = vi * 3.6
     frames = [packer.make_can_msg("VSA_STATUS", 0, {"USER_BRAKE": (ub * 0.015625) - 1.609375, "COMPUTER_BRAKING": int(cb[i] > 0)}),
               packer.make_can_msg("STANDSTILL", 0, {"WHEELS_MOVING": int(vi > 0.01 or xm > 0),
                                                     "BRAKE_ERROR_1": int(brake_error and 20.0 <= t[i] < 20.5)}),
@@ -119,16 +133,18 @@ def synth_route(d: str, flags: int = 16, creep: bool = False, brake_error: bool 
         o.vNED = [vi, 0.0, 0.0]
       add("gpsLocationExternal", mono[i], gps)
 
-      def rad(o, stopped=stopped):
-        o.leadOne.present = bool(stopped)
-        o.leadOne.dRel, o.leadOne.vLead = (4.0, 0.0) if stopped else (0.0, 0.0)
+      def rad(o, i=i):
+        held = 25.0 <= t[i] < 40.0
+        o.leadOne.present = bool(held)
+        o.leadOne.dRel, o.leadOne.vLead = (4.0 - float(x_roll[i]), 0.0) if held else (0.0, 0.0)
       add("radarState", mono[i], rad)
       add("deviceMotion", mono[i], lambda o, vi=vi: setattr(o.velocityDevice, "x", vi))
     add("accelerometer", mono[i], lambda o, ai=ai: setattr(o.acceleration, "v", [9.81, 0.0, -ai]))
     if i % 500 == 0:
       m = messaging.new_message(None)          # logMessage is a text field: nothing to init
       m.logMonoTime = int(mono[i])
-      m.logMessage = json.dumps({"msg": "hondadyn gaslaw=v2 brake=1.005 brakec=1.005 tuner=1 pump=v6"})
+      m.logMessage = json.dumps({"msg": f"hondadyn gaslaw=v2 brake=1.005 brakec={1.005 + i / 500 * 0.001:.3f} tuner=1 " +
+                                        f"pump={'v6' if v6 else 'v5'}{blaw_tag}"})
       msgs.append(m)
   import zstandard
   raw = os.path.join(d, "raw")
@@ -184,6 +200,9 @@ class TestEndToEnd(unittest.TestCase):
     cls.ok = synth_route(os.path.join(cls.tmp.name, "15646e8515eda1a7_000000aa--0000000000"))
     cls.crept = synth_route(os.path.join(cls.tmp.name, "15646e8515eda1a7_000000ab--0000000000"), creep=True, brake_error=True)
     cls.v5 = synth_route(os.path.join(cls.tmp.name, "15646e8515eda1a7_000000ac--0000000000"), flags=0)
+    cls.pressed = synth_route(os.path.join(cls.tmp.name, "15646e8515eda1a7_000000ad--0000000000"), press=True)
+    cls.law_off = synth_route(os.path.join(cls.tmp.name, "15646e8515eda1a7_000000ae--0000000000"), flags=16 | 32,
+                              blaw_tag=" blaw=v1")
 
   @classmethod
   def tearDownClass(cls):
@@ -194,21 +213,26 @@ class TestEndToEnd(unittest.TestCase):
     self.assertEqual((R["rule"], R["brake_law"], R["commit"], R["name"]), ("v6", "v1", "abcdef123", "000000aa"))
     assert "CarParamsSP" in R["rule_how"]
     self.assertEqual(R["match"], 1.0, "the replay of the rule the car ran is what it logged")
+    self.assertEqual(R["match_raw"], 1.0)
     w = R["pump"]["wire"]
     self.assertEqual((w["starts"], w["pump_s"]), (R["pump"]["v6"]["starts"], R["pump"]["v6"]["pump_s"]))
     self.assertGreater(w["starts"], 0)
     self.assertEqual(len(R["stops_pump"]), 1)
     self.assertLessEqual(R["stops_pump"][0]["bursts"], 1)
+    self.assertTrue(R["stops_pump"][0]["c1_ok"])
     self.assertEqual(len(R["holds"]), 1)
     h = R["holds"][0]
     self.assertGreater(h["s"], 13.0)
     self.assertFalse(h["moved"])
+    self.assertGreaterEqual(h["delivered"], 185, "the hold's delivered pressure is reported")
+    self.assertEqual((R["stops"]["arrivals"], R["stops"]["brake_pressed"], len(R["stops"]["stops"])), (1, 0, 1))
     self.assertAlmostEqual(h["radar_change"], 0.0, places=3)
     self.assertLess(h["camera_disp"], 0.01)
     self.assertAlmostEqual(R["vsa"]["comp_braking_frac"], 1.0)
     self.assertEqual(R["vsa"]["brake_error_frames"], 0)
     self.assertTrue(0.10 <= R["vsa"]["ripple_onset_median"] <= 0.16, R["vsa"])
-    self.assertEqual((R["learner"]["n"], R["learner"]["last"]), (10, 1.005))
+    self.assertEqual((R["learner"]["n"], R["learner"]["first"], R["learner"]["last"]), (10, 1.005, 1.014))
+    self.assertAlmostEqual(R["learner"]["delta"], 0.009, places=6)
     self.assertGreater(R["grade_s"], 30.0)
     v = {c: s for c, s, _ in brc.verdicts(brc.pool([R]), None)}
     self.assertEqual(v["a hold that moves with cb >= 100 and no planner launch"], "PASS")
@@ -218,11 +242,42 @@ class TestEndToEnd(unittest.TestCase):
 
   def test_a_hold_that_creeps_and_a_brake_error_abort(self):
     R = brc.check_route(self.crept, force_rlog=True, workers=1)
-    self.assertTrue(R["holds"][0]["moved"] and R["holds"][0]["xmission"])
+    self.assertEqual(len(R["holds"]), 1, "a roll inside a hold does not end it")
+    h = R["holds"][0]
+    self.assertTrue(h["moved"] and h["xmission"] and h["vEgo"] and h["wheels_moving"])
+    self.assertAlmostEqual(h["moved_s"], 1.0, delta=0.05)
+    self.assertAlmostEqual(h["moved_first_t"], 30.0, delta=0.05)
+    self.assertAlmostEqual(h["radar_change"], 0.3, delta=0.02)
+    self.assertTrue(h["suspect"])
     self.assertGreater(R["vsa"]["brake_error_frames"], 0)
     v = {c: s for c, s, _ in brc.verdicts(brc.pool([R]), None)}
     self.assertEqual(v["a hold that moves with cb >= 100 and no planner launch"], "ABORT")
     self.assertEqual(v["any BRAKE_ERROR (0x1B0)"], "ABORT")
+
+  def test_an_approach_the_driver_ends_with_the_brake_is_a_take_over(self):
+    # fix round 1: a press cancels openpilot longitudinal, so the old count (engaged through the last second) never
+    # saw one and printed 0 per 100
+    R = brc.check_route(self.pressed, force_rlog=True, workers=1)
+    s = R["stops"]
+    self.assertEqual((s["arrivals"], s["brake_pressed"], len(s["stops"])), (1, 1, 0))
+    self.assertEqual(brc.pool([R])["takeovers"], 1)
+
+  def test_the_brake_law_is_what_the_lines_say_ran(self):
+    R = brc.check_route(self.law_off, force_rlog=True, workers=1)
+    self.assertEqual(R["brake_law"], "v1", "flag 32 without gas law v2: the law did not run, and the lines say so")
+    assert "not run" in R["brake_law_how"]
+    assert any("did not run" in x for x in R["notes"])
+    R = brc.check_route(self.ok, force_rlog=True, workers=1)
+    self.assertEqual(R["brake_law"], "v1")      # no tag: flag 32 clear
+
+  def test_rule_comes_from_the_log_before_the_command_line(self):
+    R = brc.check_route(self.ok, rule="v5", force_rlog=True, workers=1)
+    self.assertEqual(R["rule"], "v6", "--rule never overrides CarParamsSP")
+    assert any("--rule v5 ignored" in x for x in R["notes"])
+    self.assertEqual(brc.what_ran(None, {}, "v6")[:2], ("v6", "--rule (the log does not say)"))
+    self.assertEqual(brc.what_ran(None, {"pump": "v5"}, "v6")[0], "v5")
+    self.assertEqual(brc.what_ran(48, {"blaw": "v2"}, None)[2], "v2")
+    self.assertEqual(brc.what_ran(48, {}, None)[2], "v2")
 
   def test_the_v5_route_and_the_cli(self):
     out = io.StringIO()
@@ -286,13 +341,93 @@ class TestEndToEnd(unittest.TestCase):
       shutil.rmtree(pdir)
 
 
+class TestHolds(unittest.TestCase):
+  """holds() on a frame table: a roll inside a hold, as the car reports one (carstate.py: XMISSION_SPEED above its
+  0.278 m/s floor clears standstill and is vEgo below 1 m/s). The review's probe: 1 s and 3 s at 0.3 m/s."""
+  DT = 0.02
+
+  def frames(self, roll_from=None, roll_to=None, v_roll=0.3, release_at=None):
+    n = int(40 / self.DT)
+    t = np.arange(n) * self.DT
+    v = np.zeros(n)
+    if roll_from is not None:
+      v[(t >= roll_from) & (t < roll_to)] = v_roll
+    cb = np.full(n, 189.0)
+    if release_at is not None:
+      cb[t >= release_at] = np.maximum(189.0 - (t[t >= release_at] - release_at) / self.DT * 32, 0)
+    moving = v > 0
+    return {"t": t, "cb": cb, "la": np.ones(n, bool), "v": v, "ss": (~moving).astype(float), "acc": np.full(n, -0.8),
+            "xmission": v.copy(), "wheels_moving": moving.astype(float), "lead": np.ones(n, bool),
+            "dRel": 3.0 - np.cumsum(v) * self.DT, "vLead": np.zeros(n), "cam_vx": v.copy(), "dt": np.full(n, self.DT),
+            "pump": np.r_[np.ones(25, bool), np.zeros(n - 25, bool)], "gp": np.zeros(n), "bp": np.zeros(n)}
+
+  def test_a_roll_inside_a_hold_is_moved(self):
+    for seconds in (1.0, 3.0):
+      with self.subTest(seconds=seconds):
+        H = brc.holds(self.frames(20.0, 20.0 + seconds))
+        self.assertEqual(len(H), 1)
+        self.assertTrue(H[0]["moved"] and H[0]["xmission"] and H[0]["vEgo"] and H[0]["wheels_moving"])
+        self.assertAlmostEqual(H[0]["moved_s"], seconds, delta=0.05)
+        self.assertAlmostEqual(H[0]["dist_moved"], 0.3 * seconds, delta=0.02)
+        self.assertAlmostEqual(H[0]["radar_change"], 0.3 * seconds, delta=0.02)
+        P = brc.pool([{"name": "x", "holds": H, "gain": {"samples": {"cbl": np.zeros(0), "beyond": np.zeros(0), "ac": np.zeros(0)}},
+                       "bleed": {"samples": {"err": np.zeros(0), "tsp": np.zeros(0), "cb": np.zeros(0), "run": np.zeros(0)}},
+                       "stops": {"stops": [], "arrivals": 0, "brake_pressed": 0}, "learner": {"last": math.nan, "delta": math.nan},
+                       "pump": {"wire": {"off_mv_cb100": 0.0, "starts": 0, "brk_s": 0.0, "pump_s": 0.0}},
+                       "vsa": {"brake_error_frames": 0}, "match": 1.0, "law": {"bands": []}}])
+        self.assertEqual({c: v for c, v, _ in brc.verdicts(P, None)}["a hold that moves with cb >= 100 and no planner launch"], "ABORT")
+
+  def test_a_still_hold_and_its_release(self):
+    H = brc.holds(self.frames())
+    self.assertEqual(len(H), 1)
+    self.assertFalse(H[0]["moved"])
+    self.assertAlmostEqual(H[0]["s"], 39.98, delta=0.05)
+    self.assertEqual(H[0]["delivered"], 189.0)
+    # the brake let go and the car rolling as it does: the release, not creep
+    F = self.frames(release_at=30.0)
+    F["v"][(F["t"] >= 30.04)] = 0.3
+    F["xmission"], F["ss"] = F["v"].copy(), (F["v"] == 0).astype(float)
+    F["wheels_moving"] = (F["v"] > 0).astype(float)
+    self.assertFalse(brc.holds(F)[0]["moved"])
+    # a launch request ends the hold before the car moves
+    F = self.frames(30.0, 40.0)
+    F["acc"][F["t"] >= 30.0] = 0.5
+    self.assertFalse(brc.holds(F)[0]["moved"])
+
+  def test_a_hold_reached_on_the_soft_stops_cap_shows_what_was_delivered(self):
+    F = self.frames()
+    F["cb"][:] = 125.0
+    F["cb"][F["t"] >= 1.0] = 189.0        # the rise to the hold, never pumped
+    H = brc.holds(F)
+    self.assertEqual(H[0]["cb"], 189.0)
+    self.assertEqual(H[0]["delivered"], 125.0)
+
+  def test_standstill_bursts_judge_c1_by_what_was_delivered(self):
+    # rolling at the soft stop's cap of 125 (delivered by a moving burst), stopped from 1 s, the rise to 189 at 1.5 s
+    F = self.frames()
+    t = F["t"]
+    F["v"] = np.where(t < 1.0, 0.5, 0.0)
+    F["cb"] = np.where(t < 1.5, 125.0, 189.0)
+    c1 = (t < 0.5) | ((t >= 1.5) & (t < 2.0))     # C1 now: the rise delivered by one burst at standstill
+    head = t < 0.5                                 # the pseudo-code alone: nothing at standstill
+    s = brc.standstill_bursts(F, c1)[0]
+    self.assertEqual((s["bursts"], s["delivered_reached"], s["cb_max"], s["c1_ok"]), (1, 125.0, 189.0, True))
+    self.assertEqual(s["delivered_hold"], 189.0)
+    s = brc.standstill_bursts(F, head)[0]
+    self.assertEqual((s["bursts"], s["delivered_hold"], s["cb_hold"]), (0, 125.0, 189.0))
+    # a burst on a stop reached firm with no rise to deliver breaks C1's design (a top-up)
+    F["cb"][:] = 189.0
+    self.assertFalse(brc.standstill_bursts(F, (t < 0.5) | ((t >= 30.0) & (t < 30.5)))[0]["c1_ok"])
+
+
 class TestVerdicts(unittest.TestCase):
   @staticmethod
-  def arm(gain=-0.8, bleed6=0.0, stretches=25, dist=4.0, learner=1.0, off=3.0, moved=0, suspect=0, berr=0):
+  def arm(gain=-0.8, bleed6=0.0, stretches=25, dist=4.0, learner=1.0, off=3.0, moved=0, suspect=0, berr=0, delta=0.0):
     return {"routes": ["x"], "gain": [{"s": 100.0, "per100": gain}] * len(brc.GAIN_BANDS), "slope100": gain,
             "bleed60": [{"err": 0.0, "stretches": 99}, {"err": 0.0, "stretches": 50}, {"err": 0.0, "stretches": 30},
                         {"err": bleed6, "stretches": stretches}, {"err": math.nan, "stretches": 0}],
             "stop_dist_median": dist, "stop_dist_min": dist, "stop_dist_n": 10, "learner_mean": learner,
+            "learner_delta_mean": delta,
             "off_mv_cb100": off, "moved_holds": moved, "suspect_holds": suspect, "holds": 5, "brake_error_frames": berr}
 
   def verdict(self, P, B=None):
@@ -305,7 +440,7 @@ class TestVerdicts(unittest.TestCase):
              ("the 6-12 s bleed bin at cb >= 60 weaker than 0-1 s by >= 0.10 (>= 20 stretches)", {"bleed6": 0.10}),
              ("the median stop distance shorter by > 0.5 m, or any stop under 2.0 m", {"dist": 3.4}),
              ("the median stop distance shorter by > 0.5 m, or any stop under 2.0 m", {"dist": 1.9}),
-             ("the brake-gain learner more than 0.04 above the other arm's mean", {"learner": 1.05}),
+             ("the brake-gain learner more than 0.04 above the other arm's mean", {"delta": 0.05}),
              ("any BRAKE_ERROR (0x1B0)", {"berr": 1}),
              ("a moving pump-off at cb >= 100 longer than 6.1 s", {"off": 6.2}),
              ("a hold that moves with cb >= 100 and no planner launch", {"moved": 1})]
@@ -313,7 +448,8 @@ class TestVerdicts(unittest.TestCase):
       with self.subTest(crit=crit, kw=kw):
         self.assertEqual(self.verdict(self.arm(**kw), base)[crit], "ABORT")
     # just inside
-    for kw in ({"gain": -0.71}, {"bleed6": 0.09}, {"dist": 3.6}, {"learner": 1.03}, {"off": 6.1}):
+    # the level alone does not trip it: both arms of an A/B share one stored gain
+    for kw in ({"gain": -0.71}, {"bleed6": 0.09}, {"dist": 3.6}, {"delta": 0.03}, {"learner": 1.10}, {"off": 6.1}):
       with self.subTest(inside=kw):
         assert "ABORT" not in self.verdict(self.arm(**kw), base).values()
     self.assertEqual(self.verdict(self.arm(suspect=1), base)["a hold that moves with cb >= 100 and no planner launch"], "CHECK")

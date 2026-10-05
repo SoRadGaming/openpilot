@@ -13,26 +13,37 @@ What it prints, per route and pooled over the arm, is the proof plan of the pump
 car doc, docs/fork/CAR-HONDA-ACCORD-9G-AU.md 7.2) and the acceptance metrics of the brake law (learnaudit A_synth
 section 3, B4), then a verdict on every abort criterion a log can judge. Section numbers follow the study:
 
-  1. the rule ran as designed: the rule the route ran (CarParamsSP flag 16, ELESYS_PUMP_V6) replayed on the logged
-     0x1FA commands must match the logged pump bit on >= 99.5% of braking frames; pump time and starts (per braking
-     minute: ~17 today, ~14 under C1); standstill bursts per stop (C1: at most one, and only on stops reached below
-     100 counts); the longest moving pump-off at >= 100 counts (abort above 6.1 s). Both rules are also replayed on
-     the same commands, so one drive gives the today-vs-C1 table of A_synth section 3 (open loop: only the
-     difference between the rules means anything).
+  1. the rule ran as designed: the rule the route ran (CarParamsSP flag 16, ELESYS_PUMP_V6; else the route's own
+     pump= tag; else --rule) replayed on the logged 0x1FA commands must match the logged pump bit on >= 99.5% of
+     braking frames, a mismatch within one frame of a burst edge counting as a match (the log's timestamps jitter
+     against the controller's frame clock by about that much; the raw match is printed too); pump time and starts
+     (per braking minute: ~17 today, ~14 under C1); standstill bursts per stop (C1: at most one - a hold build on a
+     stop reached below 100 delivered counts, or the delivery of a rise of more than 15 counts over what was
+     delivered, the soft stop's rise to the hold); the longest moving pump-off at >= 100 counts (abort above 6.1 s).
+     Both rules are also replayed on the same commands, so one drive gives the today-vs-C1 table of A_synth
+     section 3 (open loop: only the difference between the rules means anything).
   2. steady-command gain: decel beyond coasting per 100 counts in the bands 15-60 / 60-100 / 100-150 / 150-200 / 200+,
      on frames whose command (0.3 s earlier) held within +-3 counts for 1 s, at v >= 3 m/s, grade-corrected.
   3. bleed: achieved minus commanded decel against time since the last pump run, 0-1 / 1-3 / 3-6 / 6-12 / >12 s.
   4. rise response: decel change 0.3-0.7 s after a rise larger than the deadband, per 100 counts (~ -1.0), and
      over-target bites (more than 0.5 m/s^2 beyond the command within 1 s of a pump start).
-  5. stops (engaged arrivals at a standstill from above 3 m/s, braking): radar distance to a stopped lead 1 s after,
-     final-approach tracking error at 0.15-2.5 m/s (achieved - commanded, net of grade; V5 baseline -0.32 m/s^2),
-     settle jerk (the largest |d aEgo/dt| of 0.1 s means, 0.5 s before to 1 s after), and driver brake presses per
-     100 stops (a press in the last 6 s of an arrival; those arrivals are left out of the other stop metrics).
-  6. creep: every openpilot hold of 5 s or more at >= 100 counts: XMISSION_SPEED, vEgo and WHEELS_MOVING all 0 (else
-     MOVED: the abort), radar distance to a stopped lead within 0.1 m and camera displacement (after the first 4 s,
-     where the estimator settles) within 0.2 m (else SUSPECT, to look at: today's 10f holds, where nothing moved,
-     already read 0.21-0.27 m on the radar).
-  7. the brake-gain learner (hondadyn brakec; baseline 0.99-1.03).
+  5. stops. An ARRIVAL is any standstill reached from above 3 m/s with openpilot engaged at the start of its last 6 s
+     (or where it last crossed 5 m/s); a driver brake press in those 6 s makes it a take-over, counted per 100
+     arrivals (a press cancels openpilot, so those approaches end disengaged - that is why they are counted from the
+     start of the window). The CLEAN stops (engaged and braking through the last 0.5-1 s, no pedal in the 6 s) give:
+     radar distance to a stopped lead 1 s after; final-approach tracking error (pump2 ss/approach.py: from where the
+     braked approach crossed 2.5 m/s to the stop, at v >= 0.3, aEgo + g sin(pitch) - commanded, pitch from
+     carControl.orientationNED; the median over stops, against V5's -0.32 m/s^2, and the seconds it covers); settle
+     jerk (the largest |d aEgo/dt| of 0.1 s means, 0.5 s before to 1 s after).
+  6. creep: every openpilot hold, from the stop (engaged, >= 100 counts, the planner asking for no launch, the wheels
+     at zero) for as long as those hold - WHATEVER the wheels do after it, so a hold that rolls stays one hold - of
+     5 s or more: XMISSION_SPEED, vEgo and WHEELS_MOVING all 0 from 0.5 s in to its end (else MOVED: the abort),
+     radar distance to a stopped lead (first 2 s against last 2 s) within 0.1 m and camera displacement (after the
+     first 4 s, where the estimator settles) within 0.2 m (else SUSPECT, to look at: today's 10f holds, where nothing
+     moved, already read 0.21-0.27 m on the radar). Each hold also shows the pressure DELIVERED (pump2's plant model
+     on the logged pump bit: a rise arrives only while the motor runs), which is what holds the car, not the command.
+  7. the brake-gain learner (hondadyn brakec; baseline 0.99-1.03): each drive's change (last - first) and its level.
+     The arms of an A/B share one stored gain, so the verdict is on the per-drive change; the level is printed.
   8. the VSA: 0x1A4 COMPUTER_BRAKING on >= 99% of brake frames, 0x1B0 brake-error bits 0, the pump motor's ripple on
      0x1A4 USER_BRAKE starting within 0.2 s (median) of the request.
   B4. the brake law: openpilot's longitudinal integrator (controlsState.uiAccelCmd) while braking, per speed band
@@ -42,7 +53,13 @@ section 3, B4), then a verdict on every abort criterion a log can judge. Section
 
 GRADE. Accelerations are net of gravity: aEgo + g * (-vD / vH) from the GPS Doppler velocity, a 2 s rolling median
 (pump2: r = 0.88 against the accelerometer's forward specific force, which the report prints for each route as a
-cross-check). Without GPS the grade-corrected metrics read '-'.
+cross-check). Without GPS the grade-corrected metrics read '-'. The GPS grade is blank below 2 m/s, so the final
+approach of a stop uses the pitch instead, as pump2 did.
+
+WHAT RAN. The pump rule: CarParamsSP flag 16, else the route's pump= tag, else --rule (a --rule that disagrees with
+the log is ignored, with a warning). The brake law: the route's blaw= tag (hondadyn/hondashadow lines, which say
+what ran), else CarParamsSP flag 32. Flag 32 is the SETTING: without gas law v2 the law does not run, the lines say
+blaw=v1, and the report says 'v1 (v2 requested by flag 32, not run)'.
 
 What a log cannot judge -- a VSA/ABS lamp or a new DTC on the post-drive scan -- is listed as a manual check. This
 script only reads.
@@ -66,8 +83,11 @@ WANT_SRC = {ADDR_BRAKE: (SENT,), ADDR_VSA: (0,), ADDR_STANDSTILL: (0,), ADDR_ENG
 LCS = {"off": 0, "pid": 1, "stopping": 2, "starting": 3}
 LOG_TAGS = ("hondadyn", "hondashadow")
 
-# the pump rule's deadband (carcontroller.py ELESYS_PUMP_DEADBAND_BP/_V, the same in v5 and C1)
+# the pump rule's deadband (carcontroller.py ELESYS_PUMP_DEADBAND_BP/_V, the same in v5 and C1), its big rise
+# (ELESYS_PUMP_BIG_RISE) and C1's standstill hold-build limit (ELESYS_PUMP_C1_HOLD_OK)
 DEADBAND_BP, DEADBAND_V = (0., 60., 200.), (12., 6., 3.)
+BIG_RISE = 15
+HOLD_OK = 100
 # Coasting deceleration with neither pedal nor brake, grade-corrected (learnaudit, GPS column of out/coast.pkl, 8 routes):
 # used only to express the brake's own share of a deceleration, the same way in every arm.
 COAST_BP = (0., 2., 3., 5., 6., 8., 10., 12., 15., 20., 25., 30.)
@@ -89,6 +109,10 @@ STOP_DIST_MIN = 2.0             # m, any stop
 LEARNER_ABORT = 0.04            # brake gain above the other arm's mean
 CREEP_RADAR_MAX = 0.1           # m
 HOLD_V_EPS = 0.01               # m/s: vEgo at a standstill, filter residue included
+HOLD_SETTLE = 25                # frames (0.5 s) after the stop before motion counts: the stop itself settling
+HOLD_MIN_S = 5.0
+STOP_WINDOW = 300               # frames (6 s): an arrival's window
+APPROACH_V = 2.5                # m/s: the final approach starts where the braked approach crosses this (pump2)
 CREEP_CAMERA_MAX = 0.2          # m
 COMP_BRAKING_MIN = 0.99
 RIPPLE_ONSET_MAX = 0.2          # s, median
@@ -537,6 +561,7 @@ def build_frames(S: dict) -> dict:
   F["acc"] = prev(cct, cc["acc"], t, max_age=0.5)
   F["lcs"] = prev(cct, cc["lcs"], t, max_age=0.5)
   F["op_fcw"] = prev(cct, cc["fcw"], t, max_age=0.5) == 1
+  F["pitch"] = prev(cct, cc["pitch"], t, max_age=0.5)
   F["ui"] = prev(sec(S["ctl"]["t"]), S["ctl"]["ui"], t, max_age=0.5)
   r = S["rad"]
   rt = sec(r["t"])
@@ -600,7 +625,8 @@ def build_frames(S: dict) -> dict:
 # --- the pump rules --------------------------------------------------------------------------------------------------
 
 def _c1_reference(apply_brake, v_ego, level, trig, last_pump_ts, ts):
-  """pump2 A_synth section 3 pseudo-code, for a tree whose carcontroller.py does not have the rule."""
+  """pump2 A_synth section 3 pseudo-code, for a tree whose carcontroller.py does not have the rule, with the one
+  deviation the controller makes (a standstill rise of more than BIG_RISE over the delivered level is delivered)."""
   if apply_brake <= 0:
     return False, 0, trig, last_pump_ts
   if v_ego >= 2.5 and apply_brake > 200:
@@ -611,8 +637,9 @@ def _c1_reference(apply_brake, v_ego, level, trig, last_pump_ts, ts):
       last_pump_ts, trig = ts, apply_brake
   else:
     still = v_ego < 0.15
-    gap_ok = level == 0 or ts - last_pump_ts >= 1.5 or apply_brake > level + 15
-    if (not still or level < 100) and apply_brake > level + db and gap_ok:
+    gap_ok = level == 0 or ts - last_pump_ts >= 1.5 or apply_brake > level + BIG_RISE
+    hold_rise = apply_brake > level + BIG_RISE   # batch 3 fix round 1: the soft stop's rise to the hold
+    if (not still or level < HOLD_OK or hold_rise) and apply_brake > level + db and gap_ok:
       last_pump_ts, trig = ts, apply_brake
     elif not still and apply_brake >= 100 and ts - last_pump_ts >= 6.0:
       last_pump_ts, trig = ts, apply_brake
@@ -702,10 +729,13 @@ def pump_metrics(F: dict, on: np.ndarray) -> dict:
 
 
 def standstill_bursts(F: dict, on: np.ndarray) -> list[dict]:
-  """Per openpilot-held stop (engaged, braking, v < 0.15 for >= 1 s): the pump starts while stopped and the command
-  the stop was reached at."""
+  """Per openpilot-held stop (engaged, braking, v < 0.15 for >= 1 s): the pump starts while stopped, the command the
+  stop was reached at, the pressure delivered then (pump2's model) and the highest command of the hold. C1's design:
+  at most one burst, and only to build a hold (reached below HOLD_OK delivered) or to deliver a rise of more than
+  BIG_RISE over what was delivered (the soft stop's rise from its ~125 cap to the hold)."""
   t, cb, act = F["t"], F["cb"], F["la"]
   v = np.nan_to_num(F["v"])
+  D = delivered(cb, on, t)
   still = (cb > 0) & act & (v < 0.15)
   st = np.flatnonzero(np.diff(np.r_[0, on.astype(np.int8)]) == 1)
   out = []
@@ -713,7 +743,11 @@ def standstill_bursts(F: dict, on: np.ndarray) -> list[dict]:
     if t[b - 1] - t[a] < 1.0:
       continue
     n = int(((st >= a) & (st < b)).sum())
-    out.append({"t": float(t[a]), "hold_s": float(t[b - 1] - t[a]), "cb_reached": float(cb[a]), "bursts": n})
+    lvl, top = float(D[a]), float(cb[a:b].max())
+    allowed = 1 if (lvl < HOLD_OK or top > lvl + BIG_RISE) else 0
+    out.append({"t": float(t[a]), "hold_s": float(t[b - 1] - t[a]), "cb_reached": float(cb[a]), "delivered_reached": lvl,
+                "cb_max": top, "cb_hold": float(np.median(cb[a:b])), "delivered_hold": float(np.median(D[a:b])),
+                "bursts": n, "c1_ok": n <= allowed})
   return out
 
 
@@ -821,24 +855,32 @@ def rises(F: dict) -> dict:
 
 
 def stops(F: dict) -> dict:
-  """Openpilot-completed stops: engaged, braking, no pedals for the last 6 s, from above 3 m/s (learnaudit stops.py)."""
+  """Arrivals at a standstill from above 3 m/s with openpilot engaged at the start of the last 6 s (or where the car
+  last crossed 5 m/s in them); a brake press in those 6 s is a take-over. A press cancels openpilot longitudinal, so a
+  take-over ends disengaged - which is why engagement is judged at the START of the window. Clean stops (engaged and
+  braking to the stop, no pedal in the window) carry the stop metrics (learnaudit stops.py, pump2 ss/approach.py)."""
   t, cb, v = F["t"], F["cb"], np.nan_to_num(F["v"], nan=99.0)
+  la = F["la"]
   ss = (v < 0.1) | (F["ss"] == 1)
   n = len(t)
-  rows, arrivals, pressed = [], 0, 0
+  rows, arrivals, pressed, press_t = [], 0, 0, []
   for i in np.flatnonzero(ss[1:] & ~ss[:-1]) + 1:
-    if i < 300 or i + 50 >= n:
+    if i < STOP_WINDOW or i + 50 >= n:
       continue
-    w = slice(i - 300, i)
-    if not (F["la"][i - 50:i].all() and v[i - 300] > 3 and (cb[i - 25:i] > 0).all()):
+    w = slice(i - STOP_WINDOW, i)
+    if not v[i - STOP_WINDOW] > 3:
+      continue
+    fast = np.flatnonzero(v[w] >= 5.0)
+    if not (la[i - STOP_WINDOW] or (len(fast) and la[i - STOP_WINDOW + fast[-1]])):
       continue
     arrivals += 1
     if (F["bp"][w] == 1).any():
       pressed += 1
+      press_t.append(float(t[i]))
       continue
-    if (F["gp"][w] == 1).any():
+    if (F["gp"][w] == 1).any() or not (la[i - 50:i].all() and (cb[i - 25:i] > 0).all()):
       continue
-    appr = (v[w] >= 0.15) & (v[w] < 2.5) & np.isfinite(F["ac"][w]) & np.isfinite(F["acc"][w])
+    ap = approach(F, i)
     a_s = F["a"][i - 25:i + 50]
     jerk = np.abs(np.diff(rolling(a_s, 5, np.nanmean, min_periods=3, center=True))) / DT if len(a_s) > 6 else np.array([np.nan])
     j = i + 50
@@ -846,30 +888,70 @@ def stops(F: dict) -> dict:
     dec_imu = -np.nanmean(F["ff"][i - 10:i]) if np.isfinite(F["ff"][i - 10:i]).any() else math.nan
     rows.append({"t": float(t[i]), "cb_at_stop": float(cb[i]), "cb_max_1s": float(cb[i:i + 50].max()),
                  "dist": float(F["dRel"][j]) if lead_stopped else math.nan,
-                 "approach_err": float(np.mean(F["ac"][w][appr] - F["acc"][w][appr])) if appr.sum() >= 10 else math.nan,
-                 "approach_s": float(appr.sum() * DT),
+                 "approach_err": ap["err"], "approach_s": ap["s"], "approach_v0": ap["v0"],
                  "settle_jerk": float(np.nanmax(jerk)) if np.isfinite(jerk).any() else math.nan,
                  "decel_at_stop": float(dec_imu)})
-  return {"stops": rows, "arrivals": arrivals, "brake_pressed": pressed}
+  return {"stops": rows, "arrivals": arrivals, "brake_pressed": pressed, "press_t": press_t}
 
 
-def holds(F: dict) -> list[dict]:
-  """Every openpilot hold of 5 s or more at >= 100 counts, from 0.5 s in to 0.5 s before it ends and only while the
-  planner asks for no launch (accel <= 0): did anything move?"""
+def approach(F: dict, i: int) -> dict:
+  """pump2 ss/approach.py: walk back from the stop while v < 2.5, braking, engaged, no hole in the log; only an
+  approach that crossed 2.5 m/s under braking counts. Over its frames at v >= 0.3: mean(aEgo + g sin(pitch)) minus
+  mean(the command). The pitch (carControl.orientationNED) because the GPS grade is blank below 2 m/s."""
+  t, cb, la = F["t"], F["cb"], F["la"]
+  v = np.nan_to_num(F["v"])
+  j = i
+  while j > 0 and v[j - 1] < APPROACH_V and cb[j - 1] > 0 and la[j - 1] and t[j] - t[j - 1] < 0.2:
+    j -= 1
+  out = {"err": math.nan, "s": 0.0, "v0": float(v[j - 1]) if j > 0 else math.nan}
+  if j == 0 or v[j - 1] < APPROACH_V or i - j < 5:
+    return out
+  w = np.arange(j, i)
+  m = (v[w] >= 0.3) & np.isfinite(F["pitch"][w]) & np.isfinite(F["acc"][w]) & np.isfinite(F["a"][w])
+  out["s"] = float(len(w) * DT)
+  if m.any():
+    anet = F["a"][w][m] + G * np.sin(F["pitch"][w][m])
+    out["err"] = float(np.mean(anet) - np.mean(F["acc"][w][m]))
+  return out
+
+
+def holds(F: dict, on: np.ndarray | None = None) -> list[dict]:
+  """Every openpilot hold of HOLD_MIN_S or more: from the stop (engaged, >= 100 counts, no planner launch, the wheels
+  at zero: standstill, or vEgo under HOLD_V_EPS) for as long as engaged, >= 100 counts and no launch hold - whatever
+  the wheels do after the stop. A hold that starts to roll therefore stays the same hold (the old definition ended a
+  hold on its first moving frame and then trimmed its last 0.5 s, so it could never see the roll). Motion counts from
+  HOLD_SETTLE in (the stop settling) to the hold's end, less only a trailing release (the command falling more than 6
+  counts below the hold's median: the brake being let go, which the car may follow before the hold formally ends); a
+  launch request, a pedal or a disengage end the hold, and the car follows those only afterwards. `on` is the pump
+  bit (default: the logged one), for the delivered level."""
   t, cb = F["t"], F["cb"]
   v = np.nan_to_num(F["v"], nan=0.0)
-  held = F["la"] & (cb >= 100) & ((v < 0.01) | (F["ss"] == 1)) & ~(F["acc"] > 0)
+  wire = (F["pump"] & (cb > 0)) if on is None else on
+  D = delivered(cb, wire, t)
+  base = F["la"] & (cb >= 100) & ~(F["acc"] > 0) & (F["gp"] != 1) & (F["bp"] != 1)
+  stopped = (F["ss"] == 1) | (np.abs(v) < HOLD_V_EPS)
   out = []
-  for a, b in zip(*runs(held), strict=True):
-    if t[b - 1] - t[a] < 5.0:
+  for a0, b in zip(*runs(base), strict=True):
+    st = np.flatnonzero(stopped[a0:b])
+    if not len(st):
       continue
-    w = slice(a + 25, max(a + 26, b - 25))
+    a = a0 + int(st[0])
+    if t[b - 1] - t[a] < HOLD_MIN_S:
+      continue
+    k, cb_med = b, float(np.median(cb[a:b]))
+    while k - 1 > a + HOLD_SETTLE and cb[k - 1] < cb_med - 6:
+      k -= 1
+    w = slice(min(a + HOLD_SETTLE, k - 1), k)
+    xm = np.nan_to_num(F["xmission"][w])
+    vv = np.abs(np.nan_to_num(F["v"][w]))
+    wm = np.nan_to_num(F["wheels_moving"][w])
     # vEgo at a standstill reads +-1e-6 (the filter's residue), so "0" is |vEgo| <= HOLD_V_EPS
-    moved = {"xmission": bool(np.nanmax(F["xmission"][w], initial=0) > 0),
-             "vEgo": bool(np.nanmax(np.abs(F["v"][w]), initial=0) > HOLD_V_EPS),
-             "wheels_moving": bool(np.nanmax(F["wheels_moving"][w], initial=0) > 0)}
+    moved = {"xmission": bool(xm.max(initial=0) > 0), "vEgo": bool(vv.max(initial=0) > HOLD_V_EPS),
+             "wheels_moving": bool(wm.max(initial=0) > 0)}
+    mv = (xm > 0) | (vv > HOLD_V_EPS) | (wm > 0)
     # radar: the net change in distance to a STOPPED lead (|vLead| < 0.1), the median of its first 2 s against its
-    # last 2 s -- a lead that pulls away at the end, or the radar's +-0.1-0.2 m frame noise, is not our creep
+    # last 2 s - so a creep and a re-stop inside the hold both count; a lead that pulls away at the end, or the
+    # radar's +-0.1-0.2 m frame noise, is not our creep
     rd = math.nan
     tw = t[w]
     lw = F["lead"][w] & np.isfinite(F["dRel"][w]) & (np.abs(np.nan_to_num(F["vLead"][w], nan=9)) < 0.1)
@@ -888,6 +970,9 @@ def holds(F: dict) -> list[dict]:
     # lead already reads 0.21-0.27 m against the plan's 0.1 -- so past their limits a hold is SUSPECT, to look at,
     # not an abort on its own.
     out.append({"t": float(t[a]), "s": float(t[b - 1] - t[a]), "cb": float(np.median(cb[a:b])), **moved,
+                "moved_s": float(F["dt"][w][mv].sum()), "moved_first_t": float(tw[mv][0]) if mv.any() else math.nan,
+                "dist_moved": float(np.sum(np.maximum(xm, vv) * F["dt"][w])),
+                "delivered": float(np.median(D[a:b])), "delivered_min": float(D[a:b].min()),
                 "radar_change": rd, "camera_disp": cam, "moved": any(moved.values()),
                 "suspect": (rd > CREEP_RADAR_MAX) or (cam > CREEP_CAMERA_MAX)})
   return out
@@ -905,7 +990,8 @@ def learner(S: dict) -> dict:
           vals.append(float(tok.split("=", 1)[1]))
         except ValueError:
           pass
-  return {"n": len(vals), "first": vals[0] if vals else math.nan, "last": vals[-1] if vals else math.nan}
+  return {"n": len(vals), "first": vals[0] if vals else math.nan, "last": vals[-1] if vals else math.nan,
+          "delta": vals[-1] - vals[0] if vals else math.nan}
 
 
 def _log_text(txt: str) -> str:
@@ -988,6 +1074,18 @@ def brake_law(F: dict) -> dict:
           "stock_fcw": edge(F["fcw"] == 1), "stock_aeb": edge(F["aeb"] == 1), "op_fcw": edge(F["op_fcw"])}
 
 
+def rule_match(rep_on: np.ndarray, wire: np.ndarray, m: np.ndarray) -> tuple[float, float]:
+  """(raw, tolerant) share of the frames in m where the replayed bit equals the logged one. Tolerant: a mismatch counts
+  as a match when the replay one frame earlier or later equals the logged bit - a burst edge one frame off, which is
+  the log's timestamps jittering against the controller's frame*DT_CTRL clock (115: pairs of mismatches 0.5 s apart
+  at burst edges, no rule difference)."""
+  if not m.any():
+    return math.nan, math.nan
+  ok = rep_on == wire
+  near = (np.r_[rep_on[1:], rep_on[-1:]] == wire) | (np.r_[rep_on[:1], rep_on[:-1]] == wire)
+  return float(np.mean(ok[m])), float(np.mean((ok | near)[m]))
+
+
 # --- one route -------------------------------------------------------------------------------------------------------
 
 def check_route(path: str, rule: str | None = None, force_rlog: bool = False, workers: int = 0) -> dict:
@@ -995,31 +1093,56 @@ def check_route(path: str, rule: str | None = None, force_rlog: bool = False, wo
   F = build_frames(S)
   meta = S["meta"]
   tags = log_tags(S)
-  fl = meta.get("flags_sp")
-  if rule:
-    ran, how = rule, "--rule"
-  elif fl is not None:
-    ran, how = ("v6" if fl & 16 else "v5"), f"CarParamsSP.flags = {fl}"
-  elif "pump" in tags:
-    ran, how = tags["pump"], "the route's hondadyn/hondashadow lines"
-  else:
-    ran, how = "v5", "assumed: no CarParamsSP and no tagged line"
-  blaw = ("v2" if fl & 32 else "v1") if fl is not None else tags.get("blaw", "v1?")
+  ran, how, blaw, blaw_how, warn = what_ran(meta.get("flags_sp"), tags, rule)
   fns = rule_functions()
   wire = F["pump"] & (F["cb"] > 0)
   reps = {name: replay_rule(name, F["cb"], F["v"], F["t"], fns) for name in ("v5", "v6")}
   m = F["cb"] > 0
-  R = {"route": path, "name": route_name(path), "source": meta.get("source"), "notes": meta.get("notes", []),
+  raw, tol = rule_match(reps[ran], wire, m) if ran in reps else (math.nan, math.nan)
+  R = {"route": path, "name": route_name(path), "source": meta.get("source"), "notes": meta.get("notes", []) + warn,
        "commit": (meta.get("commit") or tags.get("commit") or "-")[:9], "rule": ran, "rule_how": how, "brake_law": blaw,
-       "rule_sources": {k: fns[k][1] for k in fns}, "brake_src": F["brake_src"], "frames": int(len(F["t"])),
-       "match": float(np.mean(reps[ran][m] == wire[m])) if ran in reps and m.any() else math.nan,
+       "brake_law_how": blaw_how, "rule_sources": {k: fns[k][1] for k in fns}, "brake_src": F["brake_src"],
+       "frames": int(len(F["t"])), "match": tol, "match_raw": raw,
        "pump": {"wire": pump_metrics(F, wire), "v5": pump_metrics(F, reps["v5"]), "v6": pump_metrics(F, reps["v6"])},
        "stops_pump": standstill_bursts(F, wire),
-       "gain": steady_gain(F), "bleed": bleed(F), "rises": rises(F), "stops": stops(F), "holds": holds(F),
+       "gain": steady_gain(F), "bleed": bleed(F), "rises": rises(F), "stops": stops(F), "holds": holds(F, wire),
        "learner": learner(S), "vsa": vsa(F), "law": brake_law(F)}
   R["grade_r"] = grade_check(F)
   R["grade_s"] = float(F["dt"][np.isfinite(F["grade"])].sum())
   return R
+
+
+def what_ran(fl: int | None, tags: dict, rule: str | None) -> tuple[str, str, str, str, list[str]]:
+  """(pump rule, how known, brake law, how known, warnings). The pump rule: CarParamsSP flag 16, else the route's
+  pump= tag, else --rule, else v5 assumed; a --rule the log contradicts is ignored. The brake law: the route's blaw=
+  tag (it says what RAN - set_brake_law_v2 corrects it when gas law v2 is off), else flag 32 (the setting)."""
+  warn = []
+  if fl is not None:
+    ran, how = ("v6" if fl & 16 else "v5"), f"CarParamsSP.flags = {fl}"
+  elif tags.get("pump") in ("v5", "v6"):
+    ran, how = tags["pump"], "the route's hondadyn/hondashadow lines"
+  elif rule:
+    ran, how = rule, "--rule (the log does not say)"
+  else:
+    ran, how = "v5", "assumed: no CarParamsSP, no tagged line, no --rule"
+  if rule and rule != ran:
+    warn.append(f"--rule {rule} ignored: the log says {ran} ({how})")
+  if fl is not None and tags.get("pump") in ("v5", "v6") and tags["pump"] != ran:
+    warn.append(f"CarParamsSP says pump {ran} but the route's lines say {tags['pump']}")
+  flag_law = None if fl is None else ("v2" if fl & 32 else "v1")
+  tag_law = tags.get("blaw") if tags.get("blaw") in ("v1", "v2") else None
+  if tag_law is not None:
+    blaw, blaw_how = tag_law, "the route's blaw= tag"
+    if flag_law == "v2" and tag_law == "v1":
+      blaw_how = "the route's blaw= tag; v2 requested by flag 32, not run (it needs gas law v2)"
+      warn.append("brake law v2 was requested (CarParamsSP flag 32) but did not run (blaw=v1): gas law v2 was off")
+    elif flag_law is not None and flag_law != tag_law:
+      warn.append(f"CarParamsSP flag 32 says brake law {flag_law} but the route's lines say {tag_law}")
+  elif flag_law is not None:
+    blaw, blaw_how = flag_law, f"CarParamsSP.flags = {fl} (no blaw= tag: the setting, not proof it ran)"
+  else:
+    blaw, blaw_how = "v1?", "unknown: no CarParamsSP, no tagged line"
+  return ran, how, blaw, blaw_how, warn
 
 
 def grade_check(F: dict) -> float:
@@ -1066,6 +1189,10 @@ def pool(results: list[dict]) -> dict:
   P["stop_dist_n"] = len(dists)
   lv = [r["learner"]["last"] for r in results if math.isfinite(r["learner"]["last"])]
   P["learner_mean"] = float(np.mean(lv)) if lv else math.nan
+  ld = [r["learner"]["delta"] for r in results if math.isfinite(r["learner"].get("delta", math.nan))]
+  P["learner_delta_mean"] = float(np.mean(ld)) if ld else math.nan
+  P["takeovers"] = sum(r["stops"]["brake_pressed"] for r in results)
+  P["arrivals"] = sum(r["stops"]["arrivals"] for r in results)
   P["off_mv_cb100"] = max(r["pump"]["wire"]["off_mv_cb100"] for r in results)
   P["moved_holds"] = sum(1 for r in results for h in r["holds"] if h["moved"])
   P["suspect_holds"] = sum(1 for r in results for h in r["holds"] if h["suspect"] and not h["moved"])
@@ -1120,10 +1247,13 @@ def verdicts(P: dict, B: dict | None) -> list[tuple[str, str, str]]:
     out.append(("the median stop distance shorter by > 0.5 m, or any stop under 2.0 m",
                 "PASS" if math.isfinite(dmin) else "n.a.",
                 f"no stop under 2.0 m (n {P.get('stop_dist_n', 0)}, min {fnum(dmin, '.2f')} m); the median needs --baseline"))
-  if B and math.isfinite(B.get("learner_mean", math.nan)) and math.isfinite(P.get("learner_mean", math.nan)):
-    d = P["learner_mean"] - B["learner_mean"]
+  if B and math.isfinite(B.get("learner_delta_mean", math.nan)) and math.isfinite(P.get("learner_delta_mean", math.nan)):
+    # the arms share one stored gain (each drive starts where the other arm's last drive left it), so the verdict is on
+    # each drive's own change, averaged per arm; the level is printed beside it
+    d = P["learner_delta_mean"] - B["learner_delta_mean"]
     out.append(("the brake-gain learner more than 0.04 above the other arm's mean", "ABORT" if d > LEARNER_ABORT else "PASS",
-                f"{P['learner_mean']:.3f} vs {B['learner_mean']:.3f}"))
+                f"per-drive change {P['learner_delta_mean']:+.3f} vs {B['learner_delta_mean']:+.3f}; level " +
+                f"{fnum(P.get('learner_mean'), '.3f')} vs {fnum(B.get('learner_mean'), '.3f')}"))
   else:
     out.append(("the brake-gain learner more than 0.04 above the other arm's mean", "n.a.",
                 "needs --baseline, and hondadyn lines with the tuner on in both arms"))
@@ -1138,7 +1268,7 @@ def verdicts(P: dict, B: dict | None) -> list[tuple[str, str, str]]:
 def print_route(R: dict) -> None:
   print(f"\n=== {R['route']}")
   print(f"  {R['frames']} 0x1FA frames ({R['brake_src']}) from {R['source']}; build {R['commit']}; pump rule {R['rule']} " +
-        f"({R['rule_how']}); brake law {R['brake_law']}")
+        f"({R['rule_how']}); brake law {R['brake_law']} ({R.get('brake_law_how', '-')})")
   for n in R["notes"]:
     print(f"  NOTE: {n}")
   print(f"  grade: GPS-Doppler on {R['grade_s']:.0f} s; r against the accelerometer {fnum(R['grade_r'], '.2f')} (pump2: median 0.88)")
@@ -1146,7 +1276,8 @@ def print_route(R: dict) -> None:
 
   print("\n  1. THE RULE")
   print(f"    replay of {R['rule']} matches the logged pump bit on {fnum(100 * R['match'], '.2f')}% of braking frames " +
-        f"(need >= {100 * MATCH_MIN:.1f}%): {'PASS' if R['match'] >= MATCH_MIN else 'FAIL'}")
+        f"with a burst edge one frame off allowed ({fnum(100 * R.get('match_raw', math.nan), '.2f')}% exact; need >= " +
+        f"{100 * MATCH_MIN:.1f}%): {'PASS' if R['match'] >= MATCH_MIN else 'FAIL'}")
   hdr = ("pump s", "starts", "/brk-min", "still st", "off cb>=100", "off moving", "undeliv>=10", "apps", "unpumped")
   print("    " + " " * 22 + "".join(h.rjust(12) for h in hdr))
   for k, label in (("wire", "logged (as driven)"), ("v5", "v5 replayed (today)"), ("v6", "v6 replayed (C1)")):
@@ -1159,11 +1290,15 @@ def print_route(R: dict) -> None:
   print(f"    engaged {w['eng_s'] / 60:.1f} min, braking {w['brk_s'] / 60:.1f} min. Replays are open loop on the logged " +
         "commands: only the difference between the two rules means anything.")
   sp = R["stops_pump"]
-  bad = [s for s in sp if (s["cb_reached"] >= 100 and s["bursts"] > 0) or s["bursts"] > 1]
+  bad = [s for s in sp if not s["c1_ok"]]
   print(f"    stops held >= 1 s: {len(sp)}; standstill bursts {sum(s['bursts'] for s in sp)} " +
         f"({fnum(np.mean([s['bursts'] for s in sp]) if sp else math.nan, '.2f')}/stop); stops breaking C1's design " +
-        f"(a burst after reaching >= 100 counts, or more than one): {len(bad)}" +
+        f"(more than one, or one that neither built a hold nor delivered a rise of > {BIG_RISE}): {len(bad)}" +
         ("" if R["rule"] == "v6" else " - expected under v5, which tops up every 30 s"))
+  short = [s for s in sp if s["hold_s"] >= 5.0 and s["delivered_hold"] < s["cb_hold"] - BIG_RISE]
+  print(f"    stops held >= 5 s that held (median) more than {BIG_RISE} counts under their command, by pump2's delivery " +
+        f"model: {len(short)}" + "".join(f"\n      t {s['t']:.1f}: command {s['cb_hold']:.0f}, delivered " +
+                                         f"{s['delivered_hold']:.0f}" for s in short))
   print(f"    longest moving pump-off at cb >= 100: {w['off_mv_cb100']:.2f} s at t {fnum(w['off_mv_cb100_t'], '.1f')} " +
         f"(abort above {MOVING_OFF_CB100_MAX} s)")
 
@@ -1190,13 +1325,17 @@ def print_route(R: dict) -> None:
   print("\n  5. STOPS")
   dist = [x["dist"] for x in rows if math.isfinite(x["dist"])]
   ae = [x["approach_err"] for x in rows if math.isfinite(x["approach_err"])]
+  ae_s = sum(x["approach_s"] for x in rows if math.isfinite(x["approach_err"]))
   jk = [x["settle_jerk"] for x in rows if math.isfinite(x["settle_jerk"])]
-  print(f"    {len(rows)} clean openpilot stops of {s['arrivals']} engaged arrivals; driver brake presses " +
-        f"{100.0 * s['brake_pressed'] / s['arrivals'] if s['arrivals'] else math.nan:.0f} per 100 stops")
+  print(f"    {s['arrivals']} engaged arrivals (openpilot on 6 s before the stop); driver brake take-overs " +
+        f"{s['brake_pressed']} = {fnum(100.0 * s['brake_pressed'] / s['arrivals'] if s['arrivals'] else math.nan, '.0f')} " +
+        "per 100 arrivals" + (f" (at t {', '.join(f'{x:.1f}' for x in s['press_t'])})" if s["press_t"] else "") +
+        f"; {len(rows)} clean openpilot stops")
   print(f"    distance to a stopped lead at standstill: median {fnum(np.median(dist) if dist else math.nan, '.2f')} m, " +
         f"min {fnum(min(dist) if dist else math.nan, '.2f')} m (n {len(dist)})")
-  print(f"    final-approach tracking error at 0.15-2.5 m/s: {fnum(np.mean(ae) if ae else math.nan, '+.2f')} m/s^2 " +
-        "(V5 baseline -0.32, net of grade)")
+  print("    final-approach tracking error below 2.5 m/s (pitch-corrected, v >= 0.3): median " +
+        f"{fnum(np.median(ae) if ae else math.nan, '+.2f')} m/s^2 over {len(ae)} approach(es), {ae_s:.1f} s " +
+        "(pump2 V5 median -0.32, the same method)")
   print(f"    settle jerk: median {fnum(np.median(jk) if jk else math.nan, '.2f')} m/s^3")
 
   h = R["holds"]
@@ -1204,19 +1343,25 @@ def print_route(R: dict) -> None:
   moved = [x for x in h if x["moved"]]
   rc = [x["radar_change"] for x in h if math.isfinite(x["radar_change"])]
   cm = [x["camera_disp"] for x in h if math.isfinite(x["camera_disp"])]
+  dl = [x["delivered"] for x in h]
   print(f"    {len(h)} holds, {sum(x['s'] for x in h):.0f} s; moved (XMISSION_SPEED, vEgo or WHEELS_MOVING): {len(moved)}; " +
         f"radar net change to a stopped lead max {fnum(max(rc) if rc else math.nan, '.2f')} m (n {len(rc)}; plan " +
         f"<= {CREEP_RADAR_MAX}); camera displacement after 4 s max {fnum(max(cm) if cm else math.nan, '.2f')} m (n {len(cm)}; " +
         f"plan <= {CREEP_CAMERA_MAX})")
   for x in h:
     if x["moved"] or x["suspect"]:
-      print(f"      {'MOVED' if x['moved'] else 'suspect'} t {x['t']:.1f} ({x['s']:.0f} s at {x['cb']:.0f}): xmission " +
-            f"{x['xmission']} vEgo {x['vEgo']} wheels {x['wheels_moving']} radar {fnum(x['radar_change'], '.2f')} " +
-            f"camera {fnum(x['camera_disp'], '.2f')}")
+      print(f"      {'MOVED' if x['moved'] else 'suspect'} t {x['t']:.1f} ({x['s']:.0f} s at {x['cb']:.0f}, delivered " +
+            f"{x['delivered']:.0f}): xmission {x['xmission']} vEgo {x['vEgo']} wheels {x['wheels_moving']}; moving " +
+            f"{x['moved_s']:.2f} s from t {fnum(x['moved_first_t'], '.1f')}, ~{x['dist_moved']:.2f} m; radar " +
+            f"{fnum(x['radar_change'], '.2f')} camera {fnum(x['camera_disp'], '.2f')}")
+  if h:
+    print(f"    held pressure DELIVERED (pump2's model on the logged pump bit): median {np.median(dl):.0f} counts, lowest " +
+          f"{min(x['delivered_min'] for x in h):.0f}; holds commanded >= {BIG_RISE} counts above what was delivered: " +
+          f"{sum(1 for x in h if x['cb'] > x['delivered'] + BIG_RISE)}")
 
   lr = R["learner"]
   print(f"\n  7. BRAKE-GAIN LEARNER: {lr['n']} hondadyn line(s) with the tuner on; brakec {fnum(lr['first'], '.3f')} -> " +
-        f"{fnum(lr['last'], '.3f')} (baseline 0.99-1.03)")
+        f"{fnum(lr['last'], '.3f')}, this drive's change {fnum(lr.get('delta'), '+.3f')} (baseline level 0.99-1.03)")
 
   v = R["vsa"]
   print(f"\n  8. VSA: COMPUTER_BRAKING on {fnum(100 * v['comp_braking_frac'], '.2f')}% of brake frames (need >= 99%); " +
@@ -1243,6 +1388,8 @@ def print_arm(P: dict, B: dict | None, title: str) -> None:
   print(f"\n=== {title}: {', '.join(P['routes'])}")
   print(f"  starts per braking minute {fnum(P['starts_per_brk_min'], '.1f')} (today ~17, C1 ~14); replay match min " +
         f"{fnum(100 * P['match_min'], '.2f')}%; longest moving pump-off at cb >= 100 {P['off_mv_cb100']:.2f} s")
+  print(f"  driver brake take-overs {P.get('takeovers', 0)} of {P.get('arrivals', 0)} engaged arrivals; brake-gain learner " +
+        f"per-drive change {fnum(P.get('learner_delta_mean'), '+.3f')}, level {fnum(P.get('learner_mean'), '.3f')}")
   print("  steady gain per 100: " + "  ".join(f"{GAIN_BANDS[i][0]}+ {fnum(x['per100'])} ({x['s']:.0f}s)" for i, x in enumerate(P["gain"])) +
         f"; slope {fnum(P['slope100'])}")
   if B:
@@ -1273,7 +1420,8 @@ def main(argv=None) -> int:
   ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   ap.add_argument("routes", nargs="+", help="route folders (or rlog files): the arm being checked")
   ap.add_argument("--baseline", nargs="*", default=[], help="route folders of the other arm, for the comparative criteria")
-  ap.add_argument("--rule", choices=("v5", "v6"), help="the pump rule the routes ran, if the log cannot say")
+  ap.add_argument("--rule", choices=("v5", "v6"), help="the pump rule the routes ran, used only when neither CarParamsSP " +
+                  "nor the route's pump= tag says (one the log contradicts is ignored, with a warning)")
   ap.add_argument("--rlog", action="store_true", help="read the rlogs even when a parquet export is there")
   ap.add_argument("--workers", type=int, default=0, help="processes for reading rlogs (default: cores - 1)")
   ap.add_argument("--json", help="also write every number to this file")
