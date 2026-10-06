@@ -15,6 +15,25 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-06 — board `298727b3` bundled · `0x70B` at 10 Hz
+
+The gateway page now offers board firmware **`298727b3`** (EPS-LKAS branch `fix-70b`). It is `d995bc95` plus one
+change in `src/gw_active.c`, with the same stage configuration (LIVE, split CAN, HUD merge, HUD own, camera mute,
+authority 160, EPS floor 51.5 km/h, app slot). On `d995bc95`, `0x708` and `0x70B` went straight into the 3-deep
+CAN Tx FIFO in the same millisecond as `0x704`. About one `0x70B` in five found the FIFO full and was dropped, but
+it was still counted as sent: 7.79 / 7.84 Hz on 120 / 121, with gaps up to 12.3 s.
+
+Every diagnostic except `0x704` now waits its turn on the board's camera→car ring, the path the 100 Hz mirrors
+already used without loss. `GRANT_COUNTER` and the other frame counters only advance when a frame is actually
+queued. Nothing changes on the LIN side, in `0x0E4`, or in forwarded traffic.
+
+What to check on the first drive: the board's `0x707` shows `0x298727b3`, and `0x70B` arrives at 10 Hz with no
+gap over 0.3 s. The MADS change below does not need this image, but this image is what makes `0x70B` fresh enough
+for MADS to resume on time.
+
+Built from a clean tree at `298727b3` (`flash-incar-stage10-appslot.bat`, build and checks only) and copied by
+`bundle_appslot.py`: hash == HEAD, APL1 marker, origin 0x08004000, 46,532 bytes.
+
 ## 2026-10-06 — fixes 4: MADS waits for the board to say the override is over, and a confirm press up to 1 s late still counts
 
 From the first-drive review of routes 120 and 121 (`A_synth` §3 issue 2, and the two late presses at the
