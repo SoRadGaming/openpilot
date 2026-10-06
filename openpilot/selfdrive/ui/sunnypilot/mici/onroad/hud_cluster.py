@@ -34,7 +34,6 @@ import math
 import pyray as rl
 
 from openpilot.common.filter_simple import FirstOrderFilter
-from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_draw as hd
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (HudFrame, SignSlot, build_frame, compact_kind,
                                                                      confirm_pending, pending_limit, received,
@@ -89,17 +88,15 @@ class HudCluster(Widget):
     self._sign_slot = SignSlot()
     self._speed_r: FirstOrderFilter | None = None
     self._pending = False
+    # the sunnypilot HUD renderer asks this frame's alert whether the confirm's box is up (hud_renderer.py)
+    if hud_renderer is not None and hasattr(hud_renderer, "alert_renderer"):
+      hud_renderer.alert_renderer = alert_renderer
 
   def _max_visible(self) -> bool:
-    hr = self._hud_renderer
-    if hr is None:
-      return False
-    # a full-screen alert from this frame on: the compact confirm's box goes at once (hud_renderer.py, _draw_pending_max),
-    # so only the stock MAX number, fading as stock, still hides the speed - the cluster fading out under the alert's
-    # first frame is the one it would be with no confirm before it
-    if self._alert_covers():
-      return bool(HudRenderer.drawing_top_icons(hr))
-    return bool(hr.drawing_top_icons())
+    # the stock MAX number as stock (last frame's fade), or the compact confirm's box by THIS frame's alert
+    # (HudRendererSP.drawing_top_icons): the frame any other alert replaces the confirm, the speed is back as it would be
+    # with no confirm before it
+    return bool(self._hud_renderer is not None and self._hud_renderer.drawing_top_icons())
 
   def _alert_covers(self) -> bool:
     """An alert is drawn this frame - including the previous one while it fades out, so the cluster comes back only

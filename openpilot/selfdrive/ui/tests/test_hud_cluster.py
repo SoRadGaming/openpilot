@@ -953,8 +953,44 @@ class TestAlertRules(OpenpilotTestCase):
     for limit, offset in ((60, 0), (80, 10), (40, -5), (110, 7)):
       sm = drive(limit=limit, offset=offset)
       final = sm['longitudinalPlanSP'].speedLimit.resolver.speedLimitFinalLast
-      for metric, conv in ((True, 3.6), (False, 2.2369362920544)):
-        assert target_speed(sm, metric) == round(final * conv), (limit, offset, metric)
+      for metric, conv in ((True, 1.0), (False, 0.621371)):
+        assert target_speed(sm, metric) == round(round(final * 3.6, 1) * conv), (limit, offset, metric)
+
+  def test_the_target_is_what_the_confirm_stores_and_max_then_shows(self):
+    # cruise_ext.py: v_cruise_kph = clip(round(speed_limit_final_last_kph, 1), v_cruise_min, V_CRUISE_MAX); the MAX number
+    # then shows round(v_cruise * KM_TO_MILE) in mph. The constants are the ones the confirm and the MAX number use.
+    from openpilot.sunnypilot.selfdrive.car import cruise_ext
+    from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.helpers import get_minimum_set_speed
+    from openpilot.selfdrive.ui.mici.onroad import hud_renderer
+    assert (HM.CRUISE_MIN_KPH, HM.CRUISE_MAX_KPH) == (cruise_ext.V_CRUISE_MIN, cruise_ext.V_CRUISE_MAX)
+    assert HM.KM_TO_MILE == hud_renderer.KM_TO_MILE
+    for metric in (True, False):
+      assert HM.cruise_min_kph(metric, False) == get_minimum_set_speed(metric) and HM.cruise_min_kph(metric, True) == 8
+
+    def final(kph):
+      sm = drive(limit=kph)
+      sm['longitudinalPlanSP'].speedLimit.resolver.speedLimitFinalLast = kph / KPH
+      return sm
+    # a .5 tie in mph: 50 mph + 5 % is 84.49 km/h, stored as 84.5 = 52.506 mph -> MAX shows 53 (not round(52.50) = 52)
+    assert target_speed(final(50 * 1.609344 * 1.05), False) == 53
+    # under the floor: a 10 km/h shared zone on a button-managed car sets 30; with pcmCruiseSpeed 8 is the floor
+    assert target_speed(final(10), True, pcm_cruise_speed=False) == 30
+    assert target_speed(final(10), True) == 10 and target_speed(final(5), True) == 8
+    # over the top: no more than V_CRUISE_MAX
+    assert target_speed(final(160), True) == 145
+    # a % offset: 45 km/h + 10 % = 49.5, stored 49.5, shown 50 (round half even: 50)
+    assert target_speed(final(49.5), True) == 50
+
+  def test_the_box_and_the_banner_ask_the_same_question(self):
+    # the HUD renderer's 'is the box up this frame' and the confirm's own drawing share confirm_target(): the cluster can
+    # never hide the speed for a box that is not drawn, nor show it beside one that is
+    src = (Path(HM.__file__).parent / "hud_alerts.py").read_text(encoding="utf-8")
+    confirm = src[src.index("def _draw_confirm("):src.index("def draw_compact_standstill(")]
+    box = src[src.index("def box_alert("):src.index("def _draw_confirm(")]
+    assert "target = confirm_target(alert)" in confirm and "confirm_target(alert) > 0" in box
+    assert "target_speed(" not in confirm, "one place computes the target"
+    note = confirm[confirm.index("note = \"\""):confirm.index("pending_max.publish(")]
+    assert "d = target - limit" in note, "the note adds up to the number beside it"
 
 
 # ------------------------------------------------------------------------------------------- compact alerts

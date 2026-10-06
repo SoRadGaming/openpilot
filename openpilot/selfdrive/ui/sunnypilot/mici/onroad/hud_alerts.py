@@ -145,24 +145,40 @@ def draw_compact(ar, alert) -> bool:
   return True
 
 
+def confirm_target(alert) -> int:
+  """The set speed the compact confirm `alert` puts in the MAX number's place, or 0 when it is drawn as the banner: no
+  limit, a text naming no key (the PCM one asks for another set speed than the target) or no HUD renderer to draw it."""
+  if not pending_max.drawer or confirm_lower(alert.text1) is None:
+    return 0
+  cp_sp = getattr(ui_state, "CP_SP", None)
+  return target_speed(ui_state.sm, ui_state.is_metric, cp_sp.pcmCruiseSpeed if cp_sp is not None else True)
+
+
+def box_alert(alert, s) -> bool:
+  """alert, drawn this frame, is the compact confirm as the box: draw_compact -> _draw_confirm publishes it. The HUD
+  renderer asks this before the alert renderer has drawn (the face and the cluster come first), so whether the box is a
+  top icon is this frame's fact, not the last frame's fade."""
+  return (alert is not None and event_name(alert) == CONFIRM_EVENT and compact_kind(alert, s) != COMPACT_NONE and
+          bool(confirm_text(alert.text1)) and confirm_target(alert) > 0)
+
+
 def _draw_confirm(ar, alert, s, x: float, y: float, color: rl.Color, alpha: float):
   # the key's direction from the text, so the two can never disagree (sunnypilot's arrow rounds differently at .5 ties:
   # a 72.5 km/h set speed on route 114); its blink from the arrow. Only a text naming no key (the PCM one) takes the
   # arrow's direction.
   _, icon, icon_alpha, _, _ = ar.speed_limit_pre_active_icon_helper()
   lower = confirm_lower(alert.text1)
-  names_key = lower is not None
   if lower is None:
     lower = True if icon.id == ar.arrow_down.id else False if icon.id == ar.arrow_up.id else None
-  # the owner's design A: the target in the MAX number's place, drawn by the HUD renderer after the alerts. Only for a
-  # '+' / '-' text: the PCM one asks for another set speed than the target
-  target = target_speed(ui_state.sm, ui_state.is_metric) if names_key and pending_max.drawer else 0
+  # the owner's design A: the target in the MAX number's place, drawn by the HUD renderer after the alerts
+  target = confirm_target(alert)
   if target > 0:
     note = ""
     if not cluster_edge.sign:   # the limit is on screen nowhere else: name it when the target is not the limit itself
-      limit, offset = pending_limit(ui_state.sm, ui_state.is_metric)
-      if offset and limit > 0:
-        note = f"limit {limit} {'+' if offset > 0 else '-'}{abs(offset)}"
+      limit, _ = pending_limit(ui_state.sm, ui_state.is_metric)
+      d = target - limit        # what the number adds to the limit, so the note always adds up to it (a % offset
+      if limit > 0 and d:       # rounds apart from the target; the cruise range can clamp it)
+        note = f"limit {limit} {'+' if d > 0 else '-'}{abs(d)}"
     pending_max.publish(PendingTarget(target, confirm_text(alert.text1), lower, color, alpha, icon_alpha / 255.0, note))
     return
   value, offset = 0, 0

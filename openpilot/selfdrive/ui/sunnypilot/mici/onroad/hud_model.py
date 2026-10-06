@@ -362,15 +362,29 @@ def pending_limit(sm, is_metric: bool) -> tuple[int, int]:
   return int(round(res.speedLimitLast * conv)), int(round(res.speedLimitOffset * conv))
 
 
-def target_speed(sm, is_metric: bool) -> int:
-  """The set speed the speed-limit confirm would set, in display units: limit + offset (speedLimitFinalLast), rounded
-  exactly as sunnypilot's arrow and the alert's own '+' / '-' round it (speed_limit.py, events.py), so the number and the
-  key can never disagree. 0 when there is no limit."""
+CRUISE_MIN_KPH = 8      # cruise_ext.V_CRUISE_MIN: the confirm's floor with pcmCruiseSpeed
+CRUISE_MAX_KPH = 145    # cruise_ext.V_CRUISE_MAX
+KM_TO_MILE = 0.621371   # mici/onroad/hud_renderer.KM_TO_MILE: how the MAX number converts
+
+
+def cruise_min_kph(is_metric: bool, pcm_cruise_speed: bool) -> float:
+  """The confirm's floor (cruise_ext.VCruiseHelperSP: V_CRUISE_MIN with pcmCruiseSpeed, else the button-managed
+  cars' minimum set speed, intelligent_cruise_button_management.helpers.get_minimum_set_speed - 30, or 20 imperial,
+  used as km/h there too)."""
+  return CRUISE_MIN_KPH if pcm_cruise_speed else (30 if is_metric else 20)
+
+
+def target_speed(sm, is_metric: bool, pcm_cruise_speed: bool = True) -> int:
+  """The set speed the speed-limit confirm would set, as the MAX number will then show it: limit + offset
+  (speedLimitFinalLast) to 0.1 km/h and clamped to the cruise range, as the confirm stores it (cruise_ext.py:
+  clip(round(kph, 1), v_cruise_min, V_CRUISE_MAX)), then converted and rounded as HudRenderer._draw_set_speed does.
+  0 when there is no limit."""
   res = sm['longitudinalPlanSP'].speedLimit.resolver
   if res.speedLimitLast <= 0:
     return 0
-  conv = CV.MS_TO_KPH if is_metric else CV.MS_TO_MPH
-  return max(0, int(round(res.speedLimitFinalLast * conv)))
+  kph = min(max(round(res.speedLimitFinalLast * CV.MS_TO_KPH, 1), cruise_min_kph(is_metric, pcm_cruise_speed)),
+            CRUISE_MAX_KPH)
+  return max(0, int(round(kph * (1.0 if is_metric else KM_TO_MILE))))
 
 
 # ------------------------------------------------------------------------------------------- the right rail

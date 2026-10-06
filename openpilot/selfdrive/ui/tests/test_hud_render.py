@@ -275,14 +275,16 @@ def save(arr, name):
 phase_calls = []  # run(): each phase's last frame, as last
 
 
-def run(params, steps, stock=False, t0=100.0):
+def run(params, steps, stock=False, t0=100.0, setup=None):
   """ONE view through several phases, as a drive goes: steps = [(scene kwargs, frames, name)]. Returns the last frame
-  of each phase (saved as name when HUD_RENDER_OUT is set)."""
+  of each phase (saved as name when HUD_RENDER_OUT is set). setup(view), when given, runs once the view is built."""
   ui_state.params.v = dict(params)
   HS.hud_settings.get(force=True)
   hud_alerts.standstill_banner.reset()
   view = AugmentedRoadView()
   view.set_rect(rect)
+  if setup is not None:
+    setup(view)
   if stock:
     saved = (hud_alerts.draw_compact, hud_alerts.draw_pending_limit, hud_alerts.frees_top_icons)
     hud_alerts.draw_compact = lambda ar, alert: False
@@ -294,6 +296,8 @@ def run(params, steps, stock=False, t0=100.0):
   phase_calls.clear()
   try:
     for kw, frames, name in steps:
+      kw = dict(kw)
+      t += kw.pop("_gap", 0.0)   # the road view not drawn for this long before the phase (swiped away)
       scene(**kw)
       for _ in range(frames):
         clock["t"] = t
@@ -562,6 +566,36 @@ a_calls = list(phase_calls)
 b = run(ON, steps, stock=True)
 seq["critical"] = {"calls": a_calls, "end_vs_stock": same(a[2], b[2]),
                    "first_vs_stock_top_left": same(box(a[1], 0, 0, 260, 170), box(b[1], 0, 0, 260, 170))}
+
+# the frame the confirm ends, against the same drive with the confirm drawn as today's banner (no HUD renderer to draw
+# the box: pending_max.drawer off) - which is the unchanged build's screen. Whatever replaces the confirm - a compact
+# banner, the limit lost (the banner fallback), no alert at all, the road view coming back after a while - the speed and
+# the face are back on the frame they are there, and from then on the frames are the same.
+CONF_NOLIMIT = dict(CONF, limit=0)
+
+
+def ends(follow, n1=1, n2=5, n3=12):
+  steps = [(CONF, 60, "seq_end_0_confirm_on"), (follow, n1, "seq_end_1_on"), (follow, n2, "seq_end_2_on"),
+           (follow, n3, "seq_end_3_on")]
+  a = run(ON, steps)
+  a_calls = list(phase_calls)
+  try:
+    # the view's HUD renderer sets drawer when it is built: unset it after
+    b = run(ON, steps, setup=lambda view: setattr(hud_alerts.pending_max, "drawer", False))
+    b_calls = list(phase_calls)
+  finally:
+    hud_alerts.pending_max.drawer = True
+  return {"calls": a_calls, "ref_calls": b_calls,
+          "px": [same(x, y) for x, y in zip(a[1:], b[1:], strict=True)],
+          "px_right": [same(box(x, 260, 0, 536, 240), box(y, 260, 0, 536, 240)) for x, y in zip(a[1:], b[1:], strict=True)]}
+
+
+seq["ends"] = {"disengage": ends(dict(CONF_NONE, alert=DISENGAGE)), "turn": ends(dict(CONF_NONE, alert=TURN)),
+               "no_limit": ends(CONF_NOLIMIT), "no_alert": ends(CONF_NONE),
+               "back_later": ends(dict(CONF_NONE, _gap=5.0)), "back_changed": ends(dict(CHANGED50, _gap=5.0))}
+# the confirm's first frame: the box is a top icon from it on, so the live speed is never drawn beside the target
+a = run(ON, [(CONF_NONE, 100, "seq_start_0_on"), (CONF, 1, "seq_start_1_on")])
+seq["start"] = {"calls": list(phase_calls)}
 out["seq"] = seq
 
 # HudCurrentSpeed off: only the live speed goes, in every layout; the stop time stays
@@ -849,6 +883,27 @@ class TestHudRender(OpenpilotTestCase):
     assert confirm["speed"] is None and first["speed"] == 27, \
       f"the box hid the live speed; the cluster fading out under the alert's first frame has it, as stock: {s}"
     assert s["end_vs_stock"] == 0, f"then exactly the stock full-screen alert: {s}"
+
+  def test_whatever_ends_the_confirm_the_screen_is_todays_from_that_frame(self):
+    for name, e in self.r["seq"]["ends"].items():
+      confirm = e["calls"][0]
+      assert confirm["box"] == 1 and confirm["speed"] is None, f"{name}: {e}"
+      assert e["ref_calls"][0]["box"] == 0 and e["ref_calls"][0]["banner"] == 1, f"{name}: the reference is the banner {e}"
+      first = e["calls"][1]
+      assert first["speed"] == e["ref_calls"][1]["speed"] == 27, f"{name}: the speed is back on the first frame {e}"
+      assert e["px_right"][0] == 0, f"{name}: the cluster on the first frame is the unchanged build's {e}"
+      if name in ("no_alert", "back_later"):
+        # the confirm fades out top left (the box where the banner was), then the screen is the same, face and all
+        assert e["px"][2] == 0, f"{name}: {e}"
+      else:
+        assert first["box"] == 0, f"{name}: the box goes at once {e}"
+        assert e["px"] == [0, 0, 0], f"{name}: the whole frame, from the first on {e}"
+    assert self.r["seq"]["ends"]["no_limit"]["calls"][1]["banner"] == 1, "the limit lost: today's banner"
+
+  def test_the_confirms_first_frame_already_hides_the_speed(self):
+    before, first = self.r["seq"]["start"]["calls"]
+    assert before["speed"] == 27 and before["box"] == 0, before
+    assert first["box"] == 1 and first["top_icons"] and first["speed"] is None, f"never two big numbers: {first}"
 
   def test_a_confirm_with_no_words_draws_no_banner(self):
     c = self.r["compact"]["confirm_compact_empty"]
