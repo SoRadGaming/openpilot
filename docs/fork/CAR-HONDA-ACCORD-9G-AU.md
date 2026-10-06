@@ -122,7 +122,7 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `openpilot/sunnypilot/sunnylink/statsd.py` | M | tuner telemetry; `HondaElesysStockAcc` | - |
 | `openpilot/sunnypilot/sunnylink/tools/compile_settings_ui.py` | M | UTF-8 fix (Other, 13.2) | - |
 | `openpilot/sunnypilot/sunnylink/athena/sunnylinkd.py`, `openpilot/sunnypilot/sunnylink/athena/tests/test_sunnylinkd.py` | M (2026-10-04) | `OFFROAD_ONLY_PARAMS` = `HondaElesysStockAcc` (and since batch 3 fix round 1 `HondaElesysPumpV6`, `HondaElesysBrakeLawV2`): `saveParams()` refuses them unless `IsOffroad` is set; `test_saveParams_offroad_only`, `test_saveParams_pump_rule_and_brake_law_offroad_only` (15.6) | - |
-| `openpilot/selfdrive/car/cruise.py`, `openpilot/sunnypilot/selfdrive/car/cruise_ext.py`, `openpilot/sunnypilot/selfdrive/car/tests/test_speed_limit_confirm_buttons.py` | M / A (2026-10-04, narrowed 2026-10-05) | none: Speed Limit Assist, every non-PCM car; listed because 15.9 relies on it being non-PCM only | SL: a wrong-way press at the confirm prompt may lower the set speed, never raise it |
+| `openpilot/selfdrive/car/cruise.py`, `openpilot/sunnypilot/selfdrive/car/cruise_ext.py`, `openpilot/sunnypilot/selfdrive/car/tests/test_speed_limit_confirm_buttons.py`; since 2026-10-06 also `openpilot/selfdrive/controls/plannerd.py`, `openpilot/sunnypilot/selfdrive/controls/lib/speed_limit/speed_limit_assist.py`, `openpilot/sunnypilot/selfdrive/controls/lib/speed_limit/tests/test_speed_limit_confirm_grace.py` | M / A (2026-10-04, narrowed 2026-10-05; grace 2026-10-06) | none: Speed Limit Assist, every non-PCM car; listed because 15.9 relies on it being non-PCM only | SL: a wrong-way press at the confirm prompt may lower the set speed, never raise it; the asked-for press up to 1.0 s after the prompt timed out still confirms (11.3) |
 | `openpilot/selfdrive/controls/tests/test_stopping_debounce.py`, `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py`, `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py`, `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py`, `openpilot/selfdrive/locationd/test/test_torqued_elesys.py`, `openpilot/selfdrive/locationd/test/test_lagd_elesys.py`, `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_vsa_fault_alert.py`, `openpilot/sunnypilot/selfdrive/car/tests/test_honda_stock_acc.py`, `openpilot/sunnypilot/mads/tests/test_mads_honda_stock_acc.py`, `openpilot/sunnypilot/selfdrive/locationd/tests/test_lat_speed_split.py`, `openpilot/sunnypilot/tools/tests/test_shadow_learn_report.py`, `openpilot/sunnypilot/tools/tests/test_brake_route_check.py` | A | see section 12 and 15.7 | B: `test_latcontrol_reported_torque.py` |
 | `CHANGELOG-elesys.md`, `FEATURES-elesys.md`, `docs/CHANGELOG_SERIAL_STEERING.md` | A | history, listed at the top | - |
 | `docs/fork/UPSTREAM-2026-09.md` | A | what the 2026-09 sync brought, and what it does on this car | all |
@@ -514,12 +514,12 @@ Area C's own fields here are the two VSA flags (2026-10-03, below and 6.6). The 
 
 - `CarControlSP.lateralControl: CarControlSP.LateralControl` with `integrator: float`, `saturated: bool`, `integratorFrozen: bool` (area B).
 - `CarStateSP.driverTorqueStale: bool` (area B; read by area C's `desire_helper.py`, 10.2).
-- `CarStateSP.linbusGateway: CarStateSP.LinbusGateway`: `engaged`, `dryRun`, `valid`, `actuating`, `present`, the `GW_STEER_GRANT` fields `grantValid` through `latchedUntilKeyOff` (area B), and `fwValid` through `fwBuildValid` (area A).
+- `CarStateSP.linbusGateway: CarStateSP.LinbusGateway`: `engaged`, `dryRun`, `valid`, `actuating`, `present`, the `GW_STEER_GRANT` fields `grantValid` through `latchedUntilKeyOff` (area B), `fwValid` through `fwBuildValid` (area A), and since 2026-10-06 `grantSeq` (area B: one step per `0x70B` frame that arrived, which MADS needs to end its override pause on a fresh frame).
 
 **The rule:** card publishes these dataclasses through `convert_to_capnp()`, which passes them into `custom.CarStateSP.new_message(**dict)` by keyword. So:
 
 - **Field names must match** `openpilot/cereal/custom.capnp` exactly.
-- **capnp ordinals must be unique and must never change:** `CarControlSP.lateralControl @5`, `CarStateSP.linbusGateway @1`, `CarStateSP.driverTorqueStale @2`, `CarStateSP.vsaFault @3`, `CarStateSP.vsaStoredFault @4`, `LinbusGateway @0`-`@26`. Upstream's `CarControlSP` currently ends at `@4` and `CarStateSP` at `@0`, so there is no collision today. If upstream adds fields to either struct, the fork's fields keep their numbers and upstream's new ones must be renumbered on the fork side (or the fork's moved, which breaks old logs).
+- **capnp ordinals must be unique and must never change:** `CarControlSP.lateralControl @5`, `CarStateSP.linbusGateway @1`, `CarStateSP.driverTorqueStale @2`, `CarStateSP.vsaFault @3`, `CarStateSP.vsaStoredFault @4`, `LinbusGateway @0`-`@27`. Upstream's `CarControlSP` currently ends at `@4` and `CarStateSP` at `@0`, so there is no collision today. If upstream adds fields to either struct, the fork's fields keep their numbers and upstream's new ones must be renumbered on the fork side (or the fork's moved, which breaks old logs).
 - **Dataclass field order does not matter.** It already differs: `structs.py` declares `driverTorqueStale` before `linbusGateway`, while the capnp has them the other way round. The in-code comments in `structs.py` say names and order must match; the order part is overstated.
 
 On the way in, `openpilot/selfdrive/car/helpers.py` must rebuild every nested struct by hand (10.5).
@@ -1585,6 +1585,8 @@ On every other car both flags are False, `update()` returns two empty lists, `cl
 
 Area B owns this file. One rule in it, though, is gated neither on the car nor on the gateway: a steering rate of at least `EMERGENCY_STEER_RATE = 200.0` deg/s for `EMERGENCY_STEER_FRAMES = 2` frames adds `lkasDisable` on **every** car running MADS on this fork (sunnypilot `35622a994`). It is mentioned here so that a car maintainer is not surprised by it.
 
+Since 2026-10-06 the gateway's override pause on this car ends only on a fresh `0x70B` frame that says the override is over (`grantSeq`, 6.5), or after 3 s with no `0x70B` frame at all (`GATEWAY_SILENT_RESUME_FRAMES`): route 121 resumed at 57.40 on a stale frame, 2.4 s before the board spoke. The rule and its reasons are in `LKAS-GATEWAY-PROTOCOL.md` (area B).
+
 ---
 
 ## 11. UI, sunnylink and statsd
@@ -1643,6 +1645,15 @@ The comma 4 runs the small UI. It has no Cruise or Vehicle panel, so neither pag
   confirm is a banner top left and "set speed changed" draws nothing, so the MAX number shows the new set speed.
   Brake, cancel, main and the gas pedal are untouched, and engaging from MADS-only is not affected (the check sits in
   `_update_v_cruise_non_pcm`, which returns before it when not enabled).
+- **The confirm prompt's grace (2026-10-06, not car-gated, area SL).** The asked-for button still confirms if it went
+  down no more than `PRE_ACTIVE_CONFIRM_GRACE` = 1.0 s after the 5 s prompt timed out, on the same limit. On route 120
+  a `+` 0.29 s late became a 1 km/h step (60 -> 61); on 121 a `-` 0.88 s late, held 1.26 s, walked 80 -> 70 -> 60 in
+  10 km/h long-press steps. card decides (`cruise_ext.py`: it swallows the press - on release, or on the first
+  long-press step if held, the rest of the hold swallowed too - and sets the set speed to the limit; the planner then
+  goes inactive -> active on the matching set speed). The planner's own copy of the rule (`speed_limit_assist.py`,
+  `update_buttons(release_toggle, pressed)`) can only accept a subset of what card accepted. The other button, a press
+  after the 1.0 s and a press after the limit changed are ordinary set-speed steps; PCM cruise has no grace. Replays of
+  both presses, and the tests: `CHANGELOG_SERIAL_STEERING.md`, 2026-10-06.
 
 ### 11.4 sunnylink
 

@@ -11,6 +11,8 @@ from opendbc.car import structs
 from opendbc.car.hyundai.values import HyundaiFlags
 from opendbc.sunnypilot.car.honda.values_ext import HondaFlagsSP  # FORK(HONDA_ACCORD_9G_AU): stock ACC mode
 from openpilot.common.params import Params
+from openpilot.common.realtime import DT_CTRL
+from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.mads.helpers import MadsSteeringModeOnBrake, read_steering_mode_param, MADS_NO_ACC_MAIN_BUTTON
 from openpilot.selfdrive.selfdrived.events import ET
 from openpilot.sunnypilot.mads.state import StateMachine, GEARS_ALLOW_PAUSED_SILENT
@@ -28,6 +30,26 @@ IGNORED_SAFETY_MODES = (SafetyModel.silent, SafetyModel.noOutput)
 # carStateSP.linbusGateway.grantReason, "driver override" -- the LIN-bus gateway has handed
 # the wheel back because the driver overpowered it. See cereal/custom.capnp LinbusGateway.
 LINBUS_REASON_DRIVER_OVERRIDE = 4
+
+# FORK(LKAS-GATEWAY): how long a driver-override pause waits for the board to say anything at
+# all before MADS treats the board as gone. selfdrived runs MADS at 100 Hz, so 300 frames = 3 s.
+#
+# The pause ends on a NEW 0x70B frame that says the override is over (grantSeq moved), never on
+# the old frame going stale: route 121 t=57.40 resumed exactly 0.50 s after the last override
+# frame, the 500 ms grantValid window, while the next frame was 2.4 s away. But a board that
+# stops talking for good must not leave lateral paused behind dashed lanes for the rest of the
+# drive, so after this long without one MADS does what it does for a board that never sent
+# 0x70B: no gateway pause, the ordinary resume. Why 3 s:
+#   * it is above the 2.4 s gap of the route 121 incident, so that resume waits for the frame;
+#   * at 10 Hz it is 30 frames in a row - after the board's Tx-slot fix (EPS-LKAS fix-70b) not
+#     a scheduling gap but a board that has stopped. On routes 102-121 (every image before
+#     fix-70b), 18 of the 21 gaps over 2 s that followed an override frame were over 3 s anyway
+#     (the longest 29 s, route 110), so 5 s would buy little and leave lateral off longer;
+#   * the board stays the authority: it drops its override on driver torque alone and does not
+#     steer through one, so resuming into an override that is in fact still on costs one
+#     paused -> enabled -> paused round trip when its next frame arrives, not torque against
+#     the driver.
+GATEWAY_SILENT_RESUME_FRAMES = 300
 
 # EMERGENCY TAKEOVER: the driver moved the wheel FAST. This is the tier above the gateway's
 # ordinary driver-torque release - that one pauses and comes back by itself, this one turns
@@ -78,6 +100,8 @@ class ModularAssistiveDrivingSystem:
     self.active = False
     self.available = False
     self._gw_paused = False
+    self._gw_grant_seq: int | None = None   # FORK(LKAS-GATEWAY): carStateSP grantSeq as last seen
+    self._gw_silent = 0                     # FORK(LKAS-GATEWAY): MADS frames since a new 0x70B frame
     self._fast_steer = 0
     self.lateral_mismatch_counter = 0
     self.allow_always = False
@@ -334,6 +358,15 @@ class ModularAssistiveDrivingSystem:
     # board ending reason 4 on driver torque alone (GW_DRIVER_LATCH is 0 in the Stage 10
     # image): it does not wait for openpilot to ask again.
     #
+    # "THE BOARD STOPS REPORTING THE OVERRIDE" MEANS A NEW FRAME SAYS SO. FORK(LKAS-GATEWAY):
+    # grantValid stays true for 500 ms after a frame, so the override frame going stale used
+    # to read as the release: route 121 resumed at 57.40, 0.50 s after the last override frame
+    # at 56.90, and the board's next frame was at 59.30. The flag is cleared only on a frame
+    # whose grantSeq MADS has not seen, saying anything but driver override - or, if no frame
+    # at all arrives for GATEWAY_SILENT_RESUME_FRAMES, because the board is then treated as
+    # absent, which is what a car with no 0x70B gets (see the constant). Entering the pause
+    # is unchanged: any frame inside the 500 ms window.
+    #
     # An emergency takeover on this frame outranks the pause: its lkasDisable must turn MADS
     # off, and a silentLkasDisable alongside it would turn that into a pause (state.py).
     #
@@ -347,13 +380,21 @@ class ModularAssistiveDrivingSystem:
       gw = None  # FORK(LKAS-GATEWAY): an sm without carStateSP (upstream's MADS tests) has no gateway
     gw_override = bool(gw is not None and gw.present and gw.grantValid and not gw.granted and
                        gw.grantReason == LINBUS_REASON_DRIVER_OVERRIDE)
+    # FORK(LKAS-GATEWAY): did a 0x70B frame arrive since the last MADS frame?
+    gw_seq = int(gw.grantSeq) if gw is not None and gw.present else None
+    gw_fresh = gw_seq is not None and gw_seq != self._gw_grant_seq and bool(gw.grantValid)
+    self._gw_grant_seq = gw_seq
+    self._gw_silent = 0 if gw_fresh else min(self._gw_silent + 1, GATEWAY_SILENT_RESUME_FRAMES)
     if gw_override and (self.enabled or self.state_machine.check_contains(ET.ENABLE)) and not emergency:
       # Set even when something else paused MADS first: releasing the brake must not
       # resume lateral while the board still reports the driver's hands on the wheel.
       self._gw_paused = True
       self.transition_paused_state()
-    elif self._gw_paused and not gw_override:
-      self._gw_paused = False
+    elif self._gw_paused and gw_fresh and not gw_override:
+      self._gw_paused = False   # a new frame, and it is not an override: the board has let go
+    elif self._gw_paused and self._gw_silent >= GATEWAY_SILENT_RESUME_FRAMES:
+      self._gw_paused = False   # no frame for 3 s: no board to wait for
+      cloudlog.warning(f"MADS: no 0x70B for {GATEWAY_SILENT_RESUME_FRAMES * DT_CTRL:.1f} s in a driver-override pause, resuming")
 
     if self.should_silent_lkas_enable(CS):
       if self.state_machine.state == State.paused:

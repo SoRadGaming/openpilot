@@ -11,6 +11,7 @@ t=58.5 showed it flapping instead: paused, enabled, paused, enabled... on consec
 for 31 s, because the generic silent-resume lifted the pause every other frame.
 """
 import importlib.util
+import itertools
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,8 +23,10 @@ from opendbc.car import structs
 from openpilot.selfdrive.selfdrived.events import Events
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.mads.helpers import MadsSteeringModeOnBrake
+from openpilot.common.realtime import DT_CTRL
 from openpilot.sunnypilot.mads.mads import ModularAssistiveDrivingSystem, LINBUS_REASON_DRIVER_OVERRIDE, \
-  EMERGENCY_STEER_RATE, EMERGENCY_STEER_RATES, EMERGENCY_STEER_FRAMES, read_emergency_steer_rate
+  EMERGENCY_STEER_RATE, EMERGENCY_STEER_RATES, EMERGENCY_STEER_FRAMES, GATEWAY_SILENT_RESUME_FRAMES, \
+  read_emergency_steer_rate
 from openpilot.common.test import OpenpilotTestCase
 
 State = custom.ModularAssistiveDrivingSystem.ModularAssistiveDrivingSystemState
@@ -34,9 +37,13 @@ ButtonType = structs.CarState.ButtonEvent.Type
 REASON_NO_REQUEST = 1   # what the board reports once the driver lets go and openpilot is quiet
 
 
+_frames = itertools.count(1)
+
+
 def gateway(override: bool, present: bool = True, grant_valid: bool = True):
-  """carStateSP.linbusGateway as mads.py reads it."""
-  return SimpleNamespace(present=present, grantValid=grant_valid, granted=False,
+  """carStateSP.linbusGateway as mads.py reads it: ONE new 0x70B frame (its own grantSeq). Passed to
+  step(n=...), the same frame is then held inside its 500 ms window, as carstate holds it."""
+  return SimpleNamespace(present=present, grantValid=grant_valid, granted=False, grantSeq=next(_frames),
                          grantReason=LINBUS_REASON_DRIVER_OVERRIDE if override else REASON_NO_REQUEST)
 
 
@@ -311,3 +318,119 @@ class TestFastWheelSetting(OpenpilotTestCase):
     sd.values["MadsEmergencySteerRate"] = 200
     mads.read_params()
     assert step(mads, sd, gateway(override=False), cs=wheel, n=2) == [State.enabled, State.disabled]
+
+
+# FORK(LKAS-GATEWAY): the pause ends on a NEW 0x70B frame, never on the old one going stale.
+GRANT_WINDOW = 50              # carstate_ext LINBUS_GRANT_STALE_FRAMES: 500 ms at carstate's 100 Hz
+OVERRIDE = (0, LINBUS_REASON_DRIVER_OVERRIDE)   # IDLE, driver override
+RELEASED = (0, REASON_NO_REQUEST)               # IDLE, no request: the driver let go, openpilot quiet
+STEERING = (5, 15)                              # LIMITED, soft start: what route 121 sent at 59.30
+
+
+class Board:
+  """carStateSP.linbusGateway as carstate_ext._update_linbus_grant builds it, one MADS frame (10 ms) at a
+  time: grantSeq steps only when a frame arrives, grantValid holds for 500 ms after it, and a stale frame
+  reports nothing."""
+  def __init__(self):
+    self.seq, self.age, self.state, self.reason = 0, None, 0, 0
+
+  def tick(self, frame=None):
+    if frame is not None:
+      self.seq += 1
+      self.age = 0
+      self.state, self.reason = frame
+    elif self.age is not None:
+      self.age += 1
+    valid = self.age is not None and self.age < GRANT_WINDOW
+    return SimpleNamespace(present=True, grantValid=valid, granted=valid and self.state in (3, 4, 5),
+                           grantReason=self.reason if valid else 0, grantSeq=self.seq)
+
+
+def frames(t0: float, t1: float, frame) -> list:
+  """The board's 10 Hz frames from t0 up to (not including) t1, as (time, frame)."""
+  return [(round(t0 + 0.1 * i, 3), frame) for i in range(round((t1 - t0) * 10))]
+
+
+def drive(mads, sd, board, arrivals, until: float, start: float = 0.0) -> list:
+  """Run MADS at 100 Hz from `start` to `until` with these 0x70B arrivals; return the state on every frame."""
+  at = {round((t - start) * 100): f for t, f in arrivals}
+  return [step(mads, sd, board.tick(at.get(i)))[0] for i in range(round((until - start) * 100))]
+
+
+def first(states: list, state, start: float = 0.0) -> float | None:
+  """When `state` first appears, in seconds."""
+  return round(start + states.index(state) / 100, 2) if state in states else None
+
+
+class TestGatewayPauseNeedsAFreshFrame(OpenpilotTestCase):
+  def test_the_silent_limit_is_3_s(self):
+    assert GATEWAY_SILENT_RESUME_FRAMES * DT_CTRL == 3.0
+
+  def test_a_normal_release_resumes_on_the_first_released_frame(self, mocker):
+    mads, sd = make_mads(mocker)
+    states = drive(mads, sd, Board(), frames(0.0, 2.0, OVERRIDE) + frames(2.0, 3.0, RELEASED), 3.0)
+    assert states[:200] == [State.paused] * 200
+    assert first(states, State.enabled) == 2.0, "on the frame that said so"
+    assert states[200:] == [State.enabled] * 100
+    assert mads.active
+
+  @parameterized.expand([(g,) for g in (0.3, 0.6, 1.0, 2.4, 2.99)], names=["gap"], ids=lambda gap: f"{gap}s")
+  def test_a_gap_in_the_override_shorter_than_3_s_holds_the_pause(self, mocker, gap):
+    """The frame goes stale 0.5 s into the gap. That used to be the resume; now only a new frame is."""
+    mads, sd = make_mads(mocker)
+    last = 1.0                                  # the last override frame before the gap
+    after = round(last + gap, 3)                # the next frame to arrive
+    arrivals = frames(0.0, last + 0.1, OVERRIDE) + frames(after, after + 1.0, OVERRIDE) + \
+               frames(after + 1.0, after + 1.5, RELEASED)
+    states = drive(mads, sd, Board(), arrivals, after + 1.5)
+    assert first(states, State.enabled) == round(after + 1.0, 2), f"paused across the {gap} s gap, resumed on the release"
+
+  @parameterized.expand([(g,) for g in (3.0, 5.0, 12.0)], names=["gap"], ids=lambda gap: f"{gap}s")
+  def test_a_gap_of_3_s_or_more_resumes_as_with_no_board_and_the_next_override_pauses_again(self, mocker, gap):
+    """The fallback: no 0x70B for 3 s is no board, and a car with no board has no gateway pause. When the
+    board speaks again, an override frame pauses on arrival, as any override does."""
+    mads, sd = make_mads(mocker)
+    last = 1.0
+    after = round(last + gap + 0.01, 3)         # just past the limit, so the resume shows before the board returns
+    arrivals = frames(0.0, last + 0.1, OVERRIDE) + frames(after, after + 1.0, OVERRIDE) + \
+               frames(after + 1.0, after + 1.5, RELEASED)
+    states = drive(mads, sd, Board(), arrivals, after + 1.5)
+    assert first(states, State.enabled) == last + 3.0, "3.0 s after the last frame, not 0.5"
+    assert states[round(after * 100)] == State.paused, "the next override frame pauses again"
+    assert states[round((after + 1.0) * 100):] == [State.enabled] * 50
+
+  def test_lost_release_frames_do_not_resume_on_staleness(self, mocker):
+    """The board let go at 1.1 s and its first 2.3 s of 'released' frames never reached the bus."""
+    mads, sd = make_mads(mocker)
+    arrivals = frames(0.0, 1.1, OVERRIDE) + frames(3.4, 4.0, RELEASED)
+    states = drive(mads, sd, Board(), arrivals, 4.0)
+    assert first(states, State.enabled) == 3.4, "on the first released frame that arrived, not at 1.5 (stale)"
+
+  def test_a_board_that_goes_silent_resumes_once_after_3_s_and_says_so(self, mocker):
+    log = mocker.patch("openpilot.sunnypilot.mads.mads.cloudlog")
+    mads, sd = make_mads(mocker)
+    states = drive(mads, sd, Board(), frames(0.0, 1.0, OVERRIDE), 20.0)
+    assert states[:390] == [State.paused] * 390, "paused for 3 s after the last frame at 0.9"
+    assert states[390:] == [State.enabled] * (2000 - 390), "then lateral comes back, and stays: no flapping"
+    assert mads.active and not mads._gw_paused
+    assert log.warning.call_count == 1
+
+  def test_the_fallback_is_the_ordinary_resume_a_held_brake_still_holds(self, mocker):
+    mads, sd = make_mads(mocker, MadsSteeringModeOnBrake.PAUSE)
+    board = Board()
+    drive(mads, sd, board, frames(0.0, 1.0, OVERRIDE), 1.0)
+    held = [step(mads, sd, board.tick(), brake=True)[0] for _ in range(400)]
+    assert held == [State.paused] * 400 and not mads._gw_paused, "the board is gone; the brake is not"
+    assert step(mads, sd, board.tick()) == [State.enabled]
+
+  def test_route_121_resumes_on_the_boards_frame_not_at_57_40(self, mocker):
+    """0x70B as it reached the bus on route 121 (the d995bc95 board, its Tx-FIFO losses included): the last
+    driver-override frame at 56.897, nothing for 2.4 s, then LIMITED / soft start from 59.298. MADS resumed at
+    57.40 - the old frame's 500 ms window running out. Now it resumes on the 59.298 frame."""
+    mads, sd = make_mads(mocker)
+    ov = [56.092, 56.192, 56.296, 56.396, 56.496, 56.596, 56.695, 56.897]
+    steer = [59.298, 59.397, 59.498, 59.598]
+    arrivals = [(t, OVERRIDE) for t in ov] + [(t, STEERING) for t in steer]
+    states = drive(mads, sd, Board(), arrivals, 60.0, start=56.09)[1:]   # from the 56.092 frame on
+    assert states[:320] == [State.paused] * 320, "paused from 56.10 to 59.29, through 57.40"
+    assert first(states, State.enabled, start=56.10) == 59.3

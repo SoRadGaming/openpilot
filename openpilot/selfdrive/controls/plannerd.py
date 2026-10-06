@@ -34,7 +34,8 @@ def main():
 
   while True:
     sm.update()
-    longitudinal_planner.sla.update_buttons(sm['selfdriveStateSP'].buttonsReleaseToggle)
+    # FORK(SPEED-LIMIT): buttonsPressed dates each press for the confirm prompt's grace (speed_limit_assist.py)
+    longitudinal_planner.sla.update_buttons(sm['selfdriveStateSP'].buttonsReleaseToggle, sm['selfdriveStateSP'].buttonsPressed)
     if sm.updated['modelV2']:
       longitudinal_planner.update(sm)
       longitudinal_planner.publish(sm, pm)

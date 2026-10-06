@@ -102,14 +102,14 @@ the hunk. Integration-test sections ("integration §N") refer to
 | sp | `openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_ext_base.py` (added in the 2026-09 merge) | `or getattr(self.lac_torque, "integrator_frozen", False)` in `update_output_torque()`'s `freeze_integrator`. The extension updates the owning controller's PID a second time in the frame when Lateral Jerk (upstream `91a53aa16`) or NNLC is on, and without this that second update wound the integrator open-loop through every hold | 2026-09 merge | `test_latcontrol_gateway_hold.py` (new, same merge) |
 | sp | `openpilot/selfdrive/controls/lib/desire_helper.py` | `update(..., left_edge_detected=False, right_edge_detected=False, driver_torque_stale=False)`: the fork's parameter is last, after upstream's road-edge parameters, and callers pass it by keyword. `not driver_torque_stale` in upstream's rewritten `torque_applied`. `NUDGE_FIRM`, `NUDGE_HOLD_FRAMES`, `nudge_frames` and the `DesireHelper(car_fingerprint)` constructor are area C | `56a404318`, 2026-09 merge | `TestLaneChangeNudge.test_a_stale_torque_still_confirms_nothing` and `test_driver_torque_stale_comes_after_the_road_edges`, integration §15 |
 | sp | `openpilot/selfdrive/modeld/modeld.py`, `openpilot/sunnypilot/modeld_v2/modeld.py` | `"carStateSP"` in upstream's renamed SubMaster, `driver_torque_stale=sm['carStateSP'].driverTorqueStale` passed to `DH.update` by keyword after the edges. `DesireHelper(CP.carFingerprint)` is area C | `56a404318`, 2026-09 merge | none |
-| sp | `openpilot/sunnypilot/mads/mads.py` | `LINBUS_REASON_DRIVER_OVERRIDE`, `self._gw_paused`, the gateway pause block, and `if self._gw_paused: return False` at the top of `should_silent_lkas_enable()` (`2cfcd3c6a`). Also the steer-rate emergency takeover (`EMERGENCY_STEER_RATE`, `EMERGENCY_STEER_RATES`, `EMERGENCY_STEER_FRAMES`, `self._fast_steer`, and since 2026-09-30 its two settings: `read_emergency_steer_rate()`, and `self.emergency_steer_disable`/`self.emergency_steer_rate` read in `__init__` and `read_params()`), see "Other" in section 9. Since the 2026-09 merge the gateway block also fires on the frame MADS is being turned on (`self.enabled or ...check_contains(ET.ENABLE)`), so an LKAS press or UEM engagement during an override no longer gives one active frame, and a `KeyError` fallback treats a `SubMaster` without `carStateSP` (upstream's MADS tests) as "no gateway" | `ef4f29432` `4932aa73c` `35622a994` `2cfcd3c6a`, 2026-09 merge, 2026-09-30 | `test_mads_gateway_pause.py` (41 tests) |
+| sp | `openpilot/sunnypilot/mads/mads.py` | `LINBUS_REASON_DRIVER_OVERRIDE`, `self._gw_paused`, the gateway pause block, and `if self._gw_paused: return False` at the top of `should_silent_lkas_enable()` (`2cfcd3c6a`). Also the steer-rate emergency takeover (`EMERGENCY_STEER_RATE`, `EMERGENCY_STEER_RATES`, `EMERGENCY_STEER_FRAMES`, `self._fast_steer`, and since 2026-09-30 its two settings: `read_emergency_steer_rate()`, and `self.emergency_steer_disable`/`self.emergency_steer_rate` read in `__init__` and `read_params()`), see "Other" in section 9. Since the 2026-09 merge the gateway block also fires on the frame MADS is being turned on (`self.enabled or ...check_contains(ET.ENABLE)`), so an LKAS press or UEM engagement during an override no longer gives one active frame, and a `KeyError` fallback treats a `SubMaster` without `carStateSP` (upstream's MADS tests) as "no gateway". Since 2026-10-06 the pause ends only on a fresh `0x70B` frame (`grantSeq`, `_gw_grant_seq`) or after `GATEWAY_SILENT_RESUME_FRAMES` without one (`_gw_silent`), see section 9 | `ef4f29432` `4932aa73c` `35622a994` `2cfcd3c6a`, 2026-09 merge, 2026-09-30, 2026-10-06 | `test_mads_gateway_pause.py` (55 tests) |
 | sp | `openpilot/sunnypilot/mads/state.py` (added in the 2026-09 merge) | DISABLED branch: an ENABLE that arrives with `silentLkasDisable` goes to `paused`, not `enabled`/`overriding`. Only the gateway block can raise `silentLkasDisable` while MADS is disabled | 2026-09 merge | `test_mads_gateway_pause.py::test_turning_mads_on_during_an_override_starts_paused` |
 | sp | `openpilot/selfdrive/selfdrived/selfdrived.py` | `'carStateSP'` added to upstream's SubMaster, for MADS. Since 2026-10-01 also `self.eps_latch_alert = EpsLatchAlert()` and the call in `update_events()` that adds its events to `events_sp` | `ef4f29432`, 2026-10-01 | `test_mads_gateway_pause.py::test_selfdrived_subscribes_the_gateway_state`, `test_eps_latch_alert.py::TestSelfdrivedWiring` |
 | sp | `openpilot/sunnypilot/selfdrive/selfdrived/eps_latch_alert.py` (new, 2026-10-01) | `EpsLatchAlert`, `LATCH_CONFIRM_FRAMES`, `LATCH_CLEAR_FRAMES`, `ANNOUNCE_FRAMES`, `REMINDER_PERIOD_FRAMES`, `REMINDER_FRAMES`: the "restart the car" alert for `latchedUntilKeyOff`, see section 9 | 2026-10-01 | `test_eps_latch_alert.py` (18 tests) |
 | sp | `openpilot/sunnypilot/selfdrive/selfdrived/events.py`, `openpilot/cereal/custom.capnp` | `OnroadEventSP.EventName` `lkasGatewayEpsLatched @26`, `lkasGatewayEpsLatchedReminder @27`, and their `ET.WARNING`-only `EVENTS_SP` entries | 2026-10-01 | `test_eps_latch_alert.py::TestEpsLatchAlertDefinitions` |
 | sp | `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | the capnp ↔ dataclass seam for `lateralControl` and `linbusGateway` | `d11d2c9a8` `2dd8827d5` | itself |
 | sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | two tests: `test_a_stale_torque_still_confirms_nothing` and `test_driver_torque_stale_comes_after_the_road_edges` (the rest is area C) | `10e088a2d`, 2026-09 merge | itself |
-| sp | `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | the gateway pause and its resume, every brake mode, the brake and regen guard, the emergency takeover beside an override, no board no pause, `selfdrived`'s subscription, the enable-frame cases, and (`TestFastWheelSetting`) the takeover's switch and threshold | `2cfcd3c6a`, 2026-09 merge, 2026-09-30 | itself |
+| sp | `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | the gateway pause and its resume, every brake mode, the brake and regen guard, the emergency takeover beside an override, no board no pause, `selfdrived`'s subscription, the enable-frame cases, (`TestFastWheelSetting`) the takeover's switch and threshold, and (`TestGatewayPauseNeedsAFreshFrame`, 2026-10-06) the fresh-frame resume and the 3 s fallback | `2cfcd3c6a`, 2026-09 merge, 2026-09-30, 2026-10-06 | itself |
 | sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` (added in the 2026-09 merge) | 300 frames on `HONDA_ACCORD_9G_AU` with Lateral Jerk on and the board present but not actuating: `pid.i` stays 0.0 in both torque controllers. Control case: with no gateway the same run winds `abs(i)` above 1e-3, as upstream does | 2026-09 merge | itself |
 | sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_reported_torque.py` (2026-10) | the zero reported torque keeps `_check_saturation` from firing while the board is not actuating, closed loop through the real Honda `CarController`, both torque controllers; a real saturation still alerts while actuating; a source guard on controlsd's `steer_limited_by_safety` line | `7e9ffe547` | itself |
 
@@ -528,6 +528,7 @@ comments in `structs.py` that say "names and order must stay in lockstep" overst
 | 17 | `retryIn` | UInt8 | `RETRY_IN` | |
 | 18 | `latchedUntilKeyOff` | Bool | `RETRY_IN == 255` | `selfdrived` → `eps_latch_alert.py` (the "restart the car" alert, section 9) |
 | 19–26 | `fwValid` … `fwBuildValid` | | `0x707` / `0x70F` | area A (`card`, `board.py`) |
+| 27 | `grantSeq` | UInt32 | +1 per `0x70B` frame that arrived (wraps at 2^32; 0 before the first); unlike `grantValid` it does not move while the 500 ms window only holds the last frame (2026-10-06) | `mads` (ending the override pause) |
 
 Fields with no reader appear only in the route log (`carStateSP` is logged), and the only
 driver-facing surface for them is the `carlog.warning` above. Since 2026-10-01
@@ -726,11 +727,17 @@ except KeyError:
   gw = None                                  # a SubMaster without carStateSP (upstream's MADS tests)
 gw_override = bool(gw is not None and gw.present and gw.grantValid and not gw.granted and
                    gw.grantReason == LINBUS_REASON_DRIVER_OVERRIDE)
+gw_seq = int(gw.grantSeq) if gw is not None and gw.present else None             # 2026-10-06
+gw_fresh = gw_seq is not None and gw_seq != self._gw_grant_seq and bool(gw.grantValid)
+self._gw_grant_seq = gw_seq
+self._gw_silent = 0 if gw_fresh else min(self._gw_silent + 1, GATEWAY_SILENT_RESUME_FRAMES)
 if gw_override and (self.enabled or self.state_machine.check_contains(ET.ENABLE)) and not emergency:
   self._gw_paused = True
   self.transition_paused_state()             # silentLkasDisable -> State.paused
-elif self._gw_paused and not gw_override:
-  self._gw_paused = False                    # the generic block below resumes, through its guards
+elif self._gw_paused and gw_fresh and not gw_override:
+  self._gw_paused = False                    # a NEW frame says it is over; the generic block below resumes
+elif self._gw_paused and self._gw_silent >= GATEWAY_SILENT_RESUME_FRAMES:
+  self._gw_paused = False                    # 3 s without any 0x70B: no board to wait for (cloudlog.warning)
 
 if self.should_silent_lkas_enable(CS):       # upstream
   if self.state_machine.state == State.paused:
@@ -769,6 +776,21 @@ else:
   held at the end of an override keeps MADS paused until it is released. This relies on the
   board ending reason 4 on driver torque alone (`GW_DRIVER_LATCH` is 0 in the Stage 10 image):
   it does not wait for openpilot to ask again.
+* **"The board stops reporting the override" means a new frame says so** (2026-10-06). `grantValid`
+  holds a frame for 500 ms, and the block used to read the last override frame going stale as the
+  release. On route 121 the last override frame arrived at 56.90, MADS resumed at 57.40, and the
+  board's next frame came at 59.30: the d995bc95 board lost about a fifth of its `0x70B` frames in
+  its Tx FIFO (board `fix-70b`, `298727b3`, fixes that). `carstate_ext` now counts the frames that
+  arrive (`grantSeq @27`), and the flag clears only on a frame MADS has not seen that is not an
+  override. The replay of 121 resumes at 59.30.
+* **A board that goes silent does not hold lateral off** (2026-10-06). After
+  `GATEWAY_SILENT_RESUME_FRAMES` = 300 MADS frames (3 s) with no new `0x70B` frame, the flag clears
+  as if there were no board, and the resume is the ordinary one above (a held brake still holds it);
+  one `cloudlog.warning`. An override frame after that pauses again on arrival. 3 s is over 121's
+  2.4 s gap; after `fix-70b` it is 30 lost frames in a row, a stopped board; on routes 102-121, 18 of
+  the 21 gaps over 2 s after an override frame were over 3 s anyway (up to 29 s), so waiting longer
+  buys little. The board is the authority throughout: it does not steer through the driver, so a
+  resume into an override that is still on costs a paused - enabled - paused round trip, not torque.
 * **Turning MADS on during an override starts it paused** (2026-09 merge). `self.enabled` is
   still False on the frame of an LKAS press or a unified engagement, so the gateway block used
   to wait a frame: MADS went disabled → enabled (active, one request frame) and paused on the
