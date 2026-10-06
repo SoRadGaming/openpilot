@@ -596,6 +596,29 @@ seq["ends"] = {"disengage": ends(dict(CONF_NONE, alert=DISENGAGE)), "turn": ends
 # the confirm's first frame: the box is a top icon from it on, so the live speed is never drawn beside the target
 a = run(ON, [(CONF_NONE, 100, "seq_start_0_on"), (CONF, 1, "seq_start_1_on")])
 seq["start"] = {"calls": list(phase_calls)}
+# the confirm's grace (speed_limit_assist.PRE_ACTIVE_CONFIRM_GRACE, 2026-10-06): the prompt times out (the planner
+# goes inactive, no alert) and the box goes with it, as with "no_alert" above; a press inside the grace then confirms -
+# card sets the limit, the planner goes active ('set speed changed' or 'auto adjusting'). Then the screen is the stock
+# solid MAX number: exactly the drive's screen with no prompt before it. 8 frames = route 120 (a '+' released 0.41 s
+# after the timeout), 28 = route 121 (a '-' confirming on its first long-press step 1.38 s after it), 1 = at once (the
+# box still fading with the prompt).
+CONF_TIMEOUT = dict(CONF_NONE, assist="inactive")
+ACTIVE = ("speedLimitActive/warning", "Auto adjusting to speed limit", "", "small", "normal")
+
+
+def grace(gap, alert):
+  confirmed = dict(CONF_NONE, alert=alert, set_kph=50, assist="active")
+  steps = [(CONF_TIMEOUT, gap, "seq_grace_1_timeout_on"), (confirmed, 1, "seq_grace_2_first_frame_on"),
+           (confirmed, 40, "seq_grace_3_on")]
+  a = run(ON, [(CONF, 60, "seq_grace_0_confirm_on")] + steps)
+  a_calls = list(phase_calls)
+  b = run(ON, [(CONF_TIMEOUT, 60, "seq_grace_ref_0_on")] + steps)
+  return {"calls": a_calls, "px": [same(x, y) for x, y in zip(a[1:], b[1:], strict=True)],
+          "max_white": count(a[3], MAX_BOX, "white")}
+
+
+seq["grace"] = {"r120_changed": grace(8, CHANGED), "r120_active": grace(8, ACTIVE), "r121_changed": grace(28, CHANGED),
+                "at_once_changed": grace(1, CHANGED)}
 out["seq"] = seq
 
 # HudCurrentSpeed off: only the live speed goes, in every layout; the stop time stays
@@ -899,6 +922,22 @@ class TestHudRender(OpenpilotTestCase):
         assert first["box"] == 0, f"{name}: the box goes at once {e}"
         assert e["px"] == [0, 0, 0], f"{name}: the whole frame, from the first on {e}"
     assert self.r["seq"]["ends"]["no_limit"]["calls"][1]["banner"] == 1, "the limit lost: today's banner"
+
+  def test_a_confirm_in_the_grace_after_the_prompt_is_the_stock_solid_max(self):
+    for name, g in self.r["seq"]["grace"].items():
+      confirm, timeout, first, after = g["calls"]
+      assert confirm["box"] == 1 and confirm["speed"] is None, f"{name}: {g}"
+      # the prompt timed out: the speed and the face are back at once; the box only fades where the banner faded
+      assert not timeout["top_icons"] and timeout["speed"] == 27, f"{name}: {g}"
+      if name == "r121_changed":
+        # past the prompt's fade: the box is gone, and the confirm is the drive's screen with no prompt from its first frame
+        assert timeout["box"] == 0 and first["box"] == 0, f"{name}: {g}"
+        assert g["px"] == [0, 0, 0], f"{name}: {g}"
+      else:
+        # inside the fade: the box fades out under the stock MAX number fading in, as a confirm inside the prompt does
+        assert timeout["box"] == 1 and first["box"] == 1 and first["top_icons"], f"{name}: {g}"
+      assert after["box"] == 0 and after["top_icons"], f"{name}: {g}"
+      assert g["px"][2] == 0 and g["max_white"] > 2000, f"{name}: then exactly the stock solid MAX number {g}"
 
   def test_the_confirms_first_frame_already_hides_the_speed(self):
     before, first = self.r["seq"]["start"]["calls"]

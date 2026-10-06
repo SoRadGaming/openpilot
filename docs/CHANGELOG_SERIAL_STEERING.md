@@ -15,6 +15,24 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-06 — the three 2026-10-06 changes together (integration)
+
+The pump rule C1b, the screen's confirm target and fixes 4 (the MADS resume and the confirm grace, board `298727b3`)
+are merged into one tree, with opendbc carrying both `grantSeq` and C1b. They touch different code; what they share
+was checked:
+
+* **The confirm grace and the box.** A press up to 1 s after the prompt timed out still confirms (fixes 4). The box
+  goes with the prompt as today's banner does - the speed and the face back as the prompt ends, the box fading out
+  where the banner faded - and a confirm in the grace is the stock solid MAX number, the same screen as if no prompt
+  had been up. A press inside the fade (route 120's, 0.41 s) fades the box out under the MAX number as a confirm inside
+  the prompt does. A new render test, `test_hud_render.py`, covers both timings.
+* **C1b and stock ACC mode.** Stock ACC mode still never sets the pump flag: replayed with C1b on and off, nothing it
+  sends differs, and it is the same as before C1b.
+* **MADS and the rest.** The MADS resume reads only `grantSeq`; neither the pump nor the screen reads or writes it.
+  Route 121 replayed on the merged tree resumes at 59.30 on the first fresh `0x70B`, as on fixes 4 alone.
+
+Nothing else changes: the same tests, routes and screens give the same results as on each change alone.
+
 ## 2026-10-06 — the brake pump: "Quiet pump at stops" (rule C1b, on) replaces "Quieter brake pump"
 
 You felt braking was weaker on the two drives with the quieter pump (rule C1, routes 120 and 121), so the brake data
