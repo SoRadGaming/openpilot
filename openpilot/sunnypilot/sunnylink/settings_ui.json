@@ -2527,12 +2527,12 @@
           ]
         },
         {
-          "key": "HondaElesysPumpV6",
+          "key": "HondaElesysPumpC1b",
           "widget": "toggle",
           "needs_onroad_cycle": true,
-          "title": "Quieter brake pump",
-          "description": "On - the brake pump runs when the brake is applied or increased, and not otherwise - no top-ups while stopped and no continuous run while creeping into a stop. About a fifth fewer pump starts for the same braking. Off - the previous pump rule. sunnypilot longitudinal on the 2013-15 Accord (Elesys) only. Applies at the next drive.",
-          "details": "The pump builds brake pressure; measured on this car, a rise in braking arrives only while it runs, and a steady brake or a built standstill hold keeps without it. On, each brake application gets one short burst at about 12 counts and each further rise one more; firm braking (over 200 counts) above 9 km/h still runs it continuously, and braking at 100 counts or more while moving runs it at least every 6 s. While stopped it runs only to build the hold, or to deliver a rise of more than 15 counts (the soft stop's rise to the full hold) - never to top a hold up. Very light applications, peaking under about 0.1 m/s^2, never start it. Turn it off to go back to the previous rule if a stop ever falls short or a hold creeps.",
+          "title": "Quiet pump at stops",
+          "description": "On - the brake pump runs like the previous rule while braking, from the first moment of every application, and stays silent through long stops - no top-ups once a stop is held. Off - the previous pump rule, which also tops a held stop up every 30 s. sunnypilot longitudinal on the 2013-15 Accord (Elesys) only. Applies at the next drive.",
+          "details": "The pump builds brake pressure; measured on this car, a rise in braking arrives only while it runs, and a steady brake or a built standstill hold keeps without it. On, every brake application gets a short burst at its first moment and every further rise past a small deadband one more, at once; firm braking (over 200 counts) above 9 km/h and braking over 100 counts while creeping into a stop below 9 km/h run it continuously, and braking at 100 counts or more while moving runs it at least every 6 s. While stopped it runs only to build the hold, or to deliver a rise of more than 15 counts (the soft stop's rise to the full hold) - never to top a hold up. It replaces \"Quieter brake pump\", which was quieter while moving, and starts on whatever that setting was. Turn it off to go back to the previous rule if a stop ever falls short or a hold creeps.",
           "enablement": [
             {
               "type": "offroad_only"

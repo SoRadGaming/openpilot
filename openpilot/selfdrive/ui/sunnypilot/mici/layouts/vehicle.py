@@ -24,7 +24,7 @@ from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigMultiToggle
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.vehicle.brands.honda import (
   BRAKE_LAW_V2_PARAM,
-  PUMP_V6_PARAM,
+  PUMP_C1B_PARAM,
   STOCK_ACC_PARAM,
   TUNING_PARAM,
   MODE_SLOTS,
@@ -199,8 +199,8 @@ class VehicleLayoutMici(NavScroller):
 
     # FORK(HONDA_ACCORD_9G_AU): the brake pump rule and the brake law. Read once at ignition, so offroad only too;
     # the big UI's panel and sunnylink say what each does.
-    self._pump_v6_toggle = BigParamControl(tr("quieter brake pump"), PUMP_V6_PARAM)
-    self._pump_v6_toggle.set_enabled(ui_state.is_offroad)
+    self._pump_c1b_toggle = BigParamControl(tr("quiet pump at stops"), PUMP_C1B_PARAM)
+    self._pump_c1b_toggle.set_enabled(ui_state.is_offroad)
     self._brake_law_v2_toggle = BigParamControl(tr("measured brake law (testing)"), BRAKE_LAW_V2_PARAM)
     self._brake_law_v2_toggle.set_enabled(ui_state.is_offroad)
 
@@ -212,7 +212,7 @@ class VehicleLayoutMici(NavScroller):
     self._fast_wheel_rate = FastWheelRateToggle()
 
     self._scroller.add_widgets([self._learned_info, self._learning_toggle, self._reset_btn,
-                                self._stock_acc_toggle, self._pump_v6_toggle, self._brake_law_v2_toggle,
+                                self._stock_acc_toggle, self._pump_c1b_toggle, self._brake_law_v2_toggle,
                                 self._fast_wheel_toggle, self._fast_wheel_rate])
 
     self._refreshed = 0.0
@@ -241,7 +241,7 @@ class VehicleLayoutMici(NavScroller):
     self._refreshed = time.monotonic()
     self._learning_toggle.refresh()
     self._stock_acc_toggle.refresh()
-    self._pump_v6_toggle.refresh()
+    self._pump_c1b_toggle.refresh()
     self._brake_law_v2_toggle.refresh()
     self._fast_wheel_toggle.refresh()
     self._fast_wheel_rate.refresh()
