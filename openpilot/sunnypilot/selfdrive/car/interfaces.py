@@ -137,7 +137,7 @@ def initialize_params(params) -> list[dict[str, Any]]:
   # honda
   keys.extend([
     "HondaElesysStockAcc",  # FORK(HONDA_ACCORD_9G_AU): stock ACC mode, opendbc _initialize_honda
-    "HondaElesysPumpV6",  # FORK(HONDA_ACCORD_9G_AU): the brake pump rule, opendbc _initialize_honda
+    "HondaElesysPumpC1b",  # FORK(HONDA_ACCORD_9G_AU): the brake pump rule, opendbc _initialize_honda
     "HondaElesysBrakeLawV2",  # FORK(HONDA_ACCORD_9G_AU): the brake law, opendbc _initialize_honda
   ])
 

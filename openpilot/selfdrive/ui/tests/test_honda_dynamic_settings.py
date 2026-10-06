@@ -39,16 +39,18 @@ GAS_LAW_PARAM = "HondaElesysGasLawV2"
 # FORK(HONDA_ACCORD_9G_AU): stock ACC mode. A setting, but deliberately NOT backed up, and offroad only everywhere
 STOCK_ACC_PARAM = "HondaElesysStockAcc"
 STOCK_ACC_SNAPSHOT = "HondaElesysStockAccSaved"
-# FORK(HONDA_ACCORD_9G_AU): the brake pump rule (on by default) and the brake law (off by default): settings, BACKUP,
-# offroad only, read once at ignition by opendbc's _initialize_honda
-PUMP_V6_PARAM, PUMP_V6_TITLE = "HondaElesysPumpV6", "Quieter brake pump"
+# FORK(HONDA_ACCORD_9G_AU): the brake pump rule C1b (on by default) and the brake law (off by default): settings,
+# BACKUP, offroad only, read once at ignition by opendbc's _initialize_honda
+PUMP_C1B_PARAM, PUMP_C1B_TITLE = "HondaElesysPumpC1b", "Quiet pump at stops"
 BRAKE_LAW_V2_PARAM, BRAKE_LAW_V2_TITLE = "HondaElesysBrakeLawV2", "Measured brake law (testing)"
-IGNITION_SETTINGS = {PUMP_V6_PARAM: ("PUMP_V6_PARAM", "1", PUMP_V6_TITLE),
+IGNITION_SETTINGS = {PUMP_C1B_PARAM: ("PUMP_C1B_PARAM", "1", PUMP_C1B_TITLE),
                      BRAKE_LAW_V2_PARAM: ("BRAKE_LAW_V2_PARAM", "0", BRAKE_LAW_V2_TITLE)}
 OPENDBC_HOOKS = REPO / "opendbc_repo/opendbc/sunnypilot/car/interfaces.py"
 SP_CAR_INTERFACES = ROOT / "sunnypilot/selfdrive/car/interfaces.py"
-# retired in 2026-10 with the pedal and aero learners; nothing may read, write or show them
-RETIRED_RE = re.compile(r"HondaDynPedalGain\d*|HondaDynWindFactor")
+# retired in 2026-10 with the pedal and aero learners; nothing may read, write or show them. HondaElesysPumpV6: the
+# retired pump rule C1's setting (2026-10-06), replaced by HondaElesysPumpC1b
+RETIRED_RE = re.compile(r"HondaDynPedalGain\d*|HondaDynWindFactor|HondaElesysPumpV6\b")
+SUNNYLINKD = ROOT / "sunnypilot/sunnylink/athena/sunnylinkd.py"
 
 # {"Key", {FLAGS, TYPE, "default"}},  -- the default is optional
 PARAM_ENTRY_RE = re.compile(r'\{"(?P<key>\w+)",\s*\{(?P<flags>[^,}]+),\s*(?P<type>\w+)(?:,\s*"(?P<default>[^"]*)")?\}\}')
@@ -175,9 +177,10 @@ class TestHondaDynamicSettings(unittest.TestCase):
   def test_retired_keys_are_gone_everywhere(self):
     # Gone from the registry, so the mici and big panels, sunnylink and statsd must not name
     # them either: Params would raise UnknownKeyName on every read.
-    paths = [PARAMS_KEYS, HONDA_PANEL, MICI_PANEL, SDUI, STATSD, *sorted(SDUI_SRC.glob("*.yaml"))]
+    paths = [PARAMS_KEYS, HONDA_PANEL, MICI_PANEL, SDUI, STATSD, SUNNYLINKD, SP_CAR_INTERFACES,
+             *sorted(SDUI_SRC.glob("*.yaml"))]
     if TUNER.is_file():
-      paths += [TUNER, GAS_LAW]
+      paths += [TUNER, GAS_LAW, OPENDBC_HOOKS]
     for path in paths:
       for i, line in enumerate(path.read_text().splitlines(), 1):
         # a comment may record the history; code and data may not use the names
@@ -374,7 +377,7 @@ class TestHondaDynamicSettings(unittest.TestCase):
       assert len(calls) == 1, f"the big panel needs exactly one {const} toggle"
       enabled = {k.arg: ast.unparse(k.value) for k in calls[0].keywords}.get("enabled")
       assert enabled == "ui_state.is_offroad", f"the big panel's {key} toggle must be offroad only, got {enabled}"
-      attr = "pump_v6_toggle" if key == PUMP_V6_PARAM else "brake_law_v2_toggle"
+      attr = "pump_c1b_toggle" if key == PUMP_C1B_PARAM else "brake_law_v2_toggle"
       assert f"self.{attr}" in items, f"the big panel never shows its {key} toggle"
       assert re.search(rf"\({re.escape(const)},\s*self\.{attr}\)", HONDA_PANEL.read_text()), f"{key} is not kept in sync"
 

@@ -74,7 +74,7 @@ class TestSunnylinkdMethods(OpenpilotTestCase):
 
   def test_saveParams_pump_rule_and_brake_law_offroad_only(self):
     # FORK(HONDA_ACCORD_9G_AU) batch 3 fix round 1: read at ignition like stock ACC, so never written onroad
-    keys = ("HondaElesysPumpV6", "HondaElesysBrakeLawV2")
+    keys = ("HondaElesysPumpC1b", "HondaElesysBrakeLawV2")
     sunnylinkd.params.put_bool("IsOffroad", False, block=True)
     sunnylinkd.saveParams(dict.fromkeys(keys, "MQ=="))
     assert self.saved_params == []

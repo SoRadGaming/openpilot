@@ -91,7 +91,7 @@ def sp_stats(end_event):
     'HondaDynModeSecS',
     'HondaElesysGasLawV2',
     'HondaElesysStockAcc',  # FORK(HONDA_ACCORD_9G_AU): stock ACC mode, so a graph can tell those drives apart
-    'HondaElesysPumpV6',  # FORK(HONDA_ACCORD_9G_AU): which brake pump rule and brake law the next drive runs
+    'HondaElesysPumpC1b',  # FORK(HONDA_ACCORD_9G_AU): which brake pump rule and brake law the next drive runs
     'HondaElesysBrakeLawV2',
   ]
 

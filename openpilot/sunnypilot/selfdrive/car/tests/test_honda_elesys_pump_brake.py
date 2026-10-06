@@ -4,10 +4,13 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 
-FORK(HONDA_ACCORD_9G_AU): the brake pump rule (HondaElesysPumpV6, on by default) and the brake law
-(HondaElesysBrakeLawV2, off by default) reaching opendbc's _initialize_honda the way card hands them over, as
-CarParamsSP.flags ELESYS_PUMP_V6 (16) and ELESYS_BRAKE_LAW_V2 (32).
+FORK(HONDA_ACCORD_9G_AU): the brake pump rule C1b (HondaElesysPumpC1b, "Quiet pump at stops", on by default) and the
+brake law (HondaElesysBrakeLawV2, off by default) reaching opendbc's _initialize_honda the way card hands them over, as
+CarParamsSP.flags ELESYS_PUMP_C1B (64) and ELESYS_BRAKE_LAW_V2 (32). The retired rule C1's key (HondaElesysPumpV6) and
+flag (16) are never handed over or set.
 """
+import os
+
 from opendbc.car import gen_empty_fingerprint
 from opendbc.car.honda.interface import CarInterface
 from opendbc.car.honda.values import CAR
@@ -17,9 +20,10 @@ from openpilot.common.params import Params
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.selfdrive.car.interfaces import initialize_params
 
-PUMP = "HondaElesysPumpV6"
+PUMP = "HondaElesysPumpC1b"
 LAW = "HondaElesysBrakeLawV2"
-PUMP_BIT = HondaFlagsSP.ELESYS_PUMP_V6.value
+PUMP_BIT = HondaFlagsSP.ELESYS_PUMP_C1B.value
+RETIRED_BIT = HondaFlagsSP.ELESYS_PUMP_V6.value
 LAW_BIT = HondaFlagsSP.ELESYS_BRAKE_LAW_V2.value
 
 
@@ -35,13 +39,23 @@ def car_params(params: Params, car=CAR.HONDA_ACCORD_9G_AU):
 
 
 class TestElesysPumpBrakeLawPlumbing(OpenpilotTestCase):
-  def test_defaults_quieter_pump_on_brake_law_off(self):
+  def test_defaults_c1b_on_brake_law_off(self):
     params = Params()
     handed = initialize_params(params)
     assert {PUMP: True} in handed and {LAW: False} in handed
+    assert not any("HondaElesysPumpV6" in p for p in handed), "the retired C1 key is never handed over"
     CP, CP_SP = car_params(params)
     assert CP.openpilotLongitudinalControl
-    assert CP_SP.flags & (PUMP_BIT | LAW_BIT) == PUMP_BIT
+    assert CP_SP.flags & (PUMP_BIT | LAW_BIT | RETIRED_BIT) == PUMP_BIT
+
+  def test_c1b_is_on_whatever_the_retired_key_says(self):
+    # the owner switched "Quieter brake pump" (C1) off: its file stays on the device, unregistered and unread, and the
+    # new key starts at its default - on
+    params = Params()
+    with open(os.path.join(os.path.dirname(params.get_param_path(PUMP)), "HondaElesysPumpV6"), "wb") as f:
+      f.write(b"0")
+    _, CP_SP = car_params(params)
+    assert CP_SP.flags & (PUMP_BIT | RETIRED_BIT) == PUMP_BIT
 
   def test_each_setting_moves_its_own_bit(self):
     params = Params()
@@ -73,7 +87,7 @@ class TestElesysPumpBrakeLawPlumbing(OpenpilotTestCase):
     params.put_bool(LAW, True, block=True)
     CP, CP_SP = car_params(params)
     assert not CP.openpilotLongitudinalControl
-    assert CP_SP.flags & (PUMP_BIT | LAW_BIT) == 0
+    assert CP_SP.flags & (PUMP_BIT | LAW_BIT | RETIRED_BIT) == 0
 
   def test_other_hondas_never_get_the_bits(self):
     params = Params()
