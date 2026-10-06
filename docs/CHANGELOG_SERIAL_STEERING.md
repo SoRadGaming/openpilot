@@ -24,8 +24,8 @@ quiet stops. Nothing has reached the car.
 
 * **The pump runs from the first moment of every brake application again.** C1 waited until the command passed its
   deadband (about 11 counts, a median 0.12 s and up to 2.1 s late), and about a quarter of applications never pumped.
-* **Every rise in braking is pumped the moment it arrives.** C1 waited 1 s after a burst before the next unless the
-  rise was big; that gap was the one part of C1 with a measurable cost (about 29% more braking left undelivered).
+* **Every rise past the small deadband (12/6/3 counts) is pumped the moment it arrives.** C1 waited 1 s after a burst
+  before the next unless the rise was big; that gap was the one part of C1 with a measurable cost (about 29% more braking left undelivered).
 * **The pump runs continuously again while creeping into a stop above 100 counts** (below 9 km/h). The soft stop's
   125-count cap was sized for exactly that run; C1 had dropped it, and 120's stop was the first logged one without it.
 * **Kept from C1:** no top-ups while stopped - one burst to build the hold, or to deliver the soft stop's rise to the
@@ -34,14 +34,17 @@ quiet stops. Nothing has reached the car.
   time and 6% more starts than the old rule (24% / 30% more than C1); on five routes run through the car's own
   code it was +25% / +13%, right at the 25% limit below. You will hear the onset burst on every brake
   application again, and the whir on the final approach. Stops stay quiet: 59 of the old rule's 60 re-pumps more than
-  5 s into a stop are gone.
+  5 s into a stop are gone. Like C1, it has no timed refresh while braking lightly (below 100 counts): in short light
+  moments it can pump a few counts later than the old rule (replayed: about 12 s of 93 braking minutes 10 or more counts
+  behind it, against 223 s ahead of it; CAR doc 7.2).
 * **The setting is new and on by default:** Settings > Vehicle > Honda (or the mici vehicle page, or sunnylink >
   Vehicle > Honda), "Quiet pump at stops", offroad only, read at the next car start. It is a new key
   (`HondaElesysPumpC1b`), so it starts on even though you switched "Quieter brake pump" off; that setting is gone.
   Off = the old rule (v5), exactly as before.
 * **How to judge it:** same roads, alternating it off and on, at least 6 drives each way with 10 stops behind a stopped
   car each way. `python openpilot/sunnypilot/tools/brake_route_check.py <on routes> --baseline <off routes>` now prints
-  a "C1b ACCEPTANCE" block: the first half-second of braking no more than 0.03 m/s² softer than the old rule, stops at
+  a "C1b ACCEPTANCE" block: the first half-second of braking no more than 0.03 m/s² softer than the old rule (the
+  study's own measure: against the planner's target, adjusted for grade and target), stops at
   least 3.5 m behind a stopped car (none under 2.2 m), the stop itself no harsher than 0.6 m/s² (median), no more
   driver brake take-overs than the old rule's ~1.4 per braking minute, pump time at most 25% over the old rule, at most
   2 late re-pumps per 100 stops, no brake error. Judge it on those numbers, not on the sound. Turn it off on any of the
@@ -52,6 +55,13 @@ Under the hood: `brake_pump_c1b_elesys()` (CarParamsSP flag 64, the `hondashadow
 and the route check still reads routes 120/121 as C1. With the setting off, every CAN frame matches the build before
 this change; with it on, only the pump request bit (and its checksum) differs. The rule as built matches the study's
 replay on all 3.42 million frames of its routes and reproduces its table (CAR doc 7.2).
+
+After review (fix round 1, same day): the route check's acceptance block now measures what the study measured - the
+error against the planner's target rather than the brake command, adjusted for grade, target size and the error already
+there (on 120/121 it now reproduces the study's numbers, and a test keeps it so), the stop distance where the car stops,
+verdicts only for an on-arm that ran C1b against an off-arm that ran the old rule, and a light hold's several build
+bursts no longer flagged as breaking the design. A test now reads the pump bit the controller actually sends through
+the soft stop's final approach. No change to the rule or to anything the car runs.
 
 ## 2026-10-05 — batch 3 after review (fix round 1): one pump change for you to confirm, the brake law is not accepted
 

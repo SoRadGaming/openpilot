@@ -19,9 +19,10 @@ section 3, B4), then a verdict on every abort criterion a log can judge, and the
      else --rule) replayed on the logged 0x1FA commands must match the logged pump bit on >= 99.5% of braking frames,
      a mismatch within one frame of a burst edge counting as a match (the log's timestamps jitter against the
      controller's frame clock by about that much; the raw match is printed too); pump time and starts (per braking
-     minute: v5 ~17, C1 ~14, C1b ~18); standstill bursts per stop (C1 and C1b: at most one - a hold build on a stop
-     reached below 100 delivered counts, or the delivery of a rise of more than 15 counts over what was delivered, the
-     soft stop's rise to the hold; under C1b also the first-frame burst of an application that starts at the stop);
+     minute: v5 ~17, C1 ~14, C1b ~18); standstill bursts per stop and those outside C1/C1b's design (a standstill
+     burst may build a hold while under 100 delivered counts - one per deadband-sized rise, so a light hold can take
+     several - deliver a rise of more than 15 counts over what was delivered, the soft stop's rise to the hold, or be
+     C1b's first-frame burst of an application that starts at the stop; anything else is a top-up);
      the longest moving pump-off at >= 100 counts (abort above 6.1 s). All three rules are also replayed on the same
      commands, so one drive gives the v5 / C1 / C1b table of c1weak A_synth section 3 (open loop: only the
      differences between the rules mean anything).
@@ -34,7 +35,8 @@ section 3, B4), then a verdict on every abort criterion a log can judge, and the
      (or where it last crossed 5 m/s); a driver brake press in those 6 s makes it a take-over, counted per 100
      arrivals (a press cancels openpilot, so those approaches end disengaged - that is why they are counted from the
      start of the window). The CLEAN stops (engaged and braking through the last 0.5-1 s, no pedal in the 6 s) give:
-     radar distance to a stopped lead 1 s after; final-approach tracking error (pump2 ss/approach.py: from where the
+     radar distance to a stopped lead 1 s after (pump2; the abort criterion) and at the stop (c1weak; C1b's acceptance
+     check 3); final-approach tracking error (pump2 ss/approach.py: from where the
      braked approach crossed 2.5 m/s to the stop, at v >= 0.3, aEgo + g sin(pitch) - commanded, pitch from
      carControl.orientationNED; the median over stops, against V5's -0.32 m/s^2, and the seconds it covers); settle
      jerk (the largest |d aEgo/dt| of 0.1 s means, 0.5 s before to 1 s after).
@@ -61,21 +63,27 @@ approach of a stop uses the pitch instead, as pump2 did.
 
 C1b ACCEPTANCE (c1weak A_synth section 4), on the arm against a --baseline arm of v5 drives on the same roads:
   1. the replay of the rule matches the logged pump bit on >= 99.5% of braking frames;
-  2. clean applications (>= 1.5 s after the previous one, engaged, >= 3 m/s, no pedal in the 0.6 s before, peaking at
-     >= 12 counts): the tracking error over 0-0.5 s and 0-1 s (raw aEgo minus the command 0.3 s earlier - the command
-     carries the pitch feedforward, so this is the grade-adjusted error), arm minus baseline <= +0.03 m/s^2 with the
-     upper bound of an event bootstrap's 95% interval <= +0.05; and the time to decelerate 0.1 m/s^2 below the
-     pre-onset (coast) baseline, grade-corrected and held 0.2 s, no more than 0.05 s later;
-  3. clean stops: the median distance to a stopped lead >= 3.5 m and none below 2.2 m; the raw tracking error over the
-     last 3 s no worse than the baseline's (medians); the decel at wheel-zero (the accelerometer, the 0.2 s before
-     the stop) median <= 0.6 and p90 <= 1.0 m/s^2;
+  2. clean applications (c1weak's: >= 1.5 s after the previous one, engaged, >= 1 m/s, no pedal in the 0.6 s before,
+     peaking at >= 12 counts): c1weak's tracking error - kinematic aEgo minus the planner's longitudinalPlan.aTarget
+     0.3 s earlier - over 0-0.5 s and 0-1 s, ADJUSTED as c1weak adjusted it (an OLS over both arms' applications of the
+     error on the arm, log peak, v0, the target at the onset and over 0-1 s, the grade over -0.5..+1 s and the error
+     already there in the 0.5 s before): the arm's coefficient <= +0.03 m/s^2 with the upper bound of an event
+     bootstrap's 95% interval (within each arm) <= +0.05; the raw means and medians, and the same error against the
+     actuator command, are printed beside it, not judged. And the time to decelerate 0.1 m/s^2 below the pre-onset
+     (coast) baseline, grade-corrected and held 0.2 s, adjusted the same way (log peak, v0, the target), no more than
+     0.05 s later;
+  3. clean stops: the median distance to a stopped lead (at the stop: c1weak's first frame under 0.15 m/s, a lead with
+     vLead < 0.5 and dRel < 25 m) >= 3.5 m and none below 2.2 m; the raw tracking error (aEgo minus aTarget 0.3 s
+     earlier) over the last 3 s no worse than the baseline's (medians; the last 2 s, c1weak's window, printed beside
+     it); the decel at wheel-zero (the accelerometer, the 0.2 s before the stop) median <= 0.6 and p90 <= 1.0 m/s^2;
   4. driver brake take-overs (a press with openpilot engaged and braking in the last second) <= 1.4 per minute of
      engaged braking;
   5. pump time per engaged hour at most +25% over the baseline; standstill re-pumps more than 5 s into a stop at most
      2 per 100 stops;
   6. no BRAKE_ERROR; a VSA fault beyond the known 32-11 is a manual check.
 Each reads PASS / FAIL, or n.a. without a baseline or with too few events (10 applications per arm); the study sized
-a 0.05 difference at about 90 clean applications per arm.
+a 0.05 difference at about 90 clean applications per arm. Checks 1-5 judge only an arm whose routes all ran C1b, and
+the comparative ones only against a baseline whose routes all ran v5; otherwise they read n.a. with what ran.
 
 WHAT RAN. The pump rule: CarParamsSP flags 64 / 16, else the route's pump= tag, else --rule (a --rule that disagrees
 with the log is ignored, with a warning). The brake law: the route's blaw= tag (hondadyn/hondashadow lines, which say
@@ -148,11 +156,16 @@ BITE = 0.5                      # m/s^2 beyond the command within 1 s of a pump 
 # C1b's acceptance checks (c1weak A_synth section 4)
 ONSET_GAP = 1.5                 # s since the previous application: a clean application (c1weak A_events)
 ONSET_PRE = 0.6                 # s before the onset with no pedal
-ONSET_V0 = 3.0                  # m/s at the onset
+ONSET_V0 = 1.0                  # m/s at the onset (c1weak analyze.py: v0 >= 1)
 ONSET_PEAK = 12                 # counts: the application peaks at this or more
 ONSET_MIN_N = 10                # clean applications per arm before the onset checks give a verdict
-ACCEPT_ONSET_DIFF = 0.03        # m/s^2: arm minus baseline, 0-0.5 s and 0-1 s
-ACCEPT_ONSET_HI = 0.05          # m/s^2: the bootstrap 95% upper bound of that difference
+ACCEPT_ONSET_DIFF = 0.03        # m/s^2: the adjusted arm effect, 0-0.5 s and 0-1 s
+ACCEPT_ONSET_HI = 0.05          # m/s^2: the bootstrap 95% upper bound of that effect
+# c1weak's adjustment (pre.py): OLS of the error on the arm and these, per clean application; the decel time uses the
+# smaller set c1weak used for it (reg2.py)
+ONSET_COV_ERR = ("log_pk", "v0", "at0", "at10", "gr1", "err_pre")
+ONSET_COV_DEC = ("log_pk", "v0", "at0", "at10")
+BOOT_N = 2000
 ACCEPT_DECEL_LATER = 0.05       # s: decel 0.1 below the pre-onset baseline no later than this
 ACCEPT_STOP_MEDIAN = 3.5        # m, the median distance to a stopped lead (the car doc's target)
 ACCEPT_STOP_MIN = 2.2           # m, any stop
@@ -264,6 +277,7 @@ def _streams() -> dict:
     "cs": {"t": [], "v": [], "a": [], "bp": [], "gp": [], "ss": [], "en": [], "aeb": [], "fcw": []},
     "cc": {"t": [], "la": [], "acc": [], "lcs": [], "pitch": [], "fcw": []},
     "ctl": {"t": [], "ui": []},
+    "lp": {"t": [], "at": []},
     "rad": {"t": [], "st": [], "d": [], "vl": []},
     "gps": {"t": [], "fix": [], "vn": [], "ve": [], "vd": []},
     "imu": {"t": [], "x": [], "y": [], "z": []},
@@ -277,7 +291,7 @@ def _read_rlog(fn: str) -> dict:
   """One rlog (or qlog) file into the streams this script uses."""
   from openpilot.tools.lib.logreader import LogReader
   S = _streams()
-  can, cs, cc, ctl, rad, gps, imu, pose = (S[k] for k in ("can", "cs", "cc", "ctl", "rad", "gps", "imu", "pose"))
+  can, cs, cc, ctl, lp, rad, gps, imu, pose = (S[k] for k in ("can", "cs", "cc", "ctl", "lp", "rad", "gps", "imu", "pose"))
   meta = S["meta"]
   for m in LogReader(fn):
     w = m.which()
@@ -310,6 +324,9 @@ def _read_rlog(fn: str) -> dict:
     elif w == "controlsState":
       ctl["t"].append(t)
       ctl["ui"].append(m.controlsState.uiAccelCmd)
+    elif w == "longitudinalPlan":
+      lp["t"].append(t)
+      lp["at"].append(m.longitudinalPlan.aTarget)
     elif w == "radarState":
       ld = m.radarState.leadOne
       for k, v in (("t", t), ("st", ld.present), ("d", ld.dRel), ("vl", ld.vLead)):   # `present` was `status`, same field
@@ -484,6 +501,9 @@ def read_parquet(pdir: str) -> dict:
   tb = table("controlsState", ["_logMonoTime", "uiAccelCmd"])
   if tb is not None:
     S["ctl"]["t"], S["ctl"]["ui"] = list(col(tb, "_logMonoTime")), list(as_float(col(tb, "uiAccelCmd")))
+  tb = table("longitudinalPlan", ["_logMonoTime", "aTarget"])
+  if tb is not None:
+    S["lp"]["t"], S["lp"]["at"] = list(col(tb, "_logMonoTime")), list(as_float(col(tb, "aTarget")))
   tb = table("radarState", ["_logMonoTime", "leadOne.status", "leadOne.dRel", "leadOne.vLead"])
   if tb is not None:
     for k, c in (("t", "_logMonoTime"), ("st", "leadOne.status"), ("d", "leadOne.dRel"), ("vl", "leadOne.vLead")):
@@ -599,6 +619,9 @@ def build_frames(S: dict) -> dict:
   ct = sec(cs["t"])
   for k in ("v", "a", "bp", "gp", "ss", "en", "aeb", "fcw"):
     F[k] = prev(ct, cs[k], t, max_age=0.5)
+  # aEgo interpolated to the frame's time rather than held from the last carState (up to 10 ms old, which on an onset
+  # biases a mean error by ~+0.005): the tracking error of C1b's acceptance checks, as c1weak read it at carState times
+  F["a_i"] = np.where(np.isfinite(F["a"]), np.interp(t, ct, cs["a"]), np.nan) if len(ct) and n else np.full(n, np.nan)
   cc = S["cc"]
   cct = sec(cc["t"])
   F["la"] = prev(cct, cc["la"], t, max_age=0.5) == 1
@@ -607,6 +630,10 @@ def build_frames(S: dict) -> dict:
   F["op_fcw"] = prev(cct, cc["fcw"], t, max_age=0.5) == 1
   F["pitch"] = prev(cct, cc["pitch"], t, max_age=0.5)
   F["ui"] = prev(sec(S["ctl"]["t"]), S["ctl"]["ui"], t, max_age=0.5)
+  # the planner's aTarget, and the same 0.3 s earlier: c1weak's tracking error is aEgo minus at3 (events.py: the target
+  # is the action-time target, so the car is compared with what was asked 0.3 s before)
+  F["at"] = prev(sec(S["lp"]["t"]), S["lp"]["at"], t, max_age=0.5)
+  F["at3"] = np.interp(t - 0.3, t, F["at"]) if n else np.zeros(0)
   r = S["rad"]
   rt = sec(r["t"])
   F["lead"] = prev(rt, r["st"], t, max_age=0.5) == 1
@@ -630,6 +657,13 @@ def build_frames(S: dict) -> dict:
       Gr = rolling(raw, 100, np.nanmedian, min_periods=25, center=True)
   F["grade"] = Gr
   F["ac"] = F["a"] + Gr
+  # the grade as a fraction with its gaps filled from the calibrated pitch less the route's offset against the GPS grade
+  # (c1weak events.load): only the onset adjustment's covariate gr1, never a corrected acceleration
+  gf = Gr / G
+  pitch = F["pitch"]
+  both = np.isfinite(gf) & np.isfinite(pitch) & (np.nan_to_num(F["v"]) > 8)
+  off = float(np.nanmedian(pitch[both] - gf[both])) if both.sum() > 100 else 0.0
+  F["grade_f"] = np.where(np.isfinite(gf), gf, pitch - off)
 
   # the accelerometer's forward specific force, aligned to ac (the grade cross-check; pump2 lib.load)
   F["ff"] = np.full(n, np.nan)
@@ -808,9 +842,11 @@ def pump_metrics(F: dict, on: np.ndarray) -> dict:
 def standstill_bursts(F: dict, on: np.ndarray) -> list[dict]:
   """Per openpilot-held stop (engaged, braking, v < 0.15 for >= 1 s): the pump starts while stopped, those more than
   LATE_REPUMP_S into it, the command the stop was reached at, the pressure delivered then (pump2's model) and the
-  highest command of the hold. C1's and C1b's design: at most one burst, and only to build a hold (reached below HOLD_OK
-  delivered), to deliver a rise of more than BIG_RISE over what was delivered (the soft stop's rise from its ~125 cap
-  to the hold) or - C1b - as the first frame of an application that starts at the stop."""
+  highest command of the hold. C1's and C1b's design: a standstill burst only builds a hold (fires while what was
+  delivered is below HOLD_OK, once per deadband-sized rise, back to back under C1b's no-gap rule - so a light hold may
+  take several), delivers a rise of more than BIG_RISE over what was delivered (the soft stop's rise from its ~125 cap
+  to the hold) or - C1b - is the first frame of an application. Anything else is a top-up of a hold already delivered
+  at HOLD_OK or more, which the design never does: `outside` counts those, and `design_ok` is none."""
   t, cb, act = F["t"], F["cb"], F["la"]
   v = np.nan_to_num(F["v"])
   D = delivered(cb, on, t)
@@ -823,11 +859,15 @@ def standstill_bursts(F: dict, on: np.ndarray) -> list[dict]:
     k = st[(st >= a) & (st < b)]
     n = int(len(k))
     lvl, top = float(D[a]), float(cb[a:b].max())
-    starts_here = a == 0 or cb[a - 1] <= 0     # the application starts at the stop: C1b's first-frame burst
-    allowed = 1 if (lvl < HOLD_OK or top > lvl + BIG_RISE or starts_here) else 0
+    outside = 0
+    for s in k:
+      before = float(D[s - 1]) if s > 0 else 0.0
+      first = s == 0 or cb[s - 1] <= 0          # the application's first frame: C1b's onset burst
+      if not (first or before < HOLD_OK or cb[s] > before + BIG_RISE):
+        outside += 1
     out.append({"t": float(t[a]), "hold_s": float(t[b - 1] - t[a]), "cb_reached": float(cb[a]), "delivered_reached": lvl,
                 "cb_max": top, "cb_hold": float(np.median(cb[a:b])), "delivered_hold": float(np.median(D[a:b])),
-                "bursts": n, "late": int(np.sum(t[k] - t[a] > LATE_REPUMP_S)), "design_ok": n <= allowed})
+                "bursts": n, "late": int(np.sum(t[k] - t[a] > LATE_REPUMP_S)), "outside": outside, "design_ok": outside == 0})
   return out
 
 
@@ -943,7 +983,7 @@ def stops(F: dict) -> dict:
   la = F["la"]
   ss = (v < 0.1) | (F["ss"] == 1)
   n = len(t)
-  acc_l = np.r_[np.full(15, np.nan), F["acc"][:-15]] if n > 15 else np.full(n, np.nan)
+  err = F.get("a_i", F["a"]) - F["at3"]  # c1weak's tracking error: aEgo minus the planner's aTarget 0.3 s earlier
   rows, arrivals, pressed, press_t = [], 0, 0, []
   for i in np.flatnonzero(ss[1:] & ~ss[:-1]) + 1:
     if i < STOP_WINDOW or i + 50 >= n:
@@ -967,10 +1007,18 @@ def stops(F: dict) -> dict:
     j = i + 50
     lead_stopped = bool(F["lead"][j] and np.isfinite(F["vLead"][j]) and abs(F["vLead"][j]) < 0.5)
     dec_imu = -np.nanmean(F["ff"][i - 10:i]) if np.isfinite(F["ff"][i - 10:i]).any() else math.nan
-    e3 = F["a"][max(0, i - 150):i] - acc_l[max(0, i - 150):i]     # c1weak: raw aEgo minus the command 0.3 s earlier
+    # c1weak's stop frame: the first of the run of frames below 0.15 m/s that ends in this standstill (events.py), where
+    # it read the radar (a lead present, vLead < 0.5, dRel < 25 m: more.py) and ended the final-seconds error
+    k = i
+    while k > i - STOP_WINDOW and v[k - 1] < 0.15:
+      k -= 1
+    lead_k = bool(F["lead"][k] and np.isfinite(F["dRel"][k]) and F["dRel"][k] < 25.0 and np.nan_to_num(F["vLead"][k], nan=9.0) < 0.5)
+    e3, e2 = err[max(0, k - 150):k], err[max(0, k - 100):k]
     rows.append({"t": float(t[i]), "cb_at_stop": float(cb[i]), "cb_max_1s": float(cb[i:i + 50].max()),
                  "dist": float(F["dRel"][j]) if lead_stopped else math.nan,
+                 "dist_stop": float(F["dRel"][k]) if lead_k else math.nan,
                  "err_last3": float(np.nanmean(e3)) if np.isfinite(e3).sum() >= 50 else math.nan,
+                 "err_last2": float(np.nanmean(e2)) if np.isfinite(e2).sum() >= 50 else math.nan,
                  "approach_err": ap["err"], "approach_s": ap["s"], "approach_v0": ap["v0"],
                  "settle_jerk": float(np.nanmax(jerk)) if np.isfinite(jerk).any() else math.nan,
                  "decel_at_stop": float(dec_imu)})
@@ -1062,20 +1110,31 @@ def holds(F: dict, on: np.ndarray | None = None) -> list[dict]:
 
 
 def onsets(F: dict) -> list[dict]:
-  """c1weak's clean applications (A_events): >= ONSET_GAP s after the previous one, engaged at the onset, v0 >= ONSET_V0,
-  no pedal in the ONSET_PRE s before, peaking at >= ONSET_PEAK counts. Per application: the tracking error (raw aEgo
-  minus the command 0.3 s earlier) over 0-0.5 s and 0-1 s, each only when the window is not cut by a pedal, a
-  disengage or the application's end; and the time to a grade-corrected decel 0.1 below the pre-onset baseline
+  """c1weak's clean applications (A_events, analyze.py): >= ONSET_GAP s after the previous one, engaged at the onset,
+  v0 >= ONSET_V0, no pedal in the ONSET_PRE s before, peaking at >= ONSET_PEAK counts. Per application, c1weak's
+  tracking error - kinematic aEgo minus the planner's aTarget 0.3 s earlier (events.py err_at) - over 0-0.5 s and
+  0-1 s, each only when the window is not cut by a pedal, a disengage or the application's end (err05, err10); the
+  same against the actuator command 0.3 s earlier, printed only (err05_cmd, err10_cmd); the covariates of c1weak's
+  adjustment (pre.py: log peak, v0, the target at the onset, its mean over 0-1 s, the grade over -0.5..+1 s and the
+  error already there over the 0.5 s before); and the time to a grade-corrected decel 0.1 below the pre-onset baseline
   (0.6-0.05 s before), held 0.2 s, within 4 s."""
   t, cb, la = F["t"], F["cb"], F["la"]
   v = np.nan_to_num(F["v"])
   n = len(t)
   ped = (F["bp"] == 1) | (F["gp"] == 1)
   acc_l = np.r_[np.full(15, np.nan), F["acc"][:-15]] if n > 15 else np.full(n, np.nan)
-  err = F["a"] - acc_l
+  at, at3 = F["at"], F["at3"]
+  a_i = F.get("a_i", F["a"])
+  err = a_i - at3
+  err_cmd = a_i - acc_l
+  grade_f = F.get("grade_f", np.full(n, np.nan))
   ac = F["ac"]
   out = []
   prev_end = -math.inf
+
+  def mean_ok(x):
+    return float(np.nanmean(x)) if len(x) and np.isfinite(x).sum() >= 0.5 * len(x) else math.nan
+
   for a, b in zip(*runs(cb > 0), strict=True):
     t0 = float(t[a])
     gap, prev_end = t0 - prev_end, float(t[b - 1])
@@ -1086,11 +1145,18 @@ def onsets(F: dict) -> list[dict]:
       continue
     cut = np.flatnonzero(ped[a:b] | ~la[a:b])
     iw1 = a + int(cut[0]) if len(cut) else b
-    row = {"t": t0, "peak": float(cb[a:b].max()), "v0": float(v[a]), "pump_first": bool(F["pump"][a])}
-    for T, key in ((0.5, "err05"), (1.0, "err10")):
+    row = {"t": t0, "peak": float(cb[a:b].max()), "v0": float(v[a]), "pump_first": bool(F["pump"][a]),
+           "at0": float(at[a])}
+    for T, key in ((0.5, "05"), (1.0, "10")):
       iT = int(np.searchsorted(t, t0 + T))
-      seg = err[a:iT]
-      row[key] = float(np.nanmean(seg)) if a < iT <= iw1 and np.isfinite(seg).sum() >= 0.5 * len(seg) else math.nan
+      ok = a < iT <= iw1
+      row["err" + key] = mean_ok(err[a:iT]) if ok else math.nan
+      row["err" + key + "_cmd"] = mean_ok(err_cmd[a:iT]) if ok else math.nan
+      row["at" + key] = mean_ok(at3[a:iT]) if ok else math.nan
+    i_m05, i_p10 = int(np.searchsorted(t, t0 - 0.5)), int(np.searchsorted(t, t0 + 1.0))
+    row["err_pre"] = mean_ok(err[i_m05:a])
+    g1 = grade_f[i_m05:i_p10]
+    row["gr1"] = float(np.nanmean(g1)) if np.isfinite(g1).any() else math.nan
     pre = ac[i_pre:int(np.searchsorted(t, t0 - 0.05))]
     base = float(np.nanmean(pre)) if np.isfinite(pre).any() else math.nan
     i4 = min(iw1, int(np.searchsorted(t, t0 + 4.0)))
@@ -1350,6 +1416,9 @@ def pool(results: list[dict]) -> dict:
   P["pump_s_per_eng_h"] = P["pump_s"] / (P["eng_s"] / 3600.0) if P["eng_s"] > 0 else math.nan
   P["onsets"] = [o for r in results for o in r.get("onsets", [])]
   P["stop_err_last3"] = [s["err_last3"] for r in results for s in r["stops"]["stops"] if math.isfinite(s.get("err_last3", math.nan))]
+  P["stop_err_last2"] = [s["err_last2"] for r in results for s in r["stops"]["stops"] if math.isfinite(s.get("err_last2", math.nan))]
+  P["stop_dist_at_stop"] = [s["dist_stop"] for r in results for s in r["stops"]["stops"]
+                            if math.isfinite(s.get("dist_stop", math.nan))]
   P["decel_at_stop"] = [s["decel_at_stop"] for r in results for s in r["stops"]["stops"]
                         if math.isfinite(s.get("decel_at_stop", math.nan))]
   P["stops_held"] = sum(len(r.get("stops_pump", [])) for r in results)
@@ -1420,22 +1489,58 @@ def verdicts(P: dict, B: dict | None) -> list[tuple[str, str, str]]:
   return out
 
 
-def _boot_diff(x, y, n: int = 2000, seed: int = 0) -> tuple[float, float, float]:
-  """mean(x) - mean(y) and an event bootstrap's 95% interval."""
-  x = np.asarray([v for v in x if math.isfinite(v)], dtype=float)
-  y = np.asarray([v for v in y if math.isfinite(v)], dtype=float)
-  if len(x) < 2 or len(y) < 2:
-    return math.nan, math.nan, math.nan
+def _covariate(o: dict, name: str) -> float:
+  if name == "log_pk":
+    return math.log(o["peak"]) if o.get("peak", 0) > 0 else math.nan
+  return float(o.get(name, math.nan))
+
+
+def adjusted_effect(on_a: list[dict], on_b: list[dict], key: str, cov: tuple[str, ...], n_boot: int = BOOT_N,
+                    seed: int = 0) -> dict:
+  """c1weak's adjusted arm effect (pre.py / reg2.py): OLS of `key` on a constant, the arm (1 = on_a) and the covariates
+  `cov`, over the applications that have them all; the arm coefficient with a 95% event bootstrap interval, resampled
+  within each arm (fixed seed). A covariate with no spread is dropped, and so are trailing ones that leave the design
+  rank-deficient. Also the raw means and medians of both arms."""
+  rows = [(o, 1.0) for o in on_a] + [(o, 0.0) for o in on_b]
+  X, y, arm = [], [], []
+  for o, g in rows:
+    vals = [_covariate(o, c) for c in cov]
+    yv = float(o.get(key, math.nan))
+    if math.isfinite(yv) and all(math.isfinite(x) for x in vals):
+      X.append(vals)
+      y.append(yv)
+      arm.append(g)
+  ya, yb = np.array([v for v, g in zip(y, arm, strict=True) if g]), np.array([v for v, g in zip(y, arm, strict=True) if not g])
+  out = {"n_a": len(ya), "n_b": len(yb), "mean_a": float(ya.mean()) if len(ya) else math.nan,
+         "mean_b": float(yb.mean()) if len(yb) else math.nan, "median_a": float(np.median(ya)) if len(ya) else math.nan,
+         "median_b": float(np.median(yb)) if len(yb) else math.nan, "effect": math.nan, "lo": math.nan, "hi": math.nan,
+         "cov": []}
+  if len(ya) < 2 or len(yb) < 2:
+    return out
+  Xc = np.array(X, dtype=float).reshape(len(y), len(cov))
+  keep = [i for i in range(len(cov)) if np.std(Xc[:, i]) > 1e-12]
+  M = np.column_stack([np.ones(len(y)), np.array(arm)] + [Xc[:, i] for i in keep])
+  while M.shape[1] > 2 and np.linalg.matrix_rank(M) < M.shape[1]:
+    M = M[:, :-1]
+    keep = keep[:-1]
+  Y = np.array(y)
+  out["effect"] = float(np.linalg.lstsq(M, Y, rcond=None)[0][1])
+  out["cov"] = [cov[i] for i in keep]
+  ia, ib = np.flatnonzero(M[:, 1] == 1), np.flatnonzero(M[:, 1] == 0)
   rng = np.random.default_rng(seed)
-  bx = x[rng.integers(0, len(x), (n, len(x)))].mean(1)
-  by = y[rng.integers(0, len(y), (n, len(y)))].mean(1)
-  d = bx - by
-  return float(x.mean() - y.mean()), float(np.percentile(d, 2.5)), float(np.percentile(d, 97.5))
+  bs = np.empty(n_boot)
+  for k in range(n_boot):
+    ii = np.r_[rng.choice(ia, len(ia)), rng.choice(ib, len(ib))]
+    bs[k] = np.linalg.lstsq(M[ii], Y[ii], rcond=None)[0][1]
+  out["lo"], out["hi"] = float(np.percentile(bs, 2.5)), float(np.percentile(bs, 97.5))
+  return out
 
 
 def acceptance(P: dict, B: dict | None) -> list[tuple[str, str, str]]:
   """(check, PASS / FAIL / n.a. / MANUAL, detail) for C1b's acceptance checks (c1weak A_synth section 4). The arm is
-  C1b, the baseline arm v5 on the same roads; every comparative check waits for the baseline."""
+  C1b, the baseline arm v5 on the same roads; every comparative check waits for the baseline. Checks 1-5 judge only an
+  arm whose routes all ran C1b, and the comparative ones only against a baseline whose routes all ran v5: otherwise
+  they read n.a. with what each arm ran (the numbers are still printed)."""
   out = []
   mm = P.get("match_min", math.nan)
   out.append(("1. the replay of the rule matches the logged pump bit on >= 99.5% of braking frames",
@@ -1443,44 +1548,60 @@ def acceptance(P: dict, B: dict | None) -> list[tuple[str, str, str]]:
   on_a = P.get("onsets", [])
   on_b = (B or {}).get("onsets", [])
   for key, label in (("err05", "0-0.5 s"), ("err10", "0-1 s")):
-    crit = f"2. clean applications, tracking error {label}: arm minus baseline <= +{ACCEPT_ONSET_DIFF} (95% upper <= +{ACCEPT_ONSET_HI})"
-    xa = [o[key] for o in on_a if math.isfinite(o[key])]
-    xb = [o[key] for o in on_b if math.isfinite(o[key])]
+    crit = (f"2. clean applications, tracking error {label} adjusted for grade, target and pre-onset error: arm effect <= " +
+            f"+{ACCEPT_ONSET_DIFF} (95% upper <= +{ACCEPT_ONSET_HI})")
+    xa = [o[key] for o in on_a if math.isfinite(o.get(key, math.nan))]
+    xc = [o[key + "_cmd"] for o in on_a if math.isfinite(o.get(key + "_cmd", math.nan))]
     if not B:
-      out.append((crit, "n.a.", f"needs --baseline (v5 on the same roads); arm mean {fnum(np.mean(xa) if xa else math.nan, '+.3f')} (n {len(xa)})"))
-    elif len(xa) < ONSET_MIN_N or len(xb) < ONSET_MIN_N:
-      out.append((crit, "n.a.", f"n {len(xa)} / {len(xb)} clean applications (needs {ONSET_MIN_N} per arm; the study sized ~90)"))
+      out.append((crit, "n.a.", "needs --baseline (v5 on the same roads); arm aEgo - aTarget(t-0.3) median " +
+                  f"{fnum(np.median(xa) if xa else math.nan, '+.3f')}, mean {fnum(np.mean(xa) if xa else math.nan, '+.3f')} " +
+                  f"(n {len(xa)}); against the command, mean {fnum(np.mean(xc) if xc else math.nan, '+.3f')} (n {len(xc)})"))
+      continue
+    E = adjusted_effect(on_a, on_b, key, ONSET_COV_ERR)
+    Ec = adjusted_effect(on_a, on_b, key + "_cmd", ONSET_COV_ERR)
+    raw = (f"raw aEgo - aTarget(t-0.3): arm median {fnum(E['median_a'], '+.3f')} mean {fnum(E['mean_a'], '+.3f')}, " +
+           f"baseline median {fnum(E['median_b'], '+.3f')} mean {fnum(E['mean_b'], '+.3f')}; against the command (printed " +
+           f"only): adjusted {fnum(Ec['effect'], '+.3f')}, raw means {fnum(Ec['mean_a'], '+.3f')} / {fnum(Ec['mean_b'], '+.3f')}")
+    if E["n_a"] < ONSET_MIN_N or E["n_b"] < ONSET_MIN_N:
+      out.append((crit, "n.a.", f"n {E['n_a']} / {E['n_b']} clean applications with every covariate (needs {ONSET_MIN_N} " +
+                  f"per arm; the study sized ~90); {raw}"))
     else:
-      d, lo, hi = _boot_diff(xa, xb)
-      ok = d <= ACCEPT_ONSET_DIFF and hi <= ACCEPT_ONSET_HI
-      out.append((crit, "PASS" if ok else "FAIL", f"{d:+.3f} [{lo:+.3f}, {hi:+.3f}] (arm {np.mean(xa):+.3f} n {len(xa)}, " +
-                  f"baseline {np.mean(xb):+.3f} n {len(xb)})"))
-  crit = f"2. clean applications, decel 0.1 below the pre-onset baseline no more than {ACCEPT_DECEL_LATER} s later"
+      ok = E["effect"] <= ACCEPT_ONSET_DIFF and E["hi"] <= ACCEPT_ONSET_HI
+      out.append((crit, "PASS" if ok else "FAIL", f"{E['effect']:+.3f} [{E['lo']:+.3f}, {E['hi']:+.3f}] (n {E['n_a']} / " +
+                  f"{E['n_b']}; covariates {', '.join(E['cov']) or 'none'}); {raw}"))
+  crit = f"2. clean applications, decel 0.1 below the pre-onset baseline no more than {ACCEPT_DECEL_LATER} s later (adjusted)"
   xa = [o["d_dec10"] for o in on_a if math.isfinite(o["d_dec10"])]
-  xb = [o["d_dec10"] for o in on_b if math.isfinite(o["d_dec10"])]
   if not B:
     out.append((crit, "n.a.", f"needs --baseline; arm mean {fnum(np.mean(xa) if xa else math.nan, '.2f')} s (n {len(xa)})"))
-  elif len(xa) < ONSET_MIN_N or len(xb) < ONSET_MIN_N:
-    out.append((crit, "n.a.", f"n {len(xa)} / {len(xb)} (needs {ONSET_MIN_N} per arm)"))
   else:
-    d, lo, hi = _boot_diff(xa, xb)
-    out.append((crit, "PASS" if d <= ACCEPT_DECEL_LATER else "FAIL", f"{d:+.3f} s [{lo:+.3f}, {hi:+.3f}] (arm {np.mean(xa):.2f} s, " +
-                f"baseline {np.mean(xb):.2f} s)"))
-  med, mn, nd = P.get("stop_dist_median", math.nan), P.get("stop_dist_min", math.nan), P.get("stop_dist_n", 0)
-  crit = f"3. stops: median distance to a stopped lead >= {ACCEPT_STOP_MEDIAN} m, none below {ACCEPT_STOP_MIN} m"
-  if not nd:
+    E = adjusted_effect(on_a, on_b, "d_dec10", ONSET_COV_DEC)
+    if E["n_a"] < ONSET_MIN_N or E["n_b"] < ONSET_MIN_N:
+      out.append((crit, "n.a.", f"n {E['n_a']} / {E['n_b']} (needs {ONSET_MIN_N} per arm)"))
+    else:
+      out.append((crit, "PASS" if E["effect"] <= ACCEPT_DECEL_LATER else "FAIL",
+                  f"{E['effect']:+.3f} s [{E['lo']:+.3f}, {E['hi']:+.3f}] (raw means: arm {E['mean_a']:.2f} s, baseline " +
+                  f"{E['mean_b']:.2f} s; n {E['n_a']} / {E['n_b']})"))
+  ds = P.get("stop_dist_at_stop", [])
+  crit = f"3. stops: median distance to a stopped lead >= {ACCEPT_STOP_MEDIAN} m, none below {ACCEPT_STOP_MIN} m (at the stop)"
+  if not ds:
     out.append((crit, "n.a.", "no clean stop behind a stopped lead"))
   else:
+    med, mn = float(np.median(ds)), float(np.min(ds))
     out.append((crit, "PASS" if med >= ACCEPT_STOP_MEDIAN and mn >= ACCEPT_STOP_MIN else "FAIL",
-                f"median {med:.2f} m, min {mn:.2f} m (n {nd})"))
+                f"median {med:.2f} m, min {mn:.2f} m (n {len(ds)}; c1weak's reading: the first frame under 0.15 m/s); 1 s " +
+                f"later (pump2's) median {fnum(P.get('stop_dist_median', math.nan), '.2f')} m"))
   ea, eb = P.get("stop_err_last3", []), (B or {}).get("stop_err_last3", [])
-  crit = "3. stops: raw tracking error over the last 3 s no worse than the baseline (medians; + = less decel than asked)"
+  e2a, e2b = P.get("stop_err_last2", []), (B or {}).get("stop_err_last2", [])
+  crit = ("3. stops: raw tracking error (aEgo - aTarget 0.3 s earlier) over the last 3 s no worse than the baseline " +
+          "(medians; + = less decel than asked)")
+  last2 = (f"; the last 2 s (c1weak's window: its v5 -0.012): {fnum(np.median(e2a) if e2a else math.nan, '+.3f')} vs " +
+           f"{fnum(np.median(e2b) if e2b else math.nan, '+.3f')}")
   if not B or not ea or not eb:
     out.append((crit, "n.a.", f"arm median {fnum(np.median(ea) if ea else math.nan, '+.3f')} (n {len(ea)}); " +
-                ("needs --baseline" if not B else f"baseline n {len(eb)}")))
+                ("needs --baseline" if not B else f"baseline n {len(eb)}") + last2))
   else:
     out.append((crit, "PASS" if np.median(ea) <= np.median(eb) else "FAIL",
-                f"{np.median(ea):+.3f} vs {np.median(eb):+.3f} (n {len(ea)} / {len(eb)})"))
+                f"{np.median(ea):+.3f} vs {np.median(eb):+.3f} (n {len(ea)} / {len(eb)})" + last2))
   dz = P.get("decel_at_stop", [])
   crit = f"3. stops: decel at wheel-zero median <= {ACCEPT_WHEELZERO_MEDIAN}, p90 <= {ACCEPT_WHEELZERO_P90} m/s^2"
   if not dz:
@@ -1513,7 +1634,21 @@ def acceptance(P: dict, B: dict | None) -> list[tuple[str, str, str]]:
   be = P.get("brake_error_frames", 0)
   out.append(("6. no BRAKE_ERROR (0x1B0)", "FAIL" if be else "PASS", f"{be} frame(s)"))
   out.append(("6. no VSA fault beyond the known 32-11", "MANUAL", "scan after the drive; not in the log"))
-  return out
+  # the checks are about C1b against v5: a verdict on any other pair of rules would be a verdict about the wrong rule
+  ran_a = P.get("rules", [])
+  ran_b = (B or {}).get("rules", [])
+  arm_ok = ran_a == ["c1b"]
+  base_ok = B is None or ran_b == ["v5"]
+  comparative = ("2.", "5. pump time")
+  gated = []
+  for crit, verdict, detail in out:
+    if crit.startswith(("1.", "2.", "3.", "4.", "5.")) and verdict in ("PASS", "FAIL"):
+      if not arm_ok:
+        verdict, detail = "n.a.", f"the arm ran {'/'.join(ran_a) or '-'}, not C1b alone; " + detail
+      elif not base_ok and (crit.startswith(comparative) or "than the baseline" in crit):
+        verdict, detail = "n.a.", f"the baseline ran {'/'.join(ran_b) or '-'}, not v5 alone; " + detail
+    gated.append((crit, verdict, detail))
+  return gated
 
 
 def print_route(R: dict) -> None:
@@ -1544,8 +1679,8 @@ def print_route(R: dict) -> None:
   bad = [s for s in sp if not s["design_ok"]]
   print(f"    stops held >= 1 s: {len(sp)}; standstill bursts {sum(s['bursts'] for s in sp)} " +
         f"({fnum(np.mean([s['bursts'] for s in sp]) if sp else math.nan, '.2f')}/stop), {sum(s['late'] for s in sp)} more than " +
-        f"{LATE_REPUMP_S:g} s into a stop; stops breaking C1/C1b's design (more than one, or one that neither built a hold, " +
-        f"delivered a rise of > {BIG_RISE} nor began the application): {len(bad)}" +
+        f"{LATE_REPUMP_S:g} s into a stop; stops with a burst outside C1/C1b's design (a top-up: a hold already delivered " +
+        f"at >= {HOLD_OK} counts, no rise of > {BIG_RISE}, not an application's first frame): {len(bad)}" +
         ("" if R["rule"] in ("v6", "c1b") else " - expected under v5, which tops up every 30 s"))
   short = [s for s in sp if s["hold_s"] >= 5.0 and s["delivered_hold"] < s["cb_hold"] - BIG_RISE]
   print(f"    stops held >= 5 s that held (median) more than {BIG_RISE} counts under their command, by pump2's delivery " +
@@ -1583,8 +1718,11 @@ def print_route(R: dict) -> None:
         f"{s['brake_pressed']} = {fnum(100.0 * s['brake_pressed'] / s['arrivals'] if s['arrivals'] else math.nan, '.0f')} " +
         "per 100 arrivals" + (f" (at t {', '.join(f'{x:.1f}' for x in s['press_t'])})" if s["press_t"] else "") +
         f"; {len(rows)} clean openpilot stops")
-  print(f"    distance to a stopped lead at standstill: median {fnum(np.median(dist) if dist else math.nan, '.2f')} m, " +
-        f"min {fnum(min(dist) if dist else math.nan, '.2f')} m (n {len(dist)})")
+  ds = [x["dist_stop"] for x in rows if math.isfinite(x.get("dist_stop", math.nan))]
+  print(f"    distance to a stopped lead 1 s after the stop (pump2): median {fnum(np.median(dist) if dist else math.nan, '.2f')} m, " +
+        f"min {fnum(min(dist) if dist else math.nan, '.2f')} m (n {len(dist)}); at the stop (c1weak, first frame under 0.15 " +
+        f"m/s; acceptance check 3): median {fnum(np.median(ds) if ds else math.nan, '.2f')} m, min " +
+        f"{fnum(min(ds) if ds else math.nan, '.2f')} m (n {len(ds)})")
   print("    final-approach tracking error below 2.5 m/s (pitch-corrected, v >= 0.3): median " +
         f"{fnum(np.median(ae) if ae else math.nan, '+.2f')} m/s^2 over {len(ae)} approach(es), {ae_s:.1f} s " +
         "(pump2 V5 median -0.32, the same method)")

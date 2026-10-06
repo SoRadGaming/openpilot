@@ -12,7 +12,12 @@ FORK(HONDA_ACCORD_9G_AU): brake_route_check.py reads a route and judges the pump
   on the first moving frame and never saw them).
 * The parquet export reads to the same frames as the rlogs (when pyarrow is installed; the repo's venv has none).
 * The verdicts follow the plan's thresholds, and the comparative ones wait for a baseline arm; so do C1b's acceptance
-  checks (c1weak A_synth section 4), each tripping at its own threshold.
+  checks (c1weak A_synth section 4), each tripping at its own threshold, judged on c1weak's error (aEgo minus the
+  planner's aTarget 0.3 s earlier) adjusted as c1weak adjusted it, and only for a C1b arm against a v5 baseline.
+* A standstill burst is outside C1/C1b's design only as a top-up: the hold builds and first-frame bursts C1b gives a
+  light stop are inside it.
+* On the owner's routes 120/121 (when they are on this machine) the clean applications and the stop reproduce c1weak's
+  own numbers.
 """
 import io
 import json
@@ -137,11 +142,12 @@ def synth_route(d: str, flags: int = 64, creep: bool = False, brake_error: bool 
       add("gpsLocationExternal", mono[i], gps)
 
       def rad(o, i=i):
-        held = 25.0 <= t[i] < 40.0
+        held = 24.5 <= t[i] < 40.0        # the lead is seen from just before the stop
         o.leadOne.present = bool(held)
         o.leadOne.dRel, o.leadOne.vLead = (4.0 - float(x_roll[i]), 0.0) if held else (0.0, 0.0)
       add("radarState", mono[i], rad)
       add("deviceMotion", mono[i], lambda o, vi=vi: setattr(o.velocityDevice, "x", vi))
+      add("longitudinalPlan", mono[i], lambda o, i=i: setattr(o, "aTarget", float(-cb[i] / 100.0)))
     add("accelerometer", mono[i], lambda o, ai=ai: setattr(o.acceleration, "v", [9.81, 0.0, -ai]))
     if i % 500 == 0:
       m = messaging.new_message(None)          # logMessage is a text field: nothing to init
@@ -252,6 +258,14 @@ class TestEndToEnd(unittest.TestCase):
     self.assertFalse(h["moved"])
     self.assertGreaterEqual(h["delivered"], 185, "the hold's delivered pressure is reported")
     self.assertEqual((R["stops"]["arrivals"], R["stops"]["brake_pressed"], len(R["stops"]["stops"])), (1, 0, 1))
+    # longitudinalPlan.aTarget comes through the rlog: the clean application's c1weak error and covariates are there
+    self.assertEqual(len(R["onsets"]), 1)
+    o = R["onsets"][0]
+    for k in ("err05", "err10", "err05_cmd", "at0", "at10", "err_pre", "gr1"):
+      self.assertTrue(math.isfinite(o[k]), k)
+    st = R["stops"]["stops"][0]
+    self.assertAlmostEqual(st["dist_stop"], 4.0, delta=0.01, msg="the radar read at the stop frame, c1weak's")
+    self.assertTrue(math.isfinite(st["err_last3"]) and math.isfinite(st["err_last2"]))
     self.assertAlmostEqual(h["radar_change"], 0.0, places=3)
     self.assertLess(h["camera_disp"], 0.01)
     self.assertAlmostEqual(R["vsa"]["comp_braking_frac"], 1.0)
@@ -358,6 +372,7 @@ class TestEndToEnd(unittest.TestCase):
                              "orientationNED": [[0.0, float(p), 0.0] for p in cc["pitch"]],
                              "hudControl.visualAlert": ["none"] * len(cc["t"])}), os.path.join(pdir, "carControl.parquet"))
     pq.write_table(pa.table({"_logMonoTime": S["ctl"]["t"], "uiAccelCmd": S["ctl"]["ui"]}), os.path.join(pdir, "controlsState.parquet"))
+    pq.write_table(pa.table({"_logMonoTime": S["lp"]["t"], "aTarget": S["lp"]["at"]}), os.path.join(pdir, "longitudinalPlan.parquet"))
     r = S["rad"]
     pq.write_table(pa.table({"_logMonoTime": r["t"], "leadOne.status": r["st"] == 1, "leadOne.dRel": r["d"], "leadOne.vLead": r["vl"]}),
                    os.path.join(pdir, "radarState.parquet"))
@@ -376,7 +391,8 @@ class TestEndToEnd(unittest.TestCase):
       self.assertEqual(Sp["meta"]["source"], "parquet")
       self.assertEqual(Sp["meta"]["flags_sp"], 64, "CarParamsSP from the rlog: the owner's export cannot decode it")
       Fr, Fp = brc.build_frames(S), brc.build_frames(Sp)
-      for k in ("t", "cb", "pump", "v", "acc", "la", "lcs", "ac", "ff", "xmission", "comp_braking", "dRel", "cam_vx", "ui"):
+      for k in ("t", "cb", "pump", "v", "acc", "la", "lcs", "ac", "ff", "xmission", "comp_braking", "dRel", "cam_vx", "ui",
+                "at", "at3", "a_i", "grade_f"):
         np.testing.assert_array_equal(Fr[k], Fp[k], err_msg=k)
     finally:
       import shutil
@@ -468,6 +484,34 @@ class TestHolds(unittest.TestCase):
     s = brc.standstill_bursts(F, (t >= 2.0) & (t < 2.5))[0]
     self.assertEqual((s["bursts"], s["design_ok"]), (1, True))
 
+  def test_c1bs_own_light_hold_bursts_are_inside_its_design(self):
+    # fix round 1 (review): the old count allowed one burst per stop, but C1b - no minimum gap - builds a light hold
+    # with one burst per deadband-sized rise while under 100 delivered counts, and adds its first-frame burst to an
+    # application that starts at the stop. Both are what the controller's own rule does here.
+    dt = 0.02
+    t = 10.0 + np.arange(int(12 / dt)) * dt     # the replay starts as the controller does: past 0.5 s
+    z = np.zeros(len(t))
+    base = {"t": t, "la": np.ones(len(t), bool), "dt": np.full(len(t), dt)}
+    # (A) a stop reached at 30 counts, then 50 / 70 / 90 a second apart
+    v = np.where(t < 11.0, 0.5, 0.0)
+    cb = np.select([t < 12.0, t < 13.0, t < 14.0], [30.0, 50.0, 70.0], 90.0)
+    on = brc.replay_rule("c1b", cb, v, t)
+    s = brc.standstill_bursts({**base, "cb": cb, "v": v}, on)[0]
+    self.assertEqual((s["bursts"], s["outside"], s["design_ok"]), (3, 0, True))
+    # (B) an application that starts at the stop at 5 counts and rises to 60
+    cb = np.select([t < 12.0, t < 13.0], [0.0, 5.0], 60.0)
+    on = brc.replay_rule("c1b", cb, z, t)
+    s = brc.standstill_bursts({**base, "cb": cb, "v": z}, on)[0]
+    self.assertEqual((s["bursts"], s["outside"], s["design_ok"]), (2, 0, True))
+    # and C1b never tops a firm hold up: the same rule on a stop held at 150 gives no burst after the build
+    cb = np.where(t < 12.0, 0.0, 150.0)
+    on = brc.replay_rule("c1b", cb, z, t)
+    s = brc.standstill_bursts({**base, "cb": cb, "v": z}, on)[0]
+    self.assertEqual((s["bursts"], s["outside"], s["design_ok"]), (1, 0, True))
+    # a burst there, 6 s on, is a top-up (and a late re-pump)
+    s = brc.standstill_bursts({**base, "cb": cb, "v": z}, on | ((t >= 18.0) & (t < 18.5)))[0]
+    self.assertEqual((s["bursts"], s["outside"], s["design_ok"], s["late"]), (2, 1, False, 1))
+
 
 class TestVerdicts(unittest.TestCase):
   @staticmethod
@@ -529,8 +573,10 @@ class TestAcceptance(unittest.TestCase):
       a[(t >= t0 + 0.3 + late) & (t < t0 + 2.3 + late)] = -0.5
       a[on] += err
     z = np.zeros(n)
+    # the planner's target is the command here, so c1weak's error and the command's are the same
     return {"t": t, "cb": cb, "la": np.ones(n, bool), "v": np.full(n, 15.0), "bp": z, "gp": z, "acc": acc, "a": a,
-            "ac": a.copy(), "pump": cb > 0, "dt": np.full(n, dt)}
+            "ac": a.copy(), "pump": cb > 0, "dt": np.full(n, dt), "at": acc.copy(), "at3": np.interp(t - 0.3, t, acc),
+            "grade_f": z}
 
   def test_onsets_measure_the_error_and_the_decel_time(self):
     O = brc.onsets(self.onset_frames())
@@ -543,42 +589,60 @@ class TestAcceptance(unittest.TestCase):
     O = brc.onsets(self.onset_frames(late=0.1))
     self.assertAlmostEqual(O[0]["d_dec10"], 0.4, delta=0.021)
     self.assertAlmostEqual(O[0]["err05"], 0.1, delta=0.01)   # 0.1 s of 0.5 s at +0.5: a late response is an error too
-    # not clean: a pedal in the 0.6 s before, or too slow
+    # the error is against the planner's target, not the command: a command that leads the target (the pitch
+    # feedforward on a hill) moves only the printed command column
+    F = self.onset_frames()
+    F["acc"] = F["acc"] - 0.2 * (F["cb"] > 0)
+    O = brc.onsets(F)
+    self.assertAlmostEqual(O[0]["err05"], 0.0, places=6)
+    self.assertGreater(O[0]["err05_cmd"], 0.05)
+    self.assertGreater(O[0]["err10_cmd"], 0.1)
+    # not clean: a pedal in the 0.6 s before, or too slow (c1weak: v0 >= 1 m/s)
     F = self.onset_frames()
     F["gp"] = ((F["t"] > 1.6) & (F["t"] < 1.9)).astype(float)
     self.assertEqual(len(brc.onsets(F)), 11)
     F = self.onset_frames()
-    F["v"][:] = 2.0
+    F["v"][:] = 0.9
     self.assertEqual(brc.onsets(F), [])
 
   @staticmethod
   def arm(err05=0.0, err10=0.0, dec=0.3, n=20, dist=4.4, dmin=3.0, last3=0.0, wz=0.5, tk=1, brk_min=2.0, pump_h=300.0,
-          late=0, stops=100, berr=0, match=1.0, spread=0.02):
+          late=0, stops=100, berr=0, match=1.0, spread=0.02, rules=("c1b",)):
     rng = np.random.default_rng(1)
-    on = [{"err05": err05 + spread * x, "err10": err10 + spread * x, "d_dec10": dec + spread * x} for x in rng.standard_normal(n)]
-    return {"routes": ["x"], "rules": ["c1b"], "match_min": match, "onsets": on, "stop_dist_median": dist, "stop_dist_min": dmin,
-            "stop_dist_n": 10, "stop_err_last3": [last3] * 10, "decel_at_stop": [wz] * 10, "takeovers_brk": tk,
-            "takeovers_brk_min": brk_min, "pump_s_per_eng_h": pump_h, "late_repumps": late, "stops_held": stops,
-            "brake_error_frames": berr}
+    on = []
+    for _ in range(n):
+      x, pk, v0, at0, at10, gr1, pre = rng.standard_normal(7)
+      on.append({"err05": err05 + spread * x, "err10": err10 + spread * x, "d_dec10": dec + spread * x,
+                 "err05_cmd": err05 + spread * x, "err10_cmd": err10 + spread * x, "peak": 60.0 + 20.0 * abs(pk),
+                 "v0": 10.0 + 3.0 * v0, "at0": -0.3 + 0.1 * at0, "at10": -0.6 + 0.1 * at10, "gr1": 0.01 * gr1, "err_pre": 0.02 * pre})
+    return {"routes": ["x"], "rules": list(rules), "match_min": match, "onsets": on, "stop_dist_median": dist,
+            "stop_dist_min": dmin, "stop_dist_n": 10, "stop_dist_at_stop": [dmin] + [dist] * 9, "stop_err_last3": [last3] * 10,
+            "stop_err_last2": [last3] * 10, "decel_at_stop": [wz] * 10, "takeovers_brk": tk, "takeovers_brk_min": brk_min,
+            "pump_s_per_eng_h": pump_h, "late_repumps": late, "stops_held": stops, "brake_error_frames": berr}
 
   def verdict(self, P, B=None):
     return {c: s for c, s, _ in brc.acceptance(P, B)}
 
+  E05 = ("2. clean applications, tracking error 0-0.5 s adjusted for grade, target and pre-onset error: arm effect <= " +
+         f"+{brc.ACCEPT_ONSET_DIFF} (95% upper <= +{brc.ACCEPT_ONSET_HI})")
+  E10 = E05.replace("0-0.5 s", "0-1 s")
+  DEC = f"2. clean applications, decel 0.1 below the pre-onset baseline no more than {brc.ACCEPT_DECEL_LATER} s later (adjusted)"
+  LAST3 = ("3. stops: raw tracking error (aEgo - aTarget 0.3 s earlier) over the last 3 s no worse than the baseline " +
+           "(medians; + = less decel than asked)")
+  DIST = "3. stops: median distance to a stopped lead >= 3.5 m, none below 2.2 m (at the stop)"
+
   def test_every_check_trips_at_its_threshold(self):
-    base = self.arm()
+    base = self.arm(rules=("v5",))
     v = self.verdict(self.arm(), base)
     self.assertEqual(set(v.values()), {"PASS", "MANUAL"})
-    E05 = f"2. clean applications, tracking error 0-0.5 s: arm minus baseline <= +{brc.ACCEPT_ONSET_DIFF} (95% upper <= +{brc.ACCEPT_ONSET_HI})"
-    E10 = E05.replace("0-0.5 s", "0-1 s")
     cases = [("1. the replay of the rule matches the logged pump bit on >= 99.5% of braking frames", {"match": 0.994}),
-             (E05, {"err05": 0.04}),
-             (E05, {"err05": 0.025, "spread": 0.2}),                # inside on the point, outside on the upper bound
-             (E10, {"err10": 0.04}),
-             ("2. clean applications, decel 0.1 below the pre-onset baseline no more than 0.05 s later", {"dec": 0.36}),
-             ("3. stops: median distance to a stopped lead >= 3.5 m, none below 2.2 m", {"dist": 3.4}),
-             ("3. stops: median distance to a stopped lead >= 3.5 m, none below 2.2 m", {"dmin": 2.1}),
-             ("3. stops: raw tracking error over the last 3 s no worse than the baseline (medians; + = less decel than asked)",
-              {"last3": 0.01}),
+             (self.E05, {"err05": 0.04}),
+             (self.E05, {"err05": 0.025, "spread": 0.2}),           # inside on the point, outside on the upper bound
+             (self.E10, {"err10": 0.04}),
+             (self.DEC, {"dec": 0.36}),
+             (self.DIST, {"dist": 3.4}),
+             (self.DIST, {"dmin": 2.1}),
+             (self.LAST3, {"last3": 0.01}),
              ("3. stops: decel at wheel-zero median <= 0.6, p90 <= 1.0 m/s^2", {"wz": 0.61}),
              ("4. driver brake take-overs <= 1.4 per minute of engaged braking", {"tk": 3}),
              ("5. pump time per engaged hour at most +25% over the baseline", {"pump_h": 376.0}),
@@ -597,10 +661,92 @@ class TestAcceptance(unittest.TestCase):
     for crit, verdict in v.items():
       if crit.startswith(("2.", "5. pump")) or "no worse than the baseline" in crit:
         self.assertEqual(verdict, "n.a.", crit)
-    v = self.verdict(self.arm(n=9, err05=0.5), self.arm())
-    self.assertEqual(v[f"2. clean applications, tracking error 0-0.5 s: arm minus baseline <= +{brc.ACCEPT_ONSET_DIFF} " +
-                       f"(95% upper <= +{brc.ACCEPT_ONSET_HI})"], "n.a.")
+    v = self.verdict(self.arm(n=9, err05=0.5), self.arm(rules=("v5",)))
+    self.assertEqual(v[self.E05], "n.a.")
     self.assertEqual(v["6. no VSA fault beyond the known 32-11"], "MANUAL")
+
+  def test_checks_judge_only_c1b_against_v5(self):
+    # fix round 1 (review): a C1 route in the arm, or a C1b route in the baseline, must not yield C1b verdicts
+    bad = self.arm(err05=0.5, dist=3.0, tk=9, late=9)
+    for P, B in ((self.arm(rules=("v6",)), self.arm(rules=("v5",))),
+                 (self.arm(rules=("c1b", "v5")), self.arm(rules=("v5",))),
+                 (dict(bad, rules=["v5"]), self.arm(rules=("v5",)))):
+      with self.subTest(arm=P["rules"]):
+        for crit, verdict, detail in brc.acceptance(P, B):
+          if crit.startswith(("1.", "2.", "3.", "4.", "5.")):
+            self.assertEqual(verdict, "n.a.", crit)
+            assert "the arm ran" in detail, detail
+    # a C1b arm against a baseline that is not v5: the comparative checks wait, the arm's own ones are judged
+    v = {c: (s, d) for c, s, d in brc.acceptance(self.arm(), self.arm(rules=("c1b",)))}
+    for crit in (self.E05, self.E10, self.DEC, self.LAST3, "5. pump time per engaged hour at most +25% over the baseline"):
+      self.assertEqual(v[crit][0], "n.a.", crit)
+      assert "the baseline ran c1b" in v[crit][1]
+    for crit in ("1. the replay of the rule matches the logged pump bit on >= 99.5% of braking frames", self.DIST,
+                 "4. driver brake take-overs <= 1.4 per minute of engaged braking"):
+      self.assertEqual(v[crit][0], "PASS", crit)
+    self.assertEqual({c: s for c, s, _ in brc.acceptance(bad, self.arm(rules=("v5",)))}[self.DIST], "FAIL")
+
+  def test_the_adjustment_takes_out_what_the_arms_road_mix_puts_in(self):
+    # the arm's applications sit on steeper downhills, where every rule tracks worse (c1weak pre.py: gr1 -2.2 per unit
+    # grade): the raw difference is large, the adjusted effect is the true +0.01
+    rng = np.random.default_rng(3)
+
+    def apps(n, effect, grade_mean):
+      out = []
+      for _ in range(n):
+        g = grade_mean + 0.01 * rng.standard_normal()
+        e = effect - 2.2 * g + 0.03 * rng.standard_normal()
+        out.append({"err05": e, "peak": 80.0 + 40 * rng.random(), "v0": 5 + 15 * rng.random(), "at0": -0.4 * rng.random(),
+                    "at10": -0.8 * rng.random(), "gr1": g, "err_pre": 0.02 * rng.standard_normal()})
+      return out
+    A, B = apps(60, 0.01, -0.04), apps(200, 0.0, 0.0)
+    E = brc.adjusted_effect(A, B, "err05", brc.ONSET_COV_ERR)
+    self.assertGreater(E["mean_a"] - E["mean_b"], 0.07)
+    self.assertAlmostEqual(E["effect"], 0.01, delta=0.015)
+    self.assertLess(E["lo"], E["effect"])
+    self.assertLess(E["effect"], E["hi"])
+    self.assertEqual((E["n_a"], E["n_b"]), (60, 200))
+    # a covariate missing drops the application; a constant one drops the covariate
+    A[0]["gr1"] = math.nan
+    for o in A + B:
+      o["v0"] = 12.0
+    E = brc.adjusted_effect(A, B, "err05", brc.ONSET_COV_ERR)
+    self.assertEqual((E["n_a"], "v0" in E["cov"]), (59, False))
+
+
+C1WEAK_ROUTES = os.environ.get("BRC_SUNNY_LOGS", "/mnt/s/OP/sunny_logs")
+R120 = os.path.join(C1WEAK_ROUTES, "15646e8515eda1a7_00000120--58db1563dd")
+R121 = os.path.join(C1WEAK_ROUTES, "15646e8515eda1a7_00000121--0e6436096c")
+
+
+@unittest.skipUnless(os.path.isdir(R120) and os.path.isdir(R121), "the owner's routes 120/121 are not on this machine")
+class TestC1weakReproduced(unittest.TestCase):
+  """Fix round 1 (review): the acceptance block measures what c1weak measured. On C1's own routes 120/121 the clean
+  applications peaking at 12 counts or more are c1weak's 17, and their aEgo - aTarget(t-0.3) errors give c1weak's arm
+  values (events_pre.pkl / pre.txt: 0-0.5 s median +0.100, mean +0.154, n 16; 0-1 s median +0.105, mean +0.158, n 15);
+  the one engaged stop to a stopped lead, 120 @134.7, is c1weak's 3.0 m (A_events). The old error, against the
+  actuator command, read a median +0.04 at 0-0.5 s on the same applications."""
+
+  @classmethod
+  def setUpClass(cls):
+    cls.R = [brc.check_route(p, workers=4) for p in (R120, R121)]
+
+  def test_the_clean_applications_and_their_errors(self):
+    on = [o for R in self.R for o in R["onsets"]]
+    self.assertEqual(len(on), 17)
+    for key, n, med, mean in (("err05", 16, 0.100, 0.154), ("err10", 15, 0.105, 0.158)):
+      x = [o[key] for o in on if math.isfinite(o[key])]
+      self.assertEqual(len(x), n, key)
+      self.assertAlmostEqual(float(np.median(x)), med, delta=0.005, msg=key)
+      self.assertAlmostEqual(float(np.mean(x)), mean, delta=0.005, msg=key)
+    self.assertTrue(all(R["rule"] == "v6" for R in self.R))
+
+  def test_the_stop(self):
+    st = [s for s in self.R[0]["stops"]["stops"] if math.isfinite(s["dist_stop"])]
+    self.assertEqual(len(st), 1)
+    self.assertAlmostEqual(st[0]["t"], 134.7, delta=0.1)
+    self.assertAlmostEqual(st[0]["dist_stop"], 3.0, delta=0.05)
+    self.assertAlmostEqual(st[0]["err_last2"], -0.07, delta=0.015)   # c1weak's final 2 s error
 
 
 class TestFiles(unittest.TestCase):
