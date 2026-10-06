@@ -1645,7 +1645,7 @@ On every other car both flags are False, `update()` returns two empty lists, `cl
 
 Area B owns this file. One rule in it, though, is gated neither on the car nor on the gateway: a steering rate of at least `EMERGENCY_STEER_RATE = 200.0` deg/s for `EMERGENCY_STEER_FRAMES = 2` frames adds `lkasDisable` on **every** car running MADS on this fork (sunnypilot `35622a994`). It is mentioned here so that a car maintainer is not surprised by it.
 
-Since 2026-10-06 the gateway's override pause on this car ends only on a fresh `0x70B` frame that says the override is over (`grantSeq`, 6.5), or after 3 s with no `0x70B` frame at all (`GATEWAY_SILENT_RESUME_FRAMES`): route 121 resumed at 57.40 on a stale frame, 2.4 s before the board spoke. The rule and its reasons are in `LKAS-GATEWAY-PROTOCOL.md` (area B).
+Since 2026-10-06 the gateway's override pause on this car ends only on a fresh `0x70B` frame that says the override is over (`grantSeq`, 6.5), or after 3 s with no `0x70B` frame at all (`GATEWAY_SILENT_RESUME_FRAMES`): route 121 resumed at 57.40 on a stale frame (0.50 s after the last override frame), 1.9 s before the board's next frame at 59.30 (a 2.4 s gap). The rule and its reasons are in `LKAS-GATEWAY-PROTOCOL.md` (area B).
 
 ---
 

@@ -10,7 +10,7 @@ these changes across an upstream merge without losing any of them.
 | **Platform** | `HONDA_ACCORD_9G_AU`, the only member of `HONDA_ELESYS` (`HondaFlags.ELESYS = 1024`) |
 | **sunnypilot fork** | `SoRadGaming/sunnypilot` `master`, after the 2026-09-27 upstream sync: branch `merge/upstream-2026-09-27` (`d1a14edcb` plus the post-merge review fixes). Fork point `a5f44653d` (previously `31dc4d8e5`). Every sunnypilot path is under `openpilot/` since the sync |
 | **opendbc fork** | `SoRadGaming/opendbc` `sp-master`, after the sync: `8bd6e314` plus the review fixes. Fork point `f95f996f` (previously `b9712d20`) |
-| **Board firmware** | `S:/Software/EPS-LKAS`. Last firmware commit `d995bc9`; the commits since change documentation and tools only (`862540c` teaches `bundle_appslot.py` the new layout). The bundled app-slot image is `d995bc95` (sp-live `1f20b7b68`) |
+| **Board firmware** | `S:/Software/EPS-LKAS`. Last firmware commit `298727b` (2026-10-06, `gw_active.c` only: every diagnostic but `0x704` goes through the camera->car ring, so `0x70B` reaches the bus at 10 Hz; `862540c` before it taught `bundle_appslot.py` the new layout). The bundled app-slot image is `298727b3` (sunnypilot `a32984eb2`), 46,532 bytes; `d995bc95` (sp-live `1f20b7b68`) before it. Line numbers cited below "at `d995bc9`" are at that commit |
 | **Written** | 2026-09-27, from the diffs, not from the commit messages alone. Revised after review the same day, and again for the upstream sync (section 14) |
 
 Sibling documents in `docs/fork/` cover the other two areas. Area A, updating the board's

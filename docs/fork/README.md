@@ -381,7 +381,7 @@ toggles - is in [CAR-HONDA-ACCORD-9G-AU.md](CAR-HONDA-ACCORD-9G-AU.md) section 1
 | A | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | C (+B) | `NUDGE_FIRM` rules; a stale torque confirms nothing; `driver_torque_stale` comes after the road edges (9 tests). | 0 | new→moved |
 | A | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` | B | The hold through the torque-controller extension with Lateral Jerk on (4 tests). | 0 | added in the merge |
 | A | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_reported_torque.py` | B | The zero torque the Honda `CarController` reports while the board is not actuating keeps `_check_saturation` from firing (closed loop through the real `CarController`, both torque controllers), and a real saturation still alerts while actuating (7 tests). | 0 | new |
-| A | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_appslot.bin` | A | Board app-slot image: 46,540 bytes, marker `APL1`, origin `0x08004000`, commit `d995bc95`, flags `0x04` (INCAR_TEST). | 0 | new→moved |
+| A | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_appslot.bin` | A | Board app-slot image: 46,532 bytes, marker `APL1`, origin `0x08004000`, commit `298727b3` (sunnypilot `a32984eb2`; `d995bc95` before it), SHA-256 `047b820e…`, flags `0x04` (INCAR_TEST). | 0 | new→moved |
 | A | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_flasher.py` | A | Portable bootloader protocol, `PandaTransport` (ELM327), `BenchTransport`, and the steering/vibration trace. | 0 | new→moved |
 | A | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_hook.py` | A | pandad glue: `flash_if_requested()`, `watch_for_request()`. | 0 | new→moved |
 | A | `openpilot/sunnypilot/selfdrive/selfdrived/eps_latch_alert.py` | B | `EpsLatchAlert`: the "restart the car" alert for an EPS latched until key-off. Debounced on fresh `0x70B` frames only (1 s to confirm, 3 s of fresh "not latched" to clear, stale frames count for neither); the announcement once per latch, held until a WARNING can be shown; then a silent reminder every 5 minutes. Since 2026-10-03 (C) also `reset()`, which selfdrived calls when the VSA's own fault clears: the EPS follows the VSA, so a latch the board reported during the VSA fault has to be confirmed again from fresh frames. | 0 | new |
@@ -571,7 +571,9 @@ entries (288 on `nsw-live` at `8b7ec463a`, plus the nine HUD keys); the `grep -o
 alphabetical (`HudCompact*` before `HudConfirmLimit`, `HudLimitSign` between `HudCurve` and `HudNextLimit`), with two
 more marker comments so every key has one within ten lines (`test_hud_cluster.py` checks it). With stock ACC mode's two
 `HondaElesysStockAcc*` keys beside them (2026-10-05 merge) the file has 303 entries and no duplicate. `HudCurrentSpeed`
-(2026-10-06) sits between `HudConfirmLimit` and `HudCurve`, under its own marker comment.
+(2026-10-06) sits between `HudConfirmLimit` and `HudCurve`, under its own marker comment. At `907df6b85` the file has
+306 entries and no duplicate (`Params().all_keys()` agrees): batch 3's `HondaElesysPumpV6` and `HondaElesysBrakeLawV2`
++2, `HudCurrentSpeed` +1, `HondaElesysPumpC1b` replacing `HondaElesysPumpV6` ±0.
 
 **Why a name collision would be silent.** The table is an `std::unordered_map` initializer list. A duplicate key
 compiles without complaint, and only one entry survives. After every merge, check:
@@ -719,6 +721,7 @@ Batch 2 (2026-10-04, UI): `test_hud_cluster.py` is 90 after the round-1 review (
 SAFETY walk of every event) and `test_hud_render.py` 35 (32 before; about four minutes now); new
 `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_speed_limit_pre_active_alert.py` (7) and
 `openpilot/sunnypilot/selfdrive/car/tests/test_speed_limit_confirm_buttons.py` (12 since the 2026-10-05 narrowing; 9 before).
+hud3 / integration (2026-10-06): `test_hud_cluster.py` 95, `test_hud_render.py` 44 (43 in hud3, +1 for the confirm-grace sequence).
 
 `test_stopping_debounce.py` no longer stubs `sys.modules`; it imports the real `longcontrol`, `drive_helpers` and
 `stopping_tune`.
@@ -1013,7 +1016,7 @@ reports 22 findings, all older than the merge (see [Pre-existing issues](#pre-ex
 **opendbc**, from `opendbc_repo` in the same venv:
 
 ```bash
-python -m unittest opendbc.car.honda.tests.test_honda opendbc.car.honda.tests.test_elesys   # 103 tests (102 in test_elesys; the pump rule C1b's 22, 2026-10-06)
+python -m unittest opendbc.car.honda.tests.test_honda opendbc.car.honda.tests.test_elesys   # 104 tests (103 in test_elesys; the pump rule C1b's 22, 2026-10-06)
 python -m unittest opendbc.sunnypilot.car.honda.test_elesys_gas                            # 38 tests: the gas law and the launch cap
 python -m unittest opendbc.sunnypilot.car.honda.test_elesys_stop                           # 28 tests: the soft final stop
 python -m unittest opendbc.car.honda.tests.test_elesys_stock_acc                          # 17 tests: stock ACC mode

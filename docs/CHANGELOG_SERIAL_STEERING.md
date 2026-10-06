@@ -24,7 +24,7 @@ was checked:
 * **The confirm grace and the box.** A press up to 1 s after the prompt timed out still confirms (fixes 4). The box
   goes with the prompt as today's banner does - the speed and the face back as the prompt ends, the box fading out
   where the banner faded - and a confirm in the grace is the stock solid MAX number, the same screen as if no prompt
-  had been up. A press inside the fade (route 120's, 0.41 s) fades the box out under the MAX number as a confirm inside
+  had been up. A press inside the fade (route 120's: down 0.29 s, released and confirmed 0.41 s after the timeout) fades the box out under the MAX number as a confirm inside
   the prompt does. A new render test, `test_hud_render.py`, covers both timings.
 * **C1b and stock ACC mode.** Stock ACC mode still never sets the pump flag: replayed with C1b on and off, nothing it
   sends differs, and it is the same as before C1b.
