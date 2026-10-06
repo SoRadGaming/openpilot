@@ -45,6 +45,19 @@ CRUISE_BUTTONS_PLUS = (ButtonType.accelCruise, ButtonType.resumeCruise)
 CRUISE_BUTTONS_MINUS = (ButtonType.decelCruise, ButtonType.setCruise)
 CRUISE_BUTTON_CONFIRM_HOLD = 0.5  # secs.
 
+# FORK(SPEED-LIMIT): the confirm prompt's grace. The asked-for button still confirms if it went down no more than this
+# long after the prompt timed out (non-PCM cruise: the 5 s PRE_ACTIVE_GUARD_PERIOD), as long as the limit it asked about
+# has not changed. Route 120 t=182.40 ('+', 0.29 s after the 177.10-182.11 prompt) and route 121 t=71.13 ('-', 0.88 s
+# after 65.27-70.25) both missed it: the first became a 1 km/h step, the second a long-press walk. The other button never
+# confirms, in the grace or out of it.
+#
+# CARD DECIDES. It sees the button at 100 Hz, swallows a press that went down inside the grace and, on its release, sets
+# the set speed to the limit; the planner then confirms on the set speed matching (inactive -> active, as upstream).
+# The planner's own grace below is the same rule on its 20 Hz view: it dates a press by when it first SEES it held, after
+# card has, and starts its 1.0 s on the timeout, before card hears of it - so it can only ever accept a subset of what
+# card accepted. No press card let through as a set-speed step is confirmed behind it, and none card swallowed is lost.
+PRE_ACTIVE_CONFIRM_GRACE = 1.0  # secs
+
 
 class SpeedLimitAssist:
   _speed_limit_final_last: float
@@ -96,6 +109,15 @@ class SpeedLimitAssist:
     self._plus_hold = 0.
     self._minus_hold = 0.
     self._release_toggle_prev = 0
+    # FORK(SPEED-LIMIT): the confirm grace. When the button of the press being held went down (None: not held), and
+    # when the button of the last release went down; the deadline a press must have gone down by (0: no grace open),
+    # and the limit (in display units) the timed-out prompt asked about.
+    self._plus_down: float | None = None
+    self._minus_down: float | None = None
+    self._plus_release_down = 0.
+    self._minus_release_down = 0.
+    self._grace_deadline = 0.
+    self._grace_limit_conv = 0
 
     # TODO-SP: SLA's own output_a_target for planner
     # Solution functions mapped to respective states
@@ -154,23 +176,38 @@ class SpeedLimitAssist:
       self.enabled = self.params.get("SpeedLimitMode", return_default=True) == Mode.assist
       self.map_strict = self.params.get_bool("SpeedLimitMapStrict")  # FORK(SPEED-LIMIT)
 
-  def update_buttons(self, release_toggle: int) -> None:
+  def update_buttons(self, release_toggle: int, pressed: int = 0) -> None:
+    # FORK(SPEED-LIMIT): `pressed` (selfdriveStateSP.buttonsPressed) dates each press by when it went down, which is
+    # what the confirm grace measures. A press too short for the 20 Hz poll to see held is dated by its release.
+    now = time.monotonic()
+    plus_held = any((pressed >> b) & 1 for b in CRUISE_BUTTONS_PLUS)
+    minus_held = any((pressed >> b) & 1 for b in CRUISE_BUTTONS_MINUS)
     released = self._release_toggle_prev ^ release_toggle
     self._release_toggle_prev = release_toggle
-    if not released:
-      return
-    now = time.monotonic()
     if any((released >> b) & 1 for b in CRUISE_BUTTONS_PLUS):
       self._plus_hold = max(self._plus_hold, now + CRUISE_BUTTON_CONFIRM_HOLD)
+      self._plus_release_down = self._plus_down if self._plus_down is not None else now
+      self._plus_down = None
     if any((released >> b) & 1 for b in CRUISE_BUTTONS_MINUS):
       self._minus_hold = max(self._minus_hold, now + CRUISE_BUTTON_CONFIRM_HOLD)
+      self._minus_release_down = self._minus_down if self._minus_down is not None else now
+      self._minus_down = None
+    if plus_held and self._plus_down is None:
+      self._plus_down = now
+    elif not plus_held:
+      self._plus_down = None
+    if minus_held and self._minus_down is None:
+      self._minus_down = now
+    elif not minus_held:
+      self._minus_down = None
 
-  def _get_button_release(self, req_plus: bool, req_minus: bool) -> bool:
+  def _get_button_release(self, req_plus: bool, req_minus: bool, down_by: float | None = None) -> bool:
+    # FORK(SPEED-LIMIT): down_by - the confirm grace: only a press that went down by then counts
     now = time.monotonic()
-    if req_plus and now <= self._plus_hold:
+    if req_plus and now <= self._plus_hold and (down_by is None or self._plus_release_down <= down_by):
       self._plus_hold = 0.
       return True
-    elif req_minus and now <= self._minus_hold:
+    elif req_minus and now <= self._minus_hold and (down_by is None or self._minus_release_down <= down_by):
       self._minus_hold = 0.
       return True
 
@@ -234,12 +271,26 @@ class SpeedLimitAssist:
     if self.target_set_speed_confirmed:
       return True
 
-    if self.state != SpeedLimitAssistState.preActive:
+    # FORK(SPEED-LIMIT): or inactive inside the confirm grace, for a press that went down by its deadline
+    in_grace = self.state == SpeedLimitAssistState.inactive and self._confirm_grace_open
+    if self.state != SpeedLimitAssistState.preActive and not in_grace:
       return False
 
     req_plus, req_minus = compare_cluster_target(self.v_cruise_cluster, self._speed_limit_final_last, self.is_metric)
 
-    return self._get_button_release(req_plus, req_minus)
+    return self._get_button_release(req_plus, req_minus, self._grace_deadline if in_grace else None)
+
+  @property
+  def _confirm_grace_open(self) -> bool:
+    """FORK(SPEED-LIMIT): a timed-out prompt still takes its button, for the limit it asked about. Which presses count
+    is _get_button_release(down_by=deadline)'s: one that went down by the deadline, confirming on its release as in
+    the prompt itself - so a press held past the deadline still counts, and one begun after it never does."""
+    return self._grace_deadline > 0. and self.speed_limit_final_last_conv == self._grace_limit_conv
+
+  def _start_confirm_grace(self) -> None:
+    """FORK(SPEED-LIMIT): the prompt has just timed out."""
+    self._grace_deadline = time.monotonic() + PRE_ACTIVE_CONFIRM_GRACE
+    self._grace_limit_conv = self.speed_limit_final_last_conv
 
   def update_state_machine_pcm_op_long(self):
     self.long_engaged_timer = max(0, self.long_engaged_timer - 1)
@@ -344,13 +395,14 @@ class SpeedLimitAssist:
           elif self.pre_active_timer <= 0:
             # Timeout - session ended
             self.state = SpeedLimitAssistState.inactive
+            self._start_confirm_grace()  # FORK(SPEED-LIMIT): but its button still counts for a moment
 
         # INACTIVE
         elif self.state == SpeedLimitAssistState.inactive:
           if self.speed_limit_changed:
             self.state = SpeedLimitAssistState.preActive
             self.pre_active_timer = int(PRE_ACTIVE_GUARD_PERIOD[self.pcm_op_long] / DT_MDL)
-          elif self._update_non_pcm_long_confirmed_state():
+          elif self._update_non_pcm_long_confirmed_state():  # FORK(SPEED-LIMIT): incl. the confirm grace
             self.state = SpeedLimitAssistState.active
 
     # DISABLED
@@ -373,6 +425,10 @@ class SpeedLimitAssist:
             # limit must stay the reference, or it would read as new and prompt the moment GPS returns.
             if self.map_strict and not self._map_limit_frozen:
               self._last_nonzero_limit = 0.
+
+    # FORK(SPEED-LIMIT): the confirm grace belongs to the prompt that timed out, i.e. to this inactive spell only
+    if self.state != SpeedLimitAssistState.inactive:
+      self._grace_deadline = 0.
 
     enabled = self.state in ENABLED_STATES
     active = self.state in ACTIVE_STATES

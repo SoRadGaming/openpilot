@@ -567,6 +567,14 @@ struct CarStateSP @0xb86e6369214c01c8 {
     # reading, because every field above defaults to false/0 - and the screen
     # showed a board id of 000000 for a real board on a real car.
     fwBuildValid @26 :Bool;
+
+    # GW_STEER_GRANT (0x70B) again: one step for every frame that actually ARRIVED (carstate's
+    # count, wrapping at 2^32; 0 until the first). grantValid stays true for 500 ms after the
+    # last frame, so it cannot say whether this cycle carries anything new - and a decision
+    # that must wait for the board to SAY something (MADS ending its driver-override pause)
+    # has to tell a new frame from a held one. A consumer keeps the last value it saw; a
+    # different value means at least one new frame, and the grant fields are its contents.
+    grantSeq @27 :UInt32;
   }
 }
 

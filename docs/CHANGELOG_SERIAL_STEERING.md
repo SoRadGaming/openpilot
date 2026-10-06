@@ -15,6 +15,82 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-06 — fixes 4: MADS waits for the board to say the override is over, and a confirm press up to 1 s late still counts
+
+From the first-drive review of routes 120 and 121 (`A_synth` §3 issue 2, and the two late presses at the
+speed-limit prompt). Nothing here changes what openpilot sends to the steering, the brakes or the ACC stand-down.
+It goes with the board's `fix-70b` image (`298727b3`, `S:\Software\EPS-LKAS\CHANGELOG.md`), which gets `0x70B` onto
+the bus at 10 Hz, but does not need it: with the d995bc95 image still in the car it is the more useful half.
+
+* **After you take the wheel, lateral comes back when the board says the override is over.** Until now MADS
+  resumed when the board's last "driver override" frame (`0x70B` reason 4) was more than 0.5 s old - the window in
+  which openpilot treats a `0x70B` frame as current. On d995bc95 about one `0x70B` frame in five never reached the
+  bus (gaps up to 9.9 s on 120 and 12.3 s on 121). On 121 the last override frame arrived at 56.90, MADS resumed at
+  57.40 on no news at all, and the board's next frame came at 59.30. That frame happened to say the override was
+  over; it need not have. Now the pause ends only on a NEW `0x70B` frame that says anything other than driver
+  override. The replay of 121 resumes at 59.30, on that frame.
+* **If the board stops sending `0x70B` during an override, lateral comes back after 3 s.** Waiting for a frame that
+  never comes would leave lateral paused, lanes dashed, for the rest of the drive. So after 3 s with no `0x70B` frame
+  at all MADS treats the board as absent and does what it does on a car without one: the ordinary resume (a brake held
+  in Pause mode still holds it). The log gets one line, "MADS: no 0x70B for 3.0 s in a driver-override pause,
+  resuming". If the board speaks again and still reports the override, MADS pauses again on that frame. Why 3 s: it
+  is longer than 121's 2.4 s gap, so that resume waits for the board; after the board fix a 3 s silence is 30 frames
+  lost in a row, a board that has stopped rather than a busy bus; and on the older images most silences that long
+  were much longer anyway (routes 102-121: 18 of the 21 gaps over 2 s after an override frame were over 3 s, the
+  longest 29 s on 110), so a longer wait would only keep lateral off longer. The board stays the authority meanwhile:
+  it does not steer through your hands, so resuming into an override that is in fact still on costs a paused -
+  enabled - paused round trip when its next frame arrives, not torque against you.
+* **A press up to 1 s after the speed-limit prompt times out still confirms it.** The "Press + (or -) to confirm"
+  prompt lasts 5 s. On 120 you pressed `+` 0.29 s after it ended: the set speed went 60 -> 61 and you then held `+` up
+  to 80. On 121 you pressed `-` 0.88 s after it ended and held it: the set speed walked 80 -> 70 -> 60 in long-press
+  steps and stopped at the limit only because 60 is a multiple of 10. Now the button the prompt asked for still
+  confirms if it went down within 1.0 s of the timeout, for the same limit: on 120 the set speed goes 60 -> 80 when
+  you let go, on 121 80 -> 60 on the first long-press step, and the rest of the hold does nothing. The other button
+  never confirms; a press after the 1.0 s, or after the limit changed, is an ordinary set-speed step as before; inside
+  the prompt nothing changed. Non-PCM cruise (this car) only.
+
+**What changed, for the next merge.**
+
+* `0x70B` gets a frame count: `carStateSP.linbusGateway.grantSeq @27 :UInt32` (sunnypilot `custom.capnp`, opendbc
+  `structs.py`), stepped by `carstate_ext._update_linbus_grant()` once per frame that actually arrived, never while the
+  500 ms window only holds the last one. `grantValid` cannot tell the two apart. A consumer keeps the value it last
+  saw, so a `carStateSP` that selfdrived misses loses nothing.
+* `mads.py` (`FORK(LKAS-GATEWAY)`): the gateway block clears `_gw_paused` only on a frame whose `grantSeq` it has not
+  seen that says anything but driver override, or after `GATEWAY_SILENT_RESUME_FRAMES` (300 MADS frames, 3 s) with no
+  new frame (`_gw_grant_seq`, `_gw_silent`). Entering the pause is unchanged.
+* The grace (`FORK(SPEED-LIMIT)`, `PRE_ACTIVE_CONFIRM_GRACE = 1.0` in `speed_limit_assist.py`). card decides
+  (`cruise_ext.py`): it sees the buttons at 100 Hz, dates each press by when it went down (`cruise.py` passes the
+  button timer), swallows the asked-for press that went down within 1.0 s of card seeing the prompt time out on the
+  same limit, and sets the set speed to the limit; the planner then confirms on the set speed matching, as upstream
+  does from inactive. The planner's own grace (`update_buttons(release_toggle, pressed)`, with `plannerd.py` passing
+  `selfdriveStateSP.buttonsPressed`) is the same rule on its 20 Hz view and can only accept a subset of what card
+  accepted, so a press is either swallowed and confirmed or a plain step that confirms nothing - never lost, never
+  both.
+
+**Tests.** `test_mads_gateway_pause.py` 55 (41 + 14: a normal release, override gaps of 0.3-2.99 s held, 3/5/12 s
+resumed by the fallback and re-paused by the next override frame, lost release frames, a board gone silent - one log
+line, no flapping - the fallback still held by the brake, and route 121's frames); 10 of the 14 fail on the previous
+`mads.py` (the 0.3 s gap, the normal release, the constant and the brake case pass on both). New
+`test_speed_limit_confirm_grace.py` (30): card, selfdrived's button tracker and the planner together - both directions
+0-0.95 s late, a long press that confirms and never walks, after the grace, the wrong button short and held, wrong
+then right, a changed limit, a new prompt, inside the prompt as before, card and planner agreeing at every 10 ms from
+0.80 to 1.20 s late under three lags, the planner dating a held press, no card grace on a PCM car. opendbc
+`test_dynamic_tuning_integration.py`: four `grantSeq` checks in the `0x70B` section. Full sunnypilot suite 2387
+passed, 45 skipped, 1 xfailed; ruff and ty clean on the changed files.
+
+**Replays**, closed loop through the real code: route 121 46-62 s through card's `CarInterface` and MADS - the old
+`mads.py` resumes at 57.40, the new one at 59.30 on the first fresh frame, both identical everywhere else; routes 120
+174-186 s and 121 62-76 s through card's `VCruiseHelper` and the planner's `SpeedLimitAssist` on the logged buttons
+and resolver - with the grace switched off the replay reproduces the logged set speeds and states exactly, with it
+120 confirms at 182.52 (60 -> 80) and 121 at 71.63 (80 -> 60).
+
+**On the next drive:** after a driver override, MADS goes back to enabled only on a `0x70B` frame with reason other
+than 4 (in the log: `carStateSP.linbusGateway.grantSeq` steps on that frame); no "no 0x70B for 3.0 s" line in the log
+with the fix-70b board, where a 3 s silence should not happen; a confirm press just after the prompt clears confirms
+without a 1 km/h step.
+
+---
+
 ## 2026-10-05 — batch 3 after review (fix round 1): one pump change for you to confirm, the brake law is not accepted
 
 A review of batch 3 (the entry below, corrected where it was wrong) found these. Nothing has reached the car.

@@ -84,7 +84,8 @@ class Drive:
     ps = mocker.MagicMock()
     ps.controlsAllowedLateral = True
     ps.safetyModel = SafetyModel.hondaNidec
-    gw = SimpleNamespace(present=True, grantValid=True, granted=True, grantReason=1)   # the board steering, no override
+    gw = SimpleNamespace(present=True, grantValid=True, granted=True, grantReason=1,   # the board steering, no override
+                         grantSeq=1)
     sd.sm = {'pandaStates': [ps], 'carStateSP': SimpleNamespace(linbusGateway=gw)}
     sd.CS_prev = car_state(0.0, False)
     self.sd = sd
