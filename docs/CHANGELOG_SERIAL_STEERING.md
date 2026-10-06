@@ -15,6 +15,54 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-06 — the screen: the speed a confirm would set, big, where MAX goes; a Current Speed setting
+
+From the owner's pick of four mock-ups (design A) and his request to be able to drop the speed. Drawing only:
+nothing here changes what openpilot does, when an alert fires or what it sounds like.
+
+* **"Press + (or -) to confirm speed limit" shows the speed it would set, big, top left.** With Compact Speed
+  Limit Prompts on, the set speed the confirm would give you - the limit plus any offset, kept to 0.1 km/h and
+  within the cruise range as the confirm stores it, then shown as MAX will show it (so a 10 km/h shared zone on a
+  car whose cruise starts at 30 shows 30, and mph rounds as MAX does) - is drawn where the stock MAX number goes,
+  at the same size (the same digits, pixel for pixel: about 81 px tall, against 16 px for the little sign in
+  today's banner). A dashed
+  box round it instead of "MAX" means "not set yet", and "press + to confirm" with the blinking green key sits
+  right under it. Press it and the dashed number turns into the usual solid "50 MAX" in the same place. While it
+  is up it counts as the MAX number does: the driver-monitoring face and your speed top right make way, so there
+  are never two big numbers. With an offset and no sign top right (Speed Limit Sign Off, or Zones outside a zone)
+  the pill also names the limit: "press + to confirm  limit 50 +5" - the "+5" is the big number less the limit, so
+  the note always adds up to it (a percentage offset rounds on its own). Nothing stays on the left: the box is only
+  there while the prompt is, and if you swipe away from the road view and come back after it ended, it is gone - it
+  does not fade out from where it was.
+* **When it falls back to the old banner:** no limit to show, a confirm text that names no button (the PCM
+  "set to ... to engage" one), or a screen without sunnypilot's HUD renderer. Compact Speed Limit Prompts off is
+  the stock full-screen prompt, unchanged.
+* **A critical alert during the prompt takes the screen on its first frame** - the box is not faded over it, and
+  your speed is back in the cluster fading out under the alert on that same frame, exactly as with no prompt
+  before it - and any other alert that takes the top left (a turn or disengage banner, or the old banner when the
+  limit is lost mid-prompt) removes it at once too, with your speed back top right on that frame. When the prompt
+  simply ends, the box fades out where today's banner faded out, and your speed and the driver-monitoring face come
+  back on the frame they come back today (the face used to wait ~0.5 s for the box). Whether the box is up is
+  decided from the alert of the frame being drawn, so on the prompt's first frame your speed has already made way.
+* **New setting: Current Speed** (Visuals > HUD, right under Speed and Speed Limit, on = the screen as before).
+  Off, your speed is not drawn top right - it is on the car's own dash. Nothing else moves: the sign, the next
+  lower limit and the stop time stay exactly where they are (with Speed Limit Sign Off they sit in the corner on
+  their own), and the stop time still replaces the speed at a standstill (Stop Timer is its own setting).
+* **Fixed: the offset badge on a school-zone sign.** During a confirm with a speed limit offset, the small offset
+  number on the sign top right sat on the school zone's right-hand lamp. With the lamps on the sign it now sits low
+  on the right of the ring, clear of the digits and of SCHOOL; without them it is where it was.
+* **New param:** `HudCurrentSpeed` (BOOL, "1"), backed up with your settings. Every HUD setting off is still the
+  stock screen pixel for pixel, and with today's settings every screen that is not a compact confirm prompt is
+  pixel-identical to before - checked on the render tests and on 94 replays of route 10f against the unchanged
+  build (batch 2's scenes, also with Current Speed set on explicitly; the motorway, tunnel, school and queue
+  moments in each sign mode; "set speed changed" and "auto adjusting to speed limit"; everything off, also with
+  only Current Speed on; the prompts full screen; a confirm with no limit; a critical alert's first frame and
+  1.5 s in after a confirm). 62 are pixel-identical; the 32 that differ are exactly the compact confirm prompts
+  and Current Speed off. A review then replayed the frames a confirm ends on (into a turn, cruise-off or critical
+  alert, into the old banner when the limit drops, into no alert 1 to 40 frames on): every one is pixel-identical
+  to the unchanged build from its first frame, apart from the prompt's own fade-out top left when no alert follows
+  it - the box fading where the banner faded.
+
 ## 2026-10-06 — board `298727b3` bundled · `0x70B` at 10 Hz
 
 The gateway page now offers board firmware **`298727b3`** (EPS-LKAS branch `fix-70b`). It is `d995bc95` plus one

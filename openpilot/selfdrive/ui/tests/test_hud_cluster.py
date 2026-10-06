@@ -22,7 +22,7 @@ from openpilot.common.params import Params
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_settings as HS
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (HudFrame, StandstillBanner, build_frame, next_window_m,
-                                                                     pending_limit, short_line2, LEAD_DEPART_S,
+                                                                     pending_limit, short_line2, target_speed, LEAD_DEPART_S,
                                                                      MAP_EXTRAPOLATE_MAX_S, SCHOOL_ACTIVE,
                                                                      SCHOOL_INACTIVE, SCHOOL_NONE)
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_model as HM
@@ -39,13 +39,16 @@ BOARD = ROOT / "selfdrive/ui/sunnypilot/mici/layouts/board.py"
 VISUALS_YAML = ROOT / "sunnypilot/sunnylink/settings_ui_src/pages/visuals.yaml"
 SETTINGS_JSON = ROOT / "sunnypilot/sunnylink/settings_ui.json"
 GATEWAY_ICON = ROOT / "sunnypilot/selfdrive/assets/icons_mici/gateway.png"
+HUD_RENDERER = ROOT / "selfdrive/ui/mici/onroad/hud_renderer.py"
+HUD_RENDERER_SP = ROOT / "selfdrive/ui/sunnypilot/mici/onroad/hud_renderer.py"
+HUD_ALERTS = ROOT / "selfdrive/ui/sunnypilot/mici/onroad/hud_alerts.py"
 KPH = 3.6
 
 DEFAULTS = {HS.PARAM_SPEED_CLUSTER: True, HS.PARAM_NEXT_LIMIT: HS.NEXT_BOTH, HS.PARAM_SCHOOL_CUE: True,
             HS.PARAM_VARIABLE_SIGN: True, HS.PARAM_STOPPED_TIMER: True, HS.PARAM_STOPPED_BANNER: True,
             HS.PARAM_CONFIRM_LIMIT: True, HS.PARAM_PLANNED_STOP: True, HS.PARAM_CURVE: True,
             HS.PARAM_COMPACT_LIMIT: True, HS.PARAM_COMPACT_DISENGAGE: True, HS.PARAM_COMPACT_TURN: True,
-            HS.PARAM_LIMIT_SIGN: HS.SIGN_ALWAYS}
+            HS.PARAM_LIMIT_SIGN: HS.SIGN_ALWAYS, HS.PARAM_CURRENT_SPEED: True}
 INT_DEFAULTS = {HS.PARAM_NEXT_LIMIT: '"3"', HS.PARAM_LIMIT_SIGN: '"2"'}
 
 
@@ -152,7 +155,8 @@ class TestHudParams(OpenpilotTestCase):
               HS.PARAM_VARIABLE_SIGN: "variable_sign", HS.PARAM_STOPPED_TIMER: "stopped_timer",
               HS.PARAM_STOPPED_BANNER: "stopped_banner", HS.PARAM_CONFIRM_LIMIT: "confirm_limit",
               HS.PARAM_PLANNED_STOP: "planned_stop", HS.PARAM_CURVE: "curve", HS.PARAM_COMPACT_LIMIT: "compact_limit",
-              HS.PARAM_COMPACT_DISENGAGE: "compact_disengage", HS.PARAM_COMPACT_TURN: "compact_turn"}
+              HS.PARAM_COMPACT_DISENGAGE: "compact_disengage", HS.PARAM_COMPACT_TURN: "compact_turn",
+              HS.PARAM_CURRENT_SPEED: "current_speed"}
     assert set(fields) | set(HS.INT_PARAMS) == set(HS.ALL_PARAMS), "every setting is switched here"
     for key, field in fields.items():
       params.put_bool(key, False, block=True)
@@ -171,7 +175,8 @@ class TestHudParams(OpenpilotTestCase):
     # a build whose params library predates the keys: everything off, not half a HUD
     assert HS.read_settings(FakeParams(fail=True)) == HS.ALL_OFF
     assert HS.ALL_OFF.limit_sign == HS.SIGN_OFF and not (HS.ALL_OFF.compact_limit or HS.ALL_OFF.compact_disengage or
-                                                         HS.ALL_OFF.compact_turn)
+                                                         HS.ALL_OFF.compact_turn or HS.ALL_OFF.current_speed)
+    assert HS.ALL_ON.current_speed, "on by default: the screen as before the setting"
 
   def test_a_next_limit_value_sunnylink_never_writes_is_the_default(self):
     assert HS.read_settings(FakeParams({HS.PARAM_NEXT_LIMIT: 7})).next_limit == HS.NEXT_BOTH
@@ -318,6 +323,33 @@ class TestClusterRules(OpenpilotTestCase):
   def test_the_stock_max_number_hides_the_speed_not_the_sign(self):
     f = frame(drive(), max_visible=True)
     assert f.speed is None and f.limit == 110
+
+  def test_current_speed_off_hides_only_the_live_speed(self):
+    # HudCurrentSpeed off: no speed digits, in every layout; the limit, the sign (and its place), the next lower limit,
+    # the zone and the stop time are exactly what they are with it on - nothing moves
+    off = {'current_speed': False}
+    for kw in SIGN_SCENES + ({'v': 30.3}, {'limit': 40, 'school': 2, 'v': 9.0}):
+      for sign in HS.SIGN_MODES:
+        for sl_mode_on in (True, False):
+          on = frame(drive(**kw), with_(limit_sign=sign), sl_mode_on=sl_mode_on)
+          f = frame(drive(**kw), with_(limit_sign=sign, **off), sl_mode_on=sl_mode_on)
+          assert f.speed is None, (kw, sign)
+          assert dataclasses.replace(f, speed=on.speed) == on, (kw, sign, sl_mode_on)
+        on_z, off_z = SignSim(with_(limit_sign=sign)), SignSim(with_(limit_sign=sign, **off))
+        for _ in range(3):
+          a, b = on_z.step(drive(**kw), 0.5), off_z.step(drive(**kw), 0.5)
+          assert b.speed is None and dataclasses.replace(b, speed=a.speed) == a, (kw, sign, "debounced")
+    # stopped: the stop time is its own setting and still replaces the speed; under a second there is no speed
+    sm = drive(v=0.0, standstill=True)
+    for sign in HS.SIGN_MODES:
+      f = frame(sm, with_(limit_sign=sign, **off), stopped_s=29.9)
+      assert f.timer_s == 29.9 and f.speed is None and f == frame(sm, with_(limit_sign=sign), stopped_s=29.9), sign
+      assert frame(sm, with_(limit_sign=sign, **off), stopped_s=0.5).speed is None
+    # nothing left to draw: nothing drawn
+    assert not frame(drive(lp=False), with_(**off)).visible
+    assert frame(drive(lp=False)).visible
+    # it needs the cluster: on by itself it draws no speed
+    assert frame(drive(), with_(speed_cluster=False)).speed is None
 
   def test_missing_messages(self):
     # no carState this drive: nothing
@@ -911,6 +943,55 @@ class TestAlertRules(OpenpilotTestCase):
     assert pending_limit(drive(limit=50, offset=-3), True) == (50, -3)
     assert pending_limit(FakeSM(), True) == (0, 0)
 
+  def test_the_target_speed(self):
+    # what the confirm sets: limit + offset, rounded as sunnypilot's arrow and the alert's '+' / '-' round it
+    assert target_speed(drive(limit=50), True) == 50
+    assert target_speed(drive(limit=50, offset=5), True) == 55
+    assert target_speed(drive(limit=50, offset=-3), True) == 47
+    assert target_speed(drive(limit=50), False) == round(50 / KPH * 2.23694) == 31
+    assert target_speed(drive(limit=0), True) == 0 and target_speed(FakeSM(), True) == 0, "no limit: nothing to show"
+    for limit, offset in ((60, 0), (80, 10), (40, -5), (110, 7)):
+      sm = drive(limit=limit, offset=offset)
+      final = sm['longitudinalPlanSP'].speedLimit.resolver.speedLimitFinalLast
+      for metric, conv in ((True, 1.0), (False, 0.621371)):
+        assert target_speed(sm, metric) == round(round(final * 3.6, 1) * conv), (limit, offset, metric)
+
+  def test_the_target_is_what_the_confirm_stores_and_max_then_shows(self):
+    # cruise_ext.py: v_cruise_kph = clip(round(speed_limit_final_last_kph, 1), v_cruise_min, V_CRUISE_MAX); the MAX number
+    # then shows round(v_cruise * KM_TO_MILE) in mph. The constants are the ones the confirm and the MAX number use.
+    from openpilot.sunnypilot.selfdrive.car import cruise_ext
+    from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.helpers import get_minimum_set_speed
+    from openpilot.selfdrive.ui.mici.onroad import hud_renderer
+    assert (HM.CRUISE_MIN_KPH, HM.CRUISE_MAX_KPH) == (cruise_ext.V_CRUISE_MIN, cruise_ext.V_CRUISE_MAX)
+    assert HM.KM_TO_MILE == hud_renderer.KM_TO_MILE
+    for metric in (True, False):
+      assert HM.cruise_min_kph(metric, False) == get_minimum_set_speed(metric) and HM.cruise_min_kph(metric, True) == 8
+
+    def final(kph):
+      sm = drive(limit=kph)
+      sm['longitudinalPlanSP'].speedLimit.resolver.speedLimitFinalLast = kph / KPH
+      return sm
+    # a .5 tie in mph: 50 mph + 5 % is 84.49 km/h, stored as 84.5 = 52.506 mph -> MAX shows 53 (not round(52.50) = 52)
+    assert target_speed(final(50 * 1.609344 * 1.05), False) == 53
+    # under the floor: a 10 km/h shared zone on a button-managed car sets 30; with pcmCruiseSpeed 8 is the floor
+    assert target_speed(final(10), True, pcm_cruise_speed=False) == 30
+    assert target_speed(final(10), True) == 10 and target_speed(final(5), True) == 8
+    # over the top: no more than V_CRUISE_MAX
+    assert target_speed(final(160), True) == 145
+    # a % offset: 45 km/h + 10 % = 49.5, stored 49.5, shown 50 (round half even: 50)
+    assert target_speed(final(49.5), True) == 50
+
+  def test_the_box_and_the_banner_ask_the_same_question(self):
+    # the HUD renderer's 'is the box up this frame' and the confirm's own drawing share confirm_target(): the cluster can
+    # never hide the speed for a box that is not drawn, nor show it beside one that is
+    src = (Path(HM.__file__).parent / "hud_alerts.py").read_text(encoding="utf-8")
+    confirm = src[src.index("def _draw_confirm("):src.index("def draw_compact_standstill(")]
+    box = src[src.index("def box_alert("):src.index("def _draw_confirm(")]
+    assert "target = confirm_target(alert)" in confirm and "confirm_target(alert) > 0" in box
+    assert "target_speed(" not in confirm, "one place computes the target"
+    note = confirm[confirm.index("note = \"\""):confirm.index("pending_max.publish(")]
+    assert "d = target - limit" in note, "the note adds up to the number beside it"
+
 
 # ------------------------------------------------------------------------------------------- compact alerts
 def ui_alert(name, et, a):
@@ -1142,7 +1223,7 @@ class TestSunnylink(OpenpilotTestCase):
     _, sec = hud_section()
     rule = [{"type": "param", "key": HS.PARAM_SPEED_CLUSTER, "equals": True}]
     by_key = {it["key"]: it for it in sec["items"]}
-    for key in (HS.PARAM_NEXT_LIMIT, HS.PARAM_LIMIT_SIGN):
+    for key in (HS.PARAM_NEXT_LIMIT, HS.PARAM_LIMIT_SIGN, HS.PARAM_CURRENT_SPEED):
       assert by_key[key].get("visibility") == rule, key
     # the cues style a sign: dimmed with the sign Off too
     for key in (HS.PARAM_SCHOOL_CUE, HS.PARAM_VARIABLE_SIGN):
@@ -1153,7 +1234,8 @@ class TestSunnylink(OpenpilotTestCase):
                 HS.PARAM_COMPACT_TURN):
       assert "visibility" not in by_key[key], f"{key} works without the cluster"
     keys = [it["key"] for it in sec["items"]]
-    assert keys.index(HS.PARAM_LIMIT_SIGN) == keys.index(HS.PARAM_SPEED_CLUSTER) + 1, "the sign's setting under the cluster's"
+    assert keys[:3] == [HS.PARAM_SPEED_CLUSTER, HS.PARAM_CURRENT_SPEED, HS.PARAM_LIMIT_SIGN], \
+      "the speed's and the sign's settings right under the cluster's"
 
   def test_the_rail_items_say_what_they_cannot_know(self):
     _, sec = hud_section()
@@ -1184,6 +1266,8 @@ class TestUpstreamHunks(OpenpilotTestCase):
     marked(VISUALS_YAML, ("id: hud_comma4",))
     marked(MICI_SETTINGS, ("import cloudlog", "def gateway_icon():", "icons_mici/gateway.png", "gateway_icon())"), window=5)
     marked(REPO / ".gitattributes", ("icons_mici/gateway.png -filter",))
+    marked(HUD_RENDERER_SP, ("import hud_alerts, hud_draw", "pending_max.drawer = True", "self._draw_pending_max(rect)",
+                             "def drawing_top_icons", "def _draw_pending_max"))
 
   def test_the_hooks_fall_through_to_the_stock_drawing(self):
     src = ALERTS.read_text(encoding="utf-8")
@@ -1207,6 +1291,23 @@ class TestUpstreamHunks(OpenpilotTestCase):
     render = src[src.index("  def _render(self"):]
     assert render.index("dot_height = self._rect.y + dot_height") < render.index("max(dot_height, self.hud_floor_y)") < \
       render.index("draw_circle_gradient("), "the floor applies to the stock position, before it is drawn"
+
+  def test_the_confirms_target_is_drawn_by_the_sunnypilot_subclass(self):
+    # design A needs no upstream change: the alert renderer publishes, the subclass draws after the stock HUD
+    assert "FORK" not in HUD_RENDERER.read_text(encoding="utf-8"), "upstream's HUD renderer is untouched"
+    src = HUD_RENDERER_SP.read_text(encoding="utf-8")
+    render = src[src.index("  def _render(self"):src.index("  def _has_blind_spot_detected")]
+    assert render.index("super()._render(rect)") < render.index("self._draw_pending_max(rect)"), "over the stock HUD"
+    assert "hud_alerts.pending_max.drawer = True" in src, "without the subclass the confirm stays the banner"
+    tops = src[src.index("  def drawing_top_icons"):src.index("  def _draw_pending_max")]
+    assert "super().drawing_top_icons() or" in tops, "a top icon as the stock MAX number is"
+    road = ROAD_VIEW.read_text(encoding="utf-8")
+    assert road.index("self._alert_renderer.render(self._content_rect)") < \
+      road.index("self._hud_renderer.render(self._content_rect)"), "the alerts publish before the HUD draws, each frame"
+    alerts = HUD_ALERTS.read_text(encoding="utf-8")
+    confirm = alerts[alerts.index("def _draw_confirm("):alerts.index("def draw_compact_standstill(")]
+    assert confirm.index("pending_max.publish(") < confirm.index("return\n") < confirm.index("hd.confirm_banner("), \
+      "the box or the banner, never both"
 
 
 # ------------------------------------------------------------------------------------------- the gateway icon

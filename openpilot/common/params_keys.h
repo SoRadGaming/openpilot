@@ -206,6 +206,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"HudCompactLimitPrompts", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCompactTurn", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudConfirmLimit", {PERSISTENT | BACKUP, BOOL, "1"}},
+    // FORK(HUD): HudCurrentSpeed off hides only the live speed in the cluster.
+    {"HudCurrentSpeed", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCurve", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudLimitSign", {PERSISTENT | BACKUP, INT, "2"}},
     {"HudNextLimit", {PERSISTENT | BACKUP, INT, "3"}},

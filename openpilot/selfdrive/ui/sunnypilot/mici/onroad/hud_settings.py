@@ -6,7 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 
 FORK(HUD): the comma 4 HUD's settings - one param per piece, set from sunnylink (Visuals > HUD).
 
-READ AT MOST ONCE A SECOND, from the render thread: thirteen small param reads a second, never one per frame.
+READ AT MOST ONCE A SECOND, from the render thread: fourteen small param reads a second, never one per frame.
 
 EVERY KEY DEFAULTS TO ON (params_keys.h), and every key off gives exactly the stock comma 4 screen. A key that cannot be
 read at all - a build whose params library predates it - reads as OFF, so a half-installed update draws the stock
@@ -46,10 +46,11 @@ PARAM_COMPACT_LIMIT = "HudCompactLimitPrompts"  # the speed-limit prompts small:
 PARAM_COMPACT_DISENGAGE = "HudCompactDisengage"  # 'cruise off' / 'lane centering off' as a banner
 PARAM_COMPACT_TURN = "HudCompactTurn"       # 'turning left / right' as a banner
 PARAM_LIMIT_SIGN = "HudLimitSign"           # 0 off, 1 school and variable zones, 2 always
+PARAM_CURRENT_SPEED = "HudCurrentSpeed"     # the live speed in the cluster (off: everything else stays where it is)
 
 BOOL_PARAMS = (PARAM_SPEED_CLUSTER, PARAM_SCHOOL_CUE, PARAM_VARIABLE_SIGN, PARAM_STOPPED_TIMER, PARAM_STOPPED_BANNER,
                PARAM_CONFIRM_LIMIT, PARAM_PLANNED_STOP, PARAM_CURVE, PARAM_COMPACT_LIMIT, PARAM_COMPACT_DISENGAGE,
-               PARAM_COMPACT_TURN)
+               PARAM_COMPACT_TURN, PARAM_CURRENT_SPEED)
 INT_PARAMS = (PARAM_NEXT_LIMIT, PARAM_LIMIT_SIGN)
 ALL_PARAMS = BOOL_PARAMS + INT_PARAMS
 
@@ -69,10 +70,11 @@ class HudSettings:
   compact_disengage: bool = False
   compact_turn: bool = False
   limit_sign: int = SIGN_OFF
+  current_speed: bool = False
 
 
 ALL_OFF = HudSettings()
-ALL_ON = HudSettings(True, NEXT_BOTH, True, True, True, True, True, True, True, True, True, True, SIGN_ALWAYS)
+ALL_ON = HudSettings(True, NEXT_BOTH, True, True, True, True, True, True, True, True, True, True, SIGN_ALWAYS, True)
 
 
 def read_settings(params) -> HudSettings:
@@ -106,6 +108,7 @@ def read_settings(params) -> HudSettings:
     compact_disengage=flag(PARAM_COMPACT_DISENGAGE),
     compact_turn=flag(PARAM_COMPACT_TURN),
     limit_sign=choice(PARAM_LIMIT_SIGN, SIGN_MODES, SIGN_OFF, SIGN_ALWAYS),
+    current_speed=flag(PARAM_CURRENT_SPEED),
   )
 
 
