@@ -14,6 +14,7 @@ view. What they need that the stock widgets do not do:
     on an Australian sign.
 Nominal font sizes go through gui_app's FONT_SCALE like every other text in this UI.
 """
+import math
 from functools import lru_cache
 
 import pyray as rl
@@ -359,6 +360,85 @@ def confirm_banner(x: float, y: float, text: str, lower: bool | None, color: rl.
       r = CONFIRM_SIGN_D / 2
       offset_badge(scx + r * 0.60, cy - r * 0.80, CONFIRM_SIGN_D * 0.2, offset, alpha=alpha)
   return w, h
+
+
+def dashed_rrect(x: float, y: float, w: float, h: float, r: float, thick: float, dash: float, gap: float, col: rl.Color):
+  """A rounded rectangle's outline in round-capped dashes, walked clockwise from the top edge's left end."""
+  r = max(0.0, min(r, w / 2, h / 2))
+  path = [(rl.Vector2(x + r, y), rl.Vector2(x + w - r, y))]
+  corners = ((x + w - r, y + r, -90.0), (x + w - r, y + h - r, 0.0), (x + r, y + h - r, 90.0), (x + r, y + r, 180.0))
+  edges = ((rl.Vector2(x + w, y + r), rl.Vector2(x + w, y + h - r)), (rl.Vector2(x + w - r, y + h), rl.Vector2(x + r, y + h)),
+           (rl.Vector2(x, y + h - r), rl.Vector2(x, y + r)), None)
+  for (cx, cy, a0), edge in zip(corners, edges, strict=True):
+    arc = [rl.Vector2(cx + r * math.cos(math.radians(a0 + 90 * k / 8)), cy + r * math.sin(math.radians(a0 + 90 * k / 8)))
+           for k in range(9)]
+    path += list(zip(arc, arc[1:], strict=False))
+    if edge is not None:
+      path.append(edge)
+  on, left = True, dash
+  for p0, p1 in path:
+    seg = math.hypot(p1.x - p0.x, p1.y - p0.y)
+    pos = 0.0
+    while pos < seg - 1e-6:
+      step = min(left, seg - pos)
+      if on:
+        q0 = rl.Vector2(p0.x + (p1.x - p0.x) * pos / seg, p0.y + (p1.y - p0.y) * pos / seg)
+        q1 = rl.Vector2(p0.x + (p1.x - p0.x) * (pos + step) / seg, p0.y + (p1.y - p0.y) * (pos + step) / seg)
+        rl.draw_line_ex(q0, q1, thick, col)
+        rl.draw_circle_v(q0, thick / 2, col)
+        rl.draw_circle_v(q1, thick / 2, col)
+      pos += step
+      left -= step
+      if left <= 1e-6:
+        on = not on
+        left = dash if on else gap
+
+
+PENDING_PAD = 7          # the dashed outline, this far round the digits' ink
+PENDING_PILL_H = 32
+PENDING_PILL_TEXT = 22   # ~15 px caps: the compact banners' first line is 24
+PENDING_PILL_GAP = 6     # the outline to the pill
+
+
+def pending_max(pos: rl.Vector2, size: float, value: int, text: str, lower: bool | None, color: rl.Color,
+                alpha: float = 1.0, key_alpha: float = 1.0, note: str = "", max_w: float | None = None,
+                shadow_c: "rl.Vector2 | None" = None) -> tuple[float, float, float, float]:
+  """The compact speed-limit confirm in the stock MAX number's place: the set speed the confirm would set, in the stock
+  MAX digits (the caller passes their exact place, pos, and size - the DISPLAY font, as HudRenderer._draw_set_speed
+  draws them), with a dashed rounded outline round them instead of 'MAX' (dashed: not set yet, as the HUD's pending sign
+  is), and under it, where 'MAX' would be, a pill in the alert's color: 'press + to confirm', the green key (blinking as
+  the arrow does; none while the direction is not known) and an optional note ('limit 50 +5'). Wider than max_w, the
+  pill's words are squeezed, then shrunk. Returns the (x0, y0, x1, y1) it drew in."""
+  txt = str(int(value))
+  if shadow_c is not None:
+    # the stock MAX number's drop shadow, a little bigger: the pill sits under it
+    rl.draw_circle_gradient(shadow_c, 100, rl.Color(0, 0, 0, int(255 / 2 * alpha)), rl.BLANK)
+  rl.draw_text_ex(gui_app.font(FontWeight.DISPLAY), txt, pos, size, 0, rl.Color(255, 255, 255, int(255 * 0.9 * alpha)))
+  iw, ih, ix0, iy0 = ink(txt, size, 1.0, FontWeight.DISPLAY)
+  bx, by, bw, bh = pos.x + ix0 - PENDING_PAD, pos.y + iy0 - PENDING_PAD, iw + 2 * PENDING_PAD, ih + 2 * PENDING_PAD
+  # a dark underlay first, so the dashes hold on a bright sky
+  dashed_rrect(bx + 1, by + 1, bw, bh, 10, 3.4, 9, 6, rl.Color(0, 0, 0, int(110 * alpha)))
+  dashed_rrect(bx, by, bw, bh, 10, 2.4, 9, 6, rl.Color(255, 255, 255, int(235 * alpha)))
+
+  pad, gap = 12, 10
+  top = by + bh + PENDING_PILL_GAP
+  key_w = gap + KEY_W if lower is not None else 0.0
+  note_size = PENDING_PILL_TEXT
+  note_w = ink(note, note_size, 1.0, FontWeight.MEDIUM)[0] + gap + 2 if note else 0.0
+  t_size, t_sx = _fit(text, PENDING_PILL_TEXT, (max_w or 1e9) - 2 * pad - key_w - note_w)
+  tw = ink(text, t_size, t_sx)[0]
+  pw = pad + tw + key_w + note_w + pad
+  cy = top + PENDING_PILL_H / 2
+  rl.draw_rectangle_rounded(rl.Rectangle(bx, top, pw, PENDING_PILL_H), 0.45, 10,
+                            rl.Color(color.r, color.g, color.b, int(238 * alpha)))
+  text_ink(text, t_size, bx + pad, cy, a(WHITE, alpha), sx=t_sx, anchor="left")
+  cx = bx + pad + tw
+  if lower is not None:
+    key_glyph(cx + gap, cy, lower, key_alpha * alpha)
+    cx += key_w
+  if note:
+    text_ink(note, note_size, cx + gap + 2, cy, rl.Color(255, 255, 255, int(215 * alpha)), w=FontWeight.MEDIUM, anchor="left")
+  return bx, by, max(bx + bw, bx + pw), top + PENDING_PILL_H
 
 
 def offset_badge(cx: float, cy: float, r: float, offset: int, alpha: float = 1.0):

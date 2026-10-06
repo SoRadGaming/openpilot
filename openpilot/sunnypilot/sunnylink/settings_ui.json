@@ -1650,13 +1650,26 @@
               "key": "HudSpeedCluster",
               "widget": "toggle",
               "title": "Speed and Speed Limit",
-              "description": "Your speed, as the car's speedometer shows it, beside the speed limit sign, top right. Speed Limit Sign below says when the sign shows; it is always hidden when Speed Limit is Off, and shown in grey while the limit is only being held from earlier. While the set speed shows after a change the speed hides, and the whole group fades out while a full-screen alert is up."
+              "description": "Your speed, as the car's speedometer shows it, beside the speed limit sign, top right. Current Speed below can leave the speed out; Speed Limit Sign says when the sign shows; it is always hidden when Speed Limit is Off, and shown in grey while the limit is only being held from earlier. While the set speed shows after a change (or the speed a confirm prompt would set) the speed hides, and the whole group fades out while a full-screen alert is up."
+            },
+            {
+              "key": "HudCurrentSpeed",
+              "widget": "toggle",
+              "title": "Current Speed",
+              "description": "Your speed, top right, as the car's speedometer shows it. Off - the speed is not drawn; it is on the car's own dash. The speed limit sign, the next lower limit and the stop time stay where they are; with Speed Limit Sign Off they sit in the corner on their own. After a change the set speed still shows as MAX, top left.",
+              "visibility": [
+                {
+                  "type": "param",
+                  "key": "HudSpeedCluster",
+                  "equals": true
+                }
+              ]
             },
             {
               "key": "HudLimitSign",
               "widget": "multiple_button",
               "title": "Speed Limit Sign",
-              "description": "When the sign beside your speed is drawn. Always - whenever there is a limit. School & Variable Zones - only in a NSW school zone while it is on, or a variable speed limit zone, and for about 12 seconds after, so it does not blink at a limit change; this needs NSW Speed Zones on Live and Speed Limit not Off. Off - never. With no sign, your speed, the stop time and the next lower limit slide into its place in the corner, and the confirm prompt shows the limit it asks about itself.",
+              "description": "When the sign beside your speed is drawn. Always - whenever there is a limit. School & Variable Zones - only in a NSW school zone while it is on, or a variable speed limit zone, and for about 12 seconds after, so it does not blink at a limit change; this needs NSW Speed Zones on Live and Speed Limit not Off. Off - never. With no sign, your speed, the stop time and the next lower limit slide into its place in the corner, and a confirm prompt with a speed limit offset names the limit itself ('limit 50 +5').",
               "options": [
                 {
                   "value": 0,
@@ -1683,7 +1696,7 @@
               "key": "HudNextLimit",
               "widget": "multiple_button",
               "title": "Next Lower Limit",
-              "description": "A small sign for the next LOWER limit under the speed, once it is within 15 seconds or 500 m. Bar shrinks toward the sign as you get closer; Distance shows how far, as the map rounds it; Both shows the distance over the bar. Never while stopped, never for a higher limit, and never from a tunnel's guessed position.",
+              "description": "A small sign for the next LOWER limit under the speed (or where the speed would be), once it is within 15 seconds or 500 m. Bar shrinks toward the sign as you get closer; Distance shows how far, as the map rounds it; Both shows the distance over the bar. Never while stopped, never for a higher limit, and never from a tunnel's guessed position.",
               "options": [
                 {
                   "value": 0,
@@ -1752,7 +1765,7 @@
               "key": "HudStoppedTimer",
               "widget": "toggle",
               "title": "Stop Timer",
-              "description": "After a second at a standstill the speed becomes a stopwatch and how long you have been stopped. While engaged, a stop raises the 'take control' prompt, which covers the screen - and the stopwatch - unless Compact Take Control Banner When Stopped is on."
+              "description": "After a second at a standstill the speed becomes a stopwatch and how long you have been stopped (with Current Speed off too). While engaged, a stop raises the 'take control' prompt, which covers the screen - and the stopwatch - unless Compact Take Control Banner When Stopped is on."
             },
             {
               "key": "HudStoppedBanner",
@@ -1764,13 +1777,13 @@
               "key": "HudConfirmLimit",
               "widget": "toggle",
               "title": "Show the Limit in the Confirm Prompt",
-              "description": "The 'press - (or +) to confirm speed limit' prompt shows the limit it is asking about, with a dashed ring until you confirm it, beside the green - or +. A speed limit offset shows as a small number on the sign, as on sunnypilot's own sign. With Compact Speed Limit Prompts on, the dashed ring is on the sign top right instead, or in the banner when that sign is not shown - there the banner always shows the limit, with this on or off."
+              "description": "The full-screen 'press - (or +) to confirm speed limit' prompt shows the limit it is asking about, with a dashed ring until you confirm it, beside the green - or +. A speed limit offset shows as a small number on the sign, as on sunnypilot's own sign. With Compact Speed Limit Prompts on, the sign top right turns dashed instead while the prompt is up."
             },
             {
               "key": "HudCompactLimitPrompts",
               "widget": "toggle",
               "title": "Compact Speed Limit Prompts",
-              "description": "'Auto adjusting to speed limit' and 'set speed changed' no longer cover the road: the new set speed shows as MAX top left, as after any change, and your speed and sign stay. 'Press + (or -) to confirm' is a one-line banner top left with the green key. The sounds are unchanged."
+              "description": "'Auto adjusting to speed limit' and 'set speed changed' no longer cover the road: the new set speed shows as MAX top left, as after any change, and your speed and sign stay. 'Press + (or -) to confirm' shows the speed the confirm would set (the limit plus any offset) top left, where and as big as MAX, in a dashed box - not set yet - with 'press + to confirm' and the green key under it; once confirmed it is the usual MAX. With no limit to show it is a one-line banner. The sounds are unchanged."
             },
             {
               "key": "HudCompactDisengage",

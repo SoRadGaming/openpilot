@@ -22,7 +22,8 @@ once the alert has finished fading out, so the two never overlap - except a comp
 the top right free: its banner stops short of what the cluster drew (it reads hud_alerts.cluster_edge, filled in here),
 and while the compact confirm is up the sign is drawn pending (dashed). The 60 px strip on the right (the confidence
 ball) is outside the content rect and is never painted. While the stock MAX number shows (2.5 s after a set-speed change)
-the speed digits hide, so two big numbers are never on screen together.
+- or the compact confirm's target in its place (hud_alerts.py, item 4) - the speed digits hide, so two big numbers are
+never on screen together. HudCurrentSpeed off never draws them at all; nothing else moves (hud_model.build_frame).
 WITHOUT THE SIGN (HudLimitSign off, or zones and not in one) the speed, the stop time and the next lower limit take its
 place in the corner; they slide there and back rather than jump.
 
@@ -33,6 +34,7 @@ import math
 import pyray as rl
 
 from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_draw as hd
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (HudFrame, SignSlot, build_frame, compact_kind,
                                                                      confirm_pending, pending_limit, received,
@@ -89,7 +91,15 @@ class HudCluster(Widget):
     self._pending = False
 
   def _max_visible(self) -> bool:
-    return bool(self._hud_renderer is not None and self._hud_renderer.drawing_top_icons())
+    hr = self._hud_renderer
+    if hr is None:
+      return False
+    # a full-screen alert from this frame on: the compact confirm's box goes at once (hud_renderer.py, _draw_pending_max),
+    # so only the stock MAX number, fading as stock, still hides the speed - the cluster fading out under the alert's
+    # first frame is the one it would be with no confirm before it
+    if self._alert_covers():
+      return bool(HudRenderer.drawing_top_icons(hr))
+    return bool(hr.drawing_top_icons())
 
   def _alert_covers(self) -> bool:
     """An alert is drawn this frame - including the previous one while it fades out, so the cluster comes back only
@@ -165,7 +175,10 @@ class HudCluster(Widget):
       if self._pending:
         _, offset = pending_limit(ui_state.sm, ui_state.is_metric)
         if offset:
-          hd.offset_badge(sign_cx + SIGN_D * 0.30, cy - SIGN_D * 0.40, SIGN_D * 0.2, offset, alpha=sa)
+          # up and right on the ring, as sunnypilot's own sign has it - but that is where a school zone's right lamp
+          # is, so with the lamps it sits low on the right of the ring instead, clear of the digits and of SCHOOL
+          bx, by = (SIGN_D * 0.40, SIGN_D / 3) if f.school != SCHOOL_NONE else (SIGN_D * 0.30, -SIGN_D * 0.40)
+          hd.offset_badge(sign_cx + bx, cy + by, SIGN_D * 0.2, offset, alpha=sa)
       if f.school != SCHOOL_NONE:
         hd.school_cue(sign_cx, cy, SIGN_D, f.school == SCHOOL_ACTIVE, rl.get_time(), alpha=sa)
       # the banner (hud_alerts) carries the pending sign itself until this one is at least half faded in, so while it

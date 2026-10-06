@@ -23,20 +23,30 @@ augmented_road_view.py, and with the settings off those lines fall through to th
 3. COMPACT ALERTS (HudCompactLimitPrompts, HudCompactDisengage, HudCompactTurn; which alerts: hud_model.compact_kind).
    'Auto adjusting to speed limit', 'Set speed changed' and 'Auto adjusting to last speed limit' draw nothing over the
    road: the stock MAX number shows the new set speed (augmented_road_view lets it, frees_top_icons) and the cluster
-   stays. The confirm is a one-line banner top left - 'press + to confirm' and the blinking green key - and the cluster's
-   own sign turns pending (dashed, with HudConfirmLimit); with no sign in the cluster (HudLimitSign, or one not yet half
-   faded in) the banner carries the pending sign, whatever HudConfirmLimit says - the limit has nowhere else to be. The
-   key says what the text says. A confirm with no words (the set speed already equal to the limit, a frame or two) draws
-   nothing. 'Cruise off', 'lane centering off' and 'turning left / right' are banners in the alert's color. Every banner stops
-   short of what the cluster drew this frame (ClusterEdge). Sounds are untouched: soundd plays them from selfdriveState.
+   stays. 'Cruise off', 'lane centering off' and 'turning left / right' are banners in the alert's color. Every banner
+   stops short of what the cluster drew this frame (ClusterEdge). Sounds are untouched: soundd plays them from
+   selfdriveState.
+
+4. THE COMPACT CONFIRM IN THE MAX NUMBER'S PLACE (HudCompactLimitPrompts; the owner's design A, 2026-10-06). 'Press + (or
+   -) to confirm speed limit' draws, top left where the stock MAX number goes and at its size, the set speed the confirm
+   would set (limit + offset, hud_model.target_speed) - with a dashed outline instead of 'MAX' (not set yet) and under
+   it a pill: 'press + to confirm' and the blinking green key. This file only publishes it (PendingMax); the HUD
+   renderer (sunnypilot/mici/onroad/hud_renderer.py), drawn after the alerts, draws it, and counts it as a top icon, as
+   it does the stock MAX number. With an offset and no sign in the cluster (HudLimitSign, or one not yet half faded in)
+   the pill also names the limit: 'limit 50 +5'. After the confirm the stock MAX number shows the new set speed, solid,
+   in the same place. With no limit, a text naming no key (the PCM one) or no HUD renderer to draw it, the confirm is
+   the one-line banner instead: 'press + to confirm' and the key - and, with no sign in the cluster, the pending sign,
+   whatever HudConfirmLimit says. While the confirm is up the cluster's own sign is drawn pending (dashed, with
+   HudConfirmLimit). A confirm with no words (the set speed already equal to the limit, a frame or two) draws nothing.
 """
 import math
+from dataclasses import dataclass
 
 import pyray as rl
 
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_draw as hd
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (StandstillBanner, pending_limit, short_line2,
-                                                                     compact_kind, compact_text, confirm_text,
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (StandstillBanner, pending_limit, target_speed,
+                                                                     short_line2, compact_kind, compact_text, confirm_text,
                                                                      confirm_lower, event_name, COMPACT_NONE,
                                                                      COMPACT_QUIET, CONFIRM_EVENT)
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import frees_top_icons as _frees_top_icons
@@ -65,6 +75,38 @@ class ClusterEdge:
 
 
 cluster_edge = ClusterEdge()
+
+
+@dataclass(frozen=True)
+class PendingTarget:
+  """What the compact confirm puts in the MAX number's place this frame (hud_draw.pending_max)."""
+  value: int                 # the set speed the confirm would set, display units
+  text: str                  # 'press + to confirm'
+  lower: bool | None         # the key: True '-', False '+', None none
+  color: rl.Color            # the alert's color, for the pill
+  alpha: float               # the alert's fade
+  key_alpha: float           # the arrow's blink, 0..1
+  note: str = ""             # 'limit 50 +5', or nothing
+
+
+class PendingMax:
+  """The hand-over from the alert renderer to the HUD renderer, which draws after it in the same frame: publish() every
+  frame the compact confirm is drawn, take() once a frame - nothing taken = the confirm is not up (the renderer fades the
+  box out). drawer: a HUD renderer that draws it exists (HudRendererSP, the sunnypilot UI's); without one the confirm
+  stays the banner, so it is never drawn nowhere."""
+  def __init__(self):
+    self.drawer = False
+    self._item: PendingTarget | None = None
+
+  def publish(self, item: PendingTarget):
+    self._item = item
+
+  def take(self) -> PendingTarget | None:
+    item, self._item = self._item, None
+    return item
+
+
+pending_max = PendingMax()
 
 
 def banner_max_w(rect: rl.Rectangle, h: float) -> float:
@@ -109,8 +151,20 @@ def _draw_confirm(ar, alert, s, x: float, y: float, color: rl.Color, alpha: floa
   # arrow's direction.
   _, icon, icon_alpha, _, _ = ar.speed_limit_pre_active_icon_helper()
   lower = confirm_lower(alert.text1)
+  names_key = lower is not None
   if lower is None:
     lower = True if icon.id == ar.arrow_down.id else False if icon.id == ar.arrow_up.id else None
+  # the owner's design A: the target in the MAX number's place, drawn by the HUD renderer after the alerts. Only for a
+  # '+' / '-' text: the PCM one asks for another set speed than the target
+  target = target_speed(ui_state.sm, ui_state.is_metric) if names_key and pending_max.drawer else 0
+  if target > 0:
+    note = ""
+    if not cluster_edge.sign:   # the limit is on screen nowhere else: name it when the target is not the limit itself
+      limit, offset = pending_limit(ui_state.sm, ui_state.is_metric)
+      if offset and limit > 0:
+        note = f"limit {limit} {'+' if offset > 0 else '-'}{abs(offset)}"
+    pending_max.publish(PendingTarget(target, confirm_text(alert.text1), lower, color, alpha, icon_alpha / 255.0, note))
+    return
   value, offset = 0, 0
   if not cluster_edge.sign:   # no limit on screen otherwise (owner decision 7, whatever HudConfirmLimit says)
     value, offset = pending_limit(ui_state.sm, ui_state.is_metric)

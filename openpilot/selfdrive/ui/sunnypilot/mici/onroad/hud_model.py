@@ -27,6 +27,9 @@ is on, or a Variable zone, by those same rules and whatever the two cue settings
 shown). Zone matching flickers at limit changes (route 10f: one Variable zone broke into 10 pieces, gaps of 2-58 s), so
 the zone is debounced (SignSlot): on after SIGN_ZONE_ON_S, off after SIGN_ZONE_OFF_S. Without the sign the limit is still
 known: the next lower limit is still shown, and the speed takes the sign's place.
+WHETHER THE SPEED IS DRAWN (HudCurrentSpeed): off, the live speed is never drawn and nothing else changes - the sign,
+the next lower limit and the stop time keep their places (they never depended on the digits), and the stop time still
+replaces the speed at a standstill (its own setting, HudStoppedTimer).
 
 COMPACT ALERTS (HudCompactLimitPrompts / HudCompactDisengage / HudCompactTurn, drawn by hud_alerts.py): an alert is drawn
 small only when its FULL ALERT TYPE (event name AND event type, COMPACT_TYPES) is in an enabled group below AND it is
@@ -180,7 +183,7 @@ def build_frame(sm, s: HudSettings, *, started_frame: int, is_metric: bool, spee
 
   if s.stopped_timer and standstill and stopped_s is not None and stopped_s >= TIMER_DELAY_S:
     f.timer_s = stopped_s
-  elif s.speed_cluster and not max_visible:
+  elif s.speed_cluster and s.current_speed and not max_visible:
     f.speed = int(round(v_ego * conv))
 
   if not s.speed_cluster:
@@ -357,6 +360,17 @@ def pending_limit(sm, is_metric: bool) -> tuple[int, int]:
   if res.speedLimitLast <= 0:
     return 0, 0
   return int(round(res.speedLimitLast * conv)), int(round(res.speedLimitOffset * conv))
+
+
+def target_speed(sm, is_metric: bool) -> int:
+  """The set speed the speed-limit confirm would set, in display units: limit + offset (speedLimitFinalLast), rounded
+  exactly as sunnypilot's arrow and the alert's own '+' / '-' round it (speed_limit.py, events.py), so the number and the
+  key can never disagree. 0 when there is no limit."""
+  res = sm['longitudinalPlanSP'].speedLimit.resolver
+  if res.speedLimitLast <= 0:
+    return 0
+  conv = CV.MS_TO_KPH if is_metric else CV.MS_TO_MPH
+  return max(0, int(round(res.speedLimitFinalLast * conv)))
 
 
 # ------------------------------------------------------------------------------------------- the right rail

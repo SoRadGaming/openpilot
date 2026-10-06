@@ -13,9 +13,14 @@ FORK(HUD): the comma 4 onroad view, drawn for real in a headless raylib window, 
   * with only an alert's own setting off, that alert is drawn exactly as stock;
   * the right rail: its item only in the ball's strip, white or grey as openpilot drives the plan or not, the ball held
     under it and back where the stock one is once it has gone, and with its two settings off the stock strip;
-  * compact alerts: 'set speed changed' pixel-identical to no alert (and the MAX number free to show), the confirm,
-    disengage and turn banners top left and short of the cluster, nothing below them, the confirm's pending sign on the
-    cluster or in the banner, a critical alert exactly stock, each group's setting off exactly stock;
+  * compact alerts: 'set speed changed' pixel-identical to no alert (and the MAX number free to show), the disengage
+    and turn banners top left and short of the cluster, nothing below them, a critical alert exactly stock, each group's
+    setting off exactly stock;
+  * the compact confirm (design A): its target in the stock MAX number's place, the same digits pixel for pixel, dashed,
+    the pill under it and no banner, a top icon (the live speed makes way); the limit named in the pill with an offset
+    and no sign; today's banner with no limit; the solid stock MAX number after the confirm; a critical alert on its
+    first frame exactly stock; the offset badge on a school-zone sign clear of its lamps and SCHOOL;
+  * Current Speed off: only the live speed goes, in every layout; the stop time stays;
   * the sign setting: zones outside a zone = off, inside one = always; off puts the speed, the stop time and the next
     limit in the corner; entering a zone the speed slides and the sign fades in.
 
@@ -59,13 +64,35 @@ rl.get_time = lambda: clock["t"]
 ON = {HS.PARAM_SPEED_CLUSTER: True, HS.PARAM_NEXT_LIMIT: 3, HS.PARAM_SCHOOL_CUE: True, HS.PARAM_VARIABLE_SIGN: True,
       HS.PARAM_STOPPED_TIMER: True, HS.PARAM_STOPPED_BANNER: True, HS.PARAM_CONFIRM_LIMIT: True,
       HS.PARAM_PLANNED_STOP: True, HS.PARAM_CURVE: True, HS.PARAM_COMPACT_LIMIT: True, HS.PARAM_COMPACT_DISENGAGE: True,
-      HS.PARAM_COMPACT_TURN: True, HS.PARAM_LIMIT_SIGN: HS.SIGN_ALWAYS}
+      HS.PARAM_COMPACT_TURN: True, HS.PARAM_LIMIT_SIGN: HS.SIGN_ALWAYS, HS.PARAM_CURRENT_SPEED: True}
 assert set(ON) == set(HS.ALL_PARAMS)
 OFF = {k: (0 if k in HS.INT_PARAMS else False) for k in ON}
 RAIL_OFF = {**ON, HS.PARAM_PLANNED_STOP: False, HS.PARAM_CURVE: False}
 FULL_LIMIT = {**ON, HS.PARAM_COMPACT_LIMIT: False}   # the speed-limit prompts full screen, as before the compact ones
 SIGN_OFF = {**ON, HS.PARAM_LIMIT_SIGN: HS.SIGN_OFF}
 SIGN_ZONES = {**ON, HS.PARAM_LIMIT_SIGN: HS.SIGN_ZONES}
+SPEED_OFF = {HS.PARAM_CURRENT_SPEED: False}
+
+# what the confirm drew on a frame: the banner (hud_draw.confirm_banner) or the target in the MAX number's place
+# (hud_draw.pending_max), counted through the module attributes both callers use
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_draw
+calls = {"banner": 0, "box": 0, "box_rect": None}
+_banner, _box = hud_draw.confirm_banner, hud_draw.pending_max
+
+
+def counted_banner(*a, **k):
+  calls["banner"] += 1
+  return _banner(*a, **k)
+
+
+def counted_box(*a, **k):
+  calls["box"] += 1
+  calls["box_rect"] = [round(v, 1) for v in _box(*a, **k)]
+  return calls["box_rect"]
+
+
+hud_draw.confirm_banner, hud_draw.pending_max = counted_banner, counted_box
+last = {}  # the last rendered frame's calls, and whether the HUD renderer counted a top icon
 
 
 class FakeParams:
@@ -222,6 +249,7 @@ def render(name, params, stock=False, frames=100, t0=100.0, jump_at=None, jump=0
   try:
     for i in range(frames):
       clock["t"] = t0 + i * 0.05 + (jump if jump_at is not None and i >= jump_at else 0.0)
+      calls.update(banner=0, box=0, box_rect=None)
       rl.begin_drawing()
       rl.begin_texture_mode(rt)
       rl.clear_background(rl.BLACK)
@@ -230,6 +258,8 @@ def render(name, params, stock=False, frames=100, t0=100.0, jump_at=None, jump=0
       rl.end_drawing()
   finally:
     hud_alerts.draw_compact, hud_alerts.draw_pending_limit, hud_alerts.frees_top_icons = saved
+  last.clear()
+  last.update(calls, top_icons=bool(view._hud_renderer.drawing_top_icons()))
   arr = grab()
   save(arr, name)
   view.close()
@@ -240,6 +270,9 @@ def save(arr, name):
   if OUT:
     from PIL import Image
     Image.fromarray(arr.astype(np.uint8)).save(os.path.join(OUT, f"{name}.png"))
+
+
+phase_calls = []  # run(): each phase's last frame, as last
 
 
 def run(params, steps, stock=False, t0=100.0):
@@ -258,12 +291,14 @@ def run(params, steps, stock=False, t0=100.0):
     view._hud_cluster.render = lambda *a, **k: None
     view._hud_rail.render = lambda *a, **k: None
   grabs, t = [], t0
+  phase_calls.clear()
   try:
     for kw, frames, name in steps:
       scene(**kw)
       for _ in range(frames):
         clock["t"] = t
         t += 0.05
+        calls.update(banner=0, box=0, box_rect=None)
         rl.begin_drawing()
         rl.begin_texture_mode(rt)
         rl.clear_background(rl.BLACK)
@@ -271,6 +306,7 @@ def run(params, steps, stock=False, t0=100.0):
         rl.end_texture_mode()
         rl.end_drawing()
       grabs.append(grab())
+      phase_calls.append(dict(calls, top_icons=bool(view._hud_renderer.drawing_top_icons()), speed=view._hud_cluster.frame.speed))
       save(grabs[-1], name.replace("_on", "_stock") if stock else name)
   finally:
     if stock:
@@ -366,6 +402,14 @@ states = {
                                         ahead=0, ahead_dist=0.0),
   "confirm_compact_empty": dict(limit=50, v=27 / KPH, alert=CONFIRM_EMPTY, assist="preActive", set_kph=50, ahead=0,
                                 ahead_dist=0.0),
+  # an offset with no sign in the cluster: the pill names the limit
+  "confirm_compact_sign_off_offset": dict(limit=50, offset=5, v=27 / KPH, alert=CONFIRM_PLUS, assist="preActive", set_kph=40,
+                                          ahead=0, ahead_dist=0.0),
+  # no limit at all: nothing to put in the MAX number's place - the banner
+  "confirm_compact_no_limit": dict(limit=0, v=27 / KPH, alert=CONFIRM_PLUS, assist="preActive", set_kph=40, ahead=0,
+                                   ahead_dist=0.0),
+  # the target 80, for the stock MAX number '80' of "changed" to measure it against
+  "confirm_compact_80": dict(limit=80, v=27 / KPH, alert=CONFIRM, assist="preActive", set_kph=105, ahead=0, ahead_dist=0.0),
   "changed": dict(limit=80, v=60 / KPH, alert=CHANGED, set_kph=80, ahead=0, ahead_dist=0.0),
   "disengage": dict(alert=DISENGAGE),
   "disengage_next": dict(v=30.3, alert=DISENGAGE),   # the next lower limit's row, which a two-line banner reaches down to
@@ -379,7 +423,8 @@ states = {
 }
 PARAMS = {"confirm": FULL_LIMIT, "confirm_offset": FULL_LIMIT, "confirm_compact_sign_off": SIGN_OFF,
           "confirm_compact_sign_off_no_cl": {**SIGN_OFF, HS.PARAM_CONFIRM_LIMIT: False}, "sign_off": SIGN_OFF,
-          "sign_zones_out": SIGN_ZONES, "sign_zones_in": SIGN_ZONES, "stopped_sign_off": SIGN_OFF}
+          "sign_zones_out": SIGN_ZONES, "sign_zones_in": SIGN_ZONES, "stopped_sign_off": SIGN_OFF,
+          "confirm_compact_sign_off_offset": SIGN_OFF}
 BADGE = (440, 24, 468, 52)   # the offset badge on the pending sign's ring, up and right
 NEXT_CORNER = (330, 58, 470, 97)  # the next lower limit's row with no sign above it: its small sign in the corner
 STRIP = 476                  # the confidence ball's strip: x 476..536
@@ -411,10 +456,11 @@ for name, kw in states.items():
   stopped = kw.get("standstill", False)
   jump = dict(jump_at=10, jump=JUMP_S.get(name, 30.0)) if stopped else {}
   on = render(f"{name}_on", PARAMS.get(name, ON), **jump)
+  on_calls = dict(last)
   off = render(f"{name}_off", OFF, **jump)
   stock = render(f"{name}_stock", ON, stock=True, **jump)
   r = {"off_vs_stock": same(off, stock), "on_vs_stock": same(on, stock), "on_diff_box": diff_box(on, stock),
-       "strip_vs_stock": strip_diff(on, stock)}
+       "strip_vs_stock": strip_diff(on, stock), "calls": on_calls}
   for b, bn in ((SIGN, "sign"), (SIGN_INNER, "inner"), (SPEED, "speed"), (NEXT, "next"), (LAMP_L, "lamp_l"),
                 (LAMP_R, "lamp_r"), (LABEL, "label"), (BANNER, "banner"), (LOWER, "lower"), (ARROW, "arrow"), (KEY, "key"),
                 (BADGE, "badge"), (RAIL, "rail"), (BALL_HIGH, "ballhi"), (BALL_LOW, "balllo"), (NEXT_CORNER, "nextc")):
@@ -437,7 +483,8 @@ def cluster_left(arr):
 compact = {}
 for name in ("confirm_compact", "confirm_compact_plus", "confirm_compact_offset", "confirm_compact_sign_off",
              "confirm_compact_sign_off_no_cl", "confirm_compact_text_vs_arrow", "confirm_compact_empty", "changed",
-             "disengage", "disengage_next", "turn", "stopped_sign_off"):
+             "disengage", "disengage_next", "turn", "stopped_sign_off", "confirm_compact_sign_off_offset",
+             "confirm_compact_no_limit"):
   kw = {k: v for k, v in states[name].items() if k != "alert"}
   scene(**kw)
   stopped = kw.get("standstill", False)
@@ -449,8 +496,10 @@ for name in ("confirm_compact", "confirm_compact_plus", "confirm_compact_offset"
                    "banner": [int(xs[left].min()), int(ys[left].min()), int(xs[left].max()), int(ys[left].max())]
                    if left.any() else None,
                    "cluster_px": int((~left).sum()),
-                   "banner_red": count(img, (0, 0, cl, 120), "red"), "banner_green": count(img, (0, 0, cl, 120), "green"),
-                   "banner_white": count(img, (0, 0, cl, 120), "white"), "sign_red": count(img, SIGN, "red"),
+                   "banner_red": count(img, (0, 0, cl, 160), "red"), "banner_green": count(img, (0, 0, cl, 160), "green"),
+                   "banner_white": count(img, (0, 0, cl, 160), "white"), "sign_red": count(img, SIGN, "red"),
+                   "calls": out[name]["calls"], "speed_white": count(img, SPEED, "white"),
+                   "base_speed_white": count(base, SPEED, "white"),
                    "base_sign_red": count(base, SIGN, "red"), "lower_white": count(img, (0, 100, 476, 240), "white")}
 out["compact"] = compact
 
@@ -471,6 +520,63 @@ out["changed_max"] = {k: {"max_white": count(v, MAX_BOX, "white"), "sign_red": c
                           "mid_white": count(v, (180, 0, 400, 130), "white")} for k, v in early.items()}
 scene(**{k: v for k, v in states["changed"].items() if k != "alert"})
 out["changed_max"]["noalert_vs_on"] = same(render("changed_max_noalert_on", ON, frames=20), early["on"])
+
+# the confirm's target is the stock MAX number: the same digits, drawn in the same place at the same size - '80' of the
+# compact confirm (limit 80) against '80' of the stock MAX number after "changed" (45 frames: faded fully in, not yet out),
+# inside the digits' ink box (the dashed outline is outside it, 7 px round the ink)
+from openpilot.system.ui.lib.application import FontWeight
+from openpilot.selfdrive.ui.mici.onroad.hud_renderer import FONT_SIZES
+
+
+def white_h(arr, b):
+  p = box(arr, *b)
+  rows = np.nonzero(((p[..., 0] > 200) & (p[..., 1] > 200) & (p[..., 2] > 200)).any(axis=1))[0]
+  return int(rows.max() - rows.min() + 1) if len(rows) else 0
+
+
+scene(**states["changed"])
+max80 = render("changed_max_45_on", ON, frames=45)
+iw, ih, ix0, iy0 = hud_draw.ink("80", FONT_SIZES.set_speed, 1.0, FontWeight.DISPLAY)
+ib = (int(17 + ix0) + 1, int(-4 + iy0) + 1, int(17 + ix0 + iw) - 1, int(-4 + iy0 + ih) - 1)
+around = (ib[0], max(0, ib[1] - 4), ib[2], ib[3] + 4)
+out["digits"] = {"ink_box": ib, "ink_h": round(ih, 1),
+                 "diff": same(box(images["confirm_compact_80"], *ib), box(max80, *ib)),
+                 "box_h": white_h(images["confirm_compact_80"], around), "max_h": white_h(max80, around),
+                 "calls": out["confirm_compact_80"]["calls"]}
+
+# design A through a drive: the confirm's box, then "set speed changed" - the solid stock MAX number takes its place - or
+# a critical alert, which takes the screen on its first frame. Each against the same phases with no confirm before them.
+CONF = dict(limit=50, v=27 / KPH, alert=CONFIRM_PLUS, assist="preActive", set_kph=40, ahead=0, ahead_dist=0.0)
+CONF_NONE = {k: v for k, v in CONF.items() if k != "alert"}
+CHANGED50 = dict(CONF_NONE, alert=CHANGED, set_kph=50, assist="active")
+CRIT = dict(CONF, alert=CRITICAL)
+seq = {}
+steps = [(CONF, 60, "seq_changed_1_confirm_on"), (CHANGED50, 1, "seq_changed_2_first_frame_on"), (CHANGED50, 40, "seq_changed_3_on")]
+a = run(ON, steps)
+a_calls = list(phase_calls)
+b = run(ON, [(CONF_NONE, 60, "seq_changed_ref_1_on")] + steps[1:])
+seq["changed"] = {"calls": a_calls, "end_vs_ref": same(a[2], b[2]), "max_white": count(a[2], MAX_BOX, "white")}
+steps = [(CONF, 60, "seq_critical_1_confirm_on"), (CRIT, 1, "seq_critical_2_first_frame_on"), (CRIT, 40, "seq_critical_3_on")]
+a = run(ON, steps)
+a_calls = list(phase_calls)
+b = run(ON, steps, stock=True)
+seq["critical"] = {"calls": a_calls, "end_vs_stock": same(a[2], b[2]),
+                   "first_vs_stock_top_left": same(box(a[1], 0, 0, 260, 170), box(b[1], 0, 0, 260, 170))}
+out["seq"] = seq
+
+# HudCurrentSpeed off: only the live speed goes, in every layout; the stop time stays
+spd = {}
+for name in ("cruise", "sign_off", "sign_zones_in", "school_active", "stopped", "stopped_sign_off", "confirm_compact"):
+  scene(**states[name])
+  jump = dict(jump_at=10, jump=30.0) if states[name].get("standstill") else {}
+  img = render(f"{name}_speed_off_on", {**PARAMS.get(name, ON), **SPEED_OFF}, **jump)
+  ref_img = images[name]
+  spd[name] = {"px": same(img, ref_img), "box": diff_box(img, ref_img), "white": count(img, (200, 0, 476, 70), "white"),
+               "ref_white": count(ref_img, (200, 0, 476, 70), "white"), "sign_red": count(img, SIGN, "red"),
+               "ref_sign_red": count(ref_img, SIGN, "red"),
+               "row2": same(box(img, 250, 76, 476, 100), box(ref_img, 250, 76, 476, 100)),
+               "label": same(box(img, *LABEL), box(ref_img, *LABEL))}
+out["speed_off"] = spd
 
 # the sign setting: zones outside a zone is the sign off; inside one it is Always, once it has slid back
 out["sign"] = {"zones_out_vs_off": same(images["sign_zones_out"], images["sign_off"]),
@@ -507,7 +613,8 @@ ZC_OUT = dict(limit=50, v=27 / KPH, alert=CONFIRM_PLUS, assist="preActive", set_
 ZC_IN = dict(ZC_OUT, variable=True)
 zc = run(SIGN_ZONES, [(ZC_OUT, 100, "zone_confirm_1_out_on"), (ZC_IN, 8, "zone_confirm_2_sliding_on"),
                       (ZC_IN, 60, "zone_confirm_3_in_on")])
-out["zone_confirm"] = [{"banner_red": count(g, (0, 0, 300, 120), "red"), "sign_red": reddish(g, SIGN)} for g in zc]
+out["zone_confirm"] = [{"banner_red": count(g, (0, 0, 300, 120), "red"), "sign_red": reddish(g, SIGN), "calls": c}
+                       for g, c in zip(zc, phase_calls, strict=True)]
 
 # the rail's own settings: each off alone, and both off = the stock strip
 toggles = {}
@@ -545,6 +652,26 @@ out["timer_size"] = {t: round(timer_size(t), 3) for t in ("0:30", "59:59", "1:02
 # the offset badge is the only difference an offset makes
 out["badge"] = {"px": same(images["confirm_offset"], images["confirm"]),
                 "box": diff_box(images["confirm_offset"], images["confirm"])}
+
+# the offset badge on a school-zone sign during the compact confirm: it used to sit on the right-hand lamp; with the
+# lamps it sits low on the right of the ring, clear of both lamps and of SCHOOL (pixel for pixel: the lamps' and
+# SCHOOL's colors are counted with and without the badge)
+school_badge = {}
+for school in (1, 2):
+  kw = dict(limit=50, v=27 / KPH, school=school, alert=CONFIRM_PLUS, assist="preActive", set_kph=40, ahead=0,
+            ahead_dist=0.0)
+  scene(**kw)
+  plain = render(f"confirm_compact_school{school}_on", ON)
+  scene(**dict(kw, offset=5))
+  badged = render(f"confirm_compact_school{school}_offset_on", ON)
+  # the cluster only: top left the target is 55 against 50
+  bx = diff_box(badged[:, 300:476], plain[:, 300:476])
+  school_badge[school] = {"px": same(badged[:, 300:476], plain[:, 300:476]),
+                          "box": [bx[0] + 300, bx[1], bx[2] + 300, bx[3]] if bx else None,
+                          **{f"{bn}_{kind}": [count(plain, b, kind), count(badged, b, kind)]
+                             for b, bn in ((LAMP_L, "lamp_l"), (LAMP_R, "lamp_r"), (LABEL, "label"))
+                             for kind in ("amber", "grey")}}
+out["school_badge"] = school_badge
 
 # while the stock MAX number shows (the first 2.5 s after engaging) the speed digits hide; the sign stays
 scene(**states["cruise"])
@@ -642,43 +769,91 @@ class TestHudRender(OpenpilotTestCase):
     bx0, by0, bx1, by1 = c["box"]
     assert by1 <= max(bottom, 66), f"nothing drawn below the banner and the cluster's top row: the road stays clear {c}"
 
-  def test_the_compact_confirm_is_a_banner_and_the_clusters_sign_turns_pending(self):
+  def assert_box(self, c):
+    """The compact confirm as design A: the target in the MAX number's place, its pill under it - and no banner."""
+    assert c["calls"]["box"] == 1 and c["calls"]["banner"] == 0, f"the box, not the banner: {c}"
+    assert c["calls"]["top_icons"], f"a top icon, as the stock MAX number is: {c}"
+    x0, y0, x1, y1 = c["calls"]["box_rect"]
+    assert x0 >= 8 and y0 >= 6 and y1 <= 150, f"top left, the pill clear of the wheel (y 176): {c}"
+    bx0, by0, bx1, by1 = c["box"]
+    assert by1 <= 150, f"nothing drawn below the pill: the road stays clear {c}"
+    assert c["speed_white"] == 0 < c["base_speed_white"] or c["base_speed_white"] == 0, \
+      f"the live speed makes way, as for the stock MAX number: {c}"
+
+  def test_the_compact_confirm_puts_its_target_in_the_max_place_and_the_clusters_sign_turns_pending(self):
     minus, plus = self.r["compact"]["confirm_compact"], self.r["compact"]["confirm_compact_plus"]
     for c in (minus, plus):
-      self.assert_banner(c, 6 + 46)
-      assert c["banner_green"] > 100 and c["banner_white"] > 500, f"'press - to confirm' and the green key: {c}"
-      assert c["banner_red"] == 0, "no sign in the banner: the cluster's own shows the limit"
+      self.assert_box(c)
+      assert c["banner_green"] > 100 and c["banner_white"] > 3000, f"the big digits, 'press - to confirm', the key: {c}"
+      assert c["banner_red"] == 0, "no sign top left: the cluster's own shows the limit"
       assert c["cluster_px"] > 100 and c["sign_red"] < c["base_sign_red"] - 150, f"the cluster's sign dashed: {c}"
     assert plus["banner_green"] > minus["banner_green"] + 50, "'+' has the key's upright too"
     off = self.r["compact"]["confirm_compact_offset"]
+    self.assert_box(off)
     assert off["cluster_px"] > minus["cluster_px"] + 100, f"the offset's badge on the cluster's sign: {off}"
+    assert off["calls"]["box_rect"][2] == minus["calls"]["box_rect"][2], "the sign shows the offset: no note in the pill"
     assert self.r["confirm_compact"]["strip_vs_stock"] == 0
 
-  def test_with_no_sign_in_the_cluster_the_confirm_banner_carries_it(self):
+  def test_the_target_is_the_stock_max_number(self):
+    d = self.r["digits"]
+    assert d["calls"]["box"] == 1
+    assert d["diff"] == 0, f"pixel for pixel the stock MAX digits inside their ink box: {d}"
+    assert d["box_h"] == d["max_h"] and 78 <= d["box_h"] <= 82, f"~81 px, the stock size: {d}"
+
+  def test_with_no_sign_in_the_cluster_the_target_still_shows_and_an_offset_is_named(self):
     c = self.r["compact"]["confirm_compact_sign_off"]
-    self.assert_banner(c, 6 + 46)
-    assert c["banner_red"] > 100 and c["banner_green"] > 100, f"the dashed pending sign beside the key: {c}"
-    assert c["sign_red"] == 0 and c["cluster_px"] == 0, f"the cluster has no sign to change: {c}"
-    # owner decision 7: the banner carries the limit whatever 'Show the Limit in the Confirm Prompt' says
+    self.assert_box(c)
+    assert c["banner_red"] == 0 and c["sign_red"] == 0, f"no sign anywhere: the target is the number {c}"
+    # HudConfirmLimit changes nothing here
     n = self.r["compact"]["confirm_compact_sign_off_no_cl"]
     assert n["px"] == c["px"] and n["banner"] == c["banner"], f"HudConfirmLimit off changes nothing here: {n} {c}"
+    # with an offset the target is not the limit: the pill names it ('limit 50 +5')
+    o = self.r["compact"]["confirm_compact_sign_off_offset"]
+    self.assert_box(o)
+    assert o["calls"]["box_rect"][2] > c["calls"]["box_rect"][2] + 80, f"the pill is longer by the note: {o} {c}"
+    assert o["calls"]["box_rect"][2] < 476 - 20, "and stays on the road"
+
+  def test_with_no_limit_the_confirm_is_todays_banner(self):
+    c = self.r["compact"]["confirm_compact_no_limit"]
+    assert c["calls"]["banner"] == 1 and c["calls"]["box"] == 0 and not c["calls"]["top_icons"], c
+    self.assert_banner(c, 6 + 40)
+    assert c["banner_green"] > 100 and c["banner_red"] == 0, f"'press + to confirm' and the key, no sign: {c}"
+    assert c["speed_white"] == c["base_speed_white"] > 100, "the live speed stays: there is no big number"
 
   def test_the_confirm_key_says_what_the_text_says(self):
     plus, minus = self.r["compact"]["confirm_compact_plus"], self.r["compact"]["confirm_compact"]
     c = self.r["compact"]["confirm_compact_text_vs_arrow"]
-    self.assert_banner(c, 6 + 46)
+    self.assert_box(c)
     assert c["banner_green"] > minus["banner_green"] + 50 and abs(c["banner_green"] - plus["banner_green"]) < 30, \
       f"'press + to confirm' with the '+' key although the arrow points down: {c}"
 
-  def test_entering_a_zone_the_limit_is_always_on_screen(self):
+  def test_entering_a_zone_the_target_stays_on_screen(self):
     out, sliding, inside = self.r["zone_confirm"]
-    assert out["banner_red"] > 100, f"outside a zone the banner carries the sign: {out}"
-    assert sliding["banner_red"] > 100, f"the cluster's sign is still fading in: the banner keeps it {sliding}"
-    assert inside["banner_red"] == 0 and inside["sign_red"] > 100, f"in the zone the cluster's sign has it: {inside}"
+    for z in (out, sliding, inside):
+      assert z["calls"]["box"] == 1 and z["calls"]["banner"] == 0 and z["banner_red"] == 0, z
+    assert out["sign_red"] == 0 and inside["sign_red"] > 100, f"the cluster's sign comes in the zone: {inside}"
+
+  def test_after_the_confirm_the_solid_stock_max_number_takes_its_place(self):
+    s = self.r["seq"]["changed"]
+    confirm, first, after = s["calls"]
+    assert confirm["box"] == 1 and first["box"] == 1, f"it fades out (with the stock MAX fading in), not cut: {s}"
+    assert after["box"] == 0 and after["top_icons"], s
+    assert s["end_vs_ref"] == 0 and s["max_white"] > 2000, f"then exactly the stock 'set speed changed' frame: {s}"
+
+  def test_a_critical_alert_during_the_confirm_takes_the_screen_at_once(self):
+    s = self.r["seq"]["critical"]
+    confirm, first, after = s["calls"]
+    assert confirm["box"] == 1 and first["box"] == 0 and after["box"] == 0, s
+    assert not first["top_icons"], f"not a top icon from its first frame: {s}"
+    assert s["first_vs_stock_top_left"] == 0, f"its first frame top left is the stock one: no box over the alert {s}"
+    assert confirm["speed"] is None and first["speed"] == 27, \
+      f"the box hid the live speed; the cluster fading out under the alert's first frame has it, as stock: {s}"
+    assert s["end_vs_stock"] == 0, f"then exactly the stock full-screen alert: {s}"
 
   def test_a_confirm_with_no_words_draws_no_banner(self):
     c = self.r["compact"]["confirm_compact_empty"]
     assert c["banner"] is None and c["banner_white"] == 0 and c["banner_green"] == 0, f"no empty pill top left: {c}"
+    assert c["calls"]["box"] == 0 and c["calls"]["banner"] == 0, c
 
   def test_set_speed_changed_draws_nothing_and_frees_the_max_number(self):
     assert self.r["compact"]["changed"]["px"] == 0, "pixel for pixel the screen without the alert"
@@ -712,6 +887,22 @@ class TestHudRender(OpenpilotTestCase):
     assert off["nextc_red"] > 30 and off["nextc_white"] > 100, f"the next lower limit stays, in the corner {off}"
     x0, y0, x1, y1 = off["on_diff_box"]
     assert x1 <= 466 and x0 > 300, f"the digits clear the rounded corner and the next limit follows: {off['on_diff_box']}"
+
+  def test_current_speed_off_hides_only_the_live_speed(self):
+    spd = self.r["speed_off"]
+    for name in ("cruise", "sign_zones_in", "school_active"):
+      s = spd[name]
+      assert s["px"] > 300 and s["white"] < s["ref_white"] - 300, f"{name}: the digits go {s}"
+      x0, y0, x1, y1 = s["box"]
+      assert x0 >= 300 and x1 <= 414 and y0 >= 10 and y1 <= 62, f"{name}: only the digits (and their shadow) {s}"
+      assert s["sign_red"] == s["ref_sign_red"] > 150 and s["row2"] == 0 and s["label"] == 0, f"{name}: the rest stays {s}"
+    s = spd["sign_off"]
+    x0, y0, x1, y1 = s["box"]
+    assert s["px"] > 300 and x0 >= 380 and x1 <= 466 and y1 <= 62, f"sign Off: the digits in the corner go {s}"
+    assert s["row2"] == 0, f"the next lower limit stays where it is: {s}"
+    for name in ("stopped", "stopped_sign_off"):
+      assert spd[name]["px"] == 0, f"{name}: the stop time is its own setting and stays {spd[name]}"
+    assert spd["confirm_compact"]["px"] == 0, "the confirm's target hides the speed anyway"
 
   def test_the_stop_time_in_the_corner(self):
     r = self.r["stopped_sign_off"]
@@ -753,6 +944,16 @@ class TestHudRender(OpenpilotTestCase):
     assert r["key_green"] > 20, "the green minus key"
     x0, y0, x1, y1 = r["on_diff_box"]
     assert x0 >= 374 and y0 >= 18 and x1 < 467 and y1 < 108, f"only the arrow's box changes, the cluster stays hidden: {r['on_diff_box']}"
+
+  def test_the_offset_badge_clears_the_school_zone_lamps(self):
+    for school, b in self.r["school_badge"].items():
+      assert b["px"] > 150, f"the offset adds a badge: {b}"
+      x0, y0, x1, y1 = b["box"]
+      assert x0 >= 440 and x1 <= 474 and 23 + 8 <= y0 and y1 < 68, \
+        f"low on the right of the ring: under the lamp, above SCHOOL: {school} {b}"
+      for k in ("lamp_l_amber", "lamp_l_grey", "lamp_r_amber", "lamp_r_grey", "label_amber"):
+        assert b[k][0] == b[k][1], f"the lamps and SCHOOL untouched by the badge ({k}): {school} {b}"
+    assert self.r["school_badge"]["2"]["label_amber"][0] > 50, "the active zone's SCHOOL is drawn"
 
   def test_confirm_shows_an_offset_as_sunnypilots_badge(self):
     r, plain, badge = self.r["confirm_offset"], self.r["confirm"], self.r["badge"]
