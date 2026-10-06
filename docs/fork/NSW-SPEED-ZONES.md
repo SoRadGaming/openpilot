@@ -437,8 +437,9 @@ drawn: `nswZone` then describes a limit that is not the one shown.
 | The next lower limit (small sign, distance and/or bar) | `liveMapDataSP.speedLimitAhead*`: what mapd published - only while matched (state 2), so **never while dead reckoning** - and only while the limit on screen is source map. The 1 Hz distance is run down by `vEgo` between messages (for at most 1 s) | Next Lower Limit (`HudNextLimit`) |
 
 The sign keeps its round shape in a school zone: the owner rejected the NSW plate shape in the mockups ("keep the same
-shape as all the others"). The lamp and label drawing is one function, `hud_draw.school_cue()`, so it can be restyled
-alone.
+shape as all the others"). During a speed-limit confirm with an offset, the offset badge sits low on the right of the
+ring while the lamps are drawn (since 2026-10-06; it used to cover the right-hand lamp), up and right otherwise. The
+lamp and label drawing is one function, `hud_draw.school_cue()`, so it can be restyled alone.
 
 ## The maps page (mici)
 
