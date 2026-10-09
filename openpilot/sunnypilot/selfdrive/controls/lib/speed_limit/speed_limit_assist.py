@@ -33,7 +33,9 @@ PRE_ACTIVE_GUARD_PERIOD = {
   True: 15,
   False: 5,
 }
-SPEED_LIMIT_CHANGED_HOLD_PERIOD = 1  # secs. Time to wait after speed limit change before switching to preActive.
+# secs. Time to wait after speed limit change before switching to preActive.
+# FORK(SPEED-LIMIT): upstream defines it and never uses it; SpeedLimitChangeHold below does.
+SPEED_LIMIT_CHANGED_HOLD_PERIOD = 1
 
 LIMIT_MIN_ACC = -1.5  # m/s^2 Maximum deceleration allowed for limit controllers to provide.
 LIMIT_MAX_ACC = 1.0   # m/s^2 Maximum acceleration allowed for limit controllers to provide while active.
@@ -57,6 +59,69 @@ CRUISE_BUTTON_CONFIRM_HOLD = 0.5  # secs.
 # card has, and starts its 1.0 s on the timeout, before card hears of it - so it can only ever accept a subset of what
 # card accepted. No press card let through as a set-speed step is confirmed behind it, and none card swallowed is lost.
 PRE_ACTIVE_CONFIRM_GRACE = 1.0  # secs
+
+
+class SpeedLimitChangeHold:
+  """FORK(SPEED-LIMIT): a new speed limit counts only once it has held for SPEED_LIMIT_CHANGED_HOLD_PERIOD.
+
+  plannerd runs the resolver's output through this before Speed Limit Assist, and publishes what this holds as
+  longitudinalPlanSP.speedLimit.resolver - so SLA, card (cruise_ext: the set speed it writes and the button a prompt
+  asks for), selfdrived's alert text and the UI all see the same limit at the same moment. Without that, card would
+  rewrite the set speed on the raw change while SLA was still waiting.
+
+  Only a change from one limit to a DIFFERENT one waits (speedLimitFinalLast, the limit SLA would set). The first limit
+  (none -> one), losing it (the resolver dropped the carried limit) and the same limit coming back pass at once, as do
+  changes underneath an unchanged final limit (the raw limit going 0 on an untagged stretch while the last one is
+  carried). A limit that flips back within the hold never counts at all. The hold counts plannerd frames (20 Hz), so a
+  limit counts on the 20th consecutive frame that carries it.
+  """
+  FIELDS = ('speed_limit', 'speed_limit_last', 'speed_limit_final', 'speed_limit_final_last', 'speed_limit_offset')
+  HOLD_FRAMES = round(SPEED_LIMIT_CHANGED_HOLD_PERIOD / DT_MDL)
+
+  def __init__(self):
+    self.speed_limit = 0.
+    self.speed_limit_last = 0.
+    self.speed_limit_final = 0.
+    self.speed_limit_final_last = 0.
+    self.speed_limit_offset = 0.
+    self._pending_final_last = 0.  # the different limit being held back (0: none)
+    self._pending_frames = 0
+
+  @property
+  def speed_limit_valid(self) -> bool:
+    return self.speed_limit > 0.
+
+  @property
+  def speed_limit_last_valid(self) -> bool:
+    return self.speed_limit_last > 0.
+
+  @property
+  def holding(self) -> bool:
+    return self._pending_final_last > 0.
+
+  def update(self, resolver) -> None:
+    raw = {f: float(getattr(resolver, f)) for f in self.FIELDS}
+    new, held = raw['speed_limit_final_last'], self.speed_limit_final_last
+    if self._same(new, held) or new <= 0. or held <= 0.:
+      self._take(raw)
+      return
+
+    if not self._same(new, self._pending_final_last):
+      self._pending_final_last = new
+      self._pending_frames = 0
+    self._pending_frames += 1
+    if self._pending_frames >= self.HOLD_FRAMES:
+      self._take(raw)
+
+  @staticmethod
+  def _same(a: float, b: float) -> bool:
+    return abs(a - b) < 0.01  # m/s: a limit is a whole number of km/h or mph, so this only absorbs float noise
+
+  def _take(self, raw: dict[str, float]) -> None:
+    for f, v in raw.items():
+      setattr(self, f, v)
+    self._pending_final_last = 0.
+    self._pending_frames = 0
 
 
 class SpeedLimitAssist:
@@ -244,7 +309,12 @@ class SpeedLimitAssist:
     # at/above CST:
     # - new speed limit >= CST: auto change
     # - new speed limit < CST: user confirmation required
-    return bool(self.speed_limit_final_last_conv < CONFIRM_SPEED_THRESHOLD[self.is_metric])
+    # FORK(SPEED-LIMIT): - non-PCM cruise: a new limit BELOW the set speed, whatever its value: user confirmation
+    #   required. Upstream rewrote 110 -> 100 (and 100 -> 90) on the M4 with nothing but a 5 s chime alert, and the
+    #   driver drove on believing the set speed was still 110 (routes c8 747.64, dd 728.30, fc 812.94, 10f 771.07). It
+    #   is now the 'press - to confirm' prompt; a higher limit still raises the set speed by itself, as upstream.
+    return bool(self.speed_limit_final_last_conv < CONFIRM_SPEED_THRESHOLD[self.is_metric]) or \
+      (not self.pcm_op_long and self.speed_limit_final_last_conv < self.v_cruise_cluster_conv)
 
   def get_current_acceleration_as_target(self) -> float:
     return self.a_ego

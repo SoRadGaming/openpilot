@@ -12,7 +12,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist, SpeedLimitChangeHold
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.models.helpers import get_active_bundle
@@ -29,6 +29,7 @@ class LongitudinalPlannerSP:
     self.scc = SmartCruiseControl()
     self.resolver = SpeedLimitResolver()
     self.sla = SpeedLimitAssist(CP, CP_SP)
+    self.limit_hold = SpeedLimitChangeHold()  # FORK(SPEED-LIMIT): what SLA, card and the UI take as the limit
     self.generation = int(model_bundle.generation) if (model_bundle := get_active_bundle()) else None
     self.source = LongitudinalPlanSource.cruise
     self.e2e_alerts_helper = E2EAlertsHelper()
@@ -56,11 +57,14 @@ class LongitudinalPlannerSP:
 
     # Speed Limit Resolver
     self.resolver.update(v_ego, sm)
+    # FORK(SPEED-LIMIT): a new limit counts once it has held for 1 s (speed_limit_assist.SpeedLimitChangeHold)
+    self.limit_hold.update(self.resolver)
+    limit = self.limit_hold
 
     # Speed Limit Assist
-    has_speed_limit = self.resolver.speed_limit_valid or self.resolver.speed_limit_last_valid
-    self.sla.update(long_enabled, long_override, v_ego, a_ego, v_cruise_cluster, self.resolver.speed_limit,
-                    self.resolver.speed_limit_final_last, has_speed_limit, self.resolver.distance, self.events_sp,
+    has_speed_limit = limit.speed_limit_valid or limit.speed_limit_last_valid
+    self.sla.update(long_enabled, long_override, v_ego, a_ego, v_cruise_cluster, limit.speed_limit,
+                    limit.speed_limit_final_last, has_speed_limit, self.resolver.distance, self.events_sp,
                     map_limit_frozen=self.resolver.map_limit_frozen)  # FORK(SPEED-LIMIT)
 
     targets = {
@@ -118,13 +122,16 @@ class LongitudinalPlannerSP:
     # Speed Limit
     speedLimit = longitudinalPlanSP.speedLimit
     resolver = speedLimit.resolver
-    resolver.speedLimit = float(self.resolver.speed_limit)
-    resolver.speedLimitLast = float(self.resolver.speed_limit_last)
-    resolver.speedLimitFinal = float(self.resolver.speed_limit_final)
-    resolver.speedLimitFinalLast = float(self.resolver.speed_limit_final_last)
-    resolver.speedLimitValid = self.resolver.speed_limit_valid
-    resolver.speedLimitLastValid = self.resolver.speed_limit_last_valid
-    resolver.speedLimitOffset = float(self.resolver.speed_limit_offset)
+    # FORK(SPEED-LIMIT): the held limit (SpeedLimitChangeHold), so card, selfdrived and the UI agree with SLA.
+    # Distance and source stay live. The raw limit is liveMapDataSP's / carStateSP's.
+    limit = self.limit_hold
+    resolver.speedLimit = float(limit.speed_limit)
+    resolver.speedLimitLast = float(limit.speed_limit_last)
+    resolver.speedLimitFinal = float(limit.speed_limit_final)
+    resolver.speedLimitFinalLast = float(limit.speed_limit_final_last)
+    resolver.speedLimitValid = limit.speed_limit_valid
+    resolver.speedLimitLastValid = limit.speed_limit_last_valid
+    resolver.speedLimitOffset = float(limit.speed_limit_offset)
     resolver.distToSpeedLimit = float(self.resolver.distance)
     resolver.source = self.resolver.source
     assist = speedLimit.assist
