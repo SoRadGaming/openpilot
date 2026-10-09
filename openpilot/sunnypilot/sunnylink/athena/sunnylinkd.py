@@ -55,6 +55,9 @@ BLOCKED_PARAMS = {
   "HasAcceptedTermsSP",
   "OnroadCycleRequested",      # Prevent remote cycle trigger
   "ParamsVersion",         # Device-managed version counter
+  # FORK(NSW-ZONES): written by the NSW data downloader only (the installed data date, the last check's result)
+  "NswZonesStatus",
+  "NswZonesVersion",
 }
 
 # FORK(HONDA_ACCORD_9G_AU): changed only while offroad. Read once at ignition, so an onroad cycle requested from any

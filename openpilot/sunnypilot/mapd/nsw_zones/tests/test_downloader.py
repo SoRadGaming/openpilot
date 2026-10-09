@@ -597,5 +597,120 @@ class TestUpdater(FetchTestBase):
     self.assertTrue(self.up.disabled)
 
 
+
+# ============================================================================ sunnylink: NswZonesStatus + ParamsVersion
+class RecordingParams(FakeParams):
+  def __init__(self, **values):
+    super().__init__(**values)
+    self.puts: list[tuple[str, object]] = []
+
+  def put(self, key, val, **_):
+    self.puts.append((key, val))
+    super().put(key, val)
+
+  def status_puts(self) -> list[str]:
+    return [str(v) for k, v in self.puts if k == dl.STATUS_PARAM]
+
+
+class TestSunnylinkReport(TestUpdater):
+  """Owner decision D3: the app shows the installed data and the last check, and the 'Now' switch goes back off. The
+  device writes NswZonesStatus (one line) only when a check ends or a request is refused, and bumps ParamsVersion
+  after it and when it clears the request."""
+
+  def setUp(self):
+    super().setUp()
+    self.params = RecordingParams(SpeedLimitNswZones=MODE_LIVE, NswZonesAutoUpdate=True)
+    self.up = dl.NswZonesUpdater(self.params, self.dir, BASE, on_installed=lambda: self.installed.append(1), sm=self.sm, get=self.rel.get)
+
+  @staticmethod
+  def stamp() -> str:
+    return dl.status_line("x", NOW)[len("x · "):]
+
+  def version(self) -> int:
+    return int(self.params.values.get(dl.PARAMS_VERSION_PARAM) or 0)
+
+  def test_status_line(self):
+    line = dl.status_line("updated to 2026-10-04", NOW)
+    self.assertTrue(line.startswith("updated to 2026-10-04 · 2026-"), line)
+    assert "\n" not in line
+    self.assertEqual(dl.status_line("x", float("inf")), "x · time unknown")
+
+  def test_the_weekly_check_reports_its_result(self):
+    self.run_until_idle()
+    self.assertEqual(self.params.values.get(dl.VERSION_PARAM), "2026-09-29")
+    self.assertEqual(self.params.status_puts(), [f"updated to 2026-09-29 · {self.stamp()}"])
+    self.assertEqual(self.version(), 1)
+    # the version is written before the status and its bump: the app reads both together
+    keys = [k for k, _ in self.params.puts]
+    self.assertLess(keys.index(dl.VERSION_PARAM), keys.index(dl.STATUS_PARAM))
+    self.assertLess(keys.index(dl.STATUS_PARAM), keys.index(dl.PARAMS_VERSION_PARAM))
+
+  def test_the_button_clears_bumps_then_reports(self):
+    self.run_until_idle()
+    v = self.version()
+    self.params.values[dl.CHECK_PARAM] = True
+    self.assertTrue(self.step())
+    self.assertIsNone(self.params.values.get(dl.CHECK_PARAM))
+    self.assertEqual(self.version(), v + 1, "the switch goes back off in the app as soon as the check starts")
+    self.step()
+    self.assertEqual(self.params.values[dl.STATUS_PARAM], f"up to date (2026-09-29) · {self.stamp()}")
+    self.assertEqual(self.version(), v + 2)
+
+  def test_a_request_while_driving_is_refused_and_says_offroad_only(self):
+    self.sm.ds.started = True
+    self.params.values[dl.CHECK_PARAM] = True
+    self.assertFalse(self.step())
+    self.assertIsNone(self.params.values.get(dl.CHECK_PARAM))
+    self.assertEqual(self.params.values[dl.STATUS_PARAM], f"offroad only · {self.stamp()}")
+    self.assertEqual(self.version(), 1)
+    self.assertFalse(any(self.run_until_idle(5)), "and it is not queued for later")
+
+  def test_other_refusals_say_why(self):
+    self.sm.ds.networkType = log.DeviceState.NetworkType.none
+    self.params.values[dl.CHECK_PARAM] = True
+    self.step()
+    self.assertEqual(self.params.values[dl.STATUS_PARAM], f"no network · {self.stamp()}")
+    self.sm.seen['deviceState'] = False
+    self.params.values[dl.CHECK_PARAM] = True
+    self.step()
+    self.assertEqual(self.params.values[dl.STATUS_PARAM], f"starting up, ask again · {self.stamp()}")
+
+  def test_a_failed_check_reports_the_failure(self):
+    self.rel.files.pop(INDEX_NAME)
+    self.run_until_idle()
+    self.assertEqual(len(self.params.status_puts()), 1)
+    self.assertTrue(self.params.status_puts()[0].startswith("failed: "), self.params.status_puts())
+
+  def test_progress_never_writes_the_param(self):
+    """One line per check, not 1 Hz progress: that stays in status.json."""
+    self.run_until_idle()
+    self.assertEqual(len(self.params.status_puts()), 1)
+    self.assertFalse(any(self.run_until_idle(300)))
+    self.assertEqual(len(self.params.status_puts()), 1, "automatic refusals ('checked recently') are not reported")
+
+  def test_a_failing_param_write_does_not_stop_the_updater(self):
+    real_put = self.params.put
+
+    def put(key, val, **kw):
+      if key in (dl.STATUS_PARAM, dl.PARAMS_VERSION_PARAM):
+        raise RuntimeError("disk full")
+      real_put(key, val, **kw)
+
+    self.params.put = put  # ty: ignore[invalid-assignment]
+    self.run_until_idle()
+    self.assertFalse(self.up.disabled)
+    self.assertEqual(self.installed, [1])
+    self.assertEqual(dl.read_status(self.dir)['last_result'], 'updated')
+    self.params.values[dl.CHECK_PARAM] = True
+    self.assertTrue(self.step(), "and the next request still runs")
+
+  def test_the_param_is_persistent_string_not_backup(self):
+    from openpilot.common.params import Params, ParamKeyFlag, ParamKeyType
+    p = Params()
+    self.assertEqual(p.get_type(dl.STATUS_PARAM), ParamKeyType.STRING)
+    assert dl.STATUS_PARAM.encode() in p.all_keys(ParamKeyFlag.PERSISTENT)
+    assert dl.STATUS_PARAM.encode() not in p.all_keys(ParamKeyFlag.BACKUP), "it describes this device"
+    self.assertEqual(p.get_type(dl.PARAMS_VERSION_PARAM), ParamKeyType.INT)
+
 if __name__ == "__main__":
   unittest.main()

@@ -341,6 +341,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NswZonesAutoUpdate", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"NswZonesUpdateCheck", {CLEAR_ON_MANAGER_START, BOOL}},
     {"NswZonesVersion", {PERSISTENT, STRING}},
+    // FORK(NSW-ZONES): one line, the last check's result and time, for sunnylink's "Last NSW check". Written by the
+    // downloader only when a check ends or a request is refused (never as progress). Not BACKUP: it describes this device.
+    {"NswZonesStatus", {PERSISTENT, STRING}},
     {"Offroad_OSMUpdateRequired", {CLEAR_ON_MANAGER_START, JSON}},
     {"Offroad_NswZonesStale", {CLEAR_ON_MANAGER_START, JSON}},  // FORK(NSW-ZONES): old data / school calendar ending
     // FORK(SPEED-LIMIT): mapd_manager re-requests the OSM tiles once per boot when offroad, unmetered and a week old.
