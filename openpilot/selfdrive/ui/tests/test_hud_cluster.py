@@ -21,10 +21,10 @@ from openpilot.cereal import messaging
 from openpilot.common.params import Params
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_settings as HS
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (HudFrame, StandstillBanner, build_frame, next_window_m,
-                                                                     pending_limit, short_line2, target_speed, LEAD_DEPART_S,
-                                                                     MAP_EXTRAPOLATE_MAX_S, SCHOOL_ACTIVE,
-                                                                     SCHOOL_INACTIVE, SCHOOL_NONE)
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (Approach, ApproachState, HudFrame, StandstillBanner,
+                                                                     approach_now, approach_text, box_outline, build_frame,
+                                                                     next_window_m, pending_limit, short_line2,
+                                                                     target_speed, LEAD_DEPART_S, MAP_EXTRAPOLATE_MAX_S)
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_model as HM
 
 ROOT = Path(__file__).parents[3]   # openpilot/
@@ -42,14 +42,14 @@ GATEWAY_ICON = ROOT / "sunnypilot/selfdrive/assets/icons_mici/gateway.png"
 HUD_RENDERER = ROOT / "selfdrive/ui/mici/onroad/hud_renderer.py"
 HUD_RENDERER_SP = ROOT / "selfdrive/ui/sunnypilot/mici/onroad/hud_renderer.py"
 HUD_ALERTS = ROOT / "selfdrive/ui/sunnypilot/mici/onroad/hud_alerts.py"
+HUD_CLUSTER = ROOT / "selfdrive/ui/sunnypilot/mici/onroad/hud_cluster.py"
 KPH = 3.6
 
-DEFAULTS = {HS.PARAM_SPEED_CLUSTER: True, HS.PARAM_NEXT_LIMIT: HS.NEXT_BOTH, HS.PARAM_SCHOOL_CUE: True,
-            HS.PARAM_VARIABLE_SIGN: True, HS.PARAM_STOPPED_TIMER: True, HS.PARAM_STOPPED_BANNER: True,
-            HS.PARAM_CONFIRM_LIMIT: True, HS.PARAM_PLANNED_STOP: True, HS.PARAM_CURVE: True,
-            HS.PARAM_COMPACT_LIMIT: True, HS.PARAM_COMPACT_DISENGAGE: True, HS.PARAM_COMPACT_TURN: True,
-            HS.PARAM_LIMIT_SIGN: HS.SIGN_ALWAYS, HS.PARAM_CURRENT_SPEED: True}
-INT_DEFAULTS = {HS.PARAM_NEXT_LIMIT: '"3"', HS.PARAM_LIMIT_SIGN: '"2"'}
+DEFAULTS = dict.fromkeys(HS.ALL_PARAMS, True)
+# round 5 (2026-10-09, option A) took these off the screen with what they switched: nothing may read them any more
+RETIRED = ("HudSpeedCluster", "HudCurrentSpeed", "HudLimitSign", "HudSchoolZoneCue", "HudVariableLimitSign",
+           "HudNextLimit", "HudConfirmLimit")
+RETIRED_RE = re.compile(r"\b(" + "|".join(RETIRED) + r")\b")
 
 
 # ------------------------------------------------------------------------------------------- a SubMaster stand-in
@@ -74,12 +74,12 @@ class FakeSM:
 
 
 def drive(v=110 / KPH, limit=110, valid=True, last_valid=True, source='map', ahead=100, ahead_dist=339.0,
-          ahead_valid=True, nsw_mode=2, nsw_state=2, nsw_limit=None, school=0, variable=False, standstill=False,
-          v_cluster=None, lp=True, lmd=True, lmd_alive=True, lp_alive=True, offset=0):
+          ahead_valid=True, nsw_state=2, standstill=False, lp=True, lmd=True, lmd_alive=True, lp_alive=True, offset=0,
+          cs_alive=True):
   sm = FakeSM()
-  cs = sm.put('carState')
+  cs = sm.put('carState', alive=cs_alive)
   cs.vEgo = v
-  cs.vEgoCluster = v if v_cluster is None else v_cluster
+  cs.vEgoCluster = v
   cs.standstill = standstill
   if lp:
     res = sm.put('longitudinalPlanSP', alive=lp_alive).speedLimit.resolver
@@ -96,19 +96,20 @@ def drive(v=110 / KPH, limit=110, valid=True, last_valid=True, source='map', ahe
     m.speedLimitAheadValid = ahead_valid
     m.speedLimitAhead = ahead / KPH
     m.speedLimitAheadDistance = ahead_dist
-    z = m.nswZone
-    z.mode = nsw_mode
-    z.state = nsw_state
-    z.speedLimit = (limit if nsw_limit is None else nsw_limit) / KPH
-    z.schoolZone = school
-    z.variable = variable
+    m.nswZone.mode = 2
+    m.nswZone.state = nsw_state
+    m.nswZone.speedLimit = limit / KPH
   return sm
 
 
-def frame(sm, settings=HS.ALL_ON, *, metric=True, sl_mode_on=True, stopped_s=None, cluster_seen=True, max_visible=False,
-          started_frame=5, map_age_s=0.0) -> HudFrame:
-  return build_frame(sm, settings, started_frame=started_frame, is_metric=metric, speed_limit_mode_on=sl_mode_on,
-                     stopped_s=stopped_s, v_ego_cluster_seen=cluster_seen, max_visible=max_visible, map_age_s=map_age_s)
+def frame(sm, settings=HS.ALL_ON, *, stopped_s=None, started_frame=5) -> HudFrame:
+  return build_frame(sm, settings, started_frame=started_frame, stopped_s=stopped_s)
+
+
+def raw(sm, *, metric=True, limit=None, map_age_s=0.0, started_frame=5) -> Approach | None:
+  if limit is None:
+    limit = HM.resolver_map_limit(sm, started_frame, KPH if metric else 2.23694)
+  return approach_now(sm, started_frame=started_frame, is_metric=metric, limit=limit, map_age_s=map_age_s)
 
 
 def with_(**kw) -> HS.HudSettings:
@@ -137,11 +138,9 @@ class TestHudParams(OpenpilotTestCase):
       assert m, f"{key} is not in params_keys.h; Params would raise UnknownKeyName"
       flags = m.group(1)
       assert "PERSISTENT" in flags and "BACKUP" in flags, f"{key}: a setting, kept and backed up"
-      if key in INT_DEFAULTS:
-        # the next limit defaults to both (bar and distance); the sign to always (the HUD before the setting)
-        assert "INT" in flags and INT_DEFAULTS[key] in flags, key
-      else:
-        assert "BOOL" in flags and '"1"' in flags, f"{key} defaults to on"
+      assert "BOOL" in flags and '"1"' in flags, f"{key} defaults to on"
+    assert set(HS.FIELDS) == set(HS.ALL_PARAMS) and len(HS.ALL_PARAMS) == 8
+    assert {f.name for f in dataclasses.fields(HS.HudSettings)} == set(HS.FIELDS.values())
 
   def test_the_built_params_library_knows_them(self):
     params = Params()
@@ -151,325 +150,271 @@ class TestHudParams(OpenpilotTestCase):
 
   def test_each_param_switches_only_its_piece(self):
     params = Params()
-    fields = {HS.PARAM_SPEED_CLUSTER: "speed_cluster", HS.PARAM_SCHOOL_CUE: "school_cue",
-              HS.PARAM_VARIABLE_SIGN: "variable_sign", HS.PARAM_STOPPED_TIMER: "stopped_timer",
-              HS.PARAM_STOPPED_BANNER: "stopped_banner", HS.PARAM_CONFIRM_LIMIT: "confirm_limit",
-              HS.PARAM_PLANNED_STOP: "planned_stop", HS.PARAM_CURVE: "curve", HS.PARAM_COMPACT_LIMIT: "compact_limit",
-              HS.PARAM_COMPACT_DISENGAGE: "compact_disengage", HS.PARAM_COMPACT_TURN: "compact_turn",
-              HS.PARAM_CURRENT_SPEED: "current_speed"}
-    assert set(fields) | set(HS.INT_PARAMS) == set(HS.ALL_PARAMS), "every setting is switched here"
-    for key, field in fields.items():
+    for key, field in HS.FIELDS.items():
       params.put_bool(key, False, block=True)
       s = HS.read_settings(params)
       assert getattr(s, field) is False
       assert s == with_(**{field: False}), key
       params.put_bool(key, True, block=True)
-    for mode in HS.NEXT_MODES:
-      params.put(HS.PARAM_NEXT_LIMIT, mode, block=True)
-      assert HS.read_settings(params) == with_(next_limit=mode)
-    for mode in HS.SIGN_MODES:
-      params.put(HS.PARAM_LIMIT_SIGN, mode, block=True)
-      assert HS.read_settings(params) == with_(limit_sign=mode)
 
   def test_unreadable_params_draw_the_stock_screen(self):
     # a build whose params library predates the keys: everything off, not half a HUD
     assert HS.read_settings(FakeParams(fail=True)) == HS.ALL_OFF
-    assert HS.ALL_OFF.limit_sign == HS.SIGN_OFF and not (HS.ALL_OFF.compact_limit or HS.ALL_OFF.compact_disengage or
-                                                         HS.ALL_OFF.compact_turn or HS.ALL_OFF.current_speed)
-    assert HS.ALL_ON.current_speed, "on by default: the screen as before the setting"
-
-  def test_a_next_limit_value_sunnylink_never_writes_is_the_default(self):
-    assert HS.read_settings(FakeParams({HS.PARAM_NEXT_LIMIT: 7})).next_limit == HS.NEXT_BOTH
-
-  def test_a_sign_value_sunnylink_never_writes_is_the_default(self):
-    assert HS.read_settings(FakeParams({HS.PARAM_LIMIT_SIGN: 7})).limit_sign == HS.SIGN_ALWAYS
-    assert HS.ALL_ON.limit_sign == HS.SIGN_ALWAYS and HS.read_settings(FakeParams()) == HS.ALL_ON
+    assert HS.read_settings(FakeParams()) == HS.ALL_ON
 
   def test_params_are_read_at_most_once_a_second(self):
     t = [0.0]
     params = FakeParams()
     r = HS.HudSettingsReader(params_fn=lambda: params, clock=lambda: t[0])
     assert r.get() == HS.ALL_ON and r.reads == 1
-    params.v[HS.PARAM_SPEED_CLUSTER] = False
+    params.v[HS.PARAM_APPROACHING_LIMIT] = False
     for dt in (0.016, 0.5, 0.99):
       t[0] = dt
-      assert r.get().speed_cluster and r.reads == 1, "re-read inside a second"
+      assert r.get().approaching_limit and r.reads == 1, "re-read inside a second"
     t[0] = 1.0
-    assert not r.get().speed_cluster and r.reads == 2
-    params.v[HS.PARAM_SPEED_CLUSTER] = True
-    assert r.get(force=True).speed_cluster and r.reads == 3
+    assert not r.get().approaching_limit and r.reads == 2
+    params.v[HS.PARAM_APPROACHING_LIMIT] = True
+    assert r.get(force=True).approaching_limit and r.reads == 3
 
   def test_the_reader_starts_with_everything_off(self):
     # before its first read (the first frame) nothing is drawn
     assert HS.HudSettingsReader(params_fn=FakeParams).settings == HS.ALL_OFF
 
 
-# ------------------------------------------------------------------------------------------- the cluster's rules
-class TestClusterRules(OpenpilotTestCase):
-  def test_cruise(self):
-    f = frame(drive())
-    assert (f.speed, f.limit, f.limit_held, f.electronic, f.school, f.sign_slot) == (110, 110, False, False, 0, True)
-    assert f.visible and f.timer_s is None
+class TestRetiredKeys(OpenpilotTestCase):
+  """Round 5 removed the live speed, the sign, its zone styling, the next lower limit and the old confirm drawing. A
+  retired key read anywhere would raise UnknownKeyName (a read with no default) or silently do nothing: it must not
+  appear in code, the params table, or sunnylink's settings."""
+  def test_no_removed_key_is_read_anywhere(self):
+    me = Path(__file__).resolve()
+    hits = []
+    for pattern in ("**/*.py", "**/*.h", "**/*.cc", "**/*.yaml", "**/*.json"):
+      for path in ROOT.glob(pattern):
+        if path.resolve() == me or ".venv" in path.parts or "third_party" in path.parts:
+          continue
+        try:
+          text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+          continue
+        for i, line in enumerate(text.splitlines(), 1):
+          if RETIRED_RE.search(line):
+            hits.append(f"{path.relative_to(ROOT)}:{i}: {line.strip()[:120]}")
+    assert not hits, "a removed HUD key is still used:\n" + "\n".join(hits)
 
-  def test_speed_is_the_cars_speedometer_once_it_has_been_seen(self):
-    sm = drive(v=30.0, v_cluster=29.0)
-    assert frame(sm, cluster_seen=True).speed == round(29.0 * KPH)
-    assert frame(sm, cluster_seen=False).speed == round(30.0 * KPH)
+  def test_the_guard_finds_one(self):
+    assert RETIRED_RE.search('params.get("HudLimitSign")') and RETIRED_RE.search("{\"HudNextLimit\", {PERSISTENT}}")
+    assert not RETIRED_RE.search("HudStoppedTimer HudApproachingLimit HudCompactLimitPrompts")
+    assert not set(RETIRED) & set(HS.ALL_PARAMS)
 
-  def test_next_lower_limit_within_the_window(self):
-    f = frame(drive(v=30.3))
-    assert f.next_limit == 100 and f.next_dist == 339.0
-    assert abs(f.next_frac - 339.0 / (30.3 * 15)) < 1e-3
-    assert f.next_mode == HS.NEXT_BOTH
 
-  def test_next_higher_or_equal_limit_is_hidden(self):
-    assert frame(drive(ahead=120)).next_limit == 0
-    assert frame(drive(ahead=110)).next_limit == 0
-
-  def test_next_limit_outside_15_s_or_500_m_is_hidden(self):
-    assert next_window_m(0.0) == 15.0 and next_window_m(10.0) == 150.0 and next_window_m(40.0) == 500.0
-    assert frame(drive(v=40.0, ahead_dist=510.0)).next_limit == 0
-    assert frame(drive(v=40.0, ahead_dist=499.0)).next_limit == 100
-    assert frame(drive(v=10.0, ahead_dist=160.0)).next_limit == 0
-    assert frame(drive(v=10.0, ahead_dist=140.0)).next_limit == 100
-    assert frame(drive(ahead_dist=0.0)).next_limit == 0
-
-  def test_next_limit_modes(self):
-    for mode in (HS.NEXT_BAR, HS.NEXT_TEXT, HS.NEXT_BOTH):
-      f = frame(drive(), with_(next_limit=mode))
-      assert f.next_limit == 100 and f.next_mode == mode
-    assert frame(drive(), with_(next_limit=HS.NEXT_OFF)).next_limit == 0
-
-  def test_no_next_limit_at_a_standstill(self):
-    assert frame(drive(v=0.0, standstill=True, ahead_dist=10.0)).next_limit == 0
-
-  def test_next_limit_only_from_what_mapd_published(self):
-    # dead reckoning in a tunnel: mapd publishes no next limit; nswZone keeps its own look-ahead for the logs only
-    sm = drive(ahead_valid=False, ahead=0, ahead_dist=0.0)
-    z = sm['liveMapDataSP'].nswZone
-    z.speedLimitAhead = 60 / KPH
-    z.speedLimitAheadDistance = 250.0
-    assert frame(sm).next_limit == 0
-
-  def test_next_limit_only_while_the_limit_on_screen_is_from_the_map(self):
-    # as sunnypilot's own sign (_draw_ahead_info): a car-sourced limit is never paired with a map look-ahead
-    assert frame(drive(source='map')).next_limit == 100
-    for source in ('car', 'none'):
-      f = frame(drive(source=source))
-      assert f.limit == 110 and f.next_limit == 0, source
-
-  def test_the_distance_runs_down_between_map_messages(self):
-    # liveMapDataSP is 1 Hz: between messages the distance shrinks with vEgo (not the speedometer), for one period
-    sm = drive(v=30.0, v_cluster=31.0, ahead_dist=339.0)
-    assert frame(sm, map_age_s=0.0).next_dist == 339.0
-    assert abs(frame(sm, map_age_s=0.5).next_dist - (339.0 - 15.0)) < 1e-3
-    assert abs(frame(sm, map_age_s=MAP_EXTRAPOLATE_MAX_S).next_dist - 309.0) < 1e-3
-    assert abs(frame(sm, map_age_s=5.0).next_dist - 309.0) < 1e-3, "a late message: held, not run down further"
-    assert frame(sm, map_age_s=-1.0).next_dist == 339.0
-    f0, f1 = frame(sm, map_age_s=0.0), frame(sm, map_age_s=0.5)
-    assert f1.next_frac < f0.next_frac, "the bar shrinks in between"
-    # passed the sign before the next message: gone, not drawn at 0 m
-    assert frame(drive(v=30.0, ahead_dist=20.0), map_age_s=1.0).next_limit == 0
-
-  def test_school_zone(self):
-    assert frame(drive(limit=40, school=2)).school == SCHOOL_ACTIVE
-    assert frame(drive(limit=50, school=1)).school == SCHOOL_INACTIVE
-    assert frame(drive(limit=50, school=3)).school == SCHOOL_NONE, "unknown: nothing is published, nothing is cued"
-    assert frame(drive(limit=40, school=2), with_(school_cue=False)).school == SCHOOL_NONE
-    assert frame(drive(limit=40, school=2)).limit == 40, "the sign keeps its shape and shows the school limit"
-
-  def test_school_and_variable_cues_need_the_nsw_limit_on_screen(self):
-    # log only: the shown limit is OSM's
-    assert frame(drive(limit=40, school=2, nsw_mode=1)).school == SCHOOL_NONE
-    assert not frame(drive(limit=80, variable=True, nsw_mode=1)).electronic
-    # the resolver holds another value than the one NSW published
-    assert frame(drive(limit=50, school=2, nsw_limit=40)).school == SCHOOL_NONE
-    assert not frame(drive(limit=80, variable=True, nsw_limit=60)).electronic
-    # a car-sourced limit
-    assert not frame(drive(limit=80, variable=True, source='car')).electronic
-    # nswZone not matched: 0 off, 1 no match (OSM's value), 3 ambiguous (0), 5 error, 6 no data file
-    for state in (0, 1, 3, 5, 6):
-      assert frame(drive(limit=40, school=2, nsw_state=state)).school == SCHOOL_NONE, state
-      assert not frame(drive(limit=80, variable=True, nsw_state=state)).electronic, state
-    # dead reckoning publishes the tunnel line's limit: still the NSW limit on screen
-    assert frame(drive(limit=80, variable=True, nsw_state=4)).electronic
-    assert frame(drive(limit=40, school=2, nsw_state=4)).school == SCHOOL_ACTIVE
-
-  def test_variable_zone_is_the_electronic_sign(self):
-    assert frame(drive(limit=80, variable=True)).electronic
-    assert not frame(drive(limit=80, variable=True), with_(variable_sign=False)).electronic
-    assert not frame(drive(limit=80, variable=False)).electronic
-
-  def test_a_held_limit(self):
-    f = frame(drive(valid=False, last_valid=True))
-    assert f.limit == 110 and f.limit_held
-    assert frame(drive(valid=False, last_valid=False)).limit == 0
-
-  def test_speed_limit_mode_off(self):
-    f = frame(drive(), sl_mode_on=False)
-    assert f.limit == 0 and not f.sign_slot and f.speed == 110 and f.next_limit == 0
-
-  def test_stop_timer(self):
+# ------------------------------------------------------------------------------------------- the stop timer
+class TestTimerRules(OpenpilotTestCase):
+  def test_the_stop_time_after_a_second_at_a_standstill(self):
     sm = drive(v=0.0, standstill=True)
-    assert frame(sm, stopped_s=0.5).speed == 0 and frame(sm, stopped_s=0.5).timer_s is None, "a second first"
+    assert not frame(sm, stopped_s=0.5).visible, "a second first"
     f = frame(sm, stopped_s=29.9)
-    assert f.timer_s == 29.9 and f.speed is None and f.limit == 110
-    f = frame(sm, with_(stopped_timer=False), stopped_s=29.9)
-    assert f.timer_s is None and f.speed == 0
-    f = frame(sm, with_(speed_cluster=False), stopped_s=29.9)
-    assert f.timer_s == 29.9 and f.limit == 0 and not f.sign_slot, "the timer alone, without the cluster"
-    assert frame(drive(), with_(speed_cluster=False), stopped_s=None).visible is False
+    assert f.timer_s == 29.9 and f.visible
+    assert not frame(sm, with_(stopped_timer=False), stopped_s=29.9).visible
+    assert not frame(sm, HS.ALL_OFF, stopped_s=29.9).visible
 
-  def test_the_stock_max_number_hides_the_speed_not_the_sign(self):
-    f = frame(drive(), max_visible=True)
-    assert f.speed is None and f.limit == 110
+  def test_moving_draws_nothing_top_right(self):
+    # option A: no speed, no sign, no next limit - whatever the messages say
+    for sm in (drive(), drive(limit=40), drive(v=30.3), drive(lp=False), drive(lmd=False)):
+      assert frame(sm, stopped_s=30.0) == HudFrame(), "standstill is carState's, not the caller's"
+    assert frame(drive(v=0.0, standstill=False), stopped_s=30.0).timer_s is None
 
-  def test_current_speed_off_hides_only_the_live_speed(self):
-    # HudCurrentSpeed off: no speed digits, in every layout; the limit, the sign (and its place), the next lower limit,
-    # the zone and the stop time are exactly what they are with it on - nothing moves
-    off = {'current_speed': False}
-    for kw in SIGN_SCENES + ({'v': 30.3}, {'limit': 40, 'school': 2, 'v': 9.0}):
-      for sign in HS.SIGN_MODES:
-        for sl_mode_on in (True, False):
-          on = frame(drive(**kw), with_(limit_sign=sign), sl_mode_on=sl_mode_on)
-          f = frame(drive(**kw), with_(limit_sign=sign, **off), sl_mode_on=sl_mode_on)
-          assert f.speed is None, (kw, sign)
-          assert dataclasses.replace(f, speed=on.speed) == on, (kw, sign, sl_mode_on)
-        on_z, off_z = SignSim(with_(limit_sign=sign)), SignSim(with_(limit_sign=sign, **off))
-        for _ in range(3):
-          a, b = on_z.step(drive(**kw), 0.5), off_z.step(drive(**kw), 0.5)
-          assert b.speed is None and dataclasses.replace(b, speed=a.speed) == a, (kw, sign, "debounced")
-    # stopped: the stop time is its own setting and still replaces the speed; under a second there is no speed
+  def test_missing_car_state(self):
     sm = drive(v=0.0, standstill=True)
-    for sign in HS.SIGN_MODES:
-      f = frame(sm, with_(limit_sign=sign, **off), stopped_s=29.9)
-      assert f.timer_s == 29.9 and f.speed is None and f == frame(sm, with_(limit_sign=sign), stopped_s=29.9), sign
-      assert frame(sm, with_(limit_sign=sign, **off), stopped_s=0.5).speed is None
-    # nothing left to draw: nothing drawn
-    assert not frame(drive(lp=False), with_(**off)).visible
-    assert frame(drive(lp=False)).visible
-    # it needs the cluster: on by itself it draws no speed
-    assert frame(drive(), with_(speed_cluster=False)).speed is None
-
-  def test_missing_messages(self):
-    # no carState this drive: nothing
-    sm = drive()
     sm.seen['carState'] = False
-    assert not frame(sm).visible
-    sm = drive()
+    assert not frame(sm, stopped_s=30.0).visible
+    sm = drive(v=0.0, standstill=True)
     sm.recv_frame['carState'] = 2  # from before this drive started (started_frame 5)
-    assert not frame(sm).visible
-    # no plan: the speed alone
-    f = frame(drive(lp=False))
-    assert f.speed == 110 and f.limit == 0 and f.next_limit == 0
-    f = frame(drive(lp_alive=False))
-    assert f.speed == 110 and f.limit == 0
-    # no map data: the plain sign, no next limit, no cue
-    f = frame(drive(lmd=False, limit=40))
-    assert f.limit == 40 and f.next_limit == 0 and f.school == SCHOOL_NONE and not f.electronic
-    f = frame(drive(lmd_alive=False, limit=80, variable=True))
-    assert f.limit == 80 and not f.electronic and f.next_limit == 0
+    assert not frame(sm, stopped_s=30.0).visible
 
-  def test_all_off_draws_nothing(self):
-    for sm, kw in ((drive(), {}), (drive(v=0.0, standstill=True), {"stopped_s": 30.0}),
-                   (drive(limit=40, school=2), {}), (drive(limit=80, variable=True), {})):
-      assert not frame(sm, HS.ALL_OFF, **kw).visible
-
-  def test_imperial(self):
-    f = frame(drive(v=30.0, limit=100, ahead=90, ahead_dist=300.0), metric=False)
-    assert f.speed == round(30.0 * 2.23694) and f.limit == round(100 / KPH * 2.23694) and f.next_limit == 56
+  def test_the_cluster_draws_only_the_timer(self):
+    src = HUD_CLUSTER.read_text(encoding="utf-8")
+    render = src[src.index("  def _render(self"):]
+    assert "hd.big_digits(" in render and "hd.stopwatch_glyph(" in render
+    for gone in ("hd.sign(", "next_row", "school_cue", "f.speed", "_slide("):
+      assert gone not in src, gone
+    # the timer's place is exactly the corner it had with the sign off (rect right - 10, row center 36)
+    assert "right, cy = rect.x + rect.width - MARGIN, rect.y + ROW_CY" in render
+    import ast
+    consts = {n.targets[0].id: n.value.value for n in ast.parse(src).body
+              if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant) and isinstance(n.targets[0], ast.Name)}
+    assert (consts["MARGIN"], consts["ROW_CY"], consts["GAP"], consts["TIMER_SIZE"], consts["STOPWATCH_SIZE"]) == \
+      (10, 36, 10, 50, 28)
 
 
-# ------------------------------------------------------------------------------------------- the sign setting
-SIGN_SCENES = ({}, {'limit': 40, 'school': 2}, {'limit': 50, 'school': 1}, {'limit': 80, 'variable': True},
-               {'valid': False, 'last_valid': True}, {'valid': False, 'last_valid': False}, {'lmd': False}, {'lp': False},
-               {'v': 0.0, 'standstill': True}, {'source': 'car'}, {'limit': 80, 'variable': True, 'nsw_state': 1})
-ZONES = dataclasses.replace(HS.ALL_ON, limit_sign=HS.SIGN_ZONES)
+# ------------------------------------------------------------------------------------------- the coming limit
+class ApproachSim:
+  """An ApproachState on a 20 Hz sim clock, as HudRendererSP drives it; put() bumps liveMapDataSP's recv_frame like a
+  new 1 Hz message."""
+  def __init__(self, settings=HS.ALL_ON, metric=True, sl_mode_on=True):
+    self.st, self.t, self.settings, self.metric, self.sl_mode_on = ApproachState(), 100.0, settings, metric, sl_mode_on
+    self.map_frame = 10
 
-
-class SignSim:
-  """A cluster's SignSlot on a 20 Hz sim clock, as HudCluster drives it."""
-  def __init__(self, settings=ZONES):
-    self.slot, self.t, self.settings = HM.SignSlot(), 100.0, settings
-
-  def step(self, sm, seconds=0.05, **kw) -> HudFrame:
-    f = HudFrame()
+  def step(self, sm, seconds=0.05, new_map=True) -> Approach | None:
+    if new_map:
+      self.map_frame += 1
+    sm.recv_frame['liveMapDataSP'] = self.map_frame
+    a = None
     for _ in range(max(1, int(round(seconds / 0.05)))):
       self.t += 0.05
-      f = self.slot.apply(frame(sm, self.settings, **kw), self.settings, self.t)
-    return f
+      a = self.st.update(sm, self.settings, started_frame=5, now=self.t, is_metric=self.metric,
+                         speed_limit_mode_on=self.sl_mode_on)
+    return a
 
 
-class TestSignSetting(OpenpilotTestCase):
-  def test_always_is_the_hud_before_the_setting(self):
-    # the sign whenever there is a limit, its place kept while SpeedLimitMode is on: exactly the old rules
-    for kw in SIGN_SCENES:
-      for sl_mode_on in (True, False):
-        f = frame(drive(**kw), sl_mode_on=sl_mode_on)
-        assert f.sign_slot == sl_mode_on and f.sign_shown == (f.limit > 0), (kw, sl_mode_on)
-        g = SignSim(HS.ALL_ON).step(drive(**kw), 1.0, sl_mode_on=sl_mode_on)
-        assert g == f, "SignSlot passes Always through untouched"
+class TestApproachRules(OpenpilotTestCase):
+  def test_a_lower_limit_within_the_window(self):
+    a = raw(drive(v=30.3))
+    assert a == Approach(limit=100, lower=True, dist=339.0, frac=a.frac) and abs(a.frac - 339.0 / (30.3 * 15)) < 1e-3
 
-  def test_off_keeps_the_limit_and_the_next_limit_but_draws_no_sign(self):
-    on = frame(drive(v=30.3))
-    f = frame(drive(v=30.3), with_(limit_sign=HS.SIGN_OFF))
-    assert not f.sign_slot and not f.sign_shown, "no sign, and the speed takes its place"
-    assert (f.limit, f.next_limit, f.next_dist, f.speed) == (on.limit, on.next_limit, on.next_dist, on.speed) == \
-      (110, 100, 339.0, round(30.3 * KPH)), "the limit is still known: the next lower limit stays"
-    f = frame(drive(v=0.0, standstill=True), with_(limit_sign=HS.SIGN_OFF), stopped_s=30.0)
-    assert f.timer_s == 30.0 and not f.sign_slot, "the stop time in the corner"
-    for kw in SIGN_SCENES:
-      f = frame(drive(**kw), with_(limit_sign=HS.SIGN_OFF))
-      assert not f.sign_slot and not f.sign_shown, kw
+  def test_a_higher_limit_too(self):
+    # route 10f t 182-194, Bringelly Rd: 50 -> 70 was never shown before round 5
+    a = raw(drive(v=50 / KPH, limit=50, ahead=70, ahead_dist=60.0))
+    assert a is not None and a.limit == 70 and not a.lower
+    assert raw(drive(ahead=110)) is None, "the same limit is not a change"
 
-  def test_zones_needs_a_school_zone_that_is_on_or_a_variable_zone(self):
-    z = with_(limit_sign=HS.SIGN_ZONES)
-    assert frame(drive(limit=40, school=2), z).zone and frame(drive(limit=80, variable=True), z).zone
-    for kw in ({}, {'limit': 50, 'school': 1}, {'limit': 50, 'school': 3}, {'limit': 40, 'school': 2, 'nsw_mode': 1},
-               {'limit': 80, 'variable': True, 'nsw_limit': 60}, {'limit': 80, 'variable': True, 'source': 'car'},
-               {'limit': 80, 'variable': True, 'lmd_alive': False}, {'limit': 80, 'variable': True, 'nsw_state': 3}):
-      f = frame(drive(**kw), z)
-      assert not f.zone and not f.sign_slot and not f.sign_shown, kw
-    assert frame(drive(limit=80, variable=True, nsw_state=4), z).zone, "dead reckoning in a tunnel: still the zone"
+  def test_outside_15_s_or_500_m_is_hidden(self):
+    assert next_window_m(0.0) == 15.0 and next_window_m(10.0) == 150.0 and next_window_m(40.0) == 500.0
+    assert raw(drive(v=40.0, ahead_dist=510.0)) is None
+    assert raw(drive(v=40.0, ahead_dist=499.0)).limit == 100
+    assert raw(drive(v=10.0, ahead_dist=160.0)) is None
+    assert raw(drive(v=10.0, ahead_dist=140.0)).limit == 100
+    assert raw(drive(ahead_dist=0.0)) is None
 
-  def test_zones_ignores_the_cue_settings(self):
-    # the two cues only style a sign that is shown; whether it is shown is the zone's
-    plain = with_(limit_sign=HS.SIGN_ZONES, school_cue=False, variable_sign=False)
-    f = frame(drive(limit=40, school=2), plain)
-    assert f.zone and f.sign_shown and f.school == SCHOOL_NONE
-    f = frame(drive(limit=80, variable=True), plain)
-    assert f.zone and f.sign_shown and not f.electronic
-    f = frame(drive(limit=80, variable=True), with_(limit_sign=HS.SIGN_ZONES))
-    assert f.sign_shown and f.electronic
+  def test_never_at_a_standstill(self):
+    assert raw(drive(v=0.0, standstill=True, ahead_dist=10.0)) is None
 
-  def test_zones_is_debounced(self):
-    s, zone, plain = SignSim(), drive(limit=80, variable=True), drive(limit=80)
-    assert not any(s.step(zone).sign_slot for _ in range(round(HM.SIGN_ZONE_ON_S / 0.05) - 1)), "not on a moment of zone"
-    f = s.step(zone, 0.1)
-    assert f.sign_slot and f.sign_shown and f.electronic and f.limit == 80
-    # route 10f: the Variable zone broke up at limit changes, gaps of 2-19 s: the sign holds through them
-    for gap in (2.0, 4.0, 8.0, 11.0):
-      held = [s.step(plain) for _ in range(round(gap / 0.05))]
-      assert all(h.sign_slot and h.sign_shown for h in held), gap
-      assert not any(h.electronic for h in held), "the plain sign in the gap, as the limit is then"
-      assert s.step(zone).sign_shown
-    gone = [s.step(plain) for _ in range(round(HM.SIGN_ZONE_OFF_S / 0.05) + 1)]
-    assert gone[-2].sign_slot and not gone[-1].sign_slot and not gone[-1].sign_shown, "out of the zone for good"
+  def test_only_what_mapd_published_and_never_in_a_tunnel(self):
+    # dead reckoning: mapd publishes no next limit; nswZone keeps its own look-ahead for the logs only
+    sm = drive(ahead_valid=False, ahead=0, ahead_dist=0.0, nsw_state=4)
+    sm['liveMapDataSP'].nswZone.speedLimitAhead = 60 / KPH
+    sm['liveMapDataSP'].nswZone.speedLimitAheadDistance = 250.0
+    assert raw(sm) is None
+    # and should mapd ever publish one there: still nothing (dead reckoning, or GPS still lost after it)
+    for state in HM.NSW_NO_LOOKAHEAD:
+      assert raw(drive(nsw_state=state)) is None, state
+    for state in (0, 1, 2, 3, 5, 6):
+      assert raw(drive(nsw_state=state)) is not None, state
 
-  def test_zones_held_without_a_limit_keeps_the_place_draws_no_sign(self):
-    s = SignSim()
-    s.step(drive(limit=80, variable=True), 1.0)
-    f = s.step(drive(valid=False, last_valid=False))
-    assert f.sign_slot and not f.sign_shown and f.limit == 0
+  def test_only_while_the_limit_in_force_is_from_the_map(self):
+    assert raw(drive(source='map')).limit == 100
+    for source in ('car', 'none'):
+      assert raw(drive(source=source)) is None, source
+    assert raw(drive(valid=False, last_valid=True)).limit == 100, "a held map limit is still the one in force"
+    assert raw(drive(valid=False, last_valid=False)) is None
 
-  def test_zones_starts_over_when_switched(self):
-    s = SignSim()
-    s.step(drive(limit=80, variable=True), 1.0)
-    s.settings = HS.ALL_ON
-    assert s.step(drive(limit=80)).sign_shown
-    s.settings = with_(limit_sign=HS.SIGN_ZONES)
-    assert not s.step(drive(limit=80)).sign_slot, "no zone held over from before"
-    assert not SignSim(with_(limit_sign=HS.SIGN_ZONES, speed_cluster=False)).step(drive(limit=80, variable=True), 1.0).sign_slot
+  def test_missing_or_stale_messages(self):
+    for kw in ({'lp': False}, {'lp_alive': False}, {'lmd': False}, {'lmd_alive': False}, {'cs_alive': False}):
+      assert raw(drive(**kw)) is None, kw
+
+  def test_the_distance_runs_down_between_map_messages(self):
+    sm = drive(v=30.0, ahead_dist=339.0)
+    assert raw(sm, map_age_s=0.0).dist == 339.0
+    assert abs(raw(sm, map_age_s=0.5).dist - (339.0 - 15.0)) < 1e-3
+    assert abs(raw(sm, map_age_s=MAP_EXTRAPOLATE_MAX_S).dist - 309.0) < 1e-3
+    assert abs(raw(sm, map_age_s=5.0).dist - 309.0) < 1e-3, "a late message: held, not run down further"
+    assert raw(sm, map_age_s=-1.0).dist == 339.0
+    assert raw(sm, map_age_s=0.5).frac < raw(sm).frac, "the pill drains in between"
+    assert raw(drive(v=30.0, ahead_dist=20.0), map_age_s=1.0) is None, "passed it before the next message"
+
+  def test_imperial(self):
+    a = raw(drive(v=30.0, limit=100, ahead=90, ahead_dist=300.0), metric=False)
+    assert a.limit == round(90 / KPH * 2.23694) == 56 and a.lower
+
+  def test_the_words(self):
+    assert approach_text("300 m", False) == "in 300 m" and approach_text("1.2 km", False) == "in 1.2 km"
+    assert approach_text("Near", False) == "now", "sunnypilot's 'Near' is drawn 'now'"
+    assert approach_text("300 m", True) == "now", "held past the look-ahead"
+    assert approach_text("600 ft", False) == "in 600 ft"
+
+  def test_the_setting_and_speed_limit_mode(self):
+    assert ApproachSim().step(drive()) is not None
+    assert ApproachSim(with_(approaching_limit=False)).step(drive()) is None
+    assert ApproachSim(sl_mode_on=False).step(drive()) is None
+    assert ApproachSim(HS.ALL_OFF).step(drive()) is None
+
+  def test_held_until_the_limit_in_force_becomes_it(self):
+    # route 10f, the M4: the look-ahead ends at 773.75 (11 m), MAX 100 at 774.8 - nothing on screen in between, before
+    s = ApproachSim()
+    a = s.step(drive(ahead_dist=200.0), 1.0)
+    assert a.limit == 100 and not a.held
+    gone = drive(ahead_valid=False, ahead=0, ahead_dist=0.0)   # mapd stopped publishing it; the resolver still has 110
+    for _ in range(int(HM.APPROACH_HOLD_S / 0.05) - 1):
+      h = s.step(gone, new_map=False)
+      assert h == Approach(limit=100, lower=True, dist=0.0, frac=0.0, held=True)
+    assert s.step(drive(limit=100, ahead_valid=False, ahead=0, ahead_dist=0.0)) is None, "the resolver took it: hand-over"
+    assert s.step(gone) is None, "and it does not come back"
+
+  def test_the_hold_ends(self):
+    def held_then(after, seconds=0.05):
+      s = ApproachSim()
+      s.step(drive(ahead_dist=200.0), 1.0)
+      assert s.step(drive(ahead_valid=False, ahead=0, ahead_dist=0.0), 0.5).held
+      return s.step(after, seconds)
+    none = {"ahead_valid": False, "ahead": 0, "ahead_dist": 0.0}
+    assert held_then(drive(**none), HM.APPROACH_HOLD_S) is None, "after APPROACH_HOLD_S at most"
+    assert held_then(drive(limit=90, **none)) is None, "another limit came"
+    assert held_then(drive(v=0.0, standstill=True, **none)) is None, "stopped"
+    assert held_then(drive(nsw_state=4, **none)) is None, "into a tunnel"
+    assert held_then(drive(lp=False, **none)) is None, "the plan gone"
+    assert held_then(drive(source='car', **none)) is None, "a car-sourced limit now"
+
+  def test_a_gap_in_the_look_ahead_is_bridged_and_a_new_value_replaces_it(self):
+    s = ApproachSim()
+    s.step(drive(ahead_dist=300.0), 1.0)
+    assert s.step(drive(ahead_valid=False, ahead=0, ahead_dist=0.0), 1.0).held, "one message without it: still shown"
+    a = s.step(drive(ahead_dist=250.0))
+    assert a.limit == 100 and not a.held and a.dist == 250.0
+    a = s.step(drive(ahead=90, ahead_dist=240.0))
+    assert a.limit == 90 and a.lower
+
+  def test_the_distance_only_counts_down(self):
+    # route 10f t 194.2-194.8: the run-down passed 50 m, the next 1 Hz message said 50.8 - 'now', 'in 50 m', 'now'
+    s, kw = ApproachSim(), {"v": 50 / KPH, "limit": 50, "ahead": 70}
+    assert s.step(drive(ahead_dist=49.0, **kw)).dist == 49.0
+    a = s.step(drive(ahead_dist=50.8, **kw))
+    assert a.dist == 49.0 and abs(a.frac - 49.0 / next_window_m(50 / KPH)) < 1e-6
+    assert s.step(drive(ahead_dist=40.0, **kw)).dist == 40.0
+    assert s.step(drive(v=50 / KPH, limit=50, ahead=60, ahead_dist=80.0)).dist == 80.0, "another change: its own distance"
+
+  def test_idempotent_within_a_frame(self):
+    s, sm = ApproachSim(), drive(ahead_dist=200.0)
+    s.step(sm, 1.0)
+    gone = drive(ahead_valid=False, ahead=0, ahead_dist=0.0)
+    first = s.st.update(gone, HS.ALL_ON, started_frame=5, now=s.t, is_metric=True, speed_limit_mode_on=True)
+    assert first is not None and not first.held, "the same frame: the answer already given"
+
+
+# ------------------------------------------------------------------------------------------- the confirm's outline
+class TestBoxOutline(OpenpilotTestCase):
+  def test_two_flashes_then_the_march(self):
+    fps = 20
+    lit = [box_outline(i / fps)[0] for i in range(4 * fps)]
+    runs = [k for k in range(1, len(lit)) if lit[k] and not lit[k - 1]] + ([0] if lit[0] else [])
+    assert len(runs) == HM.BOX_BLINKS == 2, lit
+    assert not any(lit[int((HM.BOX_BLINKS * (HM.BOX_BLINK_ON_S + HM.BOX_BLINK_OFF_S)) * fps) + 1:]), "then never again"
+    phases = [box_outline(i / fps)[1] for i in range(4 * fps)]
+    assert all(p == 0.0 for p in phases[:14]) and phases[-1] > phases[-2] > 0, "still while flashing, then marching"
+    assert abs((phases[-1] - phases[-21]) - HM.BOX_MARCH_PX_S) < 1e-6, "30 px a second"
+
+  def test_under_three_flashes_a_second(self):
+    rate = 1.0 / (HM.BOX_BLINK_ON_S + HM.BOX_BLINK_OFF_S)
+    assert 2.5 < rate < 3.0, rate
+    assert box_outline(-1.0) == (True, 0.0) and box_outline(0.0)[0], "lit from the first half-visible frame"
+    assert not box_outline(HM.BOX_BLINK_ON_S + 0.01)[0]
+
+  def test_the_renderer_and_the_box_use_it(self):
+    src = HUD_RENDERER_SP.read_text(encoding="utf-8")
+    body = src[src.index("  def _draw_pending_max"):src.index("  def _approach_now")]
+    assert "box_outline(" in body and "lit=lit, phase=phase" in body and "alpha >= 0.5" in body
+    draw = (Path(HM.__file__).parent / "hud_draw.py").read_text(encoding="utf-8")
+    box = draw[draw.index("def pending_max("):draw.index("def _solid_rrect(")]
+    assert box.count("phase=phase") == 2, "both the underlay and the dashes march"
+    assert box.index("rl.draw_text_ex(") < box.index("if lit:"), "the digits are drawn the same, lit or not"
 
 
 # ------------------------------------------------------------------------------------------- the right rail's rules
@@ -830,14 +775,12 @@ def alert(kind="manualRestart/warning", text1="TAKE CONTROL", text2="Resume Driv
   return SimpleNamespace(alert_type=kind, text1=text1, text2=text2)
 
 
-
-
 class StopFlow:
   """The banner's calls in the order the UI makes them, one frame at a time (20 Hz):
-    1. HudCluster._update_state: observe(what the alert renderer will draw) - the alert, the previous one while it
-       fades out, or None - every frame;
-    2. HudCluster._alert_covers: compact() for any alert it draws;
-    3. AlertRenderer._render -> hud_alerts.draw_compact_standstill: compact(), only when there is an alert.
+    1. HudCluster._alert_covers: compact() for any alert;
+    2. AlertRenderer._render -> hud_alerts.draw_compact_standstill: compact(), only when there is an alert;
+    3. HudRendererSP._update_state: observe(what the alert renderer will draw) - the alert, the previous one while it
+       fades out, or None - every frame (round 5 moved it there from the cluster).
   The renderer never asks while there is no alert: that is the call order the first version's test did not follow."""
   def __init__(self, settings=HS.ALL_ON):
     self.b, self.sm, self.t, self.settings = StandstillBanner(), FakeSM(), 100.0, settings
@@ -845,12 +788,13 @@ class StopFlow:
 
   def frame(self, shown, dt=0.05):
     self.t += dt
-    self.b.observe(shown)
     if shown is None:
+      self.b.observe(shown)
       return None
     cluster = self.b.compact(shown, self.settings, self.sm, STARTED, self.t)
     renderer = self.b.compact(shown, self.settings, self.sm, STARTED, self.t)
     assert cluster == renderer, "the cluster and the renderer agree within a frame"
+    self.b.observe(shown)
     return renderer
 
   def frames(self, shown, seconds):
@@ -1161,14 +1105,6 @@ class TestCompactAlerts(OpenpilotTestCase):
     for name in (HM.CONFIRM_EVENT, *HM.COMPACT_DISENGAGE, *HM.COMPACT_TURN, "steerSaturated"):
       assert not HM.frees_top_icons(a(name), HS.ALL_ON), "a banner and the MAX number would share the top left"
 
-  def test_the_cluster_sign_is_pending_only_for_the_compact_confirm(self):
-    confirm = SimpleNamespace(alert_type="speedLimitPreActive/warning", status=0, visual_alert=0)
-    assert HM.confirm_pending(confirm, HS.ALL_ON)
-    assert not HM.confirm_pending(confirm, with_(confirm_limit=False))
-    assert not HM.confirm_pending(confirm, with_(compact_limit=False)), "full screen: the pending sign is in the alert"
-    changed = SimpleNamespace(alert_type="speedLimitChanged/warning", status=0, visual_alert=0)
-    assert not HM.confirm_pending(changed, HS.ALL_ON) and not HM.confirm_pending(None, HS.ALL_ON)
-
   def test_banner_words(self):
     def a(name, t1="x", t2=""):
       return SimpleNamespace(alert_type=f"{name}/warning", text1=t1, text2=t2)
@@ -1198,44 +1134,27 @@ class TestSunnylink(OpenpilotTestCase):
     assert panel["label"] == "Visuals" and sec["title"] == "HUD"
     keys = [it["key"] for it in sec["items"]]
     assert sorted(keys) == sorted(HS.ALL_PARAMS)
-    assert keys[0] == HS.PARAM_SPEED_CLUSTER
+    assert keys[:3] == [HS.PARAM_STOPPED_TIMER, HS.PARAM_STOPPED_BANNER, HS.PARAM_APPROACHING_LIMIT]
 
   def test_widgets_match_the_param_types(self):
     _, sec = hud_section()
     for it in sec["items"]:
-      if it["key"] == HS.PARAM_NEXT_LIMIT:
-        assert it["widget"] == "multiple_button"
-        assert [o["value"] for o in it["options"]] == list(HS.NEXT_MODES)
-        assert [o["label"] for o in it["options"]] == ["Off", "Bar", "Distance", "Both"]
-      elif it["key"] == HS.PARAM_LIMIT_SIGN:
-        assert it["widget"] == "multiple_button"
-        assert [o["value"] for o in it["options"]] == list(HS.SIGN_MODES)
-        assert [o["label"] for o in it["options"]] == ["Off", "School & Variable Zones", "Always"]
-      else:
-        assert it["widget"] == "toggle", it["key"]
+      assert it["widget"] == "toggle", it["key"]
       assert it.get("title") and it.get("description"), it["key"]
+      assert "visibility" not in it, f"{it['key']}: every setting stands alone now"
 
   def test_shown_for_a_comma_4_only(self):
     _, sec = hud_section()
     assert sec["visibility"] == [{"type": "capability", "field": "device_type", "equals": "mici"}]
 
-  def test_the_cluster_pieces_hide_with_the_cluster(self):
+  def test_the_approaching_limit_says_what_it_does(self):
     _, sec = hud_section()
-    rule = [{"type": "param", "key": HS.PARAM_SPEED_CLUSTER, "equals": True}]
     by_key = {it["key"]: it for it in sec["items"]}
-    for key in (HS.PARAM_NEXT_LIMIT, HS.PARAM_LIMIT_SIGN, HS.PARAM_CURRENT_SPEED):
-      assert by_key[key].get("visibility") == rule, key
-    # the cues style a sign: dimmed with the sign Off too
-    for key in (HS.PARAM_SCHOOL_CUE, HS.PARAM_VARIABLE_SIGN):
-      assert by_key[key].get("visibility") == rule + [{"type": "param_compare", "key": HS.PARAM_LIMIT_SIGN, "op": ">",
-                                                        "value": 0}], key
-    for key in (HS.PARAM_SPEED_CLUSTER, HS.PARAM_STOPPED_TIMER, HS.PARAM_STOPPED_BANNER, HS.PARAM_CONFIRM_LIMIT,
-                HS.PARAM_PLANNED_STOP, HS.PARAM_CURVE, HS.PARAM_COMPACT_LIMIT, HS.PARAM_COMPACT_DISENGAGE,
-                HS.PARAM_COMPACT_TURN):
-      assert "visibility" not in by_key[key], f"{key} works without the cluster"
-    keys = [it["key"] for it in sec["items"]]
-    assert keys[:3] == [HS.PARAM_SPEED_CLUSTER, HS.PARAM_CURRENT_SPEED, HS.PARAM_LIMIT_SIGN], \
-      "the speed's and the sign's settings right under the cluster's"
+    a = by_key[HS.PARAM_APPROACHING_LIMIT]
+    assert a["title"] == "Approaching Limit"
+    for words in ("lower or higher", "15 seconds or 500 m", "tunnel", "now", "face"):
+      assert words in a["description"], words
+    assert "flashes twice" in by_key[HS.PARAM_COMPACT_LIMIT]["description"]
 
   def test_the_rail_items_say_what_they_cannot_know(self):
     _, sec = hud_section()
@@ -1261,13 +1180,14 @@ class TestUpstreamHunks(OpenpilotTestCase):
                        "hud_rail import HudRail", "self._hud_rail = HudRail(", "self._hud_rail.render(",
                        "import hud_alerts", "hud_alerts.frees_top_icons("))
     marked(BALL, ("self.hud_floor_y = -math.inf", "max(dot_height, self.hud_floor_y)"), window=0)
-    marked(ALERTS, ("import hud_alerts", "hud_alerts.draw_compact(", "hud_alerts.draw_pending_limit("))
-    marked(PARAMS_KEYS, [f'"{k}"' for k in HS.ALL_PARAMS], window=10)
+    marked(ALERTS, ("import hud_alerts", "hud_alerts.draw_compact("))
+    marked(PARAMS_KEYS, [f'"{k}"' for k in HS.ALL_PARAMS], window=12)
     marked(VISUALS_YAML, ("id: hud_comma4",))
     marked(MICI_SETTINGS, ("import cloudlog", "def gateway_icon():", "icons_mici/gateway.png", "gateway_icon())"), window=5)
     marked(REPO / ".gitattributes", ("icons_mici/gateway.png -filter",))
     marked(HUD_RENDERER_SP, ("import hud_alerts, hud_draw", "pending_max.drawer = True", "self._draw_pending_max(rect)",
-                             "def drawing_top_icons", "def _draw_pending_max"))
+                             "def drawing_top_icons", "def _draw_pending_max", "standstill_banner.observe(",
+                             "self._draw_approach(rect)", "def _draw_approach", "def _approach_blocker"))
 
   def test_the_hooks_fall_through_to_the_stock_drawing(self):
     src = ALERTS.read_text(encoding="utf-8")
@@ -1278,10 +1198,6 @@ class TestUpstreamHunks(OpenpilotTestCase):
     road = ROAD_VIEW.read_text(encoding="utf-8")
     assert "set_can_draw_top_icons(alert_to_render is None or hud_alerts.frees_top_icons(alert_to_render))" in road, \
       "no alert: the stock answer, untouched"
-    icons = src[src.index("  def _draw_icons"):src.index("  def _draw_background")]
-    assert icons.index("hud_alerts.draw_pending_limit(") > icons.index("self._turn_signal_alpha_filter.update(255 * 0.2)"), \
-      "the turn-signal blink advances exactly as before"
-    road = ROAD_VIEW.read_text(encoding="utf-8")
     assert road.index("self._hud_cluster.render(") < road.index("self._alert_renderer.render(self._content_rect)"), \
       "the cluster is drawn under the alerts"
     assert road.index("self._hud_cluster.render(") > road.index("rl.begin_scissor_mode("), "inside the content rect"
@@ -1292,15 +1208,45 @@ class TestUpstreamHunks(OpenpilotTestCase):
     assert render.index("dot_height = self._rect.y + dot_height") < render.index("max(dot_height, self.hud_floor_y)") < \
       render.index("draw_circle_gradient("), "the floor applies to the stock position, before it is drawn"
 
+  def test_the_old_confirm_drawing_is_gone(self):
+    # round 5 (D0.3): the full-screen confirm is sunnypilot's own again - no hook in _draw_icons, no drawing behind it
+    src = ALERTS.read_text(encoding="utf-8")
+    icons = src[src.index("  def _draw_icons"):src.index("  def _draw_background")]
+    assert "hud_alerts" not in icons and "FORK" not in icons
+    assert "draw_pending_limit" not in HUD_ALERTS.read_text(encoding="utf-8")
+    draw = (Path(HM.__file__).parent / "hud_draw.py").read_text(encoding="utf-8")
+    for gone in ("def pending_icon(", "def school_cue(", "def next_row(", "electronic", "LAMP_"):
+      assert gone not in draw, gone
+    assert not hasattr(HM, "confirm_pending") and not hasattr(HM, "SignSlot")
+
+  def test_the_standstill_banner_is_observed_every_frame(self):
+    # deletion trap 1: the cluster used to call observe(); without it the first departure of a drive would keep the
+    # full take-control prompt for the rest of the drive. HudRendererSP renders every frame, with or without an alert.
+    src = HUD_RENDERER_SP.read_text(encoding="utf-8")
+    upd = src[src.index("  def _update_state(self)"):src.index("  def _render(self")]
+    assert "hud_alerts.standstill_banner.observe(self.alert_renderer.will_render()[0])" in upd
+    assert "observe(" not in HUD_CLUSTER.read_text(encoding="utf-8"), "one place calls it"
+    # deletion trap 2: the cluster still hands the alert renderer to the HUD renderer (the box's top-icon question)
+    cluster = HUD_CLUSTER.read_text(encoding="utf-8")
+    assert "hud_renderer.alert_renderer = alert_renderer" in cluster
+
   def test_the_confirms_target_is_drawn_by_the_sunnypilot_subclass(self):
     # design A needs no upstream change: the alert renderer publishes, the subclass draws after the stock HUD
     assert "FORK" not in HUD_RENDERER.read_text(encoding="utf-8"), "upstream's HUD renderer is untouched"
     src = HUD_RENDERER_SP.read_text(encoding="utf-8")
     render = src[src.index("  def _render(self"):src.index("  def _has_blind_spot_detected")]
-    assert render.index("super()._render(rect)") < render.index("self._draw_pending_max(rect)"), "over the stock HUD"
+    assert render.index("super()._render(rect)") < render.index("self._draw_pending_max(rect)") < \
+      render.index("self._draw_approach(rect)"), "over the stock HUD"
     assert "hud_alerts.pending_max.drawer = True" in src, "without the subclass the confirm stays the banner"
-    tops = src[src.index("  def drawing_top_icons"):src.index("  def _draw_pending_max")]
-    assert "super().drawing_top_icons() or" in tops, "a top icon as the stock MAX number is"
+    tops = src[src.index("  def drawing_top_icons"):src.index("  def _box_top_icon")]
+    assert "super().drawing_top_icons() or self._box_top_icon() or self._approach_top_icon()" in tops, \
+      "top icons as the stock MAX number is"
+    blocked = src[src.index("  def _approach_blocker"):src.index("  def _approach_top_icon")]
+    for who in ("will_render()[0]", "frees_top_icons(alert)", "self._pending is not None",
+                "self._set_speed_alpha_filter.x > 1e-2"):
+      assert who in blocked, f"the coming limit gives way to: {who}"
+    draw = src[src.index("  def _draw_approach"):]
+    assert "self._approach_alpha.x * (1.0 - self._set_speed_alpha_filter.x)" in draw, "it cross-fades with MAX"
     road = ROAD_VIEW.read_text(encoding="utf-8")
     assert road.index("self._alert_renderer.render(self._content_rect)") < \
       road.index("self._hud_renderer.render(self._content_rect)"), "the alerts publish before the HUD draws, each frame"

@@ -269,10 +269,6 @@ class AlertRenderer(Widget, SpeedLimitAlertRenderer):
     else:
       self._turn_signal_alpha_filter.update(255 * 0.2)
 
-    # FORK(HUD): the speed-limit confirm can show the pending limit instead of the bare arrow (hud_alerts.py)
-    if hud_alerts.draw_pending_limit(self, alert_layout):
-      return
-
     if alert_layout.icon.side == 'left':
       pos_x = int(self._rect.x + alert_layout.icon.margin_x)
     else:
