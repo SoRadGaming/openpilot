@@ -42,8 +42,7 @@ STOCK_ACC_SNAPSHOT = "HondaElesysStockAccSaved"
 # FORK(HONDA_ACCORD_9G_AU): the brake pump rule C1b (on by default): a setting, BACKUP, offroad only, read once at
 # ignition by opendbc's _initialize_honda
 PUMP_C1B_PARAM, PUMP_C1B_TITLE = "HondaElesysPumpC1b", "Quiet pump at stops"
-IGNITION_SETTINGS = {PUMP_C1B_PARAM: ("PUMP_C1B_PARAM", "1", PUMP_C1B_TITLE)}
-IGNITION_TOGGLE_ATTR = {PUMP_C1B_PARAM: "pump_c1b_toggle"}
+PUMP_C1B_CONST, PUMP_C1B_ATTR = "PUMP_C1B_PARAM", "pump_c1b_toggle"   # the panels' constant and toggle attribute
 OPENDBC_HOOKS = REPO / "opendbc_repo/opendbc/sunnypilot/car/interfaces.py"
 CARCONTROLLER = REPO / "opendbc_repo/opendbc/car/honda/carcontroller.py"
 SP_CAR_INTERFACES = ROOT / "sunnypilot/selfdrive/car/interfaces.py"
@@ -353,59 +352,56 @@ class TestHondaDynamicSettings(unittest.TestCase):
       assert words in desc, f"the description must say '{words}'"
 
   def test_pump_rule_is_registered_backed_up_with_its_default(self):
-    registered = _registered_params()
-    for key, (const, default, _) in IGNITION_SETTINGS.items():
-      flags, key_type, key_default = registered[key]
-      assert key_type == "BOOL" and key_default == default, f"{key} must be a BOOL defaulting to {default}"
-      assert "PERSISTENT" in flags and "BACKUP" in flags, f"{key} is a setting and should survive a sunnylink restore"
-      assert _panel_constant(const) == key
+    flags, key_type, key_default = _registered_params()[PUMP_C1B_PARAM]
+    assert key_type == "BOOL" and key_default == "1", f"{PUMP_C1B_PARAM} must be a BOOL defaulting to on"
+    assert "PERSISTENT" in flags and "BACKUP" in flags, "a setting, which should survive a sunnylink restore"
+    assert _panel_constant(PUMP_C1B_CONST) == PUMP_C1B_PARAM
 
   def test_pump_rule_reaches_the_hook_under_one_name(self):
-    for key in IGNITION_SETTINGS:
-      assert f'"{key}"' in SP_CAR_INTERFACES.read_text(), f"card never hands {key} to opendbc"
-      if OPENDBC_HOOKS.is_file():
-        assert f'"{key}"' in OPENDBC_HOOKS.read_text(), f"_initialize_honda never reads {key}"
+    key = PUMP_C1B_PARAM
+    assert f'"{key}"' in SP_CAR_INTERFACES.read_text(), f"card never hands {key} to opendbc"
+    if OPENDBC_HOOKS.is_file():
+      assert f'"{key}"' in OPENDBC_HOOKS.read_text(), f"_initialize_honda never reads {key}"
     reported = re.findall(r"'(Honda\w+)'", STATSD.read_text())
-    assert set(IGNITION_SETTINGS) <= set(reported), "statsd must report which pump rule is set"
+    assert key in reported, "statsd must report which pump rule is set"
 
   def test_pump_rule_toggle_is_offroad_only_on_both_screens(self):
     tree = ast.parse(HONDA_PANEL.read_text())
     items = ast.unparse(next(n for n in ast.walk(tree) if isinstance(n, ast.Assign)
                              and any(isinstance(t, ast.Attribute) and t.attr == "items" for t in n.targets)))
     mici = MICI_PANEL.read_text()
-    for key, (const, _, _) in IGNITION_SETTINGS.items():
-      calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "toggle_item_sp"
-               and any(k.arg == "param" and isinstance(k.value, ast.Name) and k.value.id == const for k in n.keywords)]
-      assert len(calls) == 1, f"the big panel needs exactly one {const} toggle"
-      enabled = {k.arg: ast.unparse(k.value) for k in calls[0].keywords}.get("enabled")
-      assert enabled == "ui_state.is_offroad", f"the big panel's {key} toggle must be offroad only, got {enabled}"
-      attr = IGNITION_TOGGLE_ATTR[key]
-      assert f"self.{attr}" in items, f"the big panel never shows its {key} toggle"
-      assert re.search(rf"\({re.escape(const)},\s*self\.{attr}\)", HONDA_PANEL.read_text()), f"{key} is not kept in sync"
+    key, const, attr = PUMP_C1B_PARAM, PUMP_C1B_CONST, PUMP_C1B_ATTR
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "toggle_item_sp"
+             and any(k.arg == "param" and isinstance(k.value, ast.Name) and k.value.id == const for k in n.keywords)]
+    assert len(calls) == 1, f"the big panel needs exactly one {const} toggle"
+    enabled = {k.arg: ast.unparse(k.value) for k in calls[0].keywords}.get("enabled")
+    assert enabled == "ui_state.is_offroad", f"the big panel's {key} toggle must be offroad only, got {enabled}"
+    assert f"self.{attr}" in items, f"the big panel never shows its {key} toggle"
+    assert re.search(rf"\({re.escape(const)},\s*self\.{attr}\)", HONDA_PANEL.read_text()), f"{key} is not kept in sync"
 
-      assert const in mici, f"the mici page must import {const} from the brand panel"
-      assert f"self._{attr}.set_enabled(ui_state.is_offroad)" in mici
-      assert f"self._{attr}.refresh()" in mici
-      assert re.search(rf"add_widgets\(\[[^\]]*self\._{attr}", mici, re.DOTALL), f"the mici {key} toggle is never shown"
+    assert const in mici, f"the mici page must import {const} from the brand panel"
+    assert f"self._{attr}.set_enabled(ui_state.is_offroad)" in mici
+    assert f"self._{attr}.refresh()" in mici
+    assert re.search(rf"add_widgets\(\[[^\]]*self\._{attr}", mici, re.DOTALL), f"the mici {key} toggle is never shown"
     for src in (HONDA_PANEL.read_text(), mici):
       code = " ".join(line.split("#")[0] for line in src.splitlines())
       assert "OnroadCycleRequested" not in code
 
   def test_sunnylink_exposes_pump_rule_offroad_only(self):
     items = {i["key"]: i for i in _sdui_honda_items()}
-    for key, (_, _, title) in IGNITION_SETTINGS.items():
-      assert key in items, f"{key} is missing from the honda section of settings_ui.json"
-      item = items[key]
-      assert item["widget"] == "toggle"
-      assert item["title"] == title
-      # the big panel's title is tr_noop("..."): the same words on the device
-      assert f'_TITLE = tr_noop("{title}")' in HONDA_PANEL.read_text(), f"the big panel titles {key} differently"
-      assert item.get("needs_onroad_cycle") is True
-      assert item.get("enablement") == [{"type": "offroad_only"}], item.get("enablement")
-      assert "has_longitudinal_control" not in json.dumps(item)
-      desc = item.get("description", "")
-      for words in ("next drive", "Elesys", "Off"):
-        assert words in desc, f"{key}: the description must say '{words}'"
+    key, title = PUMP_C1B_PARAM, PUMP_C1B_TITLE
+    assert key in items, f"{key} is missing from the honda section of settings_ui.json"
+    item = items[key]
+    assert item["widget"] == "toggle"
+    assert item["title"] == title
+    # the big panel's title is tr_noop("..."): the same words on the device
+    assert f'_TITLE = tr_noop("{title}")' in HONDA_PANEL.read_text(), f"the big panel titles {key} differently"
+    assert item.get("needs_onroad_cycle") is True
+    assert item.get("enablement") == [{"type": "offroad_only"}], item.get("enablement")
+    assert "has_longitudinal_control" not in json.dumps(item)
+    desc = item.get("description", "")
+    for words in ("next drive", "Elesys", "Off"):
+      assert words in desc, f"{key}: the description must say '{words}'"
 
   def test_panel_defaults_match_the_tuner(self):
     # opendbc is a submodule; skip when it isn't checked out
