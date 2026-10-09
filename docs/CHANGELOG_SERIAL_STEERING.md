@@ -22,9 +22,10 @@ make such a return the lead below about 36 km/h ("What can get worse" there). ra
 `HONDA_ELESYS` only: `CarParams.brand` is `honda` and the fingerprint is in `HONDA_ELESYS`. Every other car runs
 upstream's radard unchanged. The guard is `openpilot/sunnypilot/selfdrive/controls/lib/elesys_radar_guard.py`, called
 from the `FORK(HONDA_ACCORD_9G_AU)` places in `openpilot/selfdrive/controls/radard.py`. It is a separate change from
-the scale fix, in three commits: the guard; its review fixes (moving tracks, the camera hysteresis, the give-ups
-written down); and a second review round (a track counts as moving only when its own range agrees, counted in radar
-updates, and the hold). Nothing has reached the car.
+the scale fix, in four commits: the guard; its review fixes (moving tracks, the camera hysteresis, the give-ups
+written down); a second review round (a track counts as moving only when its own range agrees, counted in radar
+updates, and the hold); and a third (the held lead marked, so that only the MPC sees it, what the hold does at
+walking pace written down, and a non-finite vEgo). Nothing has reached the car.
 
 * **The camera match.** A radar track slower than 3 m/s may stand for the camera's lead only if the camera does not
   say that lead is faster than the track by more than a tolerance. The tolerance is 3 m/s up to 20 m of camera range,
@@ -49,7 +50,12 @@ updates, and the hold). Nothing has reached the car.
   not accelerating, at the MPC's desired distance for that speed on its shortest time gap (6 m + 1.25 s x vEgo, from
   `long_mpc`). The planner takes the lower of the MPC and e2e, so the MPC holds the plan at about 0 (aggressive) or
   eases off slightly (standard, relaxed); it does not brake for the object as for a stopped car. Its distance is not
-  the track's range, and its `modelProb` is 0, so it raises no FCW.
+  the track's range, and its `modelProb` is 0, so it raises no FCW. **Below the car's stopping speed (0.8 m/s)
+  holding speed is a stop**: the planner asks to stop and, from standstill, does not pull away while the track stays
+  held, whatever its range (CAR doc 5.3). **A held lead is a lead for the MPC only.** It is marked (`radarTrackId` =
+  -2 - the track's id, `held_lead.py`), and every other reader of `leadOne` skips it. These are DEC, `hasLead` (the
+  dash's lead icon, 0x500, shadow_learn), the e2e alerts, the onroad chevrons and path, the developer UI, the comma
+  4 rail and `brake_route_check.py`. So during a hold the dash shows no lead.
 * **Stopped cars are kept.** A stopped car that the camera also sees as stopped or slow is matched as before, at any
   range. The camera's lag on a stopped queue far ahead is inside the tolerance. On route c0, track 809 runs from 117 m
   to 5 m while the camera reads it at 8-12 m/s beyond 65 m; every frame upstream matched to it is unchanged.
@@ -147,13 +153,41 @@ updates, and the hold). Nothing has reached the car.
   - **The hold** ran 44.7 s engaged: 30.7 s on clutter the car drove through, 9.85 s on objects it stopped short of,
     3.8 s on tracks that moved later. Engaged, the plan is 0.5 m/s^2 or more firmer than the second version on 7.3 s,
     never by 1 to below -1, at worst -0.83 (route 06 t=1265.5, clutter, where the old decode braked to -0.78 and the
-    true scale to -1.28), and it is never 0.5 or more softer. No engaged frame near standstill is kept from pulling
-    away (v under 0.5 m/s, hold, the plan at 0.05 or less where the second version gave over 0.2: 0 s).
-  - **Moving leads:** below 4 m/s, a moving radar lead the true scale uses and the guard does not: 5.4 s -> 4.7 s,
-    engaged 0.45 -> 0. Route 07 t=1128.2-1130.1: -0.36, it was -3.50. c9 t=180.0-180.3: -0.42, it was -2.18 (track
+    true scale to -1.28), and it is never 0.5 or more softer. Near standstill what decides a launch is the stop
+    request (`shouldStop`), not `aTarget`, and the hold asks to stop below 0.8 m/s. Engaged, it adds 0.8 s of stop
+    requests where the second version had none. These are route 07 t=1241.9-1242.0 at 0.4-0.5 m/s and route 08
+    t=72.5-73.1 from 0.8 m/s down to the stop, and the old decode asked for the same stop on every one of those
+    frames. At standstill, where the second version would have launched, the hold keeps the car stopped on one frame
+    (0.05 s, route 08); over all 4,015 s of standstill the hold ran 0.35 s. (The figure this line
+    gave before, 0 s with the plan at 0.05 or less where the second version gave over 0.2, measured `aTarget`, which
+    does not gate a launch.)
+  - **Moving leads:** below 4 m/s, a radar lead reading 1 m/s or more that the true scale uses and the guard does not
+    take: 5.4 s -> 9.55 s, engaged 0.45 -> 0.55 s. The range test refuses more of them, not fewer. (This line said
+    4.7 s and 0 before, because it counted a held lead of the same track as taken; a held lead's speed and distance
+    are made up.) 5.05 s of the 9.55 are held, including all 0.55 s engaged. Part of it is intended: spike tracks such
+    as 07's 1796 and 120's 74 read as moving. Engaged, the plan there is never softer than the second version's.
+    Route 06 t=1209.7 plans -0.65 against +0.26 (old decode -1.1), route 120 t=17.7 +0.51 against +0.65, and the other
+    three episodes are identical.
+    Route 07 t=1128.2-1130.1: -0.36, it was -3.50. c9 t=180.0-180.3: -0.42, it was -2.18 (track
     611 no longer latches). 10f t=2800.8-2801.2 stays at -2.09: track 6716's own range moves
     forward 1.3 m in 1 s, so by every test here it was moving; the car then drove through its point.
   - **c9 t=288.79**, the car in the lane: taken from its second radar update, 0.1 s later than the true scale.
+
+* **The fourth commit, replayed** the same way (13 routes, 469,942 frames, against the third commit):
+  - **The plan does not change.** `aTarget`, `shouldStop`, FCW and every `leadOne` field but `radarTrackId` are
+    identical on every frame. `radarTrackId` carries the mark on exactly the 7,768 held frames (388.4 s, 44.7 s
+    engaged), each as -2 - the held track's id.
+  - **`hasLead`** (the dash's lead icon) is off on those frames: 44.6 s less lead shown engaged. It toggles 2,705
+    times (third commit 3,043, second 2,737, old decode 3,121).
+  - **DEC, what-if** (sunnypilot's real `DynamicExperimentalController` over the 13 routes, fed each version's
+    `leadOne`; DEC was off on every frame of them). With the third commit DEC would sit in ACC where the second
+    version is blended on 26.65 s engaged. On 2.1 s of that its plan is 0.5 m/s² or more above the second version's,
+    and on 0.8 s of that the second version brakes: route 08 t=71.5-71.8, an e2e stop from 4 m/s with tracks at 16-20 m
+    in the path, gives +0.47 against -0.84. Closed loop, the car would roll on toward the stop at walking pace. With
+    the mark DEC skips the held lead: 0 s in ACC where the second version is blended, 0 s with its plan 0.5 or more
+    above the second version's, and its mode differs from the second version's on 0.25 s engaged.
+  - **A non-finite `vEgo`** no longer poisons the guard's odometer. It used to stay NaN for the rest of the drive,
+    and then no track latched as moving (found by the review's fuzzer).
 
 * **What the guard gives up.** The camera is the only thing in this data that tells a stationary return from a real
   stationary object (track age, distance jumps and range-rate residual all overlap between the two). So below 4 m/s
@@ -202,7 +236,7 @@ updates, and the hold). Nothing has reached the car.
   The scale fix's interim guidance (next entry down) still applies until such a drive: no engaged driving in car
   parks or driveways, and engaged stop-and-go and close follow are unvalidated.
 
-* **Tests.** `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_elesys_radar_guard.py` (new, 21 tests) uses
+* **Tests.** `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_elesys_radar_guard.py` (new, 26 tests) uses
   logged frames in `fixtures/elesys_radar_guard_frames.json.gz`: 10f t=2737-2746 and t=2753-2758, c8 t=2318-2322.5,
   c0 t=249-266, c9 t=286.5-289.4, 07 t=1126-1130.2 and 06 t=1303.5-1311. Each frame says whether it carries a new
   radar update. Each window goes through radard with the guard on and off.
@@ -228,14 +262,20 @@ updates, and the hold). Nothing has reached the car.
     the camera hysteresis (route 06 t=1303.45's single frame at 0.53), counting in radar updates, the range-backed
     latch and its reset, a speed spike whose range does not follow (routes 07 and 120), a cut-in taken after two
     updates, a track coming toward the car (not moving), and the hold (its values, and only with no other lead).
+    Fourth commit: the hold through the real MPC, on every personality at 0-3.9 m/s (within 0.05 of 0; a stop
+    request exactly below 0.8 m/s); the mark; `hasLead` through the real planner's `publish()` and DEC both skipping
+    a held lead; a NaN and an inf `vEgo`. `test_hud_cluster.py` (the rail's planned stop) and `test_brake_route_check.py`
+    (28: a held lead is no stopped car) pin those two consumers.
 
   The 10f near-range and c8 tests fail with the guard off. The creeping-10f and c9 tests fail on the first version
   of the guard (no moving-track rule). The 06, 07 and both 10f windows fail without the hold; the 07 window and the
   spike unit test fail without the range test. The c0 test passes either way: it pins that the guard changes
-  nothing there.
+  nothing there. Without the mark, 9 guard tests fail. Without its `real_lead()`, the DEC test, the `hasLead` test
+  and the `brake_route_check` test each fail. Without the finite check, the odometer test fails.
 
 Under the hood: no opendbc change; the submodule stays at `83c8b5b0`. The guard's thresholds and the data behind them
-are in the module docstring. Docs: CAR doc 4.8 and 5.3, `docs/fork/README.md`.
+are in the module docstring. The mark is `openpilot/sunnypilot/selfdrive/controls/lib/held_lead.py`; its readers are
+listed in CAR doc 5.3. Docs: CAR doc 4.8 and 5.3, `docs/fork/README.md`.
 
 ## 2026-10-09 — the radar's relative speed was read at half its value
 
