@@ -15,6 +15,103 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-09 — the radar's relative speed was read at half its value
+
+The Elesys radar's track speed (`REL_SPEED`, in the hand-written `honda_accord_2015au_radar.dbc`) was decoded at
+1/128 m/s. The radar sends it at 1/64 m/s. So openpilot saw every radar track closing or pulling away at half its real
+speed. The same went for `vLead`, `vLeadK` and `aLeadK` of every lead that came from the radar, which is 84-97% of the
+lead time while moving on the six routes below. The DBC now says 1/64 on all 13 track messages (0x410-0x417 and
+0x420-0x424). Nothing else changes. Nothing has reached the car.
+
+* **What it did on the road.** Route 000000c0 closing on a stopped queue at 15 m/s: the radar put the car ahead at
+  7.4 m/s, half of the 14.7 m/s closing speed. The planner's lead model therefore had it moving away at half our speed
+  while it was standing still. The model's own lead swung between 0.8 and 8 m/s until t≈256 and read 0.1-0.6 m/s
+  after it; experimental mode's e2e plan did most of the braking. Replayed with the fix, the radar lead reads -0.15 to
+  +0.25 m/s through the whole approach:
+
+  | t (s) | vEgo | model lead v | logged radar vLead | fixed vLead | dRel |
+  |---|---|---|---|---|---|
+  | 253 | 14.7 | 7.6 | 7.36 | -0.03 | 105 m |
+  | 256 | 12.0 | 6.8 | 6.04 | 0.03 | 64 m |
+  | 259 | 8.4 | 0.3 | 4.35 | 0.18 | 33 m |
+  | 262 | 4.6 | 0.1 | 2.49 | 0.25 | 13.5 m |
+  | 264 | 1.6 | 0.1 | 0.95 | 0.16 | 6.4 m |
+
+  t is from the first logged event; the earlier study's clock is about 2 s behind it, so its "t≈251" is this table's 253.
+
+* **The logged CAN.** On routes 113 and 120, the bus-1 track frames were decoded through each tree's own DBC
+  (`CANParser`). For each 1 s window of one track, the rate of change of `LONG_DIST` was fitted against `REL_SPEED`:
+
+  | route | group | before: slope (median ratio) | after: slope (median ratio) | windows |
+  |---|---|---|---|---|
+  | 113 | A (0x410-0x417) | 2.010 (2.021) | **1.005** (1.010) | 7464 |
+  | 113 | B (0x420-0x424) | 2.073 (2.009) | **1.036** (1.004) | 267 |
+  | 120 | A | 2.025 (2.012) | **1.012** (1.006) | 9939 |
+  | 120 | B | 2.370 (1.998) | **1.185** (0.999) | 19 |
+
+  B has few windows: its tracks are oncoming cars, and 120's 19 windows give a loose fit, so the median ratio is the
+  better measure there.
+  - **Stationary objects** (windows whose range rate is -vEgo) read `REL_SPEED` = -0.498 x vEgo before and
+    -0.997/-0.996 x vEgo after.
+  - **On the other routes** (c0, 10f, 115, 121) the A-group slope after the fix is 0.990-1.011 and B's median ratio is
+    1.002-1.011.
+  - **Only the factor was wrong.** Each fixed value is exactly 2x the old one on every frame, and `LONG_DIST` is
+    identical. Byte 4 bits 7:6 are never set and negative values sign-extend from bit 37, so the 14-bit signed layout
+    stands. The other speed on the radar bus, `0x300 VEHICLE_SPEED`, reads 0.99 x vEgo in km/h and was already
+    right.
+
+* **Through radard.** On six routes (c0, 10f, 113, 115, 120, 121) the logged CAN was replayed through this tree's
+  `RadarInterface`, and radard was run on the logged `modelV2`/`carState`, once with the fixed decode and once with
+  the old one. The old-decode replay reproduces the logged `radarState.leadOne` on 95.3-99.8% of frames.
+  - For radar leads, the rate of change of `dRel` against `vRel` goes from 2.01-2.04 to **1.00-1.02** (five routes;
+    121 has almost no leads).
+  - The radar-or-camera choice barely moves: the radar-sourced share of the lead changes by -1.4 to +0.2 points, and
+    the source differs on 0-1.5% of lead frames. The camera match in radard uses `vRel`, but its speed term rarely
+    changed which track it picked.
+
+* **What changes in the car.** Every radar lead now has its real speed relative to us.
+  - **Closing on slower or stopped traffic,** the longitudinal MPC sees the real closing speed and brakes earlier.
+    Before, it saw about vEgo²/20 m more room than there was, 11 m at 15 m/s.
+  - **Behind a lead that pulls away,** it sees the lead's real speed and follows sooner.
+  - **FCW** (upstream's crash check on the MPC's lead trajectory) can now fire on a fast closing that it could not see
+    before.
+  - **Experimental mode masks some of this.** e2e is the plan in about half of low-speed following, and the planner
+    takes the lowest plan, so the difference shows most in chill mode or wherever the radar lead's plan is the one
+    that binds.
+  - **At a standstill nothing changes.** The radar reports no tracks while the car is stopped, so the stop and the
+    pull-off run on the camera as before.
+
+* **Checked, and left alone: nothing was tuned on the half-scale value.**
+  - `radar_interface.py` passes `REL_SPEED` straight through.
+  - radard is upstream's, and its camera match and Kalman filter assume the true scale.
+  - In the fork, two places read a lead's speed:
+    - the HUD's standstill banner (`LEAD_DEPART_MS`, 1 m/s);
+    - `brake_route_check.py`'s stopped-lead tests (`vLead` < 0.5 and < 0.1).
+
+    Both are physical thresholds that apply at or after a stop, where the radar has no tracks. Nothing in opendbc's
+    Honda code reads a lead's speed.
+  - **Logs recorded before this change still carry the half-scale `vRel`/`vLead` in `radarState`.** Any analysis of
+    those routes that reads the radar lead's speed (the c1weak study, `brake_route_check.py` on older routes) reads
+    the old numbers. That affects nothing at the stop itself, for the reason above.
+
+* **How to judge it.** Before driving, replay a route recorded with this build: the radar lead's d(`dRel`)/dt against
+  `vRel` should be about 1.0. Then drive it in chill mode and in experimental mode. Watch for:
+  - earlier, smoother braking toward slower and stopped traffic;
+  - quicker following when the lead pulls away;
+  - no new FCW in ordinary following.
+
+* **Tests.** `opendbc/car/honda/tests/test_elesys_radar.py` (new, 4 tests) uses logged frames of route 113:
+  - the signal definition on all 13 track messages;
+  - a raw value;
+  - a stationary object through the real `RadarInterface`, which reads -vEgo, with its `dRel` changing at `vRel`;
+  - an oncoming B-group track's range rate.
+
+  All four fail on the old DBC.
+
+Under the hood: opendbc `83c8b5b0`, `REL_SPEED : 37|14@0- (0.015625,0) [-128|128]` with a `CM_` per track message.
+Docs: CAR doc 4.8 and 5.2, `docs/fork/README.md`, opendbc `FORK.md`. The root cause was found in round 5's
+close-follow study (item 4) and confirmed independently by its review.
+
 ## 2026-10-06 — the three 2026-10-06 changes together (integration)
 
 The pump rule C1b, the screen's confirm target and fixes 4 (the MADS resume and the confirm grace, board `298727b3`)

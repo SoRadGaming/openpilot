@@ -78,6 +78,7 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `opendbc/sunnypilot/car/honda/gas_interceptor.py` | M | the import and the one call into `elesys_gas.py`, and the tuner's `observe_pedal` hook | - |
 | `opendbc/car/honda/tests/test_elesys.py` | A | all | - |
 | `opendbc/car/honda/tests/test_elesys_stock_acc.py` | A (2026-10-04) | all (15.7) | - |
+| `opendbc/car/honda/tests/test_elesys_radar.py` | A (2026-10-09) | all (4.8, 5.2) | - |
 | `opendbc/sunnypilot/car/honda/values_ext.py` | M (2026-10-04) | `HondaFlagsSP.ELESYS_STOCK_ACC` = 8 (15) | - |
 | `opendbc/sunnypilot/car/interfaces.py` | M (2026-10-04) | `_initialize_honda()`, the stock ACC mode's one writer (15.2) | - |
 | `opendbc/safety/tests/libsafety/safety.c`, `opendbc/safety/tests/libsafety/libsafety_py.py` | M (2026-10-04) | the test getter `get_honda_elesys_stock_acc()` (15.7) | - |
@@ -396,11 +397,13 @@ Upstream has since added `11 B` to the `GEARBOX_CVT` VAL table in `_gearbox_comm
 | `RADAR_VEHICLE_STATE` | 0x300 (768) | `VEHICLE_SPEED 15:8` kph |
 | `RADAR_VEHICLE_STATE2` | 0x301 (769) | no signals |
 | `RADAR_DIAGNOSTIC` | 0x400 (1024) | `RADAR_STATE 7:8`, `NOT_READY 15:8`, `RADAR_FLAGS 23:8` |
-| `RADAR_TRACK_A0`..`A7` | 0x410-0x417 (1040-1047) | `LONG_DIST 6:15` x0.0078125 m, `LAT_DIST 20:13` signed x0.0078125 m, `FLAG_B21`, `FLAG_B22`, `NEW_TRACK 23:1`, `REL_SPEED 37:14` signed x0.0078125 m/s, `CHECKSUM`, `COUNTER`. A0 also has `NEW_SIGNAL_1 55:5` |
+| `RADAR_TRACK_A0`..`A7` | 0x410-0x417 (1040-1047) | `LONG_DIST 6:15` x0.0078125 m, `LAT_DIST 20:13` signed x0.0078125 m, `FLAG_B21`, `FLAG_B22`, `NEW_TRACK 23:1`, `REL_SPEED 37:14` signed x0.015625 m/s (1/64; 1/128 until 2026-10-09, below), `CHECKSUM`, `COUNTER`. A0 also has `NEW_SIGNAL_1 55:5` |
 | `RADAR_TRACK_B0`..`B4` | 0x420-0x424 (1056-1060) | same layout as the A tracks |
 | `RADAR_STATUS_4FF` | 0x4FF (1279) | `STATUS_A`..`STATUS_D` |
 
 The signal names `LONG_DIST`, `LAT_DIST`, `REL_SPEED`, `NEW_TRACK` and `RADAR_STATE` must not change: `radar_interface.py` reads them by name on the path it shares with Nidec. Background is in `S:/OP/radar_firmware_bit_spec.md` and `S:/OP/HOW_OP_USES_RADAR.md`. The second describes an older fork whose ranges skipped 0x417 and 0x424; the current code reads both.
+
+**`REL_SPEED` is 1/64 m/s (fixed 2026-10-09).** Until then this file said 1/128, which halved the `vRel` of every radar track, and with it `vLead`, `vLeadK` and `aLeadK` of every radar-sourced lead. Measured on the logged bus 1 of routes 113 and 120: d(`LONG_DIST`)/dt was 2.01-2.03 x the old decode on the A group (B: 2.00-2.01 by median ratio), and stationary objects read -0.50 x vEgo. At 1/64 the slope is 0.99-1.01 on the A group of six routes (B: 1.00-1.01 by median ratio, few windows) and stationary objects read -1.00 x vEgo. Byte 4 bits 7:6 are never set and negative values sign-extend from bit 37, so the 14-bit signed layout was right and only the factor was wrong. `LONG_DIST` agrees with the camera (-0.2 m median under 8 m) and `0x300 VEHICLE_SPEED` reads 0.99 x vEgo in km/h; neither changes, and no other track signal is a speed. The earlier check in `S:/OP/radar_firmware_bit_spec.md` was a correlation (r = 0.994), which cannot see a constant factor. Pinned by `opendbc/car/honda/tests/test_elesys_radar.py` with logged frames; the replay is in `docs/CHANGELOG_SERIAL_STEERING.md` (2026-10-09).
 
 ### 4.9 DBC merge checklist
 
@@ -439,7 +442,9 @@ The car takes the default lateral branch (2.4). That branch first sets `steerAct
 
 Track decoding (`LONG_DIST < 255`, `dRel`, `yRel = -LAT_DIST`, `vRel`) is the shared upstream path. Upstream removed the `aRel`/`yvRel`/`measured` assignments in the same function and moved `track_id` into the base class; the 2026-09 merge took both. The fork's hunks do not touch those lines.
 
-Re-apply: keep the `radar_type` switch and the three Elesys branches. No test covers this file directly.
+`vRel = REL_SPEED` goes straight through: the scale lives in the DBC (4.8). Nothing in this file, in radard or in the fork was tuned on the half-scale value that file carried until 2026-10-09.
+
+Re-apply: keep the `radar_type` switch and the three Elesys branches. `test_elesys_radar.py` runs logged frames through `RadarInterface` (a stationary object reads -vEgo, and its `dRel` changes at `vRel`); nothing else covers this file directly.
 
 ---
 
@@ -1772,6 +1777,7 @@ Adds `HondaDynamicTuningEnabled`, `HondaDynBrakeGain`, the three `HondaDynModeSe
 | `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | sunnypilot | runner (1 test) | 10.5 |
 | `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py` | sunnypilot | runner (26 tests) | section 11, and 15.6 |
 | `opendbc/car/honda/tests/test_elesys_stock_acc.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys_stock_acc` (17 tests) | 15.2-15.3, 15.9 |
+| `opendbc/car/honda/tests/test_elesys_radar.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys_radar` (4 tests) | 4.8, 5.2: `REL_SPEED` 37:14 signed at 1/64 m/s on all 13 track messages; a logged frame's raw value; logged frames of route 113 through the real `RadarInterface` (a stationary object reads -vEgo and its `dRel` changes at `vRel`); a logged B-group track's range rate. All four fail on the old 1/128 DBC |
 | `openpilot/sunnypilot/selfdrive/car/tests/test_honda_stock_acc.py` | sunnypilot | runner (15 tests) | 15.5 |
 | `openpilot/sunnypilot/mads/tests/test_mads_honda_stock_acc.py` | sunnypilot | runner (14 tests) | 15.5 |
 | `openpilot/selfdrive/locationd/test/test_torqued_elesys.py` | sunnypilot | runner (11 tests) | 2.4: prior and seed before any point, a zero offset as upstream, a changed prior discards the cache, a reported 0 adds no point, the seed survives EnforceTorqueControl / NNLC while other cars match upstream's re-run |
