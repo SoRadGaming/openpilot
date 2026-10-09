@@ -176,14 +176,21 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
 
   if low_speed_override:
     # FORK(HONDA_ACCORD_9G_AU): on HONDA_ELESYS only a moving track, or one the camera's confident lead confirms
-    low_speed_tracks = [c for c in tracks.values() if c.potential_low_speed_lead(v_ego) and
-                        (clutter_guard is None or clutter_guard.override_confirmed(c, lead_msg))]
+    potential_tracks = [c for c in tracks.values() if c.potential_low_speed_lead(v_ego)]
+    low_speed_tracks = [c for c in potential_tracks
+                        if clutter_guard is None or clutter_guard.override_confirmed(c, lead_msg)]
     if len(low_speed_tracks) > 0:
       closest_track = min(low_speed_tracks, key=lambda c: c.dRel)
 
       # Only choose new track if it is actually closer than the previous one
       if (not lead_dict['present']) or (closest_track.dRel < lead_dict['dRel']):
         lead_dict = closest_track.get_RadarState()
+
+    # FORK(HONDA_ACCORD_9G_AU): with no lead at all, a refused track close ahead still stops the plan accelerating
+    if clutter_guard is not None and not lead_dict['present']:
+      held = clutter_guard.hold_track([c for c in potential_tracks if c not in low_speed_tracks])
+      if held is not None:
+        lead_dict = elesys_radar_guard.hold_lead(held.get_RadarState(), v_ego)
 
   return lead_dict
 
@@ -246,7 +253,7 @@ class RadarD:
       self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead)
 
     if self.clutter_guard is not None:  # FORK(HONDA_ACCORD_9G_AU)
-      self.clutter_guard.update_tracks(self.tracks)
+      self.clutter_guard.update_tracks(self.tracks, sm.recv_frame['radarTracks'], self.v_ego_hist[0])
 
     # *** publish radarState ***
     self.radar_state_valid = sm.all_checks()

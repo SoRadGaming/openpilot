@@ -1,13 +1,14 @@
 """
 FORK(HONDA_ACCORD_9G_AU): radard's clutter guard (elesys_radar_guard.py), on logged frames.
 
-fixtures/elesys_radar_guard_frames.json.gz holds six windows of this car's drives (15646e8515eda1a7/<route>): per
+fixtures/elesys_radar_guard_frames.json.gz holds seven windows of this car's drives (15646e8515eda1a7/<route>): per
 modelV2 frame, the radar points this tree's RadarInterface decodes from the logged bus-1 CAN at the true 1/64 m/s
-REL_SPEED scale, the logged modelV2 leads and model speed, and the carState speed, in the order radard saw them. Each
-window starts about 2 s early so radard's lead-prob filter and tracks are warm. The same frames go through radard twice:
-as HONDA_ACCORD_9G_AU (guard on) and as HONDA_ACCORD, another Nidec Honda (guard off: upstream's radard exactly).
-Three windows pin what the guard must remove (10f near range, c8) or keep (c0, 10f creeping, c9), and one pins what it
-knowingly gives up (06 at night), so a later change to the thresholds shows up here either way.
+REL_SPEED scale, whether they are a new radar update (the radar reports at 10 Hz, radard runs at 20 Hz), the logged
+modelV2 leads and model speed, and the carState speed, in the order radard saw them. Each window starts about 2 s early
+so radard's lead-prob filter and tracks are warm. The same frames go through radard twice: as HONDA_ACCORD_9G_AU (guard
+on) and as HONDA_ACCORD, another Nidec Honda (guard off: upstream's radard exactly). The windows pin what the guard must
+remove (10f near range, c8, the 07 speed spike) or keep (c0, 10f creeping, c9), and what it knowingly gives up (06 at
+night, where it holds the plan instead of braking), so a later change to the thresholds shows up here either way.
 """
 import gzip
 import json
@@ -17,8 +18,11 @@ from collections import defaultdict
 from types import SimpleNamespace
 from typing import Any, cast
 
+from openpilot.cereal import log
 from opendbc.car.structs import car
+from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls import radard
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib import long_mpc
 from openpilot.sunnypilot.selfdrive.controls.lib import elesys_radar_guard as guard
 
 FIXTURE = os.path.join(os.path.dirname(__file__), 'fixtures', 'elesys_radar_guard_frames.json.gz')
@@ -48,8 +52,26 @@ def _track(identifier, vLead, vLeadK=None, dRel=5.0):
   return SimpleNamespace(identifier=identifier, dRel=dRel, yRel=0.0, vLead=vLead, vLeadK=vLead if vLeadK is None else vLeadK)
 
 
+class _Radar:
+  """Feeds a guard as radard does: one radar update, then the same update again on the next radard frame."""
+  def __init__(self, g):
+    self.g = g
+    self.frame = 0
+
+  def update(self, tracks, v_ego=0.0):
+    self.frame += 1
+    for _ in range(2):
+      self.g.update_tracks(tracks, self.frame, v_ego)
+
+
 def car_params(fingerprint, brand='honda'):
   return car.CarParams.new_message(brand=brand, carFingerprint=fingerprint).as_reader()
+
+
+def is_hold(r):
+  """A held lead: the refused track at the car's speed and the MPC's desired distance for it."""
+  return (r.present and r.radar and abs(r.v_lead - r.v_ego) < 1e-6 and
+          abs(r.d - (guard.STOP_DISTANCE + guard.HOLD_T_FOLLOW * r.v_ego)) < 1e-6)
 
 
 def replay(window, fingerprint=ELESYS):
@@ -62,6 +84,8 @@ def replay(window, fingerprint=ELESYS):
     sm['carState'] = SimpleNamespace(vEgo=fr['v_ego'])
     if fr['new_car_state']:
       sm.recv_frame['carState'] += 1
+    if fr['new_radar']:
+      sm.recv_frame['radarTracks'] += 1
     sm['modelV2'] = SimpleNamespace(velocity=SimpleNamespace(x=[fr['model_v_ego']]),
                                     leadsV3=[_lead(*ld) for ld in fr['leads']])
     sm.seen['modelV2'] = True
@@ -89,8 +113,12 @@ class TestGate(unittest.TestCase):
     self.assertIsNone(radard.RadarD(car_params('TOYOTA_COROLLA_TSS2', 'toyota'), SimpleNamespace(flags=0)).clutter_guard)
     self.assertIsNone(radard.RadarD(car_params(ELESYS, 'toyota'), SimpleNamespace(flags=0)).clutter_guard)
 
-  def test_radar_to_camera_is_radards(self):
+  def test_constants_are_radards_and_the_mpcs(self):
     self.assertEqual(guard.RADAR_TO_CAMERA, radard.RADAR_TO_CAMERA)
+    self.assertEqual(guard.DT, DT_MDL)
+    self.assertEqual(guard.STOP_DISTANCE, long_mpc.STOP_DISTANCE)
+    personalities = log.LongitudinalPersonality.schema.enumerants.values()
+    self.assertEqual(guard.HOLD_T_FOLLOW, min(long_mpc.get_T_FOLLOW(p) for p in personalities))
 
   def test_guard_off_is_upstream(self):
     # get_lead's default is upstream's path: the override and the match see every track
@@ -121,7 +149,7 @@ class TestThresholds(unittest.TestCase):
     near_stopped = _lead(5.8 + radard.RADAR_TO_CAMERA, 0.3, 0.0, 0.3, 0.2, 0.1, 0.0, 1.0)
     far_moving = _lead(12.0 + radard.RADAR_TO_CAMERA, 0.5, 0.0, 0.3, 2.5, 0.3, 0.0, 1.0)
     g = guard.ElesysRadarGuard()
-    g.update_tracks({1: trk})
+    _Radar(g).update({1: trk})
     self.assertFalse(g.override_confirmed(trk, near_stopped))  # no confident camera lead yet
     g.update_camera(0.9)
     self.assertTrue(g.override_confirmed(trk, near_stopped))
@@ -138,44 +166,115 @@ class TestThresholds(unittest.TestCase):
       g.update_camera(prob)
       self.assertEqual(g.camera_confident, confident, prob)
 
-  def test_a_track_seen_moving_latches(self):
+
+class TestMoving(unittest.TestCase):
+  CAM = _lead(30.0 + radard.RADAR_TO_CAMERA, 1.0, 0.0, 0.5, 8.0, 1.0, 0.0, 0.1)  # far, fast, not confident
+
+  def test_counted_in_radar_updates_not_radard_frames(self):
+    # radard runs at 20 Hz on a 10 Hz radar: a reading it sees twice is one update
     g = guard.ElesysRadarGuard()
-    cam = _lead(30.0 + radard.RADAR_TO_CAMERA, 1.0, 0.0, 0.5, 8.0, 1.0, 0.0, 0.1)  # far, fast, not confident
     trk = _track(7, vLead=1.2)
-    for _ in range(guard.MOVING_FRAMES - 1):
-      g.update_tracks({7: trk})
-      self.assertFalse(g.override_confirmed(trk, cam))
-    g.update_tracks({7: trk})
-    self.assertTrue(g.override_confirmed(trk, cam))  # moving: radard's override takes it as upstream does
+    for _ in range(6):
+      g.update_tracks({7: trk}, 1, 0.0)
+    self.assertEqual(g.state[7].updates, 1)
+    self.assertEqual(g.state[7].run_ahead, 1)
+    radar = _Radar(g)
+    radar.frame = 1
+    radar.update({7: trk})
+    self.assertEqual(g.state[7].run_ahead, 2)
+
+  def test_a_track_seen_moving_latches_once_its_range_agrees(self):
+    # a vehicle pulling away at 1.2 m/s with the car stopped: its range grows 0.12 m per radar update. It has read
+    # 1 m/s for MOVING_UPDATES updates after the third, but its range history needs WORLD_SPAN (0.5 s) to confirm it
+    g = guard.ElesysRadarGuard()
+    radar = _Radar(g)
+    trk = _track(7, vLead=1.2, vLeadK=1.2, dRel=5.0)
+    for n in range(1, 7):
+      trk.dRel = 5.0 + 0.12 * n
+      radar.update({7: trk})
+      self.assertEqual(g.override_confirmed(trk, self.CAM), n >= 6, n)
+    self.assertEqual(g.moving, {7})
     trk.vLead = trk.vLeadK = 0.0
-    g.update_tracks({7: trk})
-    self.assertTrue(g.override_confirmed(trk, cam))  # a vehicle that stopped stays a vehicle
-    g.update_tracks({})
-    g.update_tracks({7: trk})
-    self.assertFalse(g.override_confirmed(trk, cam))  # a new track with the same id starts again
+    radar.update({7: trk})
+    radar.update({7: trk})
+    self.assertTrue(g.override_confirmed(trk, self.CAM))  # a vehicle that stopped stays a vehicle
+    radar.update({})
+    radar.update({7: trk})
+    self.assertFalse(g.override_confirmed(trk, self.CAM))  # a new track with the same id starts again
 
-  def test_a_speed_spike_does_not_latch(self):
-    # route 120 t=17.7: stationary track 74 reads 0.1 -> 2.0 -> 2.0 -> 2.0 -> 0.2 m/s; its vLeadK peaks at 1.01
+  def test_a_speed_spike_its_range_does_not_follow_does_not_latch(self):
+    # route 07 t=1128.2-1128.8 (track 1796) and route 120 t=17.7 (track 74): a stationary return reads 2-3.9 m/s for
+    # three to six radar updates while its range closes at the car's speed. No latch, and not moving now either
     g = guard.ElesysRadarGuard()
-    cam = _lead(30.0 + radard.RADAR_TO_CAMERA, 1.0, 0.0, 0.5, 8.0, 1.0, 0.0, 0.1)
-    trk = _track(74, vLead=0.1)
-    for v, vk in [(0.1, 0.05), (2.0, 0.36), (2.0, 0.70), (2.0, 1.01), (0.2, 0.91), (0.2, 0.83)]:
-      trk.vLead, trk.vLeadK = v, vk
-      g.update_tracks({74: trk})
-      self.assertFalse(g.override_confirmed(trk, cam), v)
+    radar = _Radar(g)
+    trk = _track(74, vLead=0.1, vLeadK=0.1, dRel=12.0)
+    for n, (v, vk) in enumerate([(0.1, 0.1)] * 6 + [(3.7, 1.7), (3.7, 2.6), (3.8, 3.3), (3.8, 3.7), (3.9, 4.1),
+                                                     (3.9, 4.3), (0.2, 3.7), (0.2, 3.1), (0.2, 2.1)]):
+      trk.vLead, trk.vLeadK, trk.dRel = v, vk, 12.0 - 0.27 * n  # the car at 2.7 m/s
+      radar.update({74: trk}, v_ego=2.7)
+      self.assertFalse(g.override_confirmed(trk, self.CAM), n)
+    self.assertEqual(g.moving, set())
 
-  def test_a_clearly_moving_track_counts_at_once(self):
-    # route c9 t=288.79: track 946 appears in the lane at 8.8 m doing 2.1 m/s (its filtered speed starts there)
+  def test_a_clearly_moving_new_track_counts_after_two_updates(self):
+    # route c9 t=288.79: track 946 appears in the lane at 8.8 m doing 2.1 m/s. Too new for a range history, it is
+    # taken on its speed once raw and filtered speed have both said so for MOVING_NOW_UPDATES radar updates
     g = guard.ElesysRadarGuard()
+    radar = _Radar(g)
     cam = _lead(13.0 + radard.RADAR_TO_CAMERA, 1.0, 0.0, 0.5, 7.0, 1.0, 0.0, 0.97)
     g.update_camera(0.97)
     trk = _track(946, vLead=2.1, vLeadK=2.1, dRel=8.8)
-    g.update_tracks({946: trk})
+    radar.update({946: trk}, v_ego=3.9)
+    self.assertFalse(g.override_confirmed(trk, cam))  # one update, and the camera's lead is 4 m on
+    trk.dRel = 8.6
+    radar.update({946: trk}, v_ego=3.9)
     self.assertTrue(g.override_confirmed(trk, cam))
-    trk.vLeadK = guard.V_MOVING_NOW - 0.01
     trk.vLead = 0.9
-    g.update_tracks({946: trk})
-    self.assertFalse(g.override_confirmed(trk, cam))  # not latched by one frame, and the camera's lead is 4 m on
+    radar.update({946: trk}, v_ego=3.9)
+    self.assertFalse(g.override_confirmed(trk, cam))  # the raw speed fell under 1 m/s, and it is not latched
+
+  def test_a_vehicle_coming_toward_the_car_is_not_moving(self):
+    # Given up: only moving away counts. A track closing on the car in world terms (reversing, rolling back,
+    # oncoming) is stationary to the guard, whatever its range history says
+    g = guard.ElesysRadarGuard()
+    radar = _Radar(g)
+    trk = _track(5, vLead=-1.5, vLeadK=-1.5, dRel=10.0)
+    for n in range(10):
+      trk.dRel = 10.0 - 0.15 * n
+      radar.update({5: trk})
+    self.assertFalse(g.override_confirmed(trk, self.CAM))
+    self.assertEqual(g.moving, set())
+
+
+class TestHold(unittest.TestCase):
+  def test_hold_lead_is_at_the_cars_speed_and_the_mpcs_distance(self):
+    held = guard.hold_lead({'dRel': 14.2, 'yRel': 0.1, 'vRel': -2.9, 'vLead': 0.1, 'vLeadK': 0.0, 'aLeadK': -0.4,
+                            'radar': True, 'radarTrackId': 2633, 'present': True}, 2.9)
+    self.assertAlmostEqual(held['dRel'], long_mpc.STOP_DISTANCE + 1.25 * 2.9)
+    self.assertEqual((held['vLead'], held['vLeadK'], held['vRel'], held['aLeadK']), (2.9, 2.9, 0.0, 0.0))
+    self.assertEqual((held['radarTrackId'], held['present']), (2633, True))
+
+  def _get_lead(self, updates, cam_prob):
+    g = guard.ElesysRadarGuard()
+    radar = _Radar(g)
+    trk = radard.Track(3, 0.0, radard.KalmanParams(radard.DT_MDL))
+    trk.update(8.0, 0.2, -3.0, 0.0)
+    for _ in range(updates):
+      radar.update({3: trk}, v_ego=3.0)
+    cam = _lead(30.0 + radard.RADAR_TO_CAMERA, 1.0, 0.0, 0.5, 8.0, 1.0, 0.0, cam_prob)
+    g.update_camera(cam_prob)
+    cp_sp = cast(Any, SimpleNamespace(flags=0))
+    return radard.get_lead(3.0, True, {3: trk}, cam, 3.0, cam_prob, car_params(ELESYS), cp_sp, clutter_guard=g)
+
+  def test_a_refused_track_holds_the_plan_only_with_no_other_lead(self):
+    got = self._get_lead(guard.HOLD_UPDATES, 0.1)  # stationary at 8 m, no camera: refused by the override
+    self.assertTrue(got['present'] and got['radar'])
+    self.assertEqual(got['radarTrackId'], 3)
+    self.assertEqual((got['vLead'], got['aLeadK']), (3.0, 0.0))
+    self.assertAlmostEqual(got['dRel'], guard.STOP_DISTANCE + guard.HOLD_T_FOLLOW * 3.0)
+    self.assertFalse(self._get_lead(guard.HOLD_UPDATES - 1, 0.1)['present'])  # not seen long enough
+    got = self._get_lead(guard.HOLD_UPDATES, 0.9)  # the camera's confident lead, 30 m on at 8 m/s, is the lead
+    self.assertTrue(got['present'] and not got['radar'])
+    self.assertAlmostEqual(got['vLead'], 8.0)
 
 
 class TestLoggedFrames(unittest.TestCase):
@@ -188,13 +287,14 @@ class TestLoggedFrames(unittest.TestCase):
     self.assertGreater(sum(r.d < 6.0 for r in off), 40)  # upstream's low-speed override braking for them
 
     for r in on:
+      self.assertTrue(r.present, r.t)
       if r.cam_prob <= guard.CAMERA_OFF:
-        self.assertFalse(r.present, r.t)  # no confident camera lead, no lead: the override needs the camera
-      elif r.radar:
+        self.assertTrue(is_hold(r), r.t)  # no confident camera lead: the returns only hold the plan
+      elif r.radar and not is_hold(r):
         self.assertLess(abs(r.v_lead), 1.0, r.t)             # none of these returns is moving
         self.assertLessEqual(r.cam_v - r.v_lead, 3.0, r.t)  # a slow camera lead, which the track agrees with
         self.assertGreater(r.d, r.cam_d, r.t)                # and no closer than it
-    radar_on = [r for r in on if r.radar]
+    radar_on = [r for r in on if r.radar and not is_hold(r)]
     self.assertLessEqual(len(radar_on), 5)
     self.assertEqual({r.track for r in radar_on}, {6539})   # t=2741.11-2741.31: 7.5-7.9 m, camera at 3-4 m doing 1.4-2
 
@@ -239,9 +339,10 @@ class TestLoggedFrames(unittest.TestCase):
                              for a, b in zip(on, off, strict=True)), 1)
 
   def test_10f_vehicle_creeping_close_ahead(self):
-    # Route 10f t=2756.4-2757.5, daylight, 3.0-4.0 m/s: a vehicle creeps 4-5 m ahead (tracks 6566, then 6567, rising
-    # from 0.1 to 1.4 m/s) and the camera rates it 0.27-0.48. Once a track has read 1 m/s or more for MOVING_FRAMES
-    # frames it is a vehicle, and the low-speed override takes it with no camera, exactly as upstream does
+    # Route 10f t=2756.4-2757.5, daylight, 3.0-4.0 m/s: a vehicle creeps 4-5 m ahead (tracks 6568, 6566, then 6567,
+    # rising from 0.2 to 1.4 m/s) and the camera rates it 0.26-0.48. Once a track has read 1 m/s or more for
+    # MOVING_UPDATES radar updates and its range agrees it is a vehicle, and the low-speed override takes it with no
+    # camera, exactly as upstream does
     on = replay('creeping_10f')
     off = replay('creeping_10f', OTHER_HONDA)
     taken = [(a, b) for a, b in zip(on, off, strict=True) if 2757.25 <= a.t <= 2757.47]
@@ -250,35 +351,50 @@ class TestLoggedFrames(unittest.TestCase):
       self.assertLess(a.cam_prob, 0.5, a.t)  # the camera is not confident: this is the moving-track path
       self.assertTrue(a.radar and a.track == 6567 and a.v_lead > 1.0 and a.d < 4.5, a.t)
       self.assertEqual((a.radar, a.track, a.d, a.v_lead), (b.radar, b.track, b.d, b.v_lead), a.t)
-    self.assertTrue(any(a.radar and a.track == 6566 for a in between(on, 2756.85, 2756.95)))
-    # Given up: before a track has been seen moving for MOVING_FRAMES frames it reads 0.3-1.2 m/s and is treated as
-    # stationary, so with the camera unsure there is no lead (upstream brakes for track 6568 / 6567 here)
-    for r in between(on, 2756.40, 2756.86) + between(on, 2756.96, 2757.21):
-      self.assertFalse(r.present, r.t)
+    # Given up: before then the tracks read 0.2-1.2 m/s and count as stationary, so with the camera unsure they only
+    # hold the plan (upstream brakes for tracks 6568, 6566 and 6567 here)
+    for r in between(on, 2756.40, 2757.21):
+      self.assertTrue(is_hold(r) and r.track in (6566, 6567, 6568), r.t)
 
   def test_c9_car_in_lane_closer_than_the_camera_lead(self):
     # Route c9 t=288.79-289.39, 3.8-3.9 m/s: track 946 appears in the lane at 8.8 m doing 2.1 m/s while the camera is
     # sure (prob 0.93-0.97) of a car 9-20 m ahead doing 6-9 m/s. The driver braked at t=289.29. Moving, so the
-    # override takes it at once, as upstream does, although the camera's lead is elsewhere
+    # override takes it as upstream does, although the camera's lead is elsewhere: from its second radar update
     on = between(replay('cut_in_c9'), 288.79, 289.39)
     off = between(replay('cut_in_c9', OTHER_HONDA), 288.79, 289.39)
     for a, b in zip(on, off, strict=True):
-      self.assertTrue(a.radar and a.track == 946 and 2.0 < a.v_lead < 2.2 and a.d < 9.0, a.t)
+      self.assertTrue(b.radar and b.track == 946 and 2.0 < b.v_lead < 2.2 and b.d < 9.0, b.t)
       self.assertGreater(a.cam_prob, 0.9, a.t)
-      self.assertGreater(a.cam_d - a.d, 0.8, a.t)
-      self.assertEqual((a.radar, a.track, a.d, a.v_lead), (b.radar, b.track, b.d, b.v_lead), a.t)
+      if a.t < 288.87:
+        self.assertTrue(a.present and not a.radar, a.t)  # its first update: the camera's lead
+      else:
+        self.assertEqual((a.radar, a.track, a.d, a.v_lead), (b.radar, b.track, b.d, b.v_lead), a.t)
+        self.assertGreater(a.cam_d - a.d, 0.8, a.t)
+
+  def test_07_speed_spike_on_a_stationary_return(self):
+    # Route 07 t=1128.23-1128.78, 2.6 m/s, disengaged: a new return (track 1796) at 7-9 m reads 3.7-3.9 m/s for six
+    # radar updates while its range closes at the car's speed; the car later drove through its point. Upstream takes
+    # it (and, once it reads 0.2 m/s again, brakes for it to -3.5 in the plan replay). The guard never counts it as
+    # moving: at most it holds the plan
+    on = between(replay('speed_spike_07'), 1128.2, 1129.6)
+    off = between(replay('speed_spike_07', OTHER_HONDA), 1128.2, 1129.6)
+    self.assertTrue(any(b.radar and b.track in (1796, 1797) and b.v_lead > 3.5 for b in off))
+    self.assertTrue(all(b.radar and b.track in (1796, 1797) for b in off))
+    for a in on:
+      self.assertTrue(is_hold(a), a.t)
 
   def test_06_known_give_up_stopped_vehicle_at_night(self):
-    # Route 06 t=1306.25-1309.30, engaged, at night, 2.6-3.4 m/s: something wide and stopped in the path (tracks 2633,
+    # Route 06 t=1306.35-1309.30, engaged, at night, 2.6-3.4 m/s: something wide and stopped in the path (tracks 2633,
     # 2634, 2650, 2652; 20 m closing to 10 m) that only the radar sees; the camera reads junk at prob 0.04-0.45.
-    # Upstream brakes for it. The guard cannot tell it from clutter (stationary, no confident camera lead), so there
-    # is no lead and the plan accelerates (+0.4 to +1.0 in the plan replay) until track 2652 starts moving off at
-    # t=1309.75; the driver stopped about 6 m behind it. This is the documented give-up (CAR doc 5.3): if a change
-    # brings the radar back here, check that it does not bring back route 10f's near-range clutter too
-    on = between(replay('night_stop_06'), 1306.25, 1309.30)
-    off = between(replay('night_stop_06', OTHER_HONDA), 1306.25, 1309.30)
+    # Upstream brakes for it. The guard cannot tell it from clutter (stationary, no confident camera lead), so it
+    # does not brake for it: it holds the plan (the plan replay: -0.5 to 0.0 where the first guard went to +1.0) until
+    # track 2652 starts moving off at t=1309.75; the driver stopped about 6 m behind it. This is the documented give-up
+    # (CAR doc 5.3): if a change brings the radar's stop back here, check that it does not bring back route 10f's
+    # near-range clutter too
+    on = between(replay('night_stop_06'), 1306.35, 1309.30)
+    off = between(replay('night_stop_06', OTHER_HONDA), 1306.35, 1309.30)
     for a, b in zip(on, off, strict=True):
-      self.assertFalse(a.present, a.t)
+      self.assertTrue(is_hold(a) and a.track in (2633, 2650, 2652), a.t)
       self.assertLess(a.cam_prob, guard.CAMERA_ON, a.t)
       self.assertTrue(b.radar and b.track in (2633, 2650, 2652) and abs(b.v_lead) < 1.0, b.t)
     # once 2652 moves, the guard follows it like upstream

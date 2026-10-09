@@ -15,22 +15,37 @@ What. Only on HONDA_ELESYS, and only where radard picks a radar track:
     by more than speed_tolerance(). Tracks at or above V_CHECKED are left to upstream (vel_sane already passes them),
     and a track FASTER than the camera is never rejected: the guard only removes leads that would brake harder than
     the camera asks;
-  * the low-speed override takes a MOVING track as upstream does: one whose raw vLead has been at least V_MOVING for
-    MOVING_FRAMES radard frames in a row (latched for the rest of that track's life, so a vehicle that stops stays a
-    vehicle), or whose filtered vLeadK is at least V_MOVING_NOW. Any other track it takes only when the camera has a
-    confident lead at a consistent distance (OVERRIDE_D_TOL) or speed (OVERRIDE_V_TOL). Confident means radard's
-    filtered prob rose above CAMERA_ON and has not since fallen to CAMERA_OFF (radard's own 0.5), so a single frame
-    just over 0.5 does not switch the override on. Otherwise the lead is whatever the camera path gave.
+  * the low-speed override takes a MOVING track as upstream does. Moving is counted in radar updates (the radar
+    reports at 10 Hz, radard runs at 20 Hz and sees each reading twice) and must be backed by the track's own range:
+    its range plus the car's travel (its point in the world) must move away at V_WORLD or more and at least
+    WORLD_RATIO of its radar speed. A track is latched as moving, for the rest of its life (a vehicle that stops stays
+    a vehicle), once its raw vLead has read V_MOVING for MOVING_UPDATES updates in a row and WORLD_SPAN of range
+    history agrees. It is moving now while both its vLeadK and its raw vLead have read V_MOVING_NOW and V_MOVING for
+    MOVING_NOW_UPDATES updates and its range history agrees; a track younger than NOW_SPAN (a cut-in) is taken on its
+    speed alone. Any other track the override takes only when the camera has a confident lead at a consistent
+    distance (OVERRIDE_D_TOL) or speed (OVERRIDE_V_TOL). Confident means radard's filtered prob rose above CAMERA_ON
+    and has not since fallen to CAMERA_OFF (radard's own 0.5);
+  * a track the override refuses still HOLDS the plan when radard has no lead at all: the closest one seen for
+    HOLD_UPDATES updates becomes a lead at the car's own speed, not accelerating, at the MPC's desired distance for
+    that speed on its shortest time gap (hold_lead()). The MPC then neither accelerates toward it nor brakes for it
+    as for a stopped car; the planner takes the lower of the MPC and e2e, so the plan stops accelerating.
 A stopped car the camera also sees as stopped or slow is kept, at any range.
 
 Given up (the camera is the only discriminator for a stationary return that works in this data, see below):
-  * below 4 m/s, a stationary object that only the radar sees no longer stops the car; the stop rests on the camera,
-    e2e and the driver. Worst engaged case: route 06 t=1306.3-1309.8, at night, a stopped vehicle 20 -> 13 m ahead
-    that the camera rated 0.03-0.45; the plan held +0.4 to +1.0 m/s^2 for about 3 s where upstream braked to -0.6.
-    Also route 07 t=1240.7 (a return at 6 m the camera saw at prob 0.13-0.17). These losses fall mostly at night;
+  * below 4 m/s, a stationary object that only the radar sees no longer stops the car: the guard holds the plan for
+    it, and the stop rests on the camera, e2e and the driver. Worst engaged case: route 06 t=1306.3-1309.8, at night,
+    a stopped vehicle 20 -> 13 m ahead that the camera rated 0.03-0.45. Upstream at the true scale braked to
+    -0.3/-0.5; the first guard held +0.4 to +1.0 m/s^2 (and, closed loop, could have carried the car past 4 m/s,
+    where radard has no lead for it at all); the hold keeps the plan at -0.5 to 0.0. Also route 07 t=1240.7 (a return
+    at 6 m the camera saw at prob 0.13-0.17). These losses fall mostly at night;
   * a vehicle creeping at about 1 m/s reads 0.3-1.2 m/s on this radar at walking pace (route 10f t=2756-2757 and
-    t=2851-2853, daylight, 4-8 m ahead, camera prob 0.1-0.5), so until a track has read 1 m/s for MOVING_FRAMES
-    frames it counts as stationary and needs the camera.
+    t=2851-2853, daylight, 4-8 m ahead, camera prob 0.1-0.5), so until it has read 1 m/s for MOVING_UPDATES updates
+    with its range agreeing it counts as stationary and is only held;
+  * a vehicle coming TOWARD the car (reversing, rolling back, or oncoming in the path on a curve) never counts as
+    moving: with the camera unsure it is only held, where upstream would brake for it. Latching such tracks on the
+    same range test admitted clutter in the replay (route c8 t=2800.2: a return at 2.6 m read -1.2 m/s for three
+    updates as its range jumped, then sat still; -3.5 m/s^2 with it, disengaged), and taking them gained nothing
+    engaged (0.1 s of engaged radar lead, no plan change).
 
 Thresholds, from radard rerun on 14 routes (01, 06, 07, 08, 10, 14, c0, c8, c9, 10f, 113, 115, 120, 121; 479,301
 frames) with stationary tracks called clutter when the car drove past the point within 5 s while the track never
@@ -49,15 +64,24 @@ moved:
     up to 59874, so "a few vStd" would pass everything.
   * the override without a confident camera lead: 9056 frames, 56% of them clutter. With one, a track within 1.5 m of
     the camera's distance is clutter on 2-9% of frames, within 1 m/s of its speed on 2%; 1.5-2 m/s rises to 27%.
-  * moving: of 247 latches (MOVING_FRAMES = 5 at 1 m/s, car under 4 m/s) the track's own range history shows a world
-    speed of 0.7 m/s or more on 235, under 0.3 m/s on 2. A raw per-frame test flickers on creeping vehicles and admits
-    one-frame spikes on stationary tracks (route 120 t=17.7: track 74 reads 0.1 -> 2.0 x3 -> 0.2 m/s; three frames
-    do not latch, and its vLeadK peaks at 1.01). No other per-track feature separates clutter from a real stationary
-    object in this data (age, distance jumps, range-rate residual all overlap).
+  * moving: of 548 latches with the car under 4 m/s, the track's world speed over +-0.75 s around the latch is 0.7 m/s
+    or more on 533 and under 0.3 m/s on 5, all of them 30-59 m away and at least 1.1 m off the path. Without the
+    range test a speed spike latched: route 07 t=1128.23-1128.78, track 1796 read 3.7-3.9 m/s for six radar updates
+    while its point in the world stayed within 11755.0-11755.9 m (-3.5 m/s^2 in the replay, disengaged); route 120
+    t=17.7, track 74, read 2.0 m/s for three. WORLD_RATIO rejects 1796, whose range said 1.4 m/s against 3.9. No other
+    per-track feature separates clutter from a real stationary object in this data (age, distance jumps, range-rate
+    residual all overlap).
+  * hold, in the 13-route plan replay: 44.7 s engaged (30.7 s on clutter the car drove through, 9.9 s on objects it
+    stopped short of); no FCW; the engaged episodes at -2 m/s^2 or below and 1 below the old decode stay the same 3;
+    engaged, it is 0.5 m/s^2 or more firmer than the guard without it on 7.3 s, never by 1 m/s^2 to below -1, and
+    at worst -0.83 (route 06 t=1265.5, where the old decode braked to -0.78).
 """
+from collections import deque
+
 from opendbc.car.honda.values import HONDA_ELESYS
 
 RADAR_TO_CAMERA = 1.52  # radard.RADAR_TO_CAMERA (test_elesys_radar_guard.py pins the two equal)
+DT = 0.05               # s per radard frame (DT_MDL: radard runs once per modelV2)
 CAMERA_ON = 0.55        # radard's filtered leadsV3 prob: the camera's lead becomes confident above this,
 CAMERA_OFF = 0.5        # and stops being confident at or below radard's own 0.5
 
@@ -68,9 +92,21 @@ V_TOL_MAX = 10.0        # m/s, upstream's vel_sane window, from 67 m
 OVERRIDE_D_TOL = 1.5    # m: low-speed override track within this of the camera lead's distance
 OVERRIDE_V_TOL = 1.0    # m/s: or within this of its speed
 
-V_MOVING = 1.0          # m/s: a track whose raw vLead is at least this for
-MOVING_FRAMES = 5       # this many radard frames in a row is a moving object for the rest of its life
-V_MOVING_NOW = 1.5      # m/s: a track whose filtered vLeadK is at least this is moving now
+# Moving. Counted in radar updates: the radar reports at 10 Hz and radard runs at 20 Hz, so it sees every reading twice
+V_MOVING = 1.0          # m/s: a track whose raw vLead is at least this
+MOVING_UPDATES = 3      # for this many radar updates in a row,
+V_WORLD = 0.7           # m/s: and whose range plus the car's travel moves away at least this,
+WORLD_RATIO = 0.5       # and at least this share of that speed (a radar speed the range does not follow is noise),
+WORLD_SPAN = 0.5        # s: over the last this much of its history, is moving for the rest of its life
+V_MOVING_NOW = 1.5      # m/s: a track whose filtered vLeadK is at least this
+MOVING_NOW_UPDATES = 2  # for this many radar updates in a row, with its raw vLead at least V_MOVING, is moving now,
+                        # if its range history agrees
+NOW_SPAN = 0.3          # s: over the history it has; a shorter history (a track that just appeared) cannot disagree
+
+# Hold: with no lead at all, an in-path track the override refuses still stops the plan accelerating toward it
+HOLD_UPDATES = 5        # radar updates: once seen for at least this many
+STOP_DISTANCE = 6.0     # m: long_mpc.STOP_DISTANCE (test_elesys_radar_guard.py pins the two equal)
+HOLD_T_FOLLOW = 1.25    # s: long_mpc's shortest T_FOLLOW (aggressive), pinned the same way
 
 
 def enabled(CP) -> bool:
@@ -97,25 +133,63 @@ def match_candidates(tracks: dict, lead_msg) -> dict:
   return {k: c for k, c in tracks.items() if match_agrees(c, lead_msg)}
 
 
+def slope(samples) -> float:
+  """Least-squares slope of (t, x) samples."""
+  n = len(samples)
+  tm = sum(t for t, _ in samples) / n
+  xm = sum(x for _, x in samples) / n
+  return sum((t - tm) * (x - xm) for t, x in samples) / sum((t - tm) ** 2 for t, _ in samples)
+
+
+class _TrackState:
+  __slots__ = ('updates', 'run_ahead', 'run_now', 'history')
+
+  def __init__(self):
+    self.updates = 0     # radar updates seen
+    self.run_ahead = 0   # radar updates in a row at vLead >= V_MOVING
+    self.run_now = 0     # radar updates in a row at vLeadK >= V_MOVING_NOW and vLead >= V_MOVING
+    self.history: deque = deque()  # (t, range + the car's travel) at each radar update, over the last WORLD_SPAN s
+
+
 class ElesysRadarGuard:
-  """The guard's per-frame state: which radar tracks have been seen moving, and whether the camera's lead is confident.
+  """The guard's per-frame state: which radar tracks are moving, how long each has been seen, and whether the camera's
+  lead is confident.
 
   RadarD calls update_tracks() after it updates its tracks and update_camera() with its filtered prob for leadOne,
   once per frame, before get_lead()."""
 
   def __init__(self):
-    self.moving_frames: dict[int, int] = {}  # track id -> radard frames in a row at vLead >= V_MOVING
-    self.moving: set[int] = set()            # track ids latched as moving
+    self.t = 0.0
+    self.odometer = 0.0                       # m the car has travelled, at the radar's delay
+    self.radar_frame = -1                     # radard's recv_frame['radarTracks'] at the last update
+    self.state: dict[int, _TrackState] = {}
+    self.moving: set[int] = set()             # track ids latched as moving
     self.camera_confident = False
 
-  def update_tracks(self, tracks: dict) -> None:
-    for tid in [t for t in self.moving_frames if t not in tracks]:
-      del self.moving_frames[tid]
+  def update_tracks(self, tracks: dict, radar_frame: int, v_ego: float) -> None:
+    """tracks: radard's, after this frame's update. radar_frame: radard's recv_frame['radarTracks'], which changes when
+    they carry a radar update radard had not seen. v_ego: the car's speed at the radar's measurement (v_ego_hist[0])."""
+    new_radar = radar_frame != self.radar_frame
+    self.radar_frame = radar_frame
+    self.t += DT
+    self.odometer += v_ego * DT
+    for tid in [t for t in self.state if t not in tracks]:
+      del self.state[tid]
       self.moving.discard(tid)
+    if not new_radar:
+      return
     for tid, track in tracks.items():
-      n = self.moving_frames.get(tid, 0) + 1 if track.vLead >= V_MOVING else 0
-      self.moving_frames[tid] = n
-      if n >= MOVING_FRAMES:
+      s = self.state.get(tid)
+      if s is None:
+        s = self.state[tid] = _TrackState()
+      s.updates += 1
+      s.run_ahead = s.run_ahead + 1 if track.vLead >= V_MOVING else 0
+      s.run_now = s.run_now + 1 if track.vLeadK >= V_MOVING_NOW and track.vLead >= V_MOVING else 0
+      s.history.append((self.t, track.dRel + self.odometer))
+      while len(s.history) > 2 and s.history[1][0] <= self.t - WORLD_SPAN + DT / 2:
+        s.history.popleft()
+      if (tid not in self.moving and s.run_ahead >= MOVING_UPDATES and
+          self.range_agrees(tid, track.vLead, WORLD_SPAN)):
         self.moving.add(tid)
 
   def update_camera(self, lead_prob: float) -> None:
@@ -124,8 +198,29 @@ class ElesysRadarGuard:
     elif lead_prob <= CAMERA_OFF:
       self.camera_confident = False
 
+  def world_speed(self, tid: int, span: float = WORLD_SPAN) -> float | None:
+    """The track's speed over the ground from its own range history (up to WORLD_SPAN s of it); None if that history
+    is shorter than span."""
+    s = self.state.get(tid)
+    if s is None or len(s.history) < 2 or s.history[-1][0] - s.history[0][0] < span - DT / 2:
+      return None
+    return slope(s.history)
+
+  def range_agrees(self, tid: int, v: float, span: float) -> bool:
+    """Does the track's range history over at least span s move away at V_WORLD or more, and at least WORLD_RATIO of
+    its radar speed v?"""
+    w = self.world_speed(tid, span)
+    return w is not None and w >= max(V_WORLD, WORLD_RATIO * v)
+
   def is_moving(self, track) -> bool:
-    return track.identifier in self.moving or track.vLeadK >= V_MOVING_NOW
+    if track.identifier in self.moving:
+      return True
+    s = self.state.get(track.identifier)
+    if s is None or s.run_now < MOVING_NOW_UPDATES:
+      return False
+    if self.world_speed(track.identifier, NOW_SPAN) is None:
+      return True  # too new for a range history (a cut-in): taken on its speed alone
+    return self.range_agrees(track.identifier, track.vLeadK, NOW_SPAN)
 
   def override_confirmed(self, track, lead_msg) -> bool:
     """May radard's low-speed override take this track? A moving one always, as upstream; a stationary one only with
@@ -136,3 +231,18 @@ class ElesysRadarGuard:
       return False
     return (abs(track.dRel - camera_distance(lead_msg)) < OVERRIDE_D_TOL or
             abs(track.vLead - lead_msg.v[0]) < OVERRIDE_V_TOL)
+
+  def hold_track(self, refused: list):
+    """Of the in-path tracks the low-speed override refused, the closest one seen for HOLD_UPDATES radar updates,
+    or None."""
+    held = [c for c in refused if c.identifier in self.state and self.state[c.identifier].updates >= HOLD_UPDATES]
+    return min(held, key=lambda c: c.dRel) if held else None
+
+
+def hold_lead(lead_dict: dict, v_ego: float) -> dict:
+  """A refused track's lead, made one the planner's MPC neither accelerates toward nor brakes for: a lead at the car's
+  own speed, not accelerating, at the MPC's desired distance for that speed on its shortest time gap. The MPC then
+  holds speed (aggressive) or eases off slightly (standard, relaxed); the camera, e2e and the driver still do any
+  stopping. Its dRel is therefore not the track's range."""
+  lead_dict.update(dRel=STOP_DISTANCE + HOLD_T_FOLLOW * v_ego, vLead=v_ego, vLeadK=v_ego, vRel=0.0, aLeadK=0.0)
+  return lead_dict
