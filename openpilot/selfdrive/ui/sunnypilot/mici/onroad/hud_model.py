@@ -23,10 +23,19 @@ owner's option C), from:
                         It arrives once a second: between messages the distance is run down by the car's own speed (vEgo),
                         for at most one period, so the pill drains smoothly instead of in ~30 m steps.
   carState              vEgo, standstill: never at a standstill.
-A limit LOWER or HIGHER than the one now in force, once it is within 15 s of travel or 500 m (next_window_m). Once it
-shows it is HELD after the look-ahead ends - drawn 'now' - until the resolver's limit becomes it (the hand-over: the
-confirm prompt or the stock MAX number takes the same place), for at most APPROACH_HOLD_S: on route 10f mapd stopped
-publishing the 100 at 773.75 and MAX 100 came at 774.8, a second with nothing on screen.
+A limit LOWER or HIGHER than the one now in force, once it is within 15 s of travel or 500 m (next_window_m). While the
+same change is coming its distance only counts down - unless mapd's figure comes back up by more than one period's
+run-down plus APPROACH_JUMP_M, which is news (the map matched it elsewhere), taken as it is.
+When the look-ahead stops giving it, what happens depends on how far away it was (the last distance shown, run down by
+vEgo since):
+  REACHED - within APPROACH_NEAR_S of travel, or under sunnypilot's 'Near' (50 m, 100 ft): HELD, drawn 'now', until the
+            resolver's limit becomes it (the hand-over: the confirm prompt or the stock MAX number takes the same place),
+            for at most APPROACH_HOLD_S after the look-ahead ended: on route 10f mapd stopped publishing the 100 at 773.75
+            and MAX 100 came at 774.8, a second with nothing on screen.
+  further out - a 1 Hz message missed, the window shrinking as the car slows: the distance keeps running down, drawn as
+            a distance, for at most APPROACH_GAP_S; it becomes held if it reaches the change in that time, and goes if
+            not. Never a jump to 'now' (route 10f t 196.7-202.2, braking for a red light with the 70 still 40-65 m off:
+            'now' for 8 s for a limit that never came, before round 5's fix round 1).
 
 COMPACT ALERTS (HudCompactLimitPrompts / HudCompactDisengage / HudCompactTurn, drawn by hud_alerts.py): an alert is drawn
 small only when its FULL ALERT TYPE (event name AND event type, COMPACT_TYPES) is in an enabled group below AND it is
@@ -82,9 +91,14 @@ NEXT_MAX_M = 500.0      # the coming limit shows from the earlier of 500 m ...
 NEXT_MAX_S = 15.0       # ... or 15 s of travel at the current speed
 TIMER_DELAY_S = 1.0     # a standstill this long before the stopwatch shows
 MAP_EXTRAPOLATE_MAX_S = 1.0  # liveMapDataSP is 1 Hz: the distance is run down for at most one period, then held
-APPROACH_HOLD_S = 3.0   # once the look-ahead ends, the coming limit is held (as 'now') this long at most for the
-                        # resolver to take it: mapd's last look-ahead to the limit in force took 1.05 s on route 10f,
-                        # and plannerd's 1 s stability hold (speed_limit_assist.SpeedLimitChangeHold) comes on top
+APPROACH_HOLD_S = 3.0   # once the look-ahead ends at the change, the coming limit is held (as 'now') this long at most
+                        # for the resolver to take it: mapd's last look-ahead to the limit in force took 1.05 s on route
+                        # 10f, and plannerd's 1 s stability hold (speed_limit/change_hold.py) comes on top
+APPROACH_NEAR_S = 2.0   # the change is REACHED once the distance left is within this much travel ...
+NEAR_M = 50.0           # ... or under sunnypilot's 'Near' (SpeedLimitRenderer._format_dist: 50 m metric ...
+NEAR_FT = 100.0         # ... 100 ft imperial), which the pill already draws 'now'
+APPROACH_GAP_S = 2.0    # the look-ahead lost further out: the distance runs down by vEgo this long at most, then it goes
+APPROACH_JUMP_M = 10.0  # mapd's figure coming back up by one period's run-down + this is noise (held); more is news
 NSW_NO_LOOKAHEAD = (4, 7)  # nswZone.state: dead reckoning in a tunnel, and GPS still lost after it - never announced
 
 STANDSTILL_EVENT = 'manualRestart'
@@ -131,11 +145,7 @@ COMPACT_TEXT = {
 
 @dataclass
 class HudFrame:
-  timer_s: float | None = None    # seconds stopped, when the stopwatch shows
-
-  @property
-  def visible(self) -> bool:
-    return self.timer_s is not None
+  timer_s: float | None = None    # seconds stopped, when the stopwatch shows; None: nothing top right
 
 
 def next_window_m(v_ego: float) -> float:
@@ -207,9 +217,14 @@ def approach_now(sm, *, started_frame: int, is_metric: bool, limit: int, map_age
   return Approach(limit=ahead, lower=ahead < limit, dist=dist, frac=dist / window)
 
 
+def reached(dist: float, v_ego: float, is_metric: bool) -> bool:
+  """The change is here: the distance left (m) is within APPROACH_NEAR_S of travel, or under sunnypilot's 'Near'."""
+  return dist <= max(NEAR_M if is_metric else NEAR_FT * 0.3048, max(v_ego, 0.0) * APPROACH_NEAR_S)
+
+
 class ApproachState:
-  """The coming limit, frame by frame, with its hold (APPROACH_HOLD_S). One per HUD renderer; update() is idempotent
-  within a frame (the same now), as the face asks before the HUD draws."""
+  """The coming limit, frame by frame, with its run-down and hold. One per HUD renderer; update() is idempotent within a
+  frame (the same now), as the face asks before the HUD draws."""
   def __init__(self):
     self.reset()
 
@@ -218,14 +233,21 @@ class ApproachState:
     self._t: float | None = None
     self._shown: Approach | None = None   # the last approach the look-ahead gave
     self._from = 0                        # ... and the limit in force then
+    self._dist = 0.0                      # the distance last drawn (run down by vEgo while the look-ahead is lost)
     self._lost_t: float | None = None     # when the look-ahead stopped giving it
+    self._held = False                    # ... and the change was reached: drawn 'now'
     self._map_frame = -1
     self._map_t = 0.0
+
+  def _drop(self) -> None:
+    self.frame = self._shown = self._lost_t = None
+    self._held = False
 
   def update(self, sm, s: HudSettings, *, started_frame: int, now: float, is_metric: bool,
              speed_limit_mode_on: bool) -> Approach | None:
     if self._t == now:
       return self.frame
+    dt = 0.0 if self._t is None else max(0.0, now - self._t)
     self._t = now
     if not (s.approaching_limit and speed_limit_mode_on):
       self.reset()
@@ -236,14 +258,19 @@ class ApproachState:
       self._map_frame, self._map_t = map_frame, now
     conv = CV.MS_TO_KPH if is_metric else CV.MS_TO_MPH
     limit = resolver_map_limit(sm, started_frame, conv)
+    moving = fresh(sm, 'carState', started_frame) and not sm['carState'].standstill
+    v_ego = max(0.0, float(sm['carState'].vEgo)) if moving else 0.0
     raw = approach_now(sm, started_frame=started_frame, is_metric=is_metric, limit=limit, map_age_s=now - self._map_t)
     if raw is not None:
       prev = self._shown
-      if prev is not None and prev.limit == raw.limit and self._from == limit and raw.dist > prev.dist:
+      if prev is not None and prev.limit == raw.limit and self._from == limit and \
+         self._dist < raw.dist <= self._dist + v_ego * MAP_EXTRAPOLATE_MAX_S + APPROACH_JUMP_M:
         # the same change coming: its distance only counts down. mapd's 1 Hz figure jumps back up a little when the
-        # run-down between messages was ahead of it (route 10f t 194.2-194.8: 'now', 'in 50 m', 'now')
-        raw = Approach(limit=raw.limit, lower=raw.lower, dist=prev.dist, frac=raw.frac * prev.dist / raw.dist)
-      self._shown, self._from, self._lost_t = raw, limit, None
+        # run-down between messages was ahead of it (route 10f t 194.2-194.8: 'now', 'in 50 m', 'now'); by more than
+        # a period's run-down + APPROACH_JUMP_M it is news and is taken (route 10f t 199.7: 65 m, after 'now')
+        d = max(self._dist, 0.0)
+        raw = Approach(limit=raw.limit, lower=raw.lower, dist=d, frac=min(1.0, d / next_window_m(v_ego)))
+      self._shown, self._from, self._dist, self._lost_t, self._held = raw, limit, raw.dist, None, False
       self.frame = raw
       return raw
     self.frame = None
@@ -251,14 +278,24 @@ class ApproachState:
       return None
     if self._lost_t is None:
       self._lost_t = now
-    # held: the limit in force is still the one the change was announced from, the car still moving, the map not dead
-    # reckoning; anything else (the resolver took it - the hand-over - or another limit came) ends it
-    moving = fresh(sm, 'carState', started_frame) and not sm['carState'].standstill
+    # kept only while the limit in force is still the one the change was announced from, the car still moving, the map
+    # not dead reckoning; anything else (the resolver took it - the hand-over - or another limit came) ends it
     tunnel = fresh(sm, 'liveMapDataSP', started_frame) and int(sm['liveMapDataSP'].nswZone.state) in NSW_NO_LOOKAHEAD
-    if limit != self._from or not moving or tunnel or now - self._lost_t > APPROACH_HOLD_S:
-      self._shown, self._lost_t = None, None
+    if limit != self._from or not moving or tunnel:
+      self._drop()
       return None
-    self.frame = Approach(limit=self._shown.limit, lower=self._shown.lower, dist=0.0, frac=0.0, held=True)
+    self._dist -= v_ego * dt
+    lost_s = now - self._lost_t
+    self._held = self._held or reached(self._dist, v_ego, is_metric)
+    if lost_s > (APPROACH_HOLD_S if self._held else APPROACH_GAP_S):
+      self._drop()
+      return None
+    if self._held:
+      self.frame = Approach(limit=self._shown.limit, lower=self._shown.lower, dist=0.0, frac=0.0, held=True)
+    else:
+      # further out: still a distance, running down - never 'now' before it is reached
+      self.frame = Approach(limit=self._shown.limit, lower=self._shown.lower, dist=self._dist,
+                            frac=min(1.0, self._dist / next_window_m(v_ego)))
     return self.frame
 
 
@@ -340,7 +377,10 @@ class StandstillBanner:
 
   "Until the prompt clears" needs observe(): HudRendererSP._update_state calls it EVERY frame with the alert the renderer
   will draw (the previous one while it fades out, None when there is none). compact() alone cannot see the prompt go - the alert
-  renderer stops asking the moment there is no alert - and the first departure of a drive would stick for all of it."""
+  renderer stops asking the moment there is no alert - and the first departure of a drive would stick for all of it.
+  Since round 5 the HUD renderer, drawn AFTER the alert renderer, calls it (the cluster did, before it); it is handed
+  the frame's alert as it was before the alert renderer drew (hud_alerts.frame_alert, looked up once a frame), so it
+  ends the prompt on the same frame as when the cluster called it: the frame after the fade-out finished."""
   def __init__(self):
     self.departed = False
     self._moving_since: float | None = None
@@ -546,11 +586,6 @@ def fmt_stop_dist(d: float, is_metric: bool) -> tuple[str, str]:
   if ft < 2975:
     return str(int(50 * round(ft / 50))), "ft"
   return f"{ft / 5280:.1f}", "mi"
-
-
-def fmt_speed(v: float, is_metric: bool) -> tuple[str, str]:
-  """(figures, unit) for a target speed in m/s, in the units the cluster uses."""
-  return (str(int(round(v * CV.MS_TO_KPH))), "km/h") if is_metric else (str(int(round(v * CV.MS_TO_MPH))), "mph")
 
 
 def speed_unit(is_metric: bool) -> str:

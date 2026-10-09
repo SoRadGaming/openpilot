@@ -28,7 +28,7 @@ from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_draw as hd
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import HudFrame, build_frame, compact_kind, received, \
   COMPACT_NONE
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import HudSettings, hud_settings
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_alerts import cluster_edge, standstill_banner
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_alerts import cluster_edge, frame_alert, standstill_banner
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import Widget
@@ -76,7 +76,7 @@ class HudCluster(Widget):
     sm = ui_state.sm
     now = self._now = rl.get_time()
     # what the alert renderer will draw this frame (it renders after the cluster)
-    self._alert = self._alert_renderer.will_render()[0] if self._alert_renderer is not None else None
+    self._alert = frame_alert.get(self._alert_renderer)[0]
     if received(sm, 'carState', ui_state.started_frame) and sm['carState'].standstill:
       if self._stop_start is None:
         self._stop_start = now
@@ -97,4 +97,4 @@ class HudCluster(Widget):
     txt = hd.fmt_mmss(f.timer_s)
     w, _ = hd.big_digits(right, cy, txt, timer_size(txt), alpha=alpha)
     sw = hd.stopwatch_glyph(right - w - GAP, cy, size=STOPWATCH_SIZE, alpha=alpha)
-    cluster_edge.row1 = right - w - GAP - sw
+    cluster_edge.timer_left = right - w - GAP - sw

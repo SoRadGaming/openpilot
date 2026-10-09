@@ -7,7 +7,8 @@ See the LICENSE.md file in the root directory for more details.
 FORK(HUD): the comma 4 HUD's rules, settings, sunnylink items and markers - everything that needs no window. The
 pixels are tested in test_hud_render.py (a headless raylib child process).
 
-hud_model.py and hud_settings.py import no raylib, so they are imported here; the drawing files are only parsed.
+hud_model.py and hud_settings.py import no raylib, so they are imported here; the drawing files are only parsed (hud_alerts
+is imported for FrameAlert alone, which draws nothing).
 """
 import dataclasses
 import json
@@ -211,11 +212,11 @@ class TestRetiredKeys(OpenpilotTestCase):
 class TestTimerRules(OpenpilotTestCase):
   def test_the_stop_time_after_a_second_at_a_standstill(self):
     sm = drive(v=0.0, standstill=True)
-    assert not frame(sm, stopped_s=0.5).visible, "a second first"
+    assert frame(sm, stopped_s=0.5).timer_s is None, "a second first"
     f = frame(sm, stopped_s=29.9)
-    assert f.timer_s == 29.9 and f.visible
-    assert not frame(sm, with_(stopped_timer=False), stopped_s=29.9).visible
-    assert not frame(sm, HS.ALL_OFF, stopped_s=29.9).visible
+    assert f.timer_s == 29.9
+    assert frame(sm, with_(stopped_timer=False), stopped_s=29.9).timer_s is None
+    assert frame(sm, HS.ALL_OFF, stopped_s=29.9).timer_s is None
 
   def test_moving_draws_nothing_top_right(self):
     # option A: no speed, no sign, no next limit - whatever the messages say
@@ -226,10 +227,10 @@ class TestTimerRules(OpenpilotTestCase):
   def test_missing_car_state(self):
     sm = drive(v=0.0, standstill=True)
     sm.seen['carState'] = False
-    assert not frame(sm, stopped_s=30.0).visible
+    assert frame(sm, stopped_s=30.0).timer_s is None
     sm = drive(v=0.0, standstill=True)
     sm.recv_frame['carState'] = 2  # from before this drive started (started_frame 5)
-    assert not frame(sm, stopped_s=30.0).visible
+    assert frame(sm, stopped_s=30.0).timer_s is None
 
   def test_the_cluster_draws_only_the_timer(self):
     src = HUD_CLUSTER.read_text(encoding="utf-8")
@@ -342,6 +343,7 @@ class TestApproachRules(OpenpilotTestCase):
     s = ApproachSim()
     a = s.step(drive(ahead_dist=200.0), 1.0)
     assert a.limit == 100 and not a.held
+    assert s.step(drive(ahead_dist=11.0)).dist == 11.0, "the last look-ahead, at the change"
     gone = drive(ahead_valid=False, ahead=0, ahead_dist=0.0)   # mapd stopped publishing it; the resolver still has 110
     for _ in range(int(HM.APPROACH_HOLD_S / 0.05) - 1):
       h = s.step(gone, new_map=False)
@@ -349,10 +351,28 @@ class TestApproachRules(OpenpilotTestCase):
     assert s.step(drive(limit=100, ahead_valid=False, ahead=0, ahead_dist=0.0)) is None, "the resolver took it: hand-over"
     assert s.step(gone) is None, "and it does not come back"
 
+  def test_held_only_once_the_change_is_reached(self):
+    # reached: within APPROACH_NEAR_S of travel, or under 'Near' (50 m; 100 ft imperial)
+    assert HM.reached(49.0, 5.0, True) and not HM.reached(51.0, 5.0, True)
+    assert HM.reached(60.0, 30.6, True) and not HM.reached(62.0, 30.6, True), "2 s at 110 km/h"
+    assert HM.reached(30.0, 5.0, False) and not HM.reached(31.0, 5.0, False), "100 ft"
+    # the look-ahead lost 80 m out at 110 km/h: a distance, running down - never a jump to 'now'
+    s = ApproachSim()
+    s.step(drive(ahead_dist=80.0))
+    gone = drive(ahead_valid=False, ahead=0, ahead_dist=0.0)
+    a = s.step(gone, new_map=False)
+    assert a is not None and not a.held and abs(a.dist - (80.0 - 110 / KPH * 0.05)) < 1e-6, a
+    # ... until it is within 2 s of travel: then held 'now'
+    seen = [s.step(gone, new_map=False) for _ in range(30)]
+    first_held = next(i for i, x in enumerate(seen) if x.held)
+    assert all(not x.held and x.dist > 110 / KPH * HM.APPROACH_NEAR_S for x in seen[:first_held]), seen
+    assert all(x.held for x in seen[first_held:])
+
   def test_the_hold_ends(self):
     def held_then(after, seconds=0.05):
       s = ApproachSim()
       s.step(drive(ahead_dist=200.0), 1.0)
+      s.step(drive(ahead_dist=20.0))
       assert s.step(drive(ahead_valid=False, ahead=0, ahead_dist=0.0), 0.5).held
       return s.step(after, seconds)
     none = {"ahead_valid": False, "ahead": 0, "ahead_dist": 0.0}
@@ -363,14 +383,60 @@ class TestApproachRules(OpenpilotTestCase):
     assert held_then(drive(lp=False, **none)) is None, "the plan gone"
     assert held_then(drive(source='car', **none)) is None, "a car-sourced limit now"
 
-  def test_a_gap_in_the_look_ahead_is_bridged_and_a_new_value_replaces_it(self):
+  def test_a_gap_in_the_look_ahead_runs_the_distance_down_and_a_new_value_replaces_it(self):
     s = ApproachSim()
-    s.step(drive(ahead_dist=300.0), 1.0)
-    assert s.step(drive(ahead_valid=False, ahead=0, ahead_dist=0.0), 1.0).held, "one message without it: still shown"
+    s.step(drive(ahead_dist=300.0))
+    a = s.step(drive(ahead_valid=False, ahead=0, ahead_dist=0.0), 1.0)
+    assert a is not None and not a.held and abs(a.dist - (300.0 - 110 / KPH * 1.0)) < 1e-6, \
+      f"one message without it, 300 m out: still a distance, run down by the car's speed - not 'now' {a}"
     a = s.step(drive(ahead_dist=250.0))
     assert a.limit == 100 and not a.held and a.dist == 250.0
     a = s.step(drive(ahead=90, ahead_dist=240.0))
     assert a.limit == 90 and a.lower
+    # lost for longer than APPROACH_GAP_S, still far out: it goes (and the tunnel, the stop and the hand-over end it too)
+    s = ApproachSim()
+    s.step(drive(ahead_dist=440.0))
+    gone = drive(ahead_valid=False, ahead=0, ahead_dist=0.0)
+    assert s.step(gone, HM.APPROACH_GAP_S - 0.05) is not None
+    assert s.step(gone, 0.2) is None
+    for after in (drive(nsw_state=4, ahead_valid=False), drive(v=0.0, standstill=True, ahead_valid=False),
+                  drive(limit=100, ahead_valid=False)):
+      s = ApproachSim()
+      s.step(drive(ahead_dist=300.0))
+      assert s.step(after) is None, "into a tunnel / stopped / the resolver took it"
+
+  def test_the_window_shrinking_as_the_car_slows_is_a_gap(self):
+    # 70 at 66 m at 37 km/h (window 154 m); the car brakes to 14 km/h (window 58 m): out of the window, not reached
+    s, kw = ApproachSim(), {"limit": 50, "ahead": 70}
+    assert s.step(drive(v=37 / KPH, ahead_dist=66.0, **kw)).dist == 66.0
+    a = s.step(drive(v=14 / KPH, ahead_dist=66.0, **kw))
+    assert a is not None and not a.held and 64.0 < a.dist < 66.0 and a.frac == 1.0, a
+    assert s.step(drive(v=14 / KPH, ahead_dist=66.0, **kw), HM.APPROACH_GAP_S + 0.1) is None
+
+  def test_route_10f_braking_for_a_red_light_with_the_70_ahead(self):
+    # route 10f t 192.7-201.7 (Bringelly Rd, limit 50 in force throughout): mapd's 1 Hz look-ahead and the car's speed,
+    # as logged. Before fix round 1 it drew '70 now' from 194.2 to 202.2 - held over the gap, then the distance clamped
+    # under 50 m while mapd said 65 m. Now: 'now' only where mapd's own figure is under 50 m (sunnypilot's 'Near') and
+    # the hold after it (3 s at most), then 'in 65 m' as soon as mapd says 65 m, and nothing once the limit in force is
+    # no longer the map's
+    log = [(37.2, 66.3), (38.0, 54.8), (35.7, 50.8), (33.5, 39.0), (31.2, None), (29.7, None), (27.8, None),
+           (25.9, 65.4), (20.9, 60.4), (15.0, 41.2)]
+    s, words = ApproachSim(), []
+    for k, (v, d) in enumerate(log):
+      src = 'none' if k == len(log) - 1 else 'map'
+      sm = drive(v=v / KPH, limit=50, ahead=70, ahead_dist=d or 0.0, ahead_valid=d is not None, source=src)
+      for i in range(20):
+        a = s.step(sm, new_map=i == 0)
+        words.append(None if a is None else "now" if a.held or a.dist < HM.NEAR_M else f"in {a.dist:.0f}")
+    sec = [words[k * 20:(k + 1) * 20] for k in range(len(log))]
+    assert all(w.startswith("in ") for w in sec[0]), sec[0]
+    assert sec[3] == ["now"] * 20, f"39 m: 'Near' {sec[3]}"
+    held = sum(w == "now" for k in (4, 5, 6) for w in sec[k])
+    assert held <= HM.APPROACH_HOLD_S / 0.05, f"held at most APPROACH_HOLD_S after the look-ahead went: {sec[4:7]}"
+    assert sec[7][0] == "in 65" and all(w is not None and w.startswith("in ") for w in sec[7]), \
+      f"mapd's 65 m is news, not clamped to 'now': {sec[7]}"
+    assert all(w.startswith("in ") for w in sec[8]), sec[8]
+    assert all(w is None for w in sec[9]), "the limit in force is not the map's any more"
 
   def test_the_distance_only_counts_down(self):
     # route 10f t 194.2-194.8: the run-down passed 50 m, the next 1 Hz message said 50.8 - 'now', 'in 50 m', 'now'
@@ -380,6 +446,12 @@ class TestApproachRules(OpenpilotTestCase):
     assert a.dist == 49.0 and abs(a.frac - 49.0 / next_window_m(50 / KPH)) < 1e-6
     assert s.step(drive(ahead_dist=40.0, **kw)).dist == 40.0
     assert s.step(drive(v=50 / KPH, limit=50, ahead=60, ahead_dist=80.0)).dist == 80.0, "another change: its own distance"
+    # ... but only by what a period's run-down could explain, + APPROACH_JUMP_M: more is news (route 10f t 199.7)
+    s = ApproachSim()
+    s.step(drive(ahead_dist=40.0, **kw))
+    slack = 50 / KPH * MAP_EXTRAPOLATE_MAX_S + HM.APPROACH_JUMP_M
+    assert s.step(drive(ahead_dist=40.0 + slack - 0.5, **kw)).dist == 40.0
+    assert abs(s.step(drive(ahead_dist=40.0 + slack + 0.5, **kw)).dist - (40.0 + slack + 0.5)) < 1e-4
 
   def test_idempotent_within_a_frame(self):
     s, sm = ApproachSim(), drive(ahead_dist=200.0)
@@ -767,7 +839,6 @@ class TestRailRules(OpenpilotTestCase):
        ("1.5", "km")]
     assert [HM.fmt_stop_dist(d, False) for d in (2.0, 25.0, 120.0, 1200.0)] == \
       [("7", "ft"), ("80", "ft"), ("400", "ft"), ("0.7", "mi")]
-    assert HM.fmt_speed(37 / KPH, True) == ("37", "km/h") and HM.fmt_speed(37 / KPH, False) == ("23", "mph")
 
 
 # ------------------------------------------------------------------------------------------- the alerts' rules
@@ -1224,11 +1295,41 @@ class TestUpstreamHunks(OpenpilotTestCase):
     # full take-control prompt for the rest of the drive. HudRendererSP renders every frame, with or without an alert.
     src = HUD_RENDERER_SP.read_text(encoding="utf-8")
     upd = src[src.index("  def _update_state(self)"):src.index("  def _render(self")]
-    assert "hud_alerts.standstill_banner.observe(self.alert_renderer.will_render()[0])" in upd
+    assert "hud_alerts.standstill_banner.observe(self._frame_alert()[0])" in upd
     assert "observe(" not in HUD_CLUSTER.read_text(encoding="utf-8"), "one place calls it"
     # deletion trap 2: the cluster still hands the alert renderer to the HUD renderer (the box's top-icon question)
     cluster = HUD_CLUSTER.read_text(encoding="utf-8")
     assert "hud_renderer.alert_renderer = alert_renderer" in cluster
+    # the frame's alert is looked up once a frame (hud_alerts.FrameAlert), for every fork question, and forgotten once
+    # the HUD renderer - the last to ask - has drawn
+    for path in (HUD_RENDERER_SP, HUD_CLUSTER):
+      assert "will_render(" not in path.read_text(encoding="utf-8"), f"{path.name}: through hud_alerts.frame_alert"
+    assert HUD_ALERTS.read_text(encoding="utf-8").count("ar.will_render()") == 1
+    render = src[src.index("  def _render(self"):src.index("  def _has_blind_spot_detected")]
+    assert render.rstrip().endswith("hud_alerts.frame_alert.clear()  # FORK(HUD): the last to ask this frame")
+
+  def test_the_frame_alert_is_looked_up_once_a_frame(self):
+    from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_alerts import FrameAlert
+    from openpilot.selfdrive.ui.ui_state import ui_state
+
+    class AR:
+      def __init__(self):
+        self.n = 0
+        self.answer: tuple = ("a", False)
+
+      def will_render(self):
+        self.n += 1
+        return self.answer
+    fa, ar = FrameAlert(), AR()
+    assert fa.get(None) == (None, False)
+    assert fa.get(ar) == ("a", False) and fa.get(ar) == ("a", False) and ar.n == 1, "once a frame"
+    ar.answer = (None, True)   # the alert renderer drew and ended the fade: later askers still see the frame's answer
+    assert fa.get(ar) == ("a", False) and ar.n == 1
+    fa.clear()
+    assert fa.get(ar) == (None, True) and ar.n == 2, "the next frame asks again"
+    ui_state.sm.frame += 1
+    ar.answer = ("b", False)
+    assert fa.get(ar) == ("b", False) and ar.n == 3, "a new SubMaster frame too"
 
   def test_the_confirms_target_is_drawn_by_the_sunnypilot_subclass(self):
     # design A needs no upstream change: the alert renderer publishes, the subclass draws after the stock HUD
@@ -1242,7 +1343,7 @@ class TestUpstreamHunks(OpenpilotTestCase):
     assert "super().drawing_top_icons() or self._box_top_icon() or self._approach_top_icon()" in tops, \
       "top icons as the stock MAX number is"
     blocked = src[src.index("  def _approach_blocker"):src.index("  def _approach_top_icon")]
-    for who in ("will_render()[0]", "frees_top_icons(alert)", "self._pending is not None",
+    for who in ("self._frame_alert()[0]", "frees_top_icons(alert)", "self._pending is not None",
                 "self._set_speed_alpha_filter.x > 1e-2"):
       assert who in blocked, f"the coming limit gives way to: {who}"
     draw = src[src.index("  def _draw_approach"):]

@@ -569,6 +569,16 @@ out["anim"] = {
   "frame_to_frame": [same(box(a, 0, 0, 200, 110), box(b, 0, 0, 200, 110)) for a, b in zip(anim[1:], anim[2:], strict=False)],
 }
 
+# a second prompt while the first box is still fading out, and the target changing under one (fix round 1): each its
+# own two flashes - the box never left the screen, so only its outline says the request is new
+again = run(ON, [(CONF, 60, "again_00_on"), (CONF_NONE, 2, "again_01_fading_on")] +
+            [(CONF, 1, f"again_{i + 2:02d}_on") for i in range(16)])
+again_calls = list(phase_calls)
+retarget = run(ON, [(CONF, 60, "retarget_00_on")] + [(dict(CONF, limit=45), 1, f"retarget_{i + 1:02d}_on") for i in range(16)])
+retarget_calls = list(phase_calls)
+out["rearm"] = {"again": {"box": [c["box"] for c in again_calls], "lit": [c["lit"] for c in again_calls]},
+                "retarget": {"box": [c["box"] for c in retarget_calls], "lit": [c["lit"] for c in retarget_calls]}}
+
 # design A through a drive: the confirm's box, then "set speed changed" - the solid stock MAX number takes its place - or
 # a critical alert, which takes the screen on its first frame. Each against the same phases with no confirm before them.
 CHANGED50 = dict(CONF_NONE, alert=CHANGED, set_kph=50, assist="active")
@@ -653,18 +663,19 @@ seq["grace"] = {"r120_changed": grace(8, CHANGED), "r120_active": grace(8, ACTIV
 M4 = dict(limit=110, v=110 / KPH, set_kph=110)
 steps = [(dict(M4, ahead=100, ahead_dist=400.0), 100, "c_m4_1_announce_on"),
          (dict(M4, ahead=100, ahead_dist=150.0, map_frame=6), 10, "c_m4_2_nearer_on"),
-         (dict(M4, map_frame=7), 10, "c_m4_3_held_on"),
-         (dict(M4, limit=100, alert=CONFIRM, assist="preActive", map_frame=8), 1, "c_m4_4_handover_first_on"),
-         (dict(M4, limit=100, alert=CONFIRM, assist="preActive", map_frame=8), 30, "c_m4_5_confirm_on")]
+         (dict(M4, ahead=100, ahead_dist=11.0, map_frame=7), 1, "c_m4_3_at_on"),
+         (dict(M4, map_frame=8), 10, "c_m4_4_held_on"),
+         (dict(M4, limit=100, alert=CONFIRM, assist="preActive", map_frame=9), 1, "c_m4_5_handover_first_on"),
+         (dict(M4, limit=100, alert=CONFIRM, assist="preActive", map_frame=9), 30, "c_m4_6_confirm_on")]
 m4 = run(ON, steps)
 seq["m4"] = {"calls": list(phase_calls), "topleft_white": [count(g, TOP_LEFT, "white") for g in m4]}
 # ... the same with the resolver taking it and no prompt (Speed Limit Assist off): it goes, nothing else comes
-steps_quiet = steps[:3] + [(dict(M4, limit=100, map_frame=8), 1, "c_quiet_4_on"), (dict(M4, limit=100, map_frame=8), 40,
-                                                                                    "c_quiet_5_on")]
+steps_quiet = steps[:4] + [(dict(M4, limit=100, map_frame=9), 1, "c_quiet_5_on"), (dict(M4, limit=100, map_frame=9), 40,
+                                                                                    "c_quiet_6_on")]
 quiet = run(ON, steps_quiet)
 quiet_calls = list(phase_calls)
 quiet_ref = run(NO_APPROACH, steps_quiet)
-seq["quiet"] = {"calls": quiet_calls, "end_vs_off": same(quiet[4], quiet_ref[4])}
+seq["quiet"] = {"calls": quiet_calls, "end_vs_off": same(quiet[5], quiet_ref[5])}
 # a rising limit, Bringelly Rd 50 -> 70: announced with the chevron up, then the set speed follows (auto adjusting,
 # compact: the stock MAX number takes the place)
 BR = dict(limit=50, v=50 / KPH, set_kph=50)
@@ -674,10 +685,17 @@ steps = [(dict(BR, ahead=70, ahead_dist=150.0), 100, "c_br_1_announce_on"),
 br = run(ON, steps)
 seq["rising"] = {"calls": list(phase_calls), "max_white": count(br[2], MAX_BOX, "white")}
 # the held limit is never drawn for longer than its hold: the look-ahead gone, the resolver never taking it
-steps = [(dict(M4, ahead=100, ahead_dist=400.0), 100, "c_hold_1_on"), (dict(M4, map_frame=6), 50, "c_hold_2_on"),
-         (dict(M4, map_frame=6), 60, "c_hold_3_on")]
+steps = [(dict(M4, ahead=100, ahead_dist=400.0), 100, "c_hold_1_on"),
+         (dict(M4, ahead=100, ahead_dist=11.0, map_frame=6), 1, "c_hold_2_at_on"), (dict(M4, map_frame=7), 50, "c_hold_3_on"),
+         (dict(M4, map_frame=7), 60, "c_hold_4_on")]
 hold = run(ON, steps)
 seq["hold"] = {"calls": list(phase_calls)}
+# the look-ahead lost far from the change (a 1 Hz message missed): still a distance, never 'now'; a new figure takes
+# over; lost for longer than APPROACH_GAP_S it goes (fix round 1)
+steps = [(dict(M4, ahead=100, ahead_dist=400.0), 100, "c_gap_1_on"), (dict(M4, map_frame=6), 10, "c_gap_2_on"),
+         (dict(M4, ahead=100, ahead_dist=330.0, map_frame=7), 1, "c_gap_3_on"), (dict(M4, map_frame=8), 100, "c_gap_4_on")]
+gap = run(ON, steps)
+seq["gap"] = {"calls": list(phase_calls)}
 out["seq"] = seq
 
 # the rail's own settings: each off alone, and both off = the stock strip
@@ -848,16 +866,17 @@ class TestHudRender(OpenpilotTestCase):
 
   def test_the_m4_announce_hold_and_hand_over(self):
     s = self.r["seq"]["m4"]
-    announce, nearer, held, first, confirm = s["calls"]
+    announce, nearer, at, held, first, confirm = s["calls"]
     assert announce["approach"] == 1 and announce["approach_args"][:3] == [100, True, "in 400 m"], announce
     assert nearer["approach_args"][2] == "in 140 m" and nearer["approach_args"][3] < announce["approach_args"][3], \
       f"the pill drains: {nearer}"
+    assert at["approach_args"][:3] == [100, True, "now"], f"11 m: sunnypilot's 'Near' {at}"
     assert held["approach"] == 1 and held["approach_args"][:3] == [100, True, "now"] and held["top_icons"], \
-      f"the look-ahead gone, the limit not yet in force: held - no gap with nothing on screen {held}"
+      f"the look-ahead gone at the change, the limit not yet in force: held - no gap with nothing on screen {held}"
     assert first["approach"] == 0 and first["box"] == 1, f"the confirm's box in the same place on its first frame {first}"
     assert confirm["approach"] == 0 and confirm["box"] == 1, confirm
     q = self.r["seq"]["quiet"]
-    assert q["calls"][3]["top_icons"] and q["calls"][4]["approach"] == 0, f"taken: it fades out, nothing held {q}"
+    assert q["calls"][4]["top_icons"] and q["calls"][5]["approach"] == 0, f"taken: it fades out, nothing held {q}"
     assert q["end_vs_off"] == 0, f"then the screen as with the setting off {q}"
 
   def test_a_rising_limit_hands_over_to_the_stock_max(self):
@@ -869,9 +888,18 @@ class TestHudRender(OpenpilotTestCase):
     assert after["approach"] == 0 and after["top_icons"] and s["max_white"] > 2000, s
 
   def test_the_hold_ends(self):
-    announce, held, gone = self.r["seq"]["hold"]["calls"]
+    announce, at, held, gone = self.r["seq"]["hold"]["calls"]
     assert announce["approach"] == 1 and held["approach"] == 1 and held["approach_args"][2] == "now"
     assert gone["approach"] == 0 and not gone["top_icons"], "never held past APPROACH_HOLD_S"
+
+  def test_a_gap_far_from_the_change_is_a_distance_never_now(self):
+    announce, gap, back, gone = self.r["seq"]["gap"]["calls"]
+    assert announce["approach_args"][:3] == [100, True, "in 400 m"], announce
+    assert gap["approach"] == 1 and gap["approach_args"][2].startswith("in ") and gap["top_icons"], \
+      f"a message missed 350 m out: the distance runs on {gap}"
+    assert gap["approach_args"][3] < announce["approach_args"][3], f"and the pill keeps draining {gap}"
+    assert back["approach_args"][:3] == [100, True, "in 300 m"], back
+    assert gone["approach"] == 0 and not gone["top_icons"], "lost far out for longer than APPROACH_GAP_S: gone"
 
   # ----------------------------------------------------------------------------------------- compact alerts
   def assert_banner(self, c, bottom):
@@ -934,6 +962,15 @@ class TestHudRender(OpenpilotTestCase):
     assert all(d == 0 for d in a["digits_vs_still"]), f"the digits never blink: {a['digits_vs_still']}"
     assert all(d > 0 for d in a["outline_vs_still"][end + 3:]), "the march is drawn, frame after frame"
     assert all(d > 0 for d in a["frame_to_frame"][end + 3:]), "it moves while the prompt waits"
+
+  def test_a_new_prompt_or_target_flashes_again(self):
+    for name in ("again", "retarget"):
+      r = self.r["rearm"][name]
+      assert all(r["box"]), f"{name}: the box never leaves the screen {r}"
+      lit = r["lit"][2:] if name == "again" else r["lit"][1:]
+      starts = [i for i in range(len(lit)) if lit[i] and (i == 0 or not lit[i - 1])]
+      assert len(starts) == 2 and starts[0] <= 2, f"{name}: its own two flashes, at once {r['lit']}"
+      assert not r["lit"][0], f"{name}: the first prompt was marching by then {r['lit']}"
 
   def test_with_no_limit_the_confirm_is_todays_banner(self):
     c = self.r["compact"]["confirm_compact_no_limit"]

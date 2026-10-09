@@ -64,10 +64,39 @@ class ClusterEdge:
     self.reset()
 
   def reset(self):
-    self.row1 = math.inf
+    self.timer_left = math.inf
 
 
 cluster_edge = ClusterEdge()
+
+
+class FrameAlert:
+  """This frame's (alert, animating_out), as AlertRenderer.will_render() gives it, looked up ONCE a frame for every
+  FORK(HUD) question: the face's (drawing_top_icons: the box, the coming limit), the cluster's, the standstill banner's
+  observe() and the coming limit's drawing. They all see the answer as it was BEFORE the alert renderer drew this frame
+  (its render clears its previous alert once the fade has ended): one decision, never two that disagree on the frame an
+  alert finishes fading. A new frame is a new gui_app frame or SubMaster frame, a new selfdriveState message, or
+  clear() - which HudRendererSP calls once it has drawn, the last to ask (a sim that advances neither frame counter)."""
+  def __init__(self):
+    self.clear()
+
+  def clear(self):
+    self._key: tuple | None = None
+    self._ss = None
+    self._value: tuple = (None, False)
+
+  def get(self, ar) -> tuple:
+    if ar is None:
+      return None, False
+    from openpilot.system.ui.lib.application import gui_app
+    ss = ui_state.sm['selfdriveState']
+    key = (id(ar), gui_app.frame, ui_state.sm.frame)
+    if key != self._key or ss is not self._ss:
+      self._key, self._ss, self._value = key, ss, ar.will_render()
+    return self._value
+
+
+frame_alert = FrameAlert()
 
 
 @dataclass(frozen=True)
@@ -105,7 +134,7 @@ pending_max = PendingMax()
 def banner_max_w(rect: rl.Rectangle, h: float) -> float:
   """How wide a banner may be: up to the stop timer, less BANNER_GAP. (h, the banner's height: every banner is within
   the timer's row.)"""
-  return max(80.0, min(BANNER_MAX_W, cluster_edge.row1 - BANNER_GAP - (rect.x + BANNER_X)))
+  return max(80.0, min(BANNER_MAX_W, cluster_edge.timer_left - BANNER_GAP - (rect.x + BANNER_X)))
 
 
 def frees_top_icons(alert) -> bool:

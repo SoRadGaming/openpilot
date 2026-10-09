@@ -30,6 +30,8 @@ class HudRendererSP(HudRenderer):
     self._pending: hud_alerts.PendingTarget | None = None
     self._pending_t = -1e9      # when the box was last drawn: a box older than PENDING_STALE_S is dropped, not faded
     self._pending_t0: float | None = None  # when the box was first half visible: its outline's clock (box_outline)
+    self._pending_had = False   # the last frame took a box: one taken after a frame with none is a new prompt ...
+    self._pending_out = False   # ... as is one taken while the alert is up again after it was fading out
     self.alert_renderer = None  # set by the HUD cluster: this frame's alert, for drawing_top_icons
     # FORK(HUD): the coming limit, in the same place (round 5, option C; hud_model.ApproachState)
     self._approach = ApproachState()
@@ -43,13 +45,14 @@ class HudRendererSP(HudRenderer):
     # FORK(HUD): every frame, what the alert renderer will draw - the standstill banner sees the prompt clear even though
     # the alert renderer stops asking once there is no alert (hud_model.StandstillBanner)
     if self.alert_renderer is not None:
-      hud_alerts.standstill_banner.observe(self.alert_renderer.will_render()[0])
+      hud_alerts.standstill_banner.observe(self._frame_alert()[0])
 
   def _render(self, rect: rl.Rectangle) -> None:
     super()._render(rect)
     self._draw_pending_max(rect)  # FORK(HUD)
     self._draw_approach(rect)  # FORK(HUD)
     self.blind_spot_indicators.render(rect)
+    hud_alerts.frame_alert.clear()  # FORK(HUD): the last to ask this frame
 
   def _has_blind_spot_detected(self) -> bool:
 
@@ -60,6 +63,10 @@ class HudRendererSP(HudRenderer):
   def drawing_top_icons(self) -> bool:
     return super().drawing_top_icons() or self._box_top_icon() or self._approach_top_icon()
 
+  def _frame_alert(self) -> tuple:  # FORK(HUD)
+    """This frame's (alert, animating_out), looked up once a frame (hud_alerts.FrameAlert)."""
+    return hud_alerts.frame_alert.get(self.alert_renderer)
+
   def _box_top_icon(self) -> bool:  # FORK(HUD)
     """By THIS frame's alert (the face asks before the alert renderer publishes the box): up from the confirm's first
     frame; while the box fades out under the stock MAX number ('set speed changed'); not once anything else is up, nor
@@ -67,7 +74,7 @@ class HudRendererSP(HudRenderer):
     ar = self.alert_renderer
     if ar is None:
       return self._pending_alpha.x > 1e-2 and not self._stale()
-    alert, animating_out = ar.will_render()
+    alert, animating_out = self._frame_alert()
     if alert is None or animating_out:
       return False
     if hud_alerts.box_alert(alert, hud_settings.get()):
@@ -85,7 +92,15 @@ class HudRendererSP(HudRenderer):
     flashes twice from the frame it is half visible, then marches (hud_model.box_outline)."""
     item = hud_alerts.pending_max.take()
     now = rl.get_time()
+    out = bool(self._frame_alert()[1]) if self.alert_renderer is not None else False
     if item is not None:
+      # a new prompt - a box taken after a frame with none, or a confirm up again while the last one was still fading
+      # out (the box never left the screen) - or the target or the key changing under one: its own two flashes, from
+      # when it is half visible
+      p = self._pending
+      new_prompt = not self._pending_had or (self._pending_out and not out)
+      if new_prompt or p is None or (p.value, p.lower) != (item.value, item.lower):
+        self._pending_t0 = None
       self._pending = item
       self._pending_alpha.x = item.alpha
     elif self._can_draw_top_icons and not self._stale():
@@ -94,6 +109,7 @@ class HudRendererSP(HudRenderer):
       # another alert has the top left, or the road view was not drawn for a while (swiped away mid-prompt): no tail
       self._pending_alpha.x = 0.0
     self._pending_t = now
+    self._pending_had, self._pending_out = item is not None, out
     # the stock MAX number fading out as the box comes, or in as it goes: one or the other, never both at full
     alpha = self._pending_alpha.x * (1.0 - self._set_speed_alpha_filter.x)
     if self._pending is None or alpha < 1e-2:
@@ -125,10 +141,12 @@ class HudRendererSP(HudRenderer):
     that draws nothing and lets it show ('set speed changed', 'auto adjusting'): the coming limit hands over to it in
     the same place, the two cross-fading as the box and MAX do; APPROACH_CUT any other alert (a banner, a full-screen
     one - including one fading out) or the confirm's box: the coming limit goes on the frame, never drawn over it."""
-    ar = self.alert_renderer
-    alert = ar.will_render()[0] if ar is not None else None
-    if alert is not None:
-      return APPROACH_MAX if hud_alerts.frees_top_icons(alert) else APPROACH_CUT
+    alert = self._frame_alert()[0]
+    if alert is not None and not hud_alerts.frees_top_icons(alert):
+      return APPROACH_CUT
+    # nothing up, or an alert that draws nothing: what the MAX place has - the box (fading), then the stock MAX number
+    # for as long as it shows (SET_SPEED_PERSISTENCE, 2.5 s, not the ~5 s the 'set speed changed' alert stays up: the
+    # coming limit comes as soon as MAX has gone - route 10f t 187.8-190.2, the 70 kept back with the place empty)
     if self._pending is not None:
       return APPROACH_CUT
     return APPROACH_MAX if self._set_speed_alpha_filter.x > 1e-2 else APPROACH_FREE

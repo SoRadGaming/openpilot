@@ -32,9 +32,12 @@ PARAM_COMPACT_DISENGAGE = "HudCompactDisengage"  # 'cruise off' / 'lane centerin
 PARAM_COMPACT_TURN = "HudCompactTurn"       # 'turning left / right' as a banner
 PARAM_APPROACHING_LIMIT = "HudApproachingLimit"  # the coming limit (lower or higher) in MAX's place, before it changes
 
-BOOL_PARAMS = (PARAM_STOPPED_TIMER, PARAM_STOPPED_BANNER, PARAM_PLANNED_STOP, PARAM_CURVE, PARAM_COMPACT_LIMIT,
-               PARAM_COMPACT_DISENGAGE, PARAM_COMPACT_TURN, PARAM_APPROACHING_LIMIT)
-ALL_PARAMS = BOOL_PARAMS
+# every key (all BOOL) and the HudSettings field it switches: the one list
+FIELDS = {PARAM_STOPPED_TIMER: "stopped_timer", PARAM_STOPPED_BANNER: "stopped_banner",
+          PARAM_PLANNED_STOP: "planned_stop", PARAM_CURVE: "curve", PARAM_COMPACT_LIMIT: "compact_limit",
+          PARAM_COMPACT_DISENGAGE: "compact_disengage", PARAM_COMPACT_TURN: "compact_turn",
+          PARAM_APPROACHING_LIMIT: "approaching_limit"}
+ALL_PARAMS = tuple(FIELDS)
 
 
 @dataclass(frozen=True)
@@ -50,12 +53,7 @@ class HudSettings:
 
 
 ALL_OFF = HudSettings()
-ALL_ON = HudSettings(stopped_timer=True, stopped_banner=True, planned_stop=True, curve=True, compact_limit=True,
-                     compact_disengage=True, compact_turn=True, approaching_limit=True)
-FIELDS = {PARAM_STOPPED_TIMER: "stopped_timer", PARAM_STOPPED_BANNER: "stopped_banner",
-          PARAM_PLANNED_STOP: "planned_stop", PARAM_CURVE: "curve", PARAM_COMPACT_LIMIT: "compact_limit",
-          PARAM_COMPACT_DISENGAGE: "compact_disengage", PARAM_COMPACT_TURN: "compact_turn",
-          PARAM_APPROACHING_LIMIT: "approaching_limit"}
+ALL_ON = HudSettings(**dict.fromkeys(FIELDS.values(), True))
 
 
 def read_settings(params) -> HudSettings:
