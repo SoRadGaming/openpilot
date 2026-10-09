@@ -75,11 +75,55 @@ lead time while moving on the six routes below. The DBC now says 1/64 on all 13 
   - **Behind a lead that pulls away,** it sees the lead's real speed and follows sooner.
   - **FCW** (upstream's crash check on the MPC's lead trajectory) can now fire on a fast closing that it could not see
     before.
-  - **Experimental mode masks some of this.** e2e is the plan in about half of low-speed following, and the planner
-    takes the lowest plan, so the difference shows most in chill mode or wherever the radar lead's plan is the one
-    that binds.
-  - **At a standstill nothing changes.** The radar reports no tracks while the car is stopped, so the stop and the
-    pull-off run on the camera as before.
+  - **Experimental mode hides some of the benefit, none of the harm.** e2e is the plan in about half of low-speed
+    following, and the planner takes the lowest plan, so the earlier braking shows most in chill mode or wherever the
+    radar lead's plan is the one that binds. For the same reason a harsher false MPC plan (below) always wins in
+    either mode.
+  - **The stop and the pull-off are not camera-only.** The radar reports no tracks while the car is stopped, but they
+    come back at 1-5 km/h, and below 4 m/s radard's low-speed override takes the closest radar track within 1 m of the
+    path and 0.75-25 m ahead without asking the camera. On six crawl-heavy routes (01, 06, 07, 08, 10 and all of 14:
+    8.1 min of engaged driving at 0.3-4 m/s) the replayed lead is a stationary radar track for 120 s with the fix,
+    against about 19 s with the old decode.
+
+* **What can get worse: false hard braking on stationary returns below about 36 km/h.** A stationary radar return
+  used to read as a lead doing half our speed. Now it reads as stopped, which is correct, so when radard makes it the
+  lead the MPC brakes for it as for a stopped car. Two unchanged upstream paths in radard let that happen:
+  - **below 4 m/s, the low-speed override** (`openpilot/selfdrive/controls/radard.py` `potential_low_speed_lead`,
+    :102-105, used in `get_lead`, :173-180). It needs no camera confirmation and checks no speed;
+  - **whenever the camera lead is under 10 m/s, the camera match** (`vel_sane`, :133) accepts a stationary track:
+    `|vLead - camera v| < 10` passes. At speed the fix does the opposite (next bullet).
+
+  At walking pace the near-range returns are often clutter. On 10f at t=2740-2745, tracks 0x410 and 0x414 sit at 4-6 m
+  reading -2.5 to -3.0 m/s (about -vEgo); their distance closes, then jumps back. Such tracks jump by more than 0.4 m
+  in 4-10% of frames, against 1% for moving tracks, and `FLAG_B21`/`FLAG_B22` do not tell them apart. Measured by
+  replaying the plan with the old and the new decode, counting episodes where the new `aTarget` is at or below -2 and
+  at least 1 m/s² below the old one:
+  - **Nine routes** (c0, c8, c9, 10f, 113, 115, 120, 121, the first 963 s of 14): 144 episodes. 94 below 4 m/s, 93 of
+    them on a stationary radar lead and 67 where the car drove past the point within 3 s (63 s of such frames in
+    0.28 h of crawling, about 6%); 39 at 4-10 m/s; 11 at 10 m/s and above. Only 2 engaged.
+  - **Six crawl-heavy routes** (01, 06, 07, 08, 10, all 76 min of 14; 0.59 h engaged below 10 m/s): 75 episodes, 10
+    engaged, 6 of those with the gas pressed. Engaged without gas: route 14 t=194.3-195.4, -2.75 m/s² for 0.9 s
+    against the old -1.17 at 7.5 m/s, on a stationary return 12.4 m ahead and 1.4 m to the side while the camera lead
+    was 17.8 m ahead doing 8.2 m/s, and the car drove past it; route 06 t=1209.5, -2.14 against -1.07. (Route 10
+    t=110.6 is a real slower lead.)
+  - The plan can ask for -3.5 m/s², past the car's 2.6 m/s² brake ceiling. On c8 at t=2321.1 (disengaged) the same
+    mechanism raises a false FCW on clutter, -3.5 for 0.8 s: the only new FCW in the replay.
+  - Engaged, off the gas and at walking pace, the plan itself rarely moved: of the 120 s above, the new `aTarget` was
+    below -1.5 and 0.5 under the old one for 0.7 s. The owner's gas overrides at the same spots (old plan -1.4 to
+    -1.9) suggest he already overrides milder phantom braking there.
+
+  The fix belongs in radard, Elesys-only, as its own change with its own replay and a logged-frame test (10f
+  t=2740-2745, c8 t=2320-2322): reject a camera match whose track speed disagrees with a confident camera lead
+  (prob > 0.5) by more than about 3 m/s, and require camera agreement before the low-speed override takes a
+  stationary track. It is not in this change. **Until it lands:** no engaged driving in car parks or driveways; treat
+  engaged stop-and-go and close follow as unvalidated; expect occasional firm false braking below about 36 km/h,
+  most of it at walking pace, and override it with the gas.
+
+* **What it removes at speed.** When the camera lead is over 10 m/s, the same match check now rejects stationary
+  returns that the old decode passed (their half-scale vLead was over 3 m/s, which `vel_sane` also accepts):
+  - route 120 t=116.6, engaged at 16.5 m/s: a stationary return read at 7.55 m/s made the logged plan brake at
+    -2.31; with the fix the plan is -0.10 to -0.49;
+  - 10f t=2065, engaged at 22 m/s: logged -0.94 from a return read at 11.1 m/s, -0.05 with the fix.
 
 * **Checked, and left alone: nothing was tuned on the half-scale value.**
   - `radar_interface.py` passes `REL_SPEED` straight through.
@@ -94,11 +138,17 @@ lead time while moving on the six routes below. The DBC now says 1/64 on all 13 
     those routes that reads the radar lead's speed (the c1weak study, `brake_route_check.py` on older routes) reads
     the old numbers. That affects nothing at the stop itself, for the reason above.
 
-* **How to judge it.** Before driving, replay a route recorded with this build: the radar lead's d(`dRel`)/dt against
-  `vRel` should be about 1.0. Then drive it in chill mode and in experimental mode. Watch for:
-  - earlier, smoother braking toward slower and stopped traffic;
+* **How to judge it.** Drive it in chill mode and in experimental mode, and replay the first route recorded on this
+  build, with stop-and-go traffic in it: the radar lead's d(`dRel`)/dt against `vRel` should be about 1.0 above
+  4 m/s. Watch for:
+  - earlier, smoother braking toward slower and stopped traffic, and none of the phantom braking at speed above;
   - quicker following when the lead pulls away;
-  - no new FCW in ordinary following.
+  - sudden braking with nothing in the path at walking pace and at 10-36 km/h, and FCW in town: the false brakes
+    above. Override with the gas and note the time.
+
+  The walking-pace numbers come from the six crawl-heavy routes: the nine-route replay holds only 1.1 min of engaged
+  driving at 0.3-4 m/s. On those six routes the old-decode replay matches the logged plan within 0.1 on only 68-94%
+  of engaged walking-pace frames (99-100% on 10f-121), so the magnitudes there are approximate.
 
 * **Tests.** `opendbc/car/honda/tests/test_elesys_radar.py` (new, 4 tests) uses logged frames of route 113:
   - the signal definition on all 13 track messages;
@@ -110,7 +160,9 @@ lead time while moving on the six routes below. The DBC now says 1/64 on all 13 
 
 Under the hood: opendbc `83c8b5b0`, `REL_SPEED : 37|14@0- (0.015625,0) [-128|128]` with a `CM_` per track message.
 Docs: CAR doc 4.8 and 5.2, `docs/fork/README.md`, opendbc `FORK.md`. The root cause was found in round 5's
-close-follow study (item 4) and confirmed independently by its review.
+close-follow study (item 4) and confirmed independently by its review. The plan replay and the low-speed false brakes
+came from the fix's own review. The close-follow study's fixed-radar baseline is the logged lead with its speed
+doubled, not a radard replay on the new decode, so it does not include these false obstacles.
 
 ## 2026-10-06 — the three 2026-10-06 changes together (integration)
 
