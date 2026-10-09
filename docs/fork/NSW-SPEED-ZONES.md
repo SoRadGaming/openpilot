@@ -27,10 +27,11 @@ can be switched to log-only or off at any time (see [Modes and params](#modes-an
 | `openpilot/sunnypilot/mapd/mapd_manager.py` | Chooses the publisher and runs the downloader tick. |
 | `openpilot/sunnypilot/selfdrive/controls/lib/speed_limit/speed_limit_resolver.py` | Age fix, tunnel pass-through (states 4 and 7), settle window. |
 | `openpilot/cereal/custom.capnp` | `LiveMapDataSP.nswZone @6`. **Merge hazard:** it sits on an upstream struct at the next free ordinal. If upstream sunnypilot ever adds its own `@6` to `LiveMapDataSP`, one side must be renumbered, and routes logged before that decode wrongly with the other schema. Check this on every upstream merge. |
-| `openpilot/common/params_keys.h` | `SpeedLimitNswZones`, `NswZonesAutoUpdate`, `NswZonesUpdateCheck`, `NswZonesVersion`, `Offroad_NswZonesStale`. |
+| `openpilot/common/params_keys.h` | `SpeedLimitNswZones`, `NswZonesAutoUpdate`, `NswZonesUpdateCheck`, `NswZonesVersion`, `NswZonesStatus` (2026-10-09), `Offroad_NswZonesStale`. |
 | `openpilot/selfdrive/selfdrived/alerts_offroad.json` | `Offroad_NswZonesStale`: data over 60 days old, or the school calendar ending within 60 days. |
 | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/maps.py` | The "nsw zones" pair on the maps page. |
-| `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/cruise.yaml` | In sunnylink: the mode, both weekly updates and both "update now" controls (NSW and OSM). |
+| `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/cruise.yaml` | In sunnylink: the OSM pair in Speed Limit Settings; since 2026-10-09 the mode, the NSW pair and two info rows in their own section, "NSW Speed Zones" (before, the mode and the NSW pair sat in Speed Limit Settings too). |
+| `openpilot/sunnypilot/sunnylink/athena/sunnylinkd.py` | Since 2026-10-09 `NswZonesVersion` and `NswZonesStatus` are in `BLOCKED_PARAMS`: the device writes them. |
 | `openpilot/sunnypilot/mapd/osm_auto_update.py` | `is_offroad()` / `is_parked()`, shared with the downloader, and `answer_request()`, the offroad gate on an OSM update request (area **SL**). |
 | `openpilot/sunnypilot/sunnylink/tests/test_settings_changes.py` | `TestMapDataControls`, appended at the end of the file, marked FORK(NSW-ZONES). The file is upstream's (sunnypilot SDUI #1780, #1830): **merge hazard**, keep the block at the end. |
 | **`SoRadGaming/openpilot`**: `.github/workflows/nsw-speedzones.yaml` (master) | The weekly Action that builds the index and publishes it as release assets. |
@@ -206,8 +207,20 @@ maps page shows.
   ignition, settled for a minute - the same rule as the OSM auto-update - and only on **unmetered** Wi-Fi or ethernet.
   A forced check needs only **offroad** (deviceState heard, alive and not started) and any network: pressing it is the
   owner's choice of 22 MB, and offroad nothing is controlling the car, so **Always Offroad with the car on counts**. A
-  request that arrives onroad is answered `offroad only` in `status.json` and cleared; it does not run later. A failed
-  automatic check waits an hour before the next.
+  request that arrives onroad is answered `offroad only` in `status.json` and in `NswZonesStatus`, and cleared; it does
+  not run later (owner decision D3.1, 2026-10-09: refused, not queued for the next park, where a download could start at
+  ignition-off on a hotspot that leaves with the phone). A failed automatic check waits an hour before the next.
+- **Telling sunnylink (2026-10-09).** When a check ends - automatic or asked for - and when a request is refused, the
+  downloader writes one line to `NswZonesStatus`: the result, then the device's local time, e.g.
+  `updated to 2026-10-04 · 2026-10-09 18:02 AEDT`, `up to date (2026-10-04) · ...`, `offroad only · ...`,
+  `no network · ...`, `starting up, ask again · ...` (deviceState not heard yet) or `failed: ConnectionError · ...`.
+  Never progress: that stays in `status.json`, so the param is written once per check, not at 1 Hz. It then bumps
+  `ParamsVersion`, the counter sunnylink's app watches, and it bumps it as well when it clears a request it has taken,
+  so the app turns the "Now" switch back off. Automatic checks that are simply not due ("checked recently", "metered")
+  write nothing. Both writes are best effort, inside a try: an error there is logged and the check goes on. Every
+  route's `initData` carries the params, so the last check's result reaches the logs without SSH. That the app
+  re-reads on `ParamsVersion` rests on a comment in `sunnylinkd.py` (`saveParams`); the app is closed source, so it is
+  to be confirmed on the phone.
 - **Cancelling.** Going onroad (deviceState started) cancels any check in flight, and nothing is installed. Turning the
   ignition on also cancels an **automatic** check - automatic stays parked-only - but not one somebody asked for.
   **OSM is different:** mapd has no cancel, so an OSM download started offroad keeps running after the car drives off,
@@ -364,8 +377,9 @@ sampling every 20 m. It also reports a school zone that will be active at the es
 15 s × speed, clamped to 150–1000 m. It stops at a junction where lines with different limits continue. The result
 goes out as `speedLimitAhead` / `speedLimitAheadDistance` while matched (state 2) and in `nswZone.speedLimitAhead` always.
 **Nothing acts on it:** the resolver makes no early switch under NSW live (see [Resolver](#resolver)). Since
-2026-10-03 the comma 4 **shows** the published one - `speedLimitAhead*`, never `nswZone`'s - when it is lower and within
-15 s or 500 m ([On the comma 4 screen](#on-the-comma-4-screen-hud)); `nswZone.speedLimitAhead` is still only logged.
+2026-10-03 the comma 4 **shows** the published one - `speedLimitAhead*`, never `nswZone`'s - within 15 s or 500 m,
+lower only until round 5, lower or higher since (2026-10-09, in the MAX number's place:
+[On the comma 4 screen](#on-the-comma-4-screen-hud)); `nswZone.speedLimitAhead` is still only logged.
 
 ---
 
@@ -376,7 +390,8 @@ goes out as `speedLimitAhead` / `speedLimitAheadDistance` while matched (state 2
 | `SpeedLimitNswZones` | INT, **2**, PERSISTENT \| BACKUP | 0 off: upstream's `OsmMapData` exactly, and `nswZone` is never set. 1 log only: OSM is published and `nswZone` says what NSW would have published. **2 live**: NSW where it matches, OSM elsewhere. Switching from 0 to 1 or 2 needs a restart; changes between 1 and 2, and to 0, apply live. **The off switch is in sunnylink only** (Cruise → "NSW Speed Zones"); the device has no control for it. |
 | `NswZonesAutoUpdate` | BOOL, 1, PERSISTENT \| BACKUP | The weekly check. The first download happens regardless. |
 | `NswZonesUpdateCheck` | BOOL, CLEAR_ON_MANAGER_START | Set by the maps page button or sunnylink, consumed (and cleared, taken or refused) by the downloader. |
-| `NswZonesVersion` | STRING, PERSISTENT | The installed data version. |
+| `NswZonesVersion` | STRING, PERSISTENT | The installed data version. Written by the downloader only; read-only in sunnylink ("Installed NSW data", `BLOCKED_PARAMS`). |
+| `NswZonesStatus` | STRING, PERSISTENT (not BACKUP: it describes this device) | Since 2026-10-09: the last check's result and time, one line, written when a check ends or a request is refused. Read-only in sunnylink ("Last NSW check", `BLOCKED_PARAMS`). Absent until the first check on this software. |
 
 **What mode 2 publishes as `liveMapDataSP.speedLimit`:**
 
@@ -421,25 +436,18 @@ to log-only in a tunnel would otherwise let OSM's surface-street value through t
 
 ## On the comma 4 screen (HUD)
 
-Since 2026-10-03 the comma 4's speed cluster (`selfdrive/ui/sunnypilot/mici/onroad/hud_*.py`, area **HUD** in
-[README.md](README.md), markers `FORK(HUD)`) draws three things from this feature. Each needs the limit on screen -
-the resolver's `speedLimitLast`, source map - to **be** the NSW limit mapd published: `nswZone.mode` 2 (live),
-`nswZone.state` 2 (matched) or 4 (dead reckoning, the tunnel line's limit) and `round(nswZone.speedLimit)` equal to it.
-In log-only mode, in an ambiguous or unmatched state, or while the resolver holds another value, nothing below is
-drawn: `nswZone` then describes a limit that is not the one shown.
+Since round 5 (2026-10-09, the owner's option A) the comma 4 draws **no speed-limit sign** any more, so the school-zone
+lamps and the electronic Variable-zone sign it carried (2026-10-03 to 2026-10-08) are gone with it; nothing on the
+screen marks a school zone now. What this feature still puts on screen is the **coming limit** (area **HUD** in
+[README.md](README.md), `hud_model.ApproachState`, markers `FORK(HUD)`):
 
 | on screen | from | setting (sunnylink Visuals → HUD) |
 |---|---|---|
-| Two amber lamps on the sign's rim, flashing in turn about once a second, and SCHOOL under it | `nswZone.schoolZone` 2 (active); the sign shows the published limit, 40 as a rule | School Zone Lights (`HudSchoolZoneCue`) |
-| The same lamps unlit (grey), no text | `schoolZone` 1 (inactive) | the same |
-| Nothing | `schoolZone` 3 (unknown): nothing is published then, so there is no NSW limit on screen to mark | - |
-| The electronic sign: black face, red ring, white digits | `nswZone.variable` (a Variable zone: the published value is its static maximum, and the overhead sign may show less) | Electronic Sign in Variable Zones (`HudVariableLimitSign`) |
-| The next lower limit (small sign, distance and/or bar) | `liveMapDataSP.speedLimitAhead*`: what mapd published - only while matched (state 2), so **never while dead reckoning** - and only while the limit on screen is source map. The 1 Hz distance is run down by `vEgo` between messages (for at most 1 s) | Next Lower Limit (`HudNextLimit`) |
+| Top left, in the stock MAX number's place: the coming limit in a dashed box, a down (lower) or up (higher) chevron, and 'in 300 m' in a pill that drains ('now' close in, and while held) | `liveMapDataSP.speedLimitAhead*`: what mapd published - only while matched (state 2), so **never while dead reckoning**; and, whatever mapd says, nothing in `nswZone.state` 4 or 7 - and only while the limit in force is the resolver's, source map. Within 15 s of travel or 500 m. The 1 Hz distance is run down by `vEgo` between messages (for at most 1 s) and only counts down. Held after the look-ahead ends until the resolver's limit becomes it, 3 s at most | Approaching Limit (`HudApproachingLimit`) |
 
-The sign keeps its round shape in a school zone: the owner rejected the NSW plate shape in the mockups ("keep the same
-shape as all the others"). During a speed-limit confirm with an offset, the offset badge sits low on the right of the
-ring while the lamps are drawn (since 2026-10-06; it used to cover the right-hand lamp), up and right otherwise. The
-lamp and label drawing is one function, `hud_draw.school_cue()`, so it can be restyled alone.
+It hands over in the same place to the speed-limit confirm box or the stock MAX number. School and Variable zones
+ahead are not marked (phase 2: the matcher knows the zone type ahead, `ahead_kind` / `ahead_zone_type`, but
+`liveMapDataSP` has no field for it).
 
 ## The maps page (mici)
 
@@ -462,17 +470,31 @@ Settings has a **maps** page. Below the OSM pair (fix C) is a second pair, **nsw
   `car must be parked`; only the automatic downloads keep that rule now.
 - **A refusal made onroad is not shown offroad.** A sunnylink tap while driving is answered `offroad only` in
   `status.json`; once the device is offroad again the NSW button is enabled and shows its mode line, not that answer.
+  sunnylink's "Last NSW check" keeps saying `offroad only` (with its time) until the next check.
 - **The "update weekly" toggle** between the two pairs is the **OSM** weekly update only. NSW's weekly check
   (`NswZonesAutoUpdate`) and the mode are set in sunnylink.
 
 ## sunnylink
 
-Cruise → Speed Limits → Speed Limit Settings holds, under "NSW Speed Zones":
+Since 2026-10-09 (owner decision D3.2) NSW has its own section, Cruise → **"NSW Speed Zones"**, instead of sitting
+in the Speed Limit Settings sub-panel, which only opens through SpeedLimitMode. The OSM pair stays there.
 
 | item | param | widget | notes |
 |---|---|---|---|
-| Update NSW Speed Zones Weekly | `NswZonesAutoUpdate` | toggle | Dimmed (unavailable) when the mode is off. |
-| Update NSW Speed Zones Now | `NswZonesUpdateCheck` | toggle, `offroad_only` | The maps page's NSW button. Dimmed (unavailable) when the mode is off, like the weekly toggle: a tap would otherwise fetch ~22 MB for a feature that is off. The device itself still takes a request in any mode (the maps page button works with zones off, to fetch data before turning them on). |
+| NSW Speed Zones | `SpeedLimitNswZones` | multiple_button | Off / Log Only / Live: the off switch. Always shown. |
+| Update NSW Speed Zones Now | `NswZonesUpdateCheck` | toggle, `offroad_only` | The maps page's NSW button. The result shows in "Last NSW check" when the check ends; a request while driving is refused there as `offroad only`. |
+| Update NSW Speed Zones Weekly | `NswZonesAutoUpdate` | toggle | |
+| Installed NSW data | `NswZonesVersion` | info | The data date. |
+| Last NSW check | `NswZonesStatus` | info | One line: how the last check ended, and when. |
+
+The other four are hidden while the mode is off: a tap would otherwise fetch ~22 MB for a feature that is off. The device
+itself still takes a request in any mode (the maps page button works with zones off, to fetch data before turning them
+on).
+
+Cruise → Speed Limits → Speed Limit Settings holds the OSM pair:
+
+| item | param | widget | notes |
+|---|---|---|---|
 | Update OSM Maps Weekly | `OsmAutoUpdateWeekly` | toggle | The maps page's "update weekly" toggle. |
 | Update OSM Maps Now | `OsmDbUpdatesCheck` | toggle, `offroad_only` | The maps page's OSM button. Needs a region already chosen. Driving off does not stop a download that has started. |
 
@@ -483,8 +505,10 @@ Cruise → Speed Limits → Speed Limit Settings holds, under "NSW Speed Zones":
 - **Why toggles.** The schema lists a `button` widget with an `action` field, but nothing in this tree uses one or says
   what the app does with it; a `toggle` is known to write a BOOL. The device clears the param as soon as it has taken
   the request (the downloader removes it; `update_osm_db()` writes it false), or refused it, within a second or so.
-  That clear does not bump `ParamsVersion` (only `saveParams` does), so **in the app the switch stays on until the app
-  next loads the settings, then reads off.** Switching it off within a second or so of switching it on cancels the
+  For OSM that clear does not bump `ParamsVersion` (only `saveParams` does), so **in the app the OSM switch stays on
+  until the app next loads the settings, then reads off.** Since 2026-10-09 the NSW downloader bumps `ParamsVersion`
+  when it clears the request and when it writes `NswZonesStatus` (read-modify-write, like `saveParams`: a race can lose
+  one increment, but the value still changes). Switching it off within a second or so of switching it on cancels the
   request; after that the device has already taken it, and switching it on again asks again.
 - **The same rule as the buttons, enforced on the device.** `offroad_only` greys the items out in the app while
   driving, but the device does not trust that: the NSW downloader answers an onroad request `offroad only` and clears
@@ -505,12 +529,12 @@ Cruise → Speed Limits → Speed Limit Settings holds, under "NSW Speed Zones":
 | suite | covers |
 |---|---|
 | `sunnypilot/mapd/nsw_zones/tests/`: `test_matcher`, `test_school_days`, `test_dead_reckoning`, `test_owner_rules`, `test_lookahead`, `test_index`, `test_build_index`, `test_review_fixes` | See the list below. |
-| `nsw_zones/tests/test_downloader.py` | The device side. When a check is due: the first download, the week, the button, parked, unmetered, and waiting after a failure. Only the three fixed URLs are requested. Up to date downloads nothing more, and an incompatible format is not downloaded. Damaged, truncated or oversized files never replace a good install. A forced check runs offroad with the ignition on (Always Offroad) and is refused and cleared onroad or before deviceState is heard. Going onroad cancels any download in flight, and an install between any two of its steps; ignition cancels an automatic one but not a forced one. An install finished while driving is loaded when the device is next offroad. A damaged install is set aside and fetched again. It never raises into mapd_manager. |
+| `nsw_zones/tests/test_downloader.py` | The device side. When a check is due: the first download, the week, the button, parked, unmetered, and waiting after a failure. Only the three fixed URLs are requested. Up to date downloads nothing more, and an incompatible format is not downloaded. Damaged, truncated or oversized files never replace a good install. A forced check runs offroad with the ignition on (Always Offroad) and is refused and cleared onroad or before deviceState is heard. Going onroad cancels any download in flight, and an install between any two of its steps; ignition cancels an automatic one but not a forced one. An install finished while driving is loaded when the device is next offroad. A damaged install is set aside and fetched again. It never raises into mapd_manager. Since 2026-10-09 (`TestSunnylinkReport`, which also re-runs every `TestUpdater` case with a recording params double): `NswZonesStatus` after a weekly check, an asked-for one, an onroad request (`offroad only`, not queued), other refusals and a failure, the version written before the status and the `ParamsVersion` bump after it, one bump when the request is taken and one when the check ends, no write for progress or for an automatic check that is not due, a failing param write that stops nothing, and the key's PERSISTENT / STRING / not-BACKUP flags. |
 | `sunnypilot/mapd/tests/test_nsw_map_data.py` | The publisher. Mode 0 is `OsmMapData` byte for byte, and switching to 0 stops NSW at once. Log only publishes OSM exactly. Live publishes the NSW limit and each state's value (the held value in state 7, never OSM; OSM agreeing with NSW's best guess in state 3; the 3 s no-match hold), and carries the school code. A matcher exception gives OSM plus the error count, and a failed setup leaves a working `OsmMapData`. It also covers a missing or damaged file (set aside), reload after an install, the inputs, the stale-data alert and the capnp field. |
 | `.../speed_limit/tests/test_speed_limit_nsw.py` | The resolver. Dead reckoning (4) and its ended hold (7) pass the freeze and are never re-frozen to an older value, while GPS loss without them is still frozen, and the OSM publisher keeps fix B. The message's mode decides, not the param. An NSW match ends the settle window, stale data is dropped, and there is no early switch. Log-only and off are unchanged, including upstream's age. |
 | `selfdrive/ui/tests/test_maps_settings.py` | The maps page pair: both buttons gate on offroad only (no ignition), with a reason that fits the value line and matches what the device answers; an onroad refusal is not shown once offroad; `update_osm_db()` is handed `request_allowed`. |
 | `sunnypilot/mapd/tests/test_osm_auto_update.py` (`TestRequestGate`, `TestUpdateOsmDb`) | An OSM request runs offroad with the ignition on, and is cleared onroad, before deviceState is heard, with no region or during a download; an error refuses every later request. The SubMaster is read on every tick, also after the weekly latch (a double that goes stale when not read, as a lapped conflated queue does). `update_osm_db()` leaves a request it was not told was checked for the next tick. |
-| `sunnypilot/sunnylink/tests/test_settings_changes.py` (`TestMapDataControls`) | The four sunnylink items: where they sit, toggles over BOOL params, `offroad_only` on the "Now" pair, NSW "Now" dimmed with the mode off like its weekly sibling, the descriptions, and a real `saveParams` / `getParams` round trip showing the request written and, once cleared, read back as off. |
+| `sunnypilot/sunnylink/tests/test_settings_changes.py` (`TestMapDataControls`) | The sunnylink items: the OSM pair in Speed Limit Settings, the NSW section and its order (mode, now, weekly, installed, last check; the mode always shown), toggles over BOOL params, `offroad_only` on the "Now" pair, the info rows read-only STRINGs in `BLOCKED_PARAMS`, everything NSW hidden with the mode off, the descriptions, a real `saveParams` / `getParams` round trip showing the request written and, once cleared, read back as off, and a `saveParams` to an info row ignored. |
 
 What the 132 builder and matcher tests cover:
 
