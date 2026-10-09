@@ -424,7 +424,7 @@ class TestOdometer(unittest.TestCase):
     for _ in range(10):
       trk.dRel += 0.2  # moving away at 2 m/s (radar updates at 10 Hz) while the car stands still
       radar.update({7: trk}, v_ego=0.0)
-    self.assertIn(7, g.moving)
+    self.assertEqual(g.moving, {7})
 
 
 class TestLoggedFrames(unittest.TestCase):
