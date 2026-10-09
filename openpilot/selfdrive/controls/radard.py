@@ -16,6 +16,7 @@ from openpilot.common.simple_kalman import KF1D
 from opendbc.car import structs
 from opendbc.car.hyundai.values import HyundaiFlags
 from opendbc.sunnypilot.car.hyundai.values import HyundaiFlagsSP
+from openpilot.sunnypilot.selfdrive.controls.lib import elesys_radar_guard  # FORK(HONDA_ACCORD_9G_AU): clutter guard
 
 
 # Default lead acceleration decay set to 50% at 1s
@@ -156,10 +157,12 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
 
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
              model_v_ego: float, lead_prob: float, CP: structs.CarParams, CP_SP: structs.CarParamsSP,
-             low_speed_override: bool = True) -> dict[str, Any]:
+             low_speed_override: bool = True, clutter_guard: bool = False) -> dict[str, Any]:
   # Determine leads, this is where the essential logic happens
   if len(tracks) > 0 and ready and lead_prob > .5:
-    track = match_vision_to_track(v_ego, lead_msg, tracks)
+    # FORK(HONDA_ACCORD_9G_AU): on HONDA_ELESYS a track much slower than the camera's lead may not stand for it
+    candidates = elesys_radar_guard.match_candidates(tracks, lead_msg) if clutter_guard else tracks
+    track = match_vision_to_track(v_ego, lead_msg, candidates) if len(candidates) > 0 else None
   else:
     track = None
 
@@ -171,7 +174,9 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
     lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego, lead_prob)
 
   if low_speed_override:
-    low_speed_tracks = [c for c in tracks.values() if c.potential_low_speed_lead(v_ego)]
+    # FORK(HONDA_ACCORD_9G_AU): on HONDA_ELESYS only a track the camera's lead confirms
+    low_speed_tracks = [c for c in tracks.values() if c.potential_low_speed_lead(v_ego) and
+                        (not clutter_guard or elesys_radar_guard.override_confirmed(c, lead_msg, lead_prob))]
     if len(low_speed_tracks) > 0:
       closest_track = min(low_speed_tracks, key=lambda c: c.dRel)
 
@@ -209,6 +214,7 @@ class RadarD:
     self.radar_state_valid = False
 
     self.ready = False
+    self.clutter_guard = elesys_radar_guard.enabled(CP)  # FORK(HONDA_ACCORD_9G_AU)
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
@@ -258,9 +264,9 @@ class RadarD:
           self.lead_prob_filters[i].update(lead_prob)
 
       self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x,
-                                          self.CP, self.CP_SP, low_speed_override=True)
+                                          self.CP, self.CP_SP, low_speed_override=True, clutter_guard=self.clutter_guard)
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x,
-                                          self.CP, self.CP_SP, low_speed_override=False)
+                                          self.CP, self.CP_SP, low_speed_override=False, clutter_guard=self.clutter_guard)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None

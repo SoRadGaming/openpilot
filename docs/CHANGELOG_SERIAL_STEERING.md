@@ -15,6 +15,115 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-09 — radard's clutter guard for the true radar speed
+
+The scale fix (next entry down) makes a stationary radar return read as stopped, and two upstream paths in radard can
+make such a return the lead below about 36 km/h ("What can get worse" there). radard now has a guard against that, on
+`HONDA_ELESYS` only: `CarParams.brand` is `honda` and the fingerprint is in `HONDA_ELESYS`. Every other car runs
+upstream's radard unchanged. The guard is `openpilot/sunnypilot/selfdrive/controls/lib/elesys_radar_guard.py`, called
+from three `FORK(HONDA_ACCORD_9G_AU)` places in `openpilot/selfdrive/controls/radard.py`. It is a separate commit from
+the scale fix. Nothing has reached the car.
+
+* **The camera match.** A radar track slower than 3 m/s may stand for the camera's lead only if the camera does not
+  say that lead is faster than the track by more than a tolerance. The tolerance is 3 m/s up to 20 m of camera range,
+  then grows 0.15 m/s per meter, up to upstream's 10 m/s from 67 m. Tracks at 3 m/s or more, and any track faster
+  than the camera's lead, are left to upstream: the guard only removes leads that would brake harder than the camera
+  asks. Disagreeing tracks are removed before radard picks its match, so a track that agrees can still be matched. If
+  none agrees, the lead is the camera's.
+* **The low-speed override** (below 4 m/s) may take a track only when radard has a confident camera lead (its
+  filtered prob > 0.5), and only a track within 1.5 m of that lead's distance or within 1 m/s of its speed. Otherwise
+  the lead is what the camera path gave: the camera's own lead, or none.
+* **Stopped cars are kept.** A stopped car that the camera also sees as stopped or slow is matched as before, at any
+  range. The camera's lag on a stopped queue far ahead is inside the tolerance. On route c0, track 809 runs from 117 m
+  to 5 m while the camera reads it at 8-12 m/s beyond 65 m; every frame upstream matched to it is unchanged.
+
+* **Why these numbers.** radard was rerun on 14 routes: 01, 06, 07, 08, 10, all of 14, c0, c8, c9, 10f, 113, 115,
+  120 and 121, 479,301 frames. A stationary track counts as clutter when the car drove past its point within 5 s and
+  the track never moved.
+  - **Moving radar matches, camera faster than radar, 99th percentile:** 1.6 m/s within 20 m, 2.0 at 20-30 m, 2.3
+    at 30-45 m, 4.2 at 45-60 m, 5.0 at 60-80 m. The tolerance is above that at every range.
+  - **Clutter matches:** the camera is faster by a median 3.6 m/s at 10-20 m and 7.6-8.1 m/s at 20-45 m. There are 3
+    clutter frames beyond 45 m.
+  - **Stationary tracks that are not clutter, 99th percentile:** 2.4 m/s within 20 m, then 5.7-9.8 m/s at 20-80 m,
+    because the camera is slow to see that traffic has stopped. That is why the tolerance grows with range and
+    reaches upstream's 10 m/s.
+  - **Not "a few vStd".** On the current model (routes 10f-121) `leadsV3` `vStd` and `xStd` read up to 59874, so a
+    tolerance in vStd would pass everything. The tolerance is in m/s.
+  - **The override.** Without a confident camera lead it took a track on 9,056 frames, 56% of them clutter. With one,
+    a track within 1.5 m of the camera lead's distance is clutter on 2-9% of frames, and one within 1 m/s of its
+    speed on 2%. At 1.5-2 m/s that rises to 27%.
+
+* **Through radard** on the same routes, guard off against guard on:
+  - radar leads counted as clutter: 6,186 frames → 734 (engaged 310 → 121);
+  - radar leads on moving tracks handed to the camera: 601 of 213,707 frames (0.3%);
+  - radar/camera switches of the lead: 6,323 → 6,129.
+
+* **The plan replay.** Each tree's `RadarInterface`, radard and `LongitudinalPlanner` ran on the logged model and car
+  state (`replay_plan.py`, the replay used for the scale fix), three ways: the old decode, the true scale without the
+  guard, and the true scale with it. 215 min engaged.
+  - **FCW frames:** 0 / 3 (c8 t=2321.1, disengaged) / 0.
+  - **Engaged episodes with `aTarget` at or below -2 and at least 1 m/s² below the old decode:** 6 without the guard,
+    3 with it. The 3 left are the same with and without the guard, and all are real moving leads: route 10 t=111.2
+    (4.7 m/s), route 14 t=2325.4 (6.5 m/s) and t=2906.0 (17.1 m/s). Engaged or not: 238 → 96.
+  - **The named events:**
+
+    | event | true scale, no guard | guard | logged (old decode) |
+    |---|---|---|---|
+    | route 14 t=194.3-195.4, 7.8 m/s | -2.75 | +0.96 to -0.42, on the camera's lead at 8 m/s | -0.2 to -2.3 |
+    | route 06 t=1209.5, 3.5 m/s | -2.14 | -0.38 to +0.43 (driver on the gas at t=1210.1) | -1.4 |
+    | c9 t=2379.0, 8.4 m/s | -3.34 to -3.50 | +0.39 to +0.48 | -3.0 to -3.2 |
+    | c8 t=2320.8-2321.1, 7 m/s, disengaged | -3.50 and an FCW | -0.9 to +0.1 | -2.5 to -2.8 |
+
+    c9 and c8 are false brakes that the logged plan already had, so the guard also removes phantoms the car has
+    today.
+  - **What the scale fix gained is kept.** The phantoms it removed at speed (route 120 t=116.6, 10f t=2065) stay
+    removed. The c0 approach to a stopped queue is identical, frame for frame, except one frame at t=253.96, where
+    another stationary track of the queue at 68.8 m is matched.
+  - **Engaged time on a stationary radar lead at 0.3-4 m/s:** old 77 s, true scale 161 s, guard 113 s. On 98.5% of
+    the guard's frames the camera has a confident lead within 3 m of it, under 1.5 m/s: these are stops behind
+    stopped cars.
+  - **Unchanged elsewhere.** Engaged `aTarget` is identical with and without the guard on 98.7% of frames. Closing on
+    a slower radar lead, it is within 0.2 m/s² on 97.9%; the rest are the frames in the next bullet.
+
+* **What the guard gives up.** Below 4 m/s, with no confident camera lead, the radar no longer stops the car. The
+  stop then rests on the camera and e2e. The guard drops a radar lead in 53 engaged episodes: in 6 the driver braked
+  within 4 s, and in 4 the car stopped short of the point.
+  - **Route 07 t=1240.7, 1.4 m/s.** A stationary return at 6 m, which the camera saw at the same distance with prob
+    0.13-0.17. The old and the true-scale plans brake to -0.4/-0.6, and the logged car stopped. With the guard the
+    plan holds +0.4 and falls to -0.27 over 1.2 s, as e2e brakes; then the driver took over.
+  - **Route 06 t=1209.4-1210.0.** A real car 7 m ahead (radar 2.2 m/s from t=1209.7), camera prob 0.29-0.47. Old -0.5
+    to -1.1; with the guard -0.4 to +0.4. In the log, the driver pressed the gas there.
+
+* **How to judge it.** On the first drive with stop-and-go traffic:
+  - the firm false braking at 10-36 km/h and the FCWs in town should be gone;
+  - at walking pace, watch for a stop that comes later than before behind a car the camera picks up late, and brake
+    if it does;
+  - replay that route through `replay_plan.py`: the stationary radar lead at walking pace should come with a confident
+    camera lead at the same distance.
+
+  The scale fix's interim guidance (next entry down) still applies until such a drive: no engaged driving in car
+  parks or driveways, and engaged stop-and-go and close follow are unvalidated.
+
+* **Tests.** `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_elesys_radar_guard.py` (new, 9 tests) uses
+  logged frames in `fixtures/elesys_radar_guard_frames.json.gz`: 10f t=2737-2746, c8 t=2318-2322.5 and c0 t=249-266.
+  Each window goes through radard with the guard on and off.
+  - **10f, near-range returns at walking pace:** without the guard every frame of t=2740.25-2745.55 is a stationary
+    radar lead, more than 40 of them under 6 m. With it there is no lead while the camera is not confident, and the 5
+    radar frames left agree with a slow camera lead and are farther away than it.
+  - **c8, the false-FCW frames:** the camera's lead at over 5 m/s instead of the stationary tracks. The real car that
+    cuts in at t=2321.19 (track 5751, 7.8-8.0 m/s) is matched with and without the guard.
+  - **c0, the stop behind a stopped queue:** every frame upstream matched to track 809, from 117 m to the stop at
+    5 m, is unchanged. That includes the frames where the camera lags at 8-12 m/s, and below 4 m/s through the
+    low-speed override.
+  - **Unit tests:** the gate (`HONDA_ACCORD_9G_AU` only, not another Honda or another brand), the tolerance at each
+    range, the one-sided check, and the override's conditions.
+
+  The 10f and c8 tests fail with the guard off. The c0 test passes either way: it pins that the guard changes nothing
+  there.
+
+Under the hood: no opendbc change; the submodule stays at `83c8b5b0`. The guard's thresholds and the data behind them
+are in the module docstring. Docs: CAR doc 4.8 and 5.3, `docs/fork/README.md`.
+
 ## 2026-10-09 — the radar's relative speed was read at half its value
 
 The Elesys radar's track speed (`REL_SPEED`, in the hand-written `honda_accord_2015au_radar.dbc`) was decoded at
@@ -112,12 +221,11 @@ lead time while moving on the six routes below. The DBC now says 1/64 on all 13 
     below -1.5 and 0.5 under the old one for 0.7 s. The owner's gas overrides at the same spots (old plan -1.4 to
     -1.9) suggest he already overrides milder phantom braking there.
 
-  The fix belongs in radard, Elesys-only, as its own change with its own replay and a logged-frame test (10f
-  t=2740-2745, c8 t=2320-2322): reject a camera match whose track speed disagrees with a confident camera lead
-  (prob > 0.5) by more than about 3 m/s, and require camera agreement before the low-speed override takes a
-  stationary track. It is not in this change. **Until it lands:** no engaged driving in car parks or driveways; treat
-  engaged stop-and-go and close follow as unvalidated; expect occasional firm false braking below about 36 km/h,
-  most of it at walking pace, and override it with the gas.
+  The fix is radard's clutter guard, the next entry up, a separate commit on the same day. The guard rejects a
+  camera match whose track is much slower than a confident camera lead, and it requires the camera before the
+  low-speed override takes a track. **Until a stop-and-go drive on the guard is judged:** no engaged driving in car
+  parks or driveways, and treat engaged stop-and-go and close follow as unvalidated. Without the guard, expect
+  occasional firm false braking below about 36 km/h, most of it at walking pace, and override it with the gas.
 
 * **What it removes at speed.** When the camera lead is over 10 m/s, the same match check now rejects stationary
   returns that the old decode passed (their half-scale vLead was over 3 m/s, which `vel_sane` also accepts):

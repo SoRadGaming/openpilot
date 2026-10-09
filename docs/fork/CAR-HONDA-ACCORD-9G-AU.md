@@ -108,6 +108,8 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `openpilot/selfdrive/controls/lib/drive_helpers.py` | M (2026-09 merge) | `should_stop(..., v_ego_stopping=None)` (10.1) | - |
 | `openpilot/selfdrive/controls/lib/longitudinal_planner.py` | M (2026-09 merge) | passes the car's stopping speed to both `should_stop()` calls (10.1) | - |
 | `openpilot/selfdrive/controls/lib/longcontrol.py` | M | stopping-exit debounce; the per-car stopping ramp | - |
+| `openpilot/selfdrive/controls/radard.py`, `openpilot/sunnypilot/selfdrive/controls/lib/elesys_radar_guard.py` | M, A (2026-10-09) | radard's clutter guard, `HONDA_ELESYS` only (5.3) | - |
+| `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_elesys_radar_guard.py`, `.../tests/fixtures/elesys_radar_guard_frames.json.gz` | A (2026-10-09) | all (5.3) | - |
 | `openpilot/tools/joystick/joystickd.py`, `openpilot/tools/longitudinal_maneuvers/maneuversd.py` | M (2026-09 merge) | pass the car's stopping speed to `should_stop()` (10.1) | - |
 | `openpilot/selfdrive/controls/lib/latcontrol.py`, `openpilot/selfdrive/controls/lib/latcontrol_torque.py`, `openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py`, `openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_ext_base.py` | M | documented in 10.3; the reason for them is the gateway | B |
 | `openpilot/selfdrive/controls/controlsd.py`, `openpilot/sunnypilot/selfdrive/controls/controlsd_ext.py` | M | documented in 10.4 | B |
@@ -412,7 +414,7 @@ The signal names `LONG_DIST`, `LAT_DIST`, `REL_SPEED`, `NEW_TRACK` and `RADAR_ST
 
 A plan replay (old vs new decode, episodes with the new `aTarget` at or below -2 and at least 1 m/s² under the old one): 144 on nine routes, 94 of them below 4 m/s and 93 of those on a stationary radar lead, only 2 engaged; 75 on six crawl-heavy routes (01, 06, 07, 08, 10, all of 14), 10 engaged, 6 of those with the gas pressed. Engaged without gas, route 14 t=194.3: -2.75 m/s² for 0.9 s against the old -1.17 at 7.5 m/s, on a return 12.4 m ahead and 1.4 m to the side that the car then drove past. Requests reach -3.5 m/s², past the 2.6 m/s² brake ceiling, and c8 t=2321.1 (disengaged) shows a false FCW by the same mechanism. In return, with the camera lead over 10 m/s the match check now rejects stationary returns the old decode passed (their half-scale vLead was over 3 m/s): the logged phantom brakes at route 120 t=116.6 (-2.31 at 16.5 m/s) and 10f t=2065 (-0.94 at 22 m/s) go away. Full numbers and the driving guidance are in the CHANGELOG entry.
 
-The mitigation belongs in radard, Elesys-only, as its own change with its own replay and a logged-frame test (10f t=2740-2745, c8 t=2320-2322): reject a camera match whose track speed disagrees with a confident camera lead by more than about 3 m/s, and require camera agreement before the low-speed override takes a stationary track. Until it lands, engaged stop-and-go and close follow are unvalidated, and car parks and driveways are not for engaged driving.
+The mitigation is radard's clutter guard, `HONDA_ELESYS` only (5.3, 2026-10-09). Until a stop-and-go drive on it is judged, engaged stop-and-go and close follow are unvalidated, and car parks and driveways are not for engaged driving.
 
 ### 4.9 DBC merge checklist
 
@@ -451,9 +453,26 @@ The car takes the default lateral branch (2.4). That branch first sets `steerAct
 
 Track decoding (`LONG_DIST < 255`, `dRel`, `yRel = -LAT_DIST`, `vRel`) is the shared upstream path. Upstream removed the `aRel`/`yvRel`/`measured` assignments in the same function and moved `track_id` into the base class; the 2026-09 merge took both. The fork's hunks do not touch those lines.
 
-`vRel = REL_SPEED` goes straight through: the scale lives in the DBC (4.8). Nothing in this file, in radard or in the fork was tuned on the half-scale value that file carried until 2026-10-09. The true scale does change which radar tracks radard turns into stopped obstacles at low speed (4.8, "What the true scale makes worse"); that is radard's track selection, not this file.
+`vRel = REL_SPEED` goes straight through: the scale lives in the DBC (4.8). Nothing in this file, in radard or in the fork was tuned on the half-scale value that file carried until 2026-10-09. The true scale does change which radar tracks radard turns into stopped obstacles at low speed (4.8, "What the true scale makes worse"); that is radard's track selection, not this file, and the guard in 5.3 handles it.
 
 Re-apply: keep the `radar_type` switch and the three Elesys branches. `test_elesys_radar.py` runs logged frames through `RadarInterface` (a stationary object reads -vEgo, and its `dRel` changes at `vRel`); nothing else covers this file directly.
+
+### 5.3 radard's clutter guard (`elesys_radar_guard.py`, 2026-10-09)
+
+**What.** On `HONDA_ELESYS` only, radard picks a radar track as the lead in two places, and the guard restricts both:
+
+- **The camera match** (`get_lead()` -> `match_vision_to_track()`): a track slower than `V_CHECKED` (3 m/s) is a candidate only if the camera lead's speed minus the track's `vLead` is at most `speed_tolerance()`. That is `V_TOL_MIN` (3 m/s) up to 20 m of camera range, `V_TOL_PER_M` (0.15 m/s per meter) beyond, and at most `V_TOL_MAX` (10 m/s, upstream's `vel_sane` window) from 67 m. Faster tracks, and tracks faster than the camera, are always candidates. If no track is a candidate the lead is the camera's.
+- **The low-speed override** (below 4 m/s): a track qualifies only if radard's filtered camera prob is above `CAMERA_PROB` (0.5) and the track is within `OVERRIDE_D_TOL` (1.5 m) of the camera lead's distance or `OVERRIDE_V_TOL` (1 m/s) of its speed.
+
+**Why.** At the true `REL_SPEED` scale (4.8) a stationary return reads as stopped, and upstream's `vel_sane` (10 m/s) and its unconfirmed low-speed override turned near-range clutter into stopped obstacles below about 36 km/h: false brakes to -3.5 m/s² and a false FCW in the plan replay (4.8). The thresholds come from radard rerun on 14 routes. They are listed with their data in the module docstring and the CHANGELOG entry. The model's `vStd` cannot set the tolerance: on the current model it reads up to 59874.
+
+**Identifiers.** `elesys_radar_guard.enabled(CP)` (`CP.brand == 'honda'` and `CP.carFingerprint in HONDA_ELESYS`), `match_candidates()`, `match_agrees()`, `speed_tolerance()`, `override_confirmed()`, and the constants above. The module's `RADAR_TO_CAMERA` copies radard's, and a test pins them equal. In `radard.py`: the import, `get_lead(..., clutter_guard=False)`, which defaults to upstream's path, the two guarded lines inside it, `RadarD.clutter_guard`, and `clutter_guard=self.clutter_guard` on both `get_lead()` calls. All are marked `FORK(HONDA_ACCORD_9G_AU)`.
+
+**What it gives up.** Below 4 m/s with no confident camera lead, the radar no longer stops the car. On route 07 t=1240.7, at 1.4 m/s, a stationary return at 6 m that the camera saw only at prob 0.13-0.17 no longer brings the plan to -0.4/-0.6. The stop rests on e2e and the driver.
+
+**Test.** `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_elesys_radar_guard.py`, 9 tests, with logged frames in `fixtures/elesys_radar_guard_frames.json.gz`: 10f t=2737-2746 (near-range returns at walking pace), c8 t=2318-2322.5 (the false-FCW frames) and c0 t=249-266 (the stop behind a stopped queue, which must not change). The first two fail with the guard off.
+
+**Re-apply.** If upstream rewrites `get_lead()`: filter the candidates handed to the camera match through `match_candidates()`, add `override_confirmed()` to the low-speed override's track filter, and gate both on `elesys_radar_guard.enabled(CP)`. The fixture holds radar points decoded at 1/64 m/s, so it stays valid while the DBC does.
 
 ---
 
@@ -1788,6 +1807,7 @@ Adds `HondaDynamicTuningEnabled`, `HondaDynBrakeGain`, the three `HondaDynModeSe
 | `opendbc/car/honda/tests/test_elesys_stock_acc.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys_stock_acc` (17 tests) | 15.2-15.3, 15.9 |
 | `opendbc/car/honda/tests/test_elesys_radar.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys_radar` (4 tests) | 4.8, 5.2: `REL_SPEED` 37:14 signed at 1/64 m/s on all 13 track messages; a logged frame's raw value; logged frames of route 113 through the real `RadarInterface` (a stationary object reads -vEgo and its `dRel` changes at `vRel`); a logged B-group track's range rate. All four fail on the old 1/128 DBC |
 | `openpilot/sunnypilot/selfdrive/car/tests/test_honda_stock_acc.py` | sunnypilot | runner (15 tests) | 15.5 |
+| `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_elesys_radar_guard.py` | sunnypilot | runner (9 tests) | 5.3: logged frames through radard with the guard on and off. 10f t=2740-2745: no stationary radar lead without a confident camera lead. c8 t=2320-2322: the camera's lead, not the stationary returns. c0 t=252-265: the stop behind a stopped queue unchanged. Also the gate, the tolerance by range, the one-sided check and the override's conditions. The 10f and c8 tests fail with the guard off |
 | `openpilot/sunnypilot/mads/tests/test_mads_honda_stock_acc.py` | sunnypilot | runner (14 tests) | 15.5 |
 | `openpilot/selfdrive/locationd/test/test_torqued_elesys.py` | sunnypilot | runner (11 tests) | 2.4: prior and seed before any point, a zero offset as upstream, a changed prior discards the cache, a reported 0 adds no point, the seed survives EnforceTorqueControl / NNLC while other cars match upstream's re-run |
 | `openpilot/selfdrive/locationd/test/test_lagd_elesys.py` | sunnypilot | runner (5 tests) | 5.1: the lag fallbacks are 0.38 s, a learned cache survives |
