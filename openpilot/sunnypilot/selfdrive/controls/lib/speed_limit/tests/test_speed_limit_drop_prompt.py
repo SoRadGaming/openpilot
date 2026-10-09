@@ -24,8 +24,9 @@ from opendbc.car.honda.values import CAR as HONDA
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_CTRL, DT_MDL
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import CONFIRM_SPEED_THRESHOLD
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitChangeHold, \
-  SPEED_LIMIT_CHANGED_HOLD_PERIOD, PRE_ACTIVE_GUARD_PERIOD
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.change_hold import SpeedLimitChangeHold
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SPEED_LIMIT_CHANGED_HOLD_PERIOD, \
+  PRE_ACTIVE_GUARD_PERIOD
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.tests.test_speed_limit_confirm_grace import GraceTestBase, \
   Rig, PLANNER_EVERY, MINUS, PLUS
 from openpilot.common.test import OpenpilotTestCase

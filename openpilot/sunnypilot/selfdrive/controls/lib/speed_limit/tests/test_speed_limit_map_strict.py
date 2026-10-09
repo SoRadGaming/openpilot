@@ -21,8 +21,9 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot.selfdrive.car.cruise_ext import VCruiseHelperSP
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode, Policy
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.change_hold import SpeedLimitChangeHold
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist, \
-  SpeedLimitChangeHold, PRE_ACTIVE_GUARD_PERIOD, V_CRUISE_UNSET
+  PRE_ACTIVE_GUARD_PERIOD, V_CRUISE_UNSET
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver, \
   MAP_HOLD_TIMEOUT, MAP_GPS_SETTLE_TIME
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
