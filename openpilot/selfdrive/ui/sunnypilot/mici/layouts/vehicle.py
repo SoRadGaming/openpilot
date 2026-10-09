@@ -23,7 +23,6 @@ import pyray as rl
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigMultiToggle, BigParamControl
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.vehicle.brands.honda import (
-  BRAKE_LAW_V2_PARAM,
   PUMP_C1B_PARAM,
   STOCK_ACC_PARAM,
   TUNING_PARAM,
@@ -197,12 +196,10 @@ class VehicleLayoutMici(NavScroller):
     self._stock_acc_toggle = BigParamControl(tr("stock acc (testing)"), STOCK_ACC_PARAM)
     self._stock_acc_toggle.set_enabled(ui_state.is_offroad)
 
-    # FORK(HONDA_ACCORD_9G_AU): the brake pump rule and the brake law. Read once at ignition, so offroad only too;
-    # the big UI's panel and sunnylink say what each does.
+    # FORK(HONDA_ACCORD_9G_AU): the brake pump rule. Read once at ignition, so offroad only too; the big UI's panel
+    # and sunnylink say what it does.
     self._pump_c1b_toggle = BigParamControl(tr("quiet pump at stops"), PUMP_C1B_PARAM)
     self._pump_c1b_toggle.set_enabled(ui_state.is_offroad)
-    self._brake_law_v2_toggle = BigParamControl(tr("measured brake law (testing)"), BRAKE_LAW_V2_PARAM)
-    self._brake_law_v2_toggle.set_enabled(ui_state.is_offroad)
 
     # the fast-wheel takeover: on/off, then the rate. mads.py re-reads both every 0.1 s, so
     # neither is gated on offroad. The title names the action, so ON reads as "steering turns
@@ -212,7 +209,7 @@ class VehicleLayoutMici(NavScroller):
     self._fast_wheel_rate = FastWheelRateToggle()
 
     self._scroller.add_widgets([self._learned_info, self._learning_toggle, self._reset_btn,
-                                self._stock_acc_toggle, self._pump_c1b_toggle, self._brake_law_v2_toggle,
+                                self._stock_acc_toggle, self._pump_c1b_toggle,
                                 self._fast_wheel_toggle, self._fast_wheel_rate])
 
     self._refreshed = 0.0
@@ -242,7 +239,6 @@ class VehicleLayoutMici(NavScroller):
     self._learning_toggle.refresh()
     self._stock_acc_toggle.refresh()
     self._pump_c1b_toggle.refresh()
-    self._brake_law_v2_toggle.refresh()
     self._fast_wheel_toggle.refresh()
     self._fast_wheel_rate.refresh()
     self._fast_wheel_rate.set_enabled(ui_state.params.get_bool(FAST_WHEEL_PARAM))

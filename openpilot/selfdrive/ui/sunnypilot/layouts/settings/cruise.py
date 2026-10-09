@@ -30,14 +30,6 @@ ACC_NOLONG_DESCRIPTION = tr_noop("This feature can only be used with sunnypilot 
 ACC_PCMCRUISE_DISABLED_DESCRIPTION = tr_noop("This feature is not supported on this platform due to vehicle limitations.")
 ONROAD_ONLY_DESCRIPTION = tr_noop("Start the vehicle to check vehicle compatibility.")
 
-HONDA_DYN_DESC = tr_noop("Learn this car's throttle and brake response while you drive, and correct for it. " +
-                         "Also compensates the accel target for road grade. Honda Nidec with sunnypilot " +
-                         "longitudinal only; has no effect on other platforms. Learned values are saved " +
-                         "roughly once a minute and reloaded on the next drive.")
-HONDA_DYN_VEHICLE_NOTE = tr_noop("The same toggle, the values this car has learned so far, and a reset button " +
-                                 "are also under Settings > Vehicle.")
-HONDA_DYN_IGNITION_NOTE = tr_noop("Takes effect at the next ignition: the car reads this toggle once when it goes onroad.")
-
 
 class CruiseLayout(Widget):
   def __init__(self):
@@ -95,16 +87,6 @@ class CruiseLayout(Widget):
       description=tr("Enable toggle to allow the model to determine when to use sunnypilot ACC or sunnypilot End to End Longitudinal."),
       param="DynamicExperimentalControl")
 
-    self.honda_dyn_toggle = toggle_item_sp(
-      title=tr("Honda Nidec Dynamic Longitudinal Learning (Alpha)"),
-      # <br>, not "\n": the description renderer collapses runs of whitespace
-      description=tr(HONDA_DYN_DESC) + "<br>" + tr(HONDA_DYN_IGNITION_NOTE) + "<br>" + tr(HONDA_DYN_VEHICLE_NOTE),
-      param="HondaDynamicTuningEnabled")
-
-    self._honda_dyn_params = {
-      "HondaDynamicTuningEnabled": self.honda_dyn_toggle.action_item.get_state(),
-    }
-
     items = [
       self.icbm_toggle,
       self.dec_toggle,
@@ -113,7 +95,6 @@ class CruiseLayout(Widget):
       self.custom_acc_toggle,
       self.custom_acc_short_increment,
       self.custom_acc_long_increment,
-      self.honda_dyn_toggle,
       self.sla_settings_button,
     ]
     return items
@@ -129,7 +110,6 @@ class CruiseLayout(Widget):
     self._scroller.show_event()
     self.icbm_toggle.show_description(True)
     self.custom_acc_toggle.show_description(True)
-    self.honda_dyn_toggle.show_description(True)
 
   def _set_current_panel(self, panel: PanelType):
     self._current_panel = panel
@@ -205,21 +185,6 @@ class CruiseLayout(Widget):
         self.custom_acc_toggle.show_description(True)
 
     self._on_custom_acc_toggle(self.custom_acc_toggle.action_item.get_state())
-
-    self._sync_honda_dyn_toggles()
-
-  def _sync_honda_dyn_toggles(self):
-    # the same two params also have toggles under Settings > Vehicle > Honda, and
-    # ToggleSP only reads its param at construction -- without this, flipping one
-    # copy would leave the other showing the old state until the UI restarts.
-    # Edge triggered on the param, never level: a tap writes its param
-    # non-blocking, so a level sync would drag the toggle back to the old value
-    # for the frame or two before that write lands.
-    for param, item in (("HondaDynamicTuningEnabled", self.honda_dyn_toggle),):
-      value = ui_state.params.get_bool(param)
-      if value != self._honda_dyn_params[param]:
-        self._honda_dyn_params[param] = value
-        item.action_item.set_state(value)
 
   def _on_custom_acc_toggle(self, state):
     self.custom_acc_short_increment.set_visible(state)

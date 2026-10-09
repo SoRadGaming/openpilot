@@ -186,13 +186,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // FORK(HONDA_ELESYS): the gas law. 1 = v2, the measured pedal response; 0 = v1, the law before it.
     // A setting, so BACKUP; read once at ignition (elesys_gas.py).
     {"HondaElesysGasLawV2", {PERSISTENT | BACKUP, BOOL, "1"}},
-    // FORK(HONDA_ACCORD_9G_AU): the brake pump rule (1 = C1b, "Quiet pump at stops"; 0 = v5, the rule before it) and
-    // the brake law (1 = v2, the measured law; 0 = today's). Settings, so BACKUP; read once at ignition by opendbc's
-    // _initialize_honda, openpilot longitudinal only, into CarParamsSP.flags (ELESYS_PUMP_C1B / ELESYS_BRAKE_LAW_V2).
-    // HondaElesysPumpC1b is a NEW key so that C1b starts on even where the owner had switched the retired rule C1 off;
-    // C1's key (HondaElesysPumpV6, 2026-10-05/06) is no longer registered - a device keeps the file, unread, and a
+    // FORK(HONDA_ACCORD_9G_AU): the brake pump rule (1 = C1b, "Quiet pump at stops"; 0 = v5, the rule before it). A
+    // setting, so BACKUP; read once at ignition by opendbc's _initialize_honda, openpilot longitudinal only, into
+    // CarParamsSP.flags (ELESYS_PUMP_C1B). HondaElesysPumpC1b is a NEW key so that C1b starts on even where the owner had
+    // switched the retired rule C1 off. Two retired keys are no longer registered - C1's HondaElesysPumpV6 (2026-10-05/06)
+    // and brake law v2's HondaElesysBrakeLawV2 (2026-10-05 to 2026-10-09): a device keeps the file, unread, and a
     // sunnylink restore skips it.
-    {"HondaElesysBrakeLawV2", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"HondaElesysPumpC1b", {PERSISTENT | BACKUP, BOOL, "1"}},
     // FORK(HONDA_ACCORD_9G_AU): stock ACC mode - the car's ACC does gas and brake, openpilot steers only. Read once at
     // ignition (opendbc _initialize_honda). Not BACKUP: a sunnylink restore must never turn it on behind the driver's

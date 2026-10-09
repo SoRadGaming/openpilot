@@ -2471,19 +2471,6 @@
               "type": "offroad_only"
             }
           ]
-        },
-        {
-          "key": "HondaElesysBrakeLawV2",
-          "widget": "toggle",
-          "needs_onroad_cycle": true,
-          "title": "Measured brake law (testing)",
-          "description": "On - the brake command follows this car's measured coast-down and brake response in each speed band, and no brake is sent where coasting alone gives the slowing asked for. Stops use the current law, with the learned brake correction held at x1.00 while it is on. Off - the current brake law. Being tested, and it does not yet pass all of its acceptance checks; leave it off unless you are testing it. Needs the Measured Gas Pedal Law; with that off, this stays off. sunnypilot longitudinal on the 2013-15 Accord (Elesys) only. Applies at the next drive.",
-          "details": "Applies at the next drive - the car reads it once when it goes onroad; the drive's car parameters record the setting and its log lines record which law actually ran. The gas pedal's zero point moves with it, so the hand-over between gas and brake stays consistent. NOT YET ACCEPTED - in its offline fit the 20-25 m/s band is off by 0.076 m/s^2 (the limit is 0.05) and there is no held-out data above 25 m/s; in the simulator openpilot's correction while braking misses its +-0.05 limit (-0.08 at 18-36 km/h, -0.06 at 54-72 km/h), and in the first second of braking the car slows about 0.18 m/s^2 less than asked (0.09 today). Both errors are toward less brake. The simulator cannot judge stops or holds; those are measured in the car. Turn it on only to test it, with the owner's sign-off, and check each drive with brake_route_check.py. A sunnylink restore brings this setting back like any other.",
-          "enablement": [
-            {
-              "type": "offroad_only"
-            }
-          ]
         }
       ]
     },

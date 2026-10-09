@@ -39,17 +39,19 @@ GAS_LAW_PARAM = "HondaElesysGasLawV2"
 # FORK(HONDA_ACCORD_9G_AU): stock ACC mode. A setting, but deliberately NOT backed up, and offroad only everywhere
 STOCK_ACC_PARAM = "HondaElesysStockAcc"
 STOCK_ACC_SNAPSHOT = "HondaElesysStockAccSaved"
-# FORK(HONDA_ACCORD_9G_AU): the brake pump rule C1b (on by default) and the brake law (off by default): settings,
-# BACKUP, offroad only, read once at ignition by opendbc's _initialize_honda
+# FORK(HONDA_ACCORD_9G_AU): the brake pump rule C1b (on by default): a setting, BACKUP, offroad only, read once at
+# ignition by opendbc's _initialize_honda
 PUMP_C1B_PARAM, PUMP_C1B_TITLE = "HondaElesysPumpC1b", "Quiet pump at stops"
-BRAKE_LAW_V2_PARAM, BRAKE_LAW_V2_TITLE = "HondaElesysBrakeLawV2", "Measured brake law (testing)"
-IGNITION_SETTINGS = {PUMP_C1B_PARAM: ("PUMP_C1B_PARAM", "1", PUMP_C1B_TITLE),
-                     BRAKE_LAW_V2_PARAM: ("BRAKE_LAW_V2_PARAM", "0", BRAKE_LAW_V2_TITLE)}
+IGNITION_SETTINGS = {PUMP_C1B_PARAM: ("PUMP_C1B_PARAM", "1", PUMP_C1B_TITLE)}
+IGNITION_TOGGLE_ATTR = {PUMP_C1B_PARAM: "pump_c1b_toggle"}
 OPENDBC_HOOKS = REPO / "opendbc_repo/opendbc/sunnypilot/car/interfaces.py"
+CARCONTROLLER = REPO / "opendbc_repo/opendbc/car/honda/carcontroller.py"
 SP_CAR_INTERFACES = ROOT / "sunnypilot/selfdrive/car/interfaces.py"
 # retired in 2026-10 with the pedal and aero learners; nothing may read, write or show them. HondaElesysPumpV6: the
-# retired pump rule C1's setting (2026-10-06), replaced by HondaElesysPumpC1b
-RETIRED_RE = re.compile(r"HondaDynPedalGain\d*|HondaDynWindFactor|HondaElesysPumpV6\b")
+# retired pump rule C1's setting (2026-10-06), replaced by HondaElesysPumpC1b. HondaElesysBrakeLawV2: the retired
+# brake law v2's setting (2026-10-09, never accepted; brake_law_v2/elesys_brake were its code)
+RETIRED_RE = re.compile(r"HondaDynPedalGain\d*|HondaDynWindFactor|HondaElesysPumpV6\b|HondaElesysBrakeLawV2\b|" +
+                        r"BRAKE_LAW_V2_PARAM|brake_law_v2|elesys_brake\b")
 SUNNYLINKD = ROOT / "sunnypilot/sunnylink/athena/sunnylinkd.py"
 
 # {"Key", {FLAGS, TYPE, "default"}},  -- the default is optional
@@ -180,7 +182,7 @@ class TestHondaDynamicSettings(unittest.TestCase):
     paths = [PARAMS_KEYS, HONDA_PANEL, MICI_PANEL, SDUI, STATSD, SUNNYLINKD, SP_CAR_INTERFACES,
              *sorted(SDUI_SRC.glob("*.yaml"))]
     if TUNER.is_file():
-      paths += [TUNER, GAS_LAW, OPENDBC_HOOKS]
+      paths += [TUNER, GAS_LAW, OPENDBC_HOOKS, CARCONTROLLER]
     for path in paths:
       for i, line in enumerate(path.read_text().splitlines(), 1):
         # a comment may record the history; code and data may not use the names
@@ -196,13 +198,13 @@ class TestHondaDynamicSettings(unittest.TestCase):
     for key in (*TOGGLE_PARAMS, GAS_LAW_PARAM, *_panel_constant("LEARNED_DEFAULTS")):
       assert key in reported, f"statsd does not report {key}"
 
-  def test_both_panels_drive_the_same_params(self):
-    # the toggle exists in Settings > Cruise and in Settings > Vehicle > Honda;
-    # if one of them ever points at a different key they would silently disagree
+  def test_the_toggle_lives_on_the_honda_panel_only(self):
+    # round 5 (2026-10-09) removed the comma 3X Cruise panel's copy of the toggle: the owner drives a comma 4, and the
+    # Cruise panel is upstream's file again. Settings > Vehicle > Honda keeps it (with the mici page and sunnylink).
     cruise = CRUISE_PANEL.read_text()
     honda = HONDA_PANEL.read_text()
+    assert "Honda" not in cruise, "the Cruise panel is upstream's again: no Honda toggle, string or sync"
     for key in TOGGLE_PARAMS:
-      assert key in cruise, f"the Cruise panel no longer references {key}"
       assert key in honda, f"the Honda vehicle panel no longer references {key}"
 
   def test_honda_panel_publishes_its_items(self):
@@ -350,7 +352,7 @@ class TestHondaDynamicSettings(unittest.TestCase):
     for words in ("steers only", "next car start", "30 km/h", "cannot cancel", "CMBS"):
       assert words in desc, f"the description must say '{words}'"
 
-  def test_pump_and_brake_law_are_registered_backed_up_with_their_defaults(self):
+  def test_pump_rule_is_registered_backed_up_with_its_default(self):
     registered = _registered_params()
     for key, (const, default, _) in IGNITION_SETTINGS.items():
       flags, key_type, key_default = registered[key]
@@ -358,15 +360,15 @@ class TestHondaDynamicSettings(unittest.TestCase):
       assert "PERSISTENT" in flags and "BACKUP" in flags, f"{key} is a setting and should survive a sunnylink restore"
       assert _panel_constant(const) == key
 
-  def test_pump_and_brake_law_reach_the_hook_under_one_name(self):
+  def test_pump_rule_reaches_the_hook_under_one_name(self):
     for key in IGNITION_SETTINGS:
       assert f'"{key}"' in SP_CAR_INTERFACES.read_text(), f"card never hands {key} to opendbc"
       if OPENDBC_HOOKS.is_file():
         assert f'"{key}"' in OPENDBC_HOOKS.read_text(), f"_initialize_honda never reads {key}"
     reported = re.findall(r"'(Honda\w+)'", STATSD.read_text())
-    assert set(IGNITION_SETTINGS) <= set(reported), "statsd must report which pump rule and brake law are set"
+    assert set(IGNITION_SETTINGS) <= set(reported), "statsd must report which pump rule is set"
 
-  def test_pump_and_brake_law_toggles_are_offroad_only_on_both_screens(self):
+  def test_pump_rule_toggle_is_offroad_only_on_both_screens(self):
     tree = ast.parse(HONDA_PANEL.read_text())
     items = ast.unparse(next(n for n in ast.walk(tree) if isinstance(n, ast.Assign)
                              and any(isinstance(t, ast.Attribute) and t.attr == "items" for t in n.targets)))
@@ -377,7 +379,7 @@ class TestHondaDynamicSettings(unittest.TestCase):
       assert len(calls) == 1, f"the big panel needs exactly one {const} toggle"
       enabled = {k.arg: ast.unparse(k.value) for k in calls[0].keywords}.get("enabled")
       assert enabled == "ui_state.is_offroad", f"the big panel's {key} toggle must be offroad only, got {enabled}"
-      attr = "pump_c1b_toggle" if key == PUMP_C1B_PARAM else "brake_law_v2_toggle"
+      attr = IGNITION_TOGGLE_ATTR[key]
       assert f"self.{attr}" in items, f"the big panel never shows its {key} toggle"
       assert re.search(rf"\({re.escape(const)},\s*self\.{attr}\)", HONDA_PANEL.read_text()), f"{key} is not kept in sync"
 
@@ -389,7 +391,7 @@ class TestHondaDynamicSettings(unittest.TestCase):
       code = " ".join(line.split("#")[0] for line in src.splitlines())
       assert "OnroadCycleRequested" not in code
 
-  def test_sunnylink_exposes_pump_and_brake_law_offroad_only(self):
+  def test_sunnylink_exposes_pump_rule_offroad_only(self):
     items = {i["key"]: i for i in _sdui_honda_items()}
     for key, (_, _, title) in IGNITION_SETTINGS.items():
       assert key in items, f"{key} is missing from the honda section of settings_ui.json"
