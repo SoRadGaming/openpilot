@@ -9,6 +9,11 @@ so radard's lead-prob filter and tracks are warm. The same frames go through rad
 on) and as HONDA_ACCORD, another Nidec Honda (guard off: upstream's radard exactly). The windows pin what the guard must
 remove (10f near range, c8, the 07 speed spike) or keep (c0, 10f creeping, c9), and what it knowingly gives up (06 at
 night, where it holds the plan instead of braking), so a later change to the thresholds shows up here either way.
+
+The fixture is stored by column, to stay under CI's 120 KB file limit, and load_windows() decodes it to the logged
+values exactly: times in whole ms, the speeds and the model's leads as the shortest text of their float32 value, the
+radar points as [trackId, dRel x 128, yRel x 128, vRel x 64] (the DBC's 1/128 m and 1/64 m/s steps), stored on the first
+frame and on each new radar update only (radard sees the last update again in between).
 """
 import gzip
 import json
@@ -36,8 +41,37 @@ from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimen
 from openpilot.sunnypilot.selfdrive.controls.lib.stopping_tune import STOPPING_SPEED
 
 FIXTURE = os.path.join(os.path.dirname(__file__), 'fixtures', 'elesys_radar_guard_frames.json.gz')
-with gzip.open(FIXTURE, 'rt') as f:
-  WINDOWS = json.load(f)
+
+
+def _f32(x):
+  return float(np.float32(x))  # the logged float32, from the shortest text that names it
+
+
+def load_windows(path):
+  """The fixture as frames: {window: {'route', 'radar_delay', 'frames': [{'t', 'v_ego', 'new_car_state', 'new_radar',
+  'points', 'leads', 'model_v_ego'}]}}, each value exactly as logged."""
+  with gzip.open(path, 'rt') as f:
+    raw = json.load(f)
+  assert raw['format'] == 2, raw['format']
+  windows = {}
+  for name, w in raw['windows'].items():
+    ms = np.cumsum([w['t0_ms'], *w['dt_ms']])
+    stored = iter(w['points'])
+    frames, points = [], []
+    for n, t_ms in enumerate(ms):
+      new_radar = w['new_radar'][n] == '1'
+      if n == 0 or new_radar:
+        points = [[tid, d / 128, y / 128, v / 64] for tid, d, y, v in next(stored)]
+      leads = [_f32(x) for x in w['leads'][n]]
+      frames.append({'t': int(t_ms) / 1000, 'v_ego': _f32(w['v_ego'][n]), 'new_car_state': w['new_car_state'][n] == '1',
+                     'new_radar': new_radar, 'points': points, 'leads': [leads[:8], leads[8:]],
+                     'model_v_ego': _f32(w['model_v_ego'][n])})
+    assert next(stored, None) is None, name
+    windows[name] = {'route': w['route'], 'radar_delay': w['radar_delay'], 'frames': frames}
+  return windows
+
+
+WINDOWS = load_windows(FIXTURE)
 
 ELESYS = 'HONDA_ACCORD_9G_AU'
 OTHER_HONDA = 'HONDA_ACCORD'
