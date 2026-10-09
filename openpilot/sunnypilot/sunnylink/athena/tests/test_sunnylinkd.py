@@ -4,6 +4,9 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+from unittest import mock
+
+from openpilot.common.params import Params
 from openpilot.sunnypilot.sunnylink.athena import sunnylinkd
 from openpilot.common.test import OpenpilotTestCase
 
@@ -21,6 +24,15 @@ class TestSunnylinkdMethods(OpenpilotTestCase):
 
   def teardown_method(self):
     sunnylinkd.save_param_from_base64_encoded_string = self.original_save  # ty: ignore[invalid-assignment]
+
+  def test_saveParams_bumps_params_version(self):
+    # FORK(NSW-ZONES): ParamsVersion is an INT param - the str upstream wrote raised (swallowed), and it never moved
+    p = Params()
+    with mock.patch.object(sunnylinkd, "params", p):
+      sunnylinkd.saveParams({"SpeedLimitOffset": "5"})
+      assert p.get("ParamsVersion") == 1
+      sunnylinkd.saveParams({"SpeedLimitOffset": "6"})
+      assert p.get("ParamsVersion") == 2
 
   def test_saveParams_blocked(self):
     blocked_params = {

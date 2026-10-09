@@ -1039,7 +1039,7 @@
               "key": "NswZonesUpdateCheck",
               "widget": "toggle",
               "title": "Update NSW Speed Zones Now",
-              "description": "Check for new NSW speed zone data now, on any network (about 22 MB when there is new data). Works whenever the device is offroad, Always Offroad with the car on included; a request while driving is refused and Last NSW check says \"offroad only\". The device switches it back off within a second, taken or refused, and Last NSW check shows the result when the check finishes.",
+              "description": "Check for new NSW speed zone data now, on any network (about 22 MB when there is new data). Works whenever the device is offroad, Always Offroad with the car on included; a request while driving is refused and Last NSW check says \"offroad only\". The device switches it back off within a second, taken or refused, and writes the result to Last NSW check when the check finishes; the app shows both the next time it loads the settings.",
               "visibility": [
                 {
                   "type": "param_compare",
@@ -1086,7 +1086,7 @@
               "key": "NswZonesStatus",
               "widget": "info",
               "title": "Last NSW check",
-              "description": "How the last check ended and when (device time), weekly or asked for - \"updated to\", \"up to date\", \"offroad only\", \"no network\" or \"failed\". Empty until the first check on this software.",
+              "description": "How the last check ended and when (device time), weekly or asked for - \"updated to <date>\", \"up to date\", \"offroad only\", \"cancelled\" (the car started during it), \"no network\", or the reason it failed. Empty until the first check on this software.",
               "visibility": [
                 {
                   "type": "param_compare",

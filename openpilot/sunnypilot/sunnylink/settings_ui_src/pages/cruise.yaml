@@ -241,8 +241,9 @@ sections:
 # FORK(NSW-ZONES): NSW's own section (owner decision D3.2, 2026-10-09), out of the Speed Limit Settings sub-panel that
 # only opens through SpeedLimitMode: the mode, the two update controls, and what is installed and how the last check
 # went. The device writes NswZonesVersion and NswZonesStatus (both in sunnylinkd's BLOCKED_PARAMS) and bumps
-# ParamsVersion when it does, and when it clears the request. With the mode off the rest is hidden, as a download for a
-# feature that is off.
+# ParamsVersion when it does, and when it clears the request. Whether the app re-reads the settings on ParamsVersion is
+# not confirmed (the counter never moved on this device before round 5's fix round 1), so the text promises only what
+# the next load of the settings shows. With the mode off the rest is hidden, as a download for a feature that is off.
 - id: nsw_speed_zones
   title: NSW Speed Zones
   description: Transport for NSW speed zone and school zone data for the map speed limit
@@ -271,7 +272,8 @@ sections:
     description: Check for new NSW speed zone data now, on any network (about 22 MB when there is new data). Works
       whenever the device is offroad, Always Offroad with the car on included; a request while driving is refused and
       Last NSW check says "offroad only". The device switches it back off within a second, taken or refused, and
-      Last NSW check shows the result when the check finishes.
+      writes the result to Last NSW check when the check finishes; the app shows both the next time it loads the
+      settings.
     visibility:
     - type: param_compare
       key: SpeedLimitNswZones
@@ -301,8 +303,9 @@ sections:
   - key: NswZonesStatus
     widget: info
     title: Last NSW check
-    description: How the last check ended and when (device time), weekly or asked for - "updated to", "up to date",
-      "offroad only", "no network" or "failed". Empty until the first check on this software.
+    description: How the last check ended and when (device time), weekly or asked for - "updated to <date>", "up to
+      date", "offroad only", "cancelled" (the car started during it), "no network", or the reason it failed. Empty
+      until the first check on this software.
     visibility:
     - type: param_compare
       key: SpeedLimitNswZones

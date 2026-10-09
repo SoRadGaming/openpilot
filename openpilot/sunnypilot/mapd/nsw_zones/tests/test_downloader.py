@@ -612,6 +612,21 @@ class RecordingParams(FakeParams):
     return [str(v) for k, v in self.puts if k == dl.STATUS_PARAM]
 
 
+class TestSunnylinkReportRealParams(unittest.TestCase):
+  """Against the real params library, not FakeParams (which takes any type): NswZonesStatus is a STRING, ParamsVersion
+  an INT, and two reports in a row are two bumps."""
+  def test_report_writes_the_real_types(self):
+    from openpilot.common.params import Params
+    from openpilot.common.prefix import OpenpilotPrefix
+    with OpenpilotPrefix():
+      p = Params()
+      up = SimpleNamespace(params=p)
+      dl.NswZonesUpdater._report(up, "offroad only")  # ty: ignore[invalid-argument-type]
+      dl.NswZonesUpdater._report(up)  # ty: ignore[invalid-argument-type]
+      self.assertEqual(p.get(dl.PARAMS_VERSION_PARAM), 2)
+      self.assertTrue(p.get(dl.STATUS_PARAM).startswith("offroad only · "), p.get(dl.STATUS_PARAM))
+
+
 class TestSunnylinkReport(TestUpdater):
   """Owner decision D3: the app shows the installed data and the last check, and the 'Now' switch goes back off. The
   device writes NswZonesStatus (one line) only when a check ends or a request is refused, and bumps ParamsVersion

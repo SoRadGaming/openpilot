@@ -287,7 +287,9 @@ class TestMapDataControls(OpenpilotTestCase):
     assert item is not None
     desc = item.get("description", "")
     assert "Last NSW check" in desc and "offroad only" in desc, desc
-    assert "next time it loads" not in desc, "the device bumps ParamsVersion now"
+    # the device bumps ParamsVersion, but that the app re-reads the settings on it is not confirmed (round 5 fix round 1:
+    # sunnylinkd's own bump never worked on this device): promise only the next load
+    assert "next time it loads" in desc, desc
 
   @parameterized.expand(list(NSW_INFO), names=["key"])
   def test_nsw_info_rows_are_read_only_strings(self, schema, key):

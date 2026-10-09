@@ -263,8 +263,9 @@ def saveParams(params_to_update: dict[str, str], compression: bool = False) -> N
 
   # Increment version counter for frontend change detection
   try:
-    current = int(params.get("ParamsVersion") or "0")
-    params.put("ParamsVersion", str(current + 1), block=True)
+    current = int(params.get("ParamsVersion") or 0)
+    # FORK(NSW-ZONES): an INT param - a str raised TypeError (swallowed below), so the counter never moved
+    params.put("ParamsVersion", current + 1, block=True)
   except Exception:
     pass
 

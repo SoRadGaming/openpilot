@@ -433,9 +433,11 @@ class NswZonesUpdater:
 
   sunnylink: NswZonesStatus (one line: how the last check ended, and when) is written when a check ends - automatic
   or asked for - and when a request is refused, never for progress (that stays in status.json, for the maps page).
-  ParamsVersion, the counter the app watches for device-side changes, is bumped after each of those writes and when the
-  request (NswZonesUpdateCheck) is cleared, so the app turns the switch back off and shows the new line. Both are
-  best effort: a failure there must not stop the updater.
+  ParamsVersion, the counter sunnylinkd's comment says the app watches for changes, is bumped after each of those writes
+  and when the request (NswZonesUpdateCheck) is cleared. Whether the app re-reads the settings on it is NOT confirmed:
+  sunnylinkd's own bump wrote a str to this INT param and raised (swallowed) until round 5's fix round 1, so it never
+  moved on this device - the yaml text still says the app shows the result the next time it loads the settings. Both
+  are best effort: a failure there must not stop the updater.
   """
 
   def __init__(self, params, d: str | None = None, base_url: str = BASE_URL, on_installed: Callable[[], None] | None = None, sm=None, get=http_get):
@@ -476,8 +478,9 @@ class NswZonesUpdater:
     either way. Never raises."""
     try:
       if status is not None:
-        self.params.put(STATUS_PARAM, status_line(status, wall_now()))
-      self.params.put(PARAMS_VERSION_PARAM, int(self.params.get(PARAMS_VERSION_PARAM) or 0) + 1)
+        self.params.put(STATUS_PARAM, status_line(status, wall_now()), block=True)
+      # blocking: a read-add-write behind a queued write of the same counter would lose a bump (once a check, not a tick)
+      self.params.put(PARAMS_VERSION_PARAM, int(self.params.get(PARAMS_VERSION_PARAM) or 0) + 1, block=True)
     except Exception:
       cloudlog.exception("nsw_zones: could not report to sunnylink")
 
