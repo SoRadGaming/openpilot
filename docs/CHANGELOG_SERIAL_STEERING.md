@@ -26,7 +26,8 @@ brakes or steers, other than Speed Limit Assist no longer lowering the set speed
   `apply_confirm_speed_threshold` now also asks when `not pcm_op_long` and the new limit is below the set speed. A higher
   limit still raises the set speed by itself.
 * **A new limit counts once it has held for 1 s (decision 5, every car).** `SpeedLimitChangeHold`
-  (`speed_limit_assist.py`, upstream's unused `SPEED_LIMIT_CHANGED_HOLD_PERIOD`) sits between the resolver and SLA in
+  (`speed_limit/change_hold.py`, fork-owned beside upstream's `speed_limit_assist.py`; upstream's unused
+  `SPEED_LIMIT_CHANGED_HOLD_PERIOD`) sits between the resolver and SLA in
   plannerd, and what it holds is what `longitudinalPlanSP.speedLimit.resolver` publishes, so card (the set speed it
   writes, the button a prompt asks for), selfdrived's alert text and the UI see the same limit as SLA; otherwise card
   would rewrite on the raw change while SLA waited. Only a change from one limit to a different one waits (20 plannerd
@@ -55,12 +56,15 @@ brakes or steers, other than Speed Limit Assist no longer lowering the set speed
 * **sunnylink: the NSW data (decision 3, area NSW).** A new param `NswZonesStatus` (PERSISTENT, STRING, not BACKUP)
   holds one line, the last check's result and the device's time, e.g. `updated to 2026-10-04 · 2026-10-09 18:02 AEDT`.
   The downloader writes it when a check ends (weekly or asked for) and when a request is refused, never for progress,
-  inside a try; it bumps `ParamsVersion` after it, and when it clears a request it has taken, so the app's "Now"
-  switch goes back off. A request while driving is refused, `offroad only`, and not queued (D3.1). In the app, Cruise
+  inside a try; it bumps `ParamsVersion` after it (blocking: two reports are two bumps), and when it clears a request
+  it has taken. sunnylinkd's own `ParamsVersion` bump never worked on this device - it wrote a str to the INT param and
+  the `TypeError` was swallowed (routes 115, 120, 121 have no `ParamsVersion` in `initData`) - and now writes the INT
+  (`FORK(NSW-ZONES)`, an upstream bug). A request while driving is refused, `offroad only`, and not queued (D3.1). In the app, Cruise
   has its own "NSW Speed Zones" section (D3.2): the mode, Update NSW Speed Zones Now, the weekly toggle, and info rows
   "Installed NSW data" (`NswZonesVersion`) and "Last NSW check" (`NswZonesStatus`), both in `BLOCKED_PARAMS`. Every
   route's `initData` now carries the last check's result. That the app re-reads on `ParamsVersion` is still to be
-  confirmed on the phone.
+  confirmed on the phone; until then the app's text promises only that the switch and the result show the next time
+  it loads the settings.
 * **The comma 4 HUD, option A (decision 1, area HUD).** The live speed, the speed-limit sign (with its school-zone
   lamps and electronic-sign styling) and the next-lower-limit row are gone from the top right, with their five settings
   and `HudNextLimit`; the stop timer stays, in the corner where it was drawn with the sign off. Moving, the top right is
@@ -76,20 +80,31 @@ brakes or steers, other than Speed Limit Assist no longer lowering the set speed
   its outline flashes solid twice (0.18 s lit, 0.18 s dashed: 2.8 a second, under 3 Hz), then the dashes walk
   clockwise at 30 px/s while the prompt waits. Only the outline moves: in the render test the digits are identical,
   frame by frame, to a still box. `hud_draw.dashed_rrect(phase=)` and `hud_model.box_outline()`. A critical alert still
-  takes the screen on its next frame, mid-flash included.
+  takes the screen on its next frame, mid-flash included. A new prompt flashes again - also one raised while the last
+  box is still fading out, as on route dd's flip-flop - and so does a target or key changing under one.
 * **The coming limit in the MAX number's place (decision 2, option C; new setting Approaching Limit,
   `HudApproachingLimit`, BOOL "1").** A limit lower OR higher than the one in force, from mapd's published look-ahead,
   once within 15 s or 500 m: the limit in the MAX font at 64 px in a dashed box, a down or up chevron, and an
-  'in 300 m' pill that drains ('Near' drawn 'now'; the distance only counts down). It is held - 'now' - after the
-  look-ahead ends until the resolver's limit becomes it (3 s at most), then hands over in the same place: to the
-  confirm box, or cross-fading into the stock MAX number. It waits while MAX or any alert shows, is cut on the frame by
-  any other alert, and counts as a top icon, so the driver-monitoring face makes way for it (11 s on the M4 approach).
+  'in 300 m' pill that drains ('Near', under 50 m, drawn 'now'; the distance only counts down, unless mapd's figure
+  comes back more than a second's run-down + 10 m higher, which is news). When the look-ahead ends AT the change (the
+  distance left, run down by the car's speed, within 2 s of travel or under 50 m) it is held - 'now' - until the
+  resolver's limit becomes it (3 s at most), then hands over in the same place: to the confirm box, or cross-fading
+  into the stock MAX number. Lost further out (a missed 1 Hz message, the window shrinking as the car slows) it stays a
+  distance, running down, for 2 s at most - never a jump to 'now'. It waits while the stock MAX number shows (a 'set
+  speed changed' alert holds it back only that long, 2.5 s, not the alert's 5 s), is cut on the frame by any other
+  alert, and counts as a top icon, so the driver-monitoring face makes way for it (about 13 s on the M4 approach,
+  762.1-774.75).
   Never at a standstill, for a car-sourced limit, or in a tunnel (dead reckoning, or GPS still lost after it).
   Rendered over route 10f: the M4 110 -> 100 is announced from 762.1 ('in 300 m') to 774.7 and hands over to MAX 100
   at 774.75 as logged; with this build's Speed Limit Assist (the 100 counting 0.95 s later, then 'press -') it is held
-  'now' 774.7-775.65 and the box takes the place at 775.7 - no frame with nothing. Bringelly Rd's 50 -> 70, never
-  shown before, is announced from 190.2 (after 'set speed changed' clears) with the up chevron. The M4 East tunnel shows
-  nothing. School and variable zones ahead are phase 2 (they need two new `liveMapDataSP` fields).
+  'now' 774.7-775.65 and the box takes the place at 775.7 - no frame with nothing, also with the prompt reaching the
+  UI 1, 2 or 3 frames after the new limit (the coming limit fades while the box comes; the face never shows). Bringelly
+  Rd's 50 -> 70, never shown before, is announced from 187.8 - as soon as the stock MAX number from the earlier confirm
+  has gone - with the up chevron; braking for the red light there, 'now' shows only under mapd's own 50 m and for the
+  3 s hold after its look-ahead went (196.7-199.7), and mapd's 65 m at 199.7 is drawn 'in 70 m' (fix round 1: before,
+  '70 now' stood from 194.2 to 202.2 for a limit that never came). The M4 East tunnel shows nothing, also with mapd made
+  to publish a limit ahead there, and a held 'now' ends on the frame dead reckoning starts. School and variable zones
+  ahead are phase 2 (they need two new `liveMapDataSP` fields).
 * **The old full-screen confirm drawing is gone (decision 0, D0.3).** `HudConfirmLimit`, `draw_pending_limit()`,
   `pending_icon()` and the `_draw_icons` hunk in `alert_renderer.py`: with Compact Speed Limit Prompts off the confirm is
   sunnypilot's own alert, pixel for pixel.
@@ -98,15 +113,22 @@ brakes or steers, other than Speed Limit Assist no longer lowering the set speed
   Speed. Removed params: `HudSpeedCluster`, `HudCurrentSpeed`, `HudLimitSign`, `HudSchoolZoneCue`,
   `HudVariableLimitSign`, `HudNextLimit`, `HudConfirmLimit` (a stored value on the device is left unread).
 * **Watch on the next drive:** the M4 eastbound 110 -> 100 - the 100 top left from ~400 m with the bar draining, 'now'
-  at the sign, then the flashing 'press -' box (or MAX 100); that the face's absence for those ~12 s does not bother
-  you; that the box's march is not distracting on a long prompt (V2, flash only, is a one-line change).
+  at the sign, then the flashing 'press -' box (or MAX 100); that the face's absence for those ~13 s does not bother
+  you; that the box's march is not distracting on a long prompt (V2, flash only, is a one-line change). And two older
+  rules that now come up at every motorway drop, not only below 80 km/h: while the 'press -' box is up, **+ does
+  nothing** (the whole 5 s); and a **- pressed within about a second after the box has gone still confirms** - 110 to
+  100 in one press. After that second a - is an ordinary 1 km/h step.
 * **Tests.** `test_speed_limit_drop_prompt.py` (new, 19: card + selfdrived + the hold + SLA; seven of them fail with
   the old rule), the `Drive` harness in `test_speed_limit_map_strict.py` now has the hold; `test_downloader.py`
   `TestSunnylinkReport`; `test_settings_changes.py` `TestMapDataControls` for the new section. HUD:
-  `test_hud_cluster.py` (the timer, `ApproachState` - window, both directions, the hold and its five ends, tunnels,
-  car-sourced limits, the count-down - `box_outline()`, the eight settings, `TestRetiredKeys`, the markers) and
-  `test_hud_render.py` (rewritten: the top right empty while moving, the coming limit and its hand-overs to the box and
-  to MAX, the outline strip against a still box, a critical alert mid-flash, every setting off = stock).
+  `test_hud_cluster.py` (the timer, `ApproachState` - window, both directions, the hold only once the change is
+  reached and its five ends, a gap far out as a running distance, the window shrinking, route 10f's red light second by
+  second, tunnels, car-sourced limits, the count-down and the jump it takes - `box_outline()`, the frame's alert
+  looked up once a frame, the eight settings, `TestRetiredKeys`, the markers) and `test_hud_render.py` (rewritten: the
+  top right empty while moving, the coming limit and its hand-overs to the box and to MAX, a missed look-ahead far out,
+  the outline strip against a still box, a second prompt and a new target flashing again, a critical alert
+  mid-flash, every setting off = stock); `test_sunnylinkd.py` and `test_downloader.py` write `ParamsVersion` and
+  `NswZonesStatus` through the real params library.
 * **Brake law v2 is gone (decision 0, D0.1).** "Measured brake law (testing)" (`HondaElesysBrakeLawV2`, batch 3) failed
   acceptance and never ran in the car. Deleted: `elesys_brake.py` and its 29 tests, its three call sites in
   `carcontroller.py`, `elesys_pedal_v2_window()` and the tuner's brake-gain hold (git keeps them: opendbc `8f844a79`,
@@ -126,7 +148,8 @@ brakes or steers, other than Speed Limit Assist no longer lowering the set speed
   rather than becoming `time.monotonic()`. `board.py`'s docstring now names `stage_board_firmware()` and
   `write_board_firmware()`.
 * **Tests (part 3).** `test_elesys.py` `test_the_retired_brake_law_flag_runs_todays_law` (flag 32 sends today's 0x1FA,
-  with either pump rule); `test_elesys_pump_brake_flags.py` and `test_honda_elesys_pump_brake.py` cover the one pump
+  with either pump rule and with the retired C1 flag; flags 32 and 64 keep their numbers - it absorbs the older
+  `test_brake_law_flag_alone_leaves_the_pump_on_v5`), `shadow_learn.brake_law_tag()` a plain `'-'` / `'v1'`; `test_elesys_pump_brake_flags.py` and `test_honda_elesys_pump_brake.py` cover the one pump
   flag and both retired keys (not registered, not handed over, their files set nothing); in
   `test_honda_dynamic_settings.py`, `test_retired_keys_are_gone_everywhere` also fails on `HondaElesysBrakeLawV2`,
   `BRAKE_LAW_V2_PARAM`, `brake_law_v2` or `elesys_brake` (`carcontroller.py` included), and

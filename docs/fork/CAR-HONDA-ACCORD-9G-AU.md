@@ -112,7 +112,6 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `openpilot/sunnypilot/selfdrive/selfdrived/vsa_fault_alert.py`, `openpilot/sunnypilot/selfdrive/selfdrived/events.py` (the three `vsa*` entries and their two callbacks, and `hondaElesysStockAcc`) | A / M (2026-10-03) | `VsaFaultAlert` and its events (10.6); the stock ACC banner (15.5, 2026-10-04) | B owns the rest of `events.py` |
 | `openpilot/selfdrive/controls/lib/desire_helper.py`, `openpilot/selfdrive/modeld/modeld.py`, `openpilot/sunnypilot/modeld_v2/modeld.py` | M | `NUDGE_FIRM` | B: `driver_torque_stale` |
 | `openpilot/sunnypilot/mads/mads.py`, `openpilot/sunnypilot/mads/state.py` | M | `mads.py` in stock ACC mode only: MADS on at any speed, and the drop-out's `speedTooLow` alert (15.5, 2026-10-04); 10.7 notes one rule that applies to every car | B |
-| `openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py` | M | Honda tuner toggle | - |
 | `openpilot/selfdrive/ui/sunnypilot/layouts/settings/vehicle/brands/honda.py` | M | Honda brand page; the stock ACC toggle (15.6) | - |
 | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/vehicle.py` | A | mici vehicle page; the stock ACC toggle (15.6) | - |
 | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py` | M | vehicle button | A: gateway button |
@@ -1589,7 +1588,11 @@ The comma 4 runs the small UI. It has no Cruise or Vehicle panel, so neither pag
   shorter than that never prompts, and every prompt and rewrite comes 1 s after the map's change. Route dd's
   110/100/110/100 flips were 2.0 s apart, longer than the hold, so they are not suppressed: the replay shows two '-'
   prompts and, between them, the limit back at the set speed confirming itself (with its chime), the set speed never
-  touched. Replays: `CHANGELOG_SERIAL_STEERING.md`, 2026-10-09.
+  touched. Replays: `CHANGELOG_SERIAL_STEERING.md`, 2026-10-09. Two older fork rules come with the prompt, and now
+  apply to every motorway drop, not only below 80 km/h: while the "press -" box is up, **+ does nothing** (for the whole
+  5 s prompt, `update_speed_limit_assist_pre_active_raise_blocked`); and a **- pressed within about a second after the
+  box has gone still confirms** the lower limit - 110 straight to 100 on one press (the confirm grace, 2026-10-06).
+  After that second a - is an ordinary 1 km/h step. The hold itself is `speed_limit/change_hold.py` (fork-owned).
 
 ### 11.4 sunnylink
 

@@ -217,10 +217,13 @@ maps page shows.
   Never progress: that stays in `status.json`, so the param is written once per check, not at 1 Hz. It then bumps
   `ParamsVersion`, the counter sunnylink's app watches, and it bumps it as well when it clears a request it has taken,
   so the app turns the "Now" switch back off. Automatic checks that are simply not due ("checked recently", "metered")
-  write nothing. Both writes are best effort, inside a try: an error there is logged and the check goes on. Every
-  route's `initData` carries the params, so the last check's result reaches the logs without SSH. That the app
-  re-reads on `ParamsVersion` rests on a comment in `sunnylinkd.py` (`saveParams`); the app is closed source, so it is
-  to be confirmed on the phone.
+  write nothing. Both writes are best effort, inside a try, and blocking (once a check, not a tick: two reports in a
+  row are two bumps): an error there is logged and the check goes on. Every route's `initData` carries the params, so
+  the last check's result reaches the logs without SSH. That the app re-reads on `ParamsVersion` rests on a comment in
+  `sunnylinkd.py` (`saveParams`); the app is closed source, so it is to be confirmed on the phone - and until round 5's
+  fix round 1 `saveParams` itself never moved the counter (it wrote a str to the INT param, raising inside a bare
+  `except`; routes 115, 120 and 121 have no `ParamsVersion` in `initData`). Until it is confirmed, the app's text says
+  only that the switch and the result show the next time the app loads the settings.
 - **Cancelling.** Going onroad (deviceState started) cancels any check in flight, and nothing is installed. Turning the
   ignition on also cancels an **automatic** check - automatic stays parked-only - but not one somebody asked for.
   **OSM is different:** mapd has no cancel, so an OSM download started offroad keeps running after the car drives off,
@@ -443,7 +446,7 @@ screen marks a school zone now. What this feature still puts on screen is the **
 
 | on screen | from | setting (sunnylink Visuals → HUD) |
 |---|---|---|
-| Top left, in the stock MAX number's place: the coming limit in a dashed box, a down (lower) or up (higher) chevron, and 'in 300 m' in a pill that drains ('now' close in, and while held) | `liveMapDataSP.speedLimitAhead*`: what mapd published - only while matched (state 2), so **never while dead reckoning**; and, whatever mapd says, nothing in `nswZone.state` 4 or 7 - and only while the limit in force is the resolver's, source map. Within 15 s of travel or 500 m. The 1 Hz distance is run down by `vEgo` between messages (for at most 1 s) and only counts down. Held after the look-ahead ends until the resolver's limit becomes it, 3 s at most | Approaching Limit (`HudApproachingLimit`) |
+| Top left, in the stock MAX number's place: the coming limit in a dashed box, a down (lower) or up (higher) chevron, and 'in 300 m' in a pill that drains ('now' close in, and while held) | `liveMapDataSP.speedLimitAhead*`: what mapd published - only while matched (state 2), so **never while dead reckoning**; and, whatever mapd says, nothing in `nswZone.state` 4 or 7 - and only while the limit in force is the resolver's, source map. Within 15 s of travel or 500 m. The 1 Hz distance is run down by `vEgo` between messages (for at most 1 s) and only counts down (a jump back up beyond a second's run-down + 10 m is taken). When the look-ahead ends at the change (within 2 s of travel or under 50 m) it is held, 'now', until the resolver's limit becomes it, 3 s at most; lost further out it stays a running distance for 2 s at most, never 'now' | Approaching Limit (`HudApproachingLimit`) |
 
 It hands over in the same place to the speed-limit confirm box or the stock MAX number. School and Variable zones
 ahead are not marked (phase 2: the matcher knows the zone type ahead, `ahead_kind` / `ahead_zone_type`, but
@@ -507,8 +510,8 @@ Cruise → Speed Limits → Speed Limit Settings holds the OSM pair:
   the request (the downloader removes it; `update_osm_db()` writes it false), or refused it, within a second or so.
   For OSM that clear does not bump `ParamsVersion` (only `saveParams` does), so **in the app the OSM switch stays on
   until the app next loads the settings, then reads off.** Since 2026-10-09 the NSW downloader bumps `ParamsVersion`
-  when it clears the request and when it writes `NswZonesStatus` (read-modify-write, like `saveParams`: a race can lose
-  one increment, but the value still changes). Switching it off within a second or so of switching it on cancels the
+  when it clears the request and when it writes `NswZonesStatus` (read-modify-write with a blocking write, like
+  `saveParams`, which since round 5's fix round 1 writes it as the INT it is). Switching it off within a second or so of switching it on cancels the
   request; after that the device has already taken it, and switching it on again asks again.
 - **The same rule as the buttons, enforced on the device.** `offroad_only` greys the items out in the app while
   driving, but the device does not trust that: the NSW downloader answers an onroad request `offroad only` and clears
