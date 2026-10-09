@@ -929,6 +929,15 @@ class TestAlertRules(OpenpilotTestCase):
       s.lead.vLead = 0.3
       assert all(s.frames(alert(), 0.2))
 
+  def test_a_held_lead_never_brings_the_full_prompt_back(self):
+    # radard's clutter guard holds a lead with vLead = vEgo and marks it (held_lead.held_id()); only the MPC reads it
+    s = StopFlow()
+    s.lead.present, s.lead.vLead = True, 2.0
+    s.lead.radarTrackId = -2 - 2633
+    assert all(s.frames(alert(), 2 * LEAD_DEPART_S + 0.5)), "a held lead moving off: still compact"
+    s.lead.radarTrackId = 2633
+    assert not s.frames(alert(), 1.0)[-1], "the same track, not held: the full alert"
+
   def test_a_radar_state_from_before_this_drive_or_stale_is_ignored(self):
     s = StopFlow()
     s.lead.present, s.lead.vLead = True, 3.0
