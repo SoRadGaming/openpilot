@@ -17,6 +17,7 @@ from openpilot.common.swaglog import cloudlog
 
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 from openpilot.sunnypilot.selfdrive.controls.lib.stopping_tune import STOPPING_SPEED  # FORK(HONDA_ACCORD_9G_AU)
+from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import real_lead  # FORK(HONDA_ACCORD_9G_AU)
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
@@ -173,7 +174,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     longitudinalPlan.accels = self.a_desired_trajectory.tolist()
     longitudinalPlan.jerks = self.j_desired_trajectory.tolist()
 
-    longitudinalPlan.hasLead = sm['radarState'].leadOne.present
+    # FORK(HONDA_ACCORD_9G_AU): a held lead (radard's clutter guard, held_lead.py) is no lead to show or learn from
+    longitudinalPlan.hasLead = real_lead(sm['radarState'].leadOne)
     longitudinalPlan.longitudinalPlanSource = self.mpc.source
     longitudinalPlan.fcw = self.fcw
 

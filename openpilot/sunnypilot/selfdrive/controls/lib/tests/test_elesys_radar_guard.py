@@ -12,18 +12,28 @@ night, where it holds the plan instead of braking), so a later change to the thr
 """
 import gzip
 import json
+import math
 import os
 import unittest
 from collections import defaultdict
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest import mock
 
-from openpilot.cereal import log
+import numpy as np
+
+from openpilot.cereal import custom, log, messaging
 from opendbc.car.structs import car
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls import radard
+from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib import long_mpc
+from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
+from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib import elesys_radar_guard as guard
+from openpilot.sunnypilot.selfdrive.controls.lib import held_lead
+from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
+from openpilot.sunnypilot.selfdrive.controls.lib.stopping_tune import STOPPING_SPEED
 
 FIXTURE = os.path.join(os.path.dirname(__file__), 'fixtures', 'elesys_radar_guard_frames.json.gz')
 with gzip.open(FIXTURE, 'rt') as f:
@@ -69,8 +79,8 @@ def car_params(fingerprint, brand='honda'):
 
 
 def is_hold(r):
-  """A held lead: the refused track at the car's speed and the MPC's desired distance for it."""
-  return (r.present and r.radar and abs(r.v_lead - r.v_ego) < 1e-6 and
+  """A held lead: marked as held, the refused track at the car's speed and the MPC's desired distance for it."""
+  return (r.held and r.present and r.radar and abs(r.v_lead - r.v_ego) < 1e-6 and
           abs(r.d - (guard.STOP_DISTANCE + guard.HOLD_T_FOLLOW * r.v_ego)) < 1e-6)
 
 
@@ -96,7 +106,8 @@ def replay(window, fingerprint=ELESYS):
     cam = fr['leads'][0]
     rows.append(SimpleNamespace(t=fr['t'], v_ego=fr['v_ego'], cam_d=cam[0] - radard.RADAR_TO_CAMERA, cam_v=cam[4],
                                 cam_prob=rd.lead_prob_filters[0].x, present=lo.present, radar=lo.radar,
-                                track=lo.radarTrackId, d=lo.dRel, v_lead=lo.vLead))
+                                held=held_lead.is_held(lo), d=lo.dRel, v_lead=lo.vLead,
+                                track=held_lead.held_track_id(lo) if held_lead.is_held(lo) else lo.radarTrackId))
   return rows
 
 
@@ -251,7 +262,10 @@ class TestHold(unittest.TestCase):
                             'radar': True, 'radarTrackId': 2633, 'present': True}, 2.9)
     self.assertAlmostEqual(held['dRel'], long_mpc.STOP_DISTANCE + 1.25 * 2.9)
     self.assertEqual((held['vLead'], held['vLeadK'], held['vRel'], held['aLeadK']), (2.9, 2.9, 0.0, 0.0))
-    self.assertEqual((held['radarTrackId'], held['present']), (2633, True))
+    self.assertEqual((held['radarTrackId'], held['present']), (-2635, True))  # marked: -2 - the track's id
+    self.assertTrue(held_lead.is_held(held))
+    self.assertEqual(held_lead.held_track_id(held), 2633)
+    self.assertFalse(held_lead.real_lead(held))
 
   def _get_lead(self, updates, cam_prob):
     g = guard.ElesysRadarGuard()
@@ -268,13 +282,115 @@ class TestHold(unittest.TestCase):
   def test_a_refused_track_holds_the_plan_only_with_no_other_lead(self):
     got = self._get_lead(guard.HOLD_UPDATES, 0.1)  # stationary at 8 m, no camera: refused by the override
     self.assertTrue(got['present'] and got['radar'])
-    self.assertEqual(got['radarTrackId'], 3)
+    self.assertEqual(got['radarTrackId'], held_lead.held_id(3))
     self.assertEqual((got['vLead'], got['aLeadK']), (3.0, 0.0))
     self.assertAlmostEqual(got['dRel'], guard.STOP_DISTANCE + guard.HOLD_T_FOLLOW * 3.0)
     self.assertFalse(self._get_lead(guard.HOLD_UPDATES - 1, 0.1)['present'])  # not seen long enough
     got = self._get_lead(guard.HOLD_UPDATES, 0.9)  # the camera's confident lead, 30 m on at 8 m/s, is the lead
     self.assertTrue(got['present'] and not got['radar'])
     self.assertAlmostEqual(got['vLead'], 8.0)
+
+
+  @staticmethod
+  def _a_mpc(personality, v_ego):
+    """The planner's MPC output (get_accel_from_plan, as longitudinal_planner.py) with a held lead at v_ego."""
+    mpc = long_mpc.LongitudinalMpc(dt=DT_MDL)
+    mpc.set_weights(True, personality=personality)
+    t_idxs = ModelConstants.T_IDXS[:CONTROL_N]
+    rs = log.RadarState.new_message()
+    rs.leadOne = guard.hold_lead({'dRel': 9.0, 'yRel': 0.0, 'vRel': 0.0, 'vLead': 0.0, 'vLeadK': 0.0, 'aLeadK': 0.0,
+                                  'aLeadTau': 1.5, 'present': True, 'radar': True, 'radarTrackId': 4, 'modelProb': 0.0}, v_ego)
+    a = 0.0
+    for _ in range(20):
+      mpc.set_cur_state(v_ego, 0.0)
+      mpc.update(rs.as_reader(), personality=personality)
+      a = get_accel_from_plan(np.interp(t_idxs, long_mpc.T_IDXS, mpc.v_solution),
+                              np.interp(t_idxs, long_mpc.T_IDXS, mpc.a_solution), t_idxs, action_t=0.25)
+    return a
+
+  def test_the_hold_holds_speed_and_below_the_stopping_speed_stops(self):
+    # Pinned, intended: the MPC neither accelerates toward a held lead nor brakes for it (within 0.05 m/s^2 of 0).
+    # Below the car's stopping speed (0.8 m/s) that output is under should_stop()'s 0.1, so the planner asks to stop
+    # and, from standstill, does not launch while the track stays held, whatever its real range (the old decode, which
+    # braked for these tracks at their range, asked for the same stops in the replay). At 0.8 m/s and over it never
+    # asks to stop
+    v_stopping = STOPPING_SPEED[ELESYS]
+    for p in log.LongitudinalPersonality.schema.enumerants.values():
+      for v_ego in (0.0, 0.3, 0.5, 0.79, 0.8, 1.0, 2.0, 3.0, 3.9):
+        a = self._a_mpc(p, v_ego)
+        self.assertLess(abs(a), 0.05, (p, v_ego, a))
+        self.assertEqual(should_stop(v_ego, a, v_stopping), v_ego < v_stopping, (p, v_ego, a))
+
+
+class TestHeldLeadConsumers(unittest.TestCase):
+  """A held lead's kinematics are made up: it is a lead for the MPC only (held_lead.py)."""
+  @staticmethod
+  def _leads(v_ego=2.0):
+    real = {'dRel': 9.0, 'yRel': 0.0, 'vRel': 0.0, 'vLead': 0.0, 'vLeadK': 0.0, 'aLeadK': 0.0, 'aLeadTau': 1.5,
+            'present': True, 'radar': True, 'radarTrackId': 4, 'modelProb': 0.0}
+    return real, guard.hold_lead(dict(real), v_ego)
+
+  def test_the_mark(self):
+    real, held = self._leads()
+    self.assertEqual(held_lead.HELD_ID_BASE, -2)
+    for tid in (0, 1, 4, 2633, 2 ** 31 - 3):
+      self.assertLessEqual(held_lead.held_id(tid), held_lead.HELD_ID_BASE)
+      self.assertEqual(held_lead.held_track_id({'radarTrackId': held_lead.held_id(tid)}), tid)
+    rs = log.RadarState.new_message()
+    self.assertEqual(rs.leadOne.radarTrackId, -1)  # cereal's default, a vision-only lead's: not held
+    self.assertFalse(held_lead.is_held(rs.leadOne) or held_lead.real_lead(rs.leadOne))
+    rs.leadOne = held
+    self.assertTrue(held_lead.is_held(rs.leadOne) and rs.leadOne.present and not held_lead.real_lead(rs.leadOne))
+    rs.leadOne = real
+    self.assertTrue(held_lead.real_lead(rs.leadOne) and held_lead.real_lead(real))
+    self.assertFalse(held_lead.real_lead(None) or held_lead.is_held(None))
+    self.assertTrue(held_lead.real_lead(SimpleNamespace(present=True)))  # a stub without radarTrackId is a real lead
+
+  def test_has_lead_is_false_for_a_held_lead(self):
+    # longitudinalPlan.hasLead: the dash's lead icon (HUD_LEAD), 0x500 LEAD_VISIBLE and shadow_learn's launch bins
+    pl = LongitudinalPlanner(car_params(ELESYS), custom.CarParamsSP.new_message().as_reader())
+    sm = _SubMaster()
+    out = []
+    pm = SimpleNamespace(send=lambda name, msg: out.append(msg))
+    for lead, want in zip(self._leads(), (True, False), strict=True):
+      rs = messaging.new_message('radarState')
+      rs.radarState.leadOne = lead
+      sm['radarState'] = rs.radarState
+      with mock.patch.object(pl, 'publish_longitudinal_plan_sp'):  # sunnypilot's own plan: not what this tests
+        pl.publish(cast(Any, sm), cast(Any, pm))
+      self.assertEqual(out[-1].longitudinalPlan.hasLead, want)
+
+  def test_dec_does_not_switch_to_acc_for_a_held_lead(self):
+    # With DEC on, any lead requests ACC ahead of the slow-down check; ACC would take e2e's stop away from a held lead
+    def run(lead):
+      dec = DynamicExperimentalController(cast(Any, SimpleNamespace(radarUnavailable=False)), SimpleNamespace(crash_cnt=0),
+                                          params=cast(Any, SimpleNamespace(get_bool=lambda k: True)))
+      rs = log.RadarState.new_message()
+      rs.leadOne = lead
+      sm = {'carState': SimpleNamespace(vEgo=2.0, vCruise=40.0, standstill=False), 'radarState': rs.as_reader(),
+            'modelV2': SimpleNamespace(position=SimpleNamespace(x=[0.0] * 33), orientation=SimpleNamespace(x=[0.0] * 33)),
+            'selfdriveState': SimpleNamespace(experimentalMode=True)}
+      for _ in range(60):
+        dec.update(cast(Any, sm))
+      return dec.mode()
+    real, held = self._leads()
+    self.assertEqual(run(real), 'acc')
+    self.assertEqual(run(held), 'blended')  # as with no lead: the model's stop ahead keeps e2e in the plan
+
+
+class TestOdometer(unittest.TestCase):
+  def test_a_non_finite_v_ego_does_not_poison_the_range_tests(self):
+    # One NaN vEgo used to leave the odometer at nan for the rest of the drive: no track latched as moving again
+    g = guard.ElesysRadarGuard()
+    radar = _Radar(g)
+    radar.update({}, v_ego=float('nan'))
+    radar.update({}, v_ego=float('inf'))
+    self.assertTrue(math.isfinite(g.odometer))
+    trk = _track(7, vLead=2.0, dRel=6.0)
+    for _ in range(10):
+      trk.dRel += 0.2  # moving away at 2 m/s (radar updates at 10 Hz) while the car stands still
+      radar.update({7: trk}, v_ego=0.0)
+    self.assertIn(7, g.moving)
 
 
 class TestLoggedFrames(unittest.TestCase):

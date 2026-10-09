@@ -12,6 +12,7 @@ from openpilot.selfdrive.ui.mici.onroad import blend_colors
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.shader_polygon import draw_polygon, Gradient
 from openpilot.system.ui.widgets import Widget
+from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import real_lead  # FORK(HONDA_ACCORD_9G_AU)
 
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.model_renderer import LANE_LINE_COLORS_SP, ModelRendererSP
 
@@ -177,7 +178,7 @@ class ModelRenderer(Widget, ModelRendererSP):
     leads = [radar_state.leadOne, radar_state.leadTwo]
 
     for i, lead_data in enumerate(leads):
-      if lead_data and lead_data.present:
+      if real_lead(lead_data):  # FORK(HONDA_ACCORD_9G_AU): not a held lead (held_lead.py)
         d_rel, y_rel, v_rel = lead_data.dRel, lead_data.yRel, lead_data.vRel
         idx = self._get_path_length_idx(path_x_array, d_rel)
 
@@ -206,7 +207,7 @@ class ModelRenderer(Widget, ModelRendererSP):
       road_edge.projected_points = self._map_line_to_polygon(road_edge.raw_points, line_width_factor, 0.0, max_idx)
 
     # Update path using raw points
-    if lead and lead.present:
+    if real_lead(lead):  # FORK(HONDA_ACCORD_9G_AU)
       lead_d = lead.dRel * 2.0
       max_distance = np.clip(lead_d - min(lead_d * 0.35, 10.0), 0.0, max_distance)
 

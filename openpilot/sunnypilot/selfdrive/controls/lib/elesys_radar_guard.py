@@ -28,7 +28,10 @@ What. Only on HONDA_ELESYS, and only where radard picks a radar track:
   * a track the override refuses still HOLDS the plan when radard has no lead at all: the closest one seen for
     HOLD_UPDATES updates becomes a lead at the car's own speed, not accelerating, at the MPC's desired distance for
     that speed on its shortest time gap (hold_lead()). The MPC then neither accelerates toward it nor brakes for it
-    as for a stopped car; the planner takes the lower of the MPC and e2e, so the plan stops accelerating.
+    as for a stopped car; the planner takes the lower of the MPC and e2e, so the plan stops accelerating. Below the
+    car's stopping speed (0.8 m/s) holding speed is a stop: the planner asks to stop and, from standstill, does not
+    launch while the track stays held, whatever its range. The held lead is marked (radarTrackId -2 - the track's id,
+    held_lead.py): it is a lead for the MPC only, and DEC, longitudinalPlan.hasLead, the e2e alerts and the UI skip it.
 A stopped car the camera also sees as stopped or slow is kept, at any range.
 
 Given up (the camera is the only discriminator for a stationary return that works in this data, see below):
@@ -76,9 +79,11 @@ moved:
     engaged, it is 0.5 m/s^2 or more firmer than the guard without it on 7.3 s, never by 1 m/s^2 to below -1, and
     at worst -0.83 (route 06 t=1265.5, where the old decode braked to -0.78).
 """
+import math
 from collections import deque
 
 from opendbc.car.honda.values import HONDA_ELESYS
+from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import held_id
 
 RADAR_TO_CAMERA = 1.52  # radard.RADAR_TO_CAMERA (test_elesys_radar_guard.py pins the two equal)
 DT = 0.05               # s per radard frame (DT_MDL: radard runs once per modelV2)
@@ -172,7 +177,8 @@ class ElesysRadarGuard:
     new_radar = radar_frame != self.radar_frame
     self.radar_frame = radar_frame
     self.t += DT
-    self.odometer += v_ego * DT
+    if math.isfinite(v_ego):  # one NaN would poison the odometer, and with it every range test, for the whole drive
+      self.odometer += v_ego * DT
     for tid in [t for t in self.state if t not in tracks]:
       del self.state[tid]
       self.moving.discard(tid)
@@ -243,6 +249,10 @@ def hold_lead(lead_dict: dict, v_ego: float) -> dict:
   """A refused track's lead, made one the planner's MPC neither accelerates toward nor brakes for: a lead at the car's
   own speed, not accelerating, at the MPC's desired distance for that speed on its shortest time gap. The MPC then
   holds speed (aggressive) or eases off slightly (standard, relaxed); the camera, e2e and the driver still do any
-  stopping. Its dRel is therefore not the track's range."""
-  lead_dict.update(dRel=STOP_DISTANCE + HOLD_T_FOLLOW * v_ego, vLead=v_ego, vLeadK=v_ego, vRel=0.0, aLeadK=0.0)
+  stopping. Below the car's stopping speed (0.8 m/s) that is a stop: the MPC's output is under should_stop()'s 0.1, so
+  the planner asks to stop, and from standstill does not launch while the track stays held. Its dRel is therefore not
+  the track's range, and it is marked (radarTrackId = held_lead.held_id(track)) so that every leadOne consumer but the
+  MPC can skip it (held_lead.real_lead())."""
+  lead_dict.update(dRel=STOP_DISTANCE + HOLD_T_FOLLOW * v_ego, vLead=v_ego, vLeadK=v_ego, vRel=0.0, aLeadK=0.0,
+                   radarTrackId=held_id(lead_dict['radarTrackId']))
   return lead_dict

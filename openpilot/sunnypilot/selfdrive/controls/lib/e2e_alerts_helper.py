@@ -10,6 +10,7 @@ from openpilot.cereal import messaging, custom
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
+from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import real_lead  # FORK(HONDA_ACCORD_9G_AU)
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 
 GREEN_LIGHT_X_THRESHOLD = 30
@@ -61,7 +62,7 @@ class E2EAlertsHelper:
 
     model_x = sm['modelV2'].position.x
     max_idx = len(model_x) - 1
-    self.has_lead = sm['radarState'].leadOne.present
+    self.has_lead = real_lead(sm['radarState'].leadOne)  # FORK(HONDA_ACCORD_9G_AU): not a held lead (held_lead.py)
     lead_dRel = sm['radarState'].leadOne.dRel
 
     standstill = CS.standstill

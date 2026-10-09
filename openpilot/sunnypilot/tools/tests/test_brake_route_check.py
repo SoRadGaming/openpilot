@@ -34,6 +34,8 @@ from openpilot.cereal import messaging
 from opendbc.can import CANPacker
 from opendbc.car.honda import carcontroller as ccm
 from openpilot.sunnypilot.tools import brake_route_check as brc
+from openpilot.sunnypilot.selfdrive.controls.lib import held_lead
+from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import held_id
 
 DBC = "honda_accord_au_2015_can_generated"
 
@@ -54,13 +56,14 @@ def _pump_stream(rule_fn, cb, v, t, six_args):
 
 
 def synth_route(d: str, flags: int = 64, creep: bool = False, brake_error: bool = False, press: bool = False,
-                blaw_tag: str = "") -> str:
+                blaw_tag: str = "", held_until: float = 0.0) -> str:
   """A 50 s engaged drive written as a real rlog: cruise, a two-step brake application, a stop, a 15 s hold at 189
   counts behind a stopped lead, a launch. The 0x1FA pump bit is what the rule the flags select would send.
   creep: the hold rolls at 0.3 m/s from 30 to 31 s the way the car reports it (carstate.py: XMISSION_SPEED above its
   floor clears standstill and is vEgo below 1 m/s; WHEELS_MOVING 1), 0.3 m toward the lead. press: the driver brakes
   from 20 s (5 m/s), which cancels openpilot longitudinal; the stop at 25 s is the driver's. flags 64: C1b; 16: the
-  retired C1 (its route, as the car logged it); 0: v5."""
+  retired C1 (its route, as the car logged it); 0: v5. held_until: before this time the lead is a held lead (radard's clutter
+  guard, held_lead.py), not a car."""
   packer = CANPacker(DBC)
   tag = "c1b" if flags & 64 else ("v6" if flags & 16 else "v5")
   rule = {"c1b": ccm.brake_pump_c1b_elesys, "v6": brc._c1_reference, "v5": ccm.brake_pump_hysteresis_elesys}[tag]
@@ -145,6 +148,8 @@ def synth_route(d: str, flags: int = 64, creep: bool = False, brake_error: bool 
         held = 24.5 <= t[i] < 40.0        # the lead is seen from just before the stop
         o.leadOne.present = bool(held)
         o.leadOne.dRel, o.leadOne.vLead = (4.0 - float(x_roll[i]), 0.0) if held else (0.0, 0.0)
+        if held and t[i] < held_until:
+          o.leadOne.radarTrackId = held_id(7)
       add("radarState", mono[i], rad)
       add("deviceMotion", mono[i], lambda o, vi=vi: setattr(o.velocityDevice, "x", vi))
       add("longitudinalPlan", mono[i], lambda o, i=i: setattr(o, "aTarget", float(-cb[i] / 100.0)))
@@ -231,6 +236,7 @@ class TestEndToEnd(unittest.TestCase):
     cls.crept = synth_route(os.path.join(cls.tmp.name, "15646e8515eda1a7_000000ab--0000000000"), creep=True, brake_error=True)
     cls.v5 = synth_route(os.path.join(cls.tmp.name, "15646e8515eda1a7_000000ac--0000000000"), flags=0)
     cls.pressed = synth_route(os.path.join(cls.tmp.name, "15646e8515eda1a7_000000ad--0000000000"), press=True)
+    cls.held = synth_route(os.path.join(cls.tmp.name, "15646e8515eda1a7_000000a9--0000000000"), held_until=30.0)
     cls.law_off = synth_route(os.path.join(cls.tmp.name, "15646e8515eda1a7_000000ae--0000000000"), flags=64 | 32,
                               blaw_tag=" blaw=v1")
 
@@ -279,6 +285,15 @@ class TestEndToEnd(unittest.TestCase):
     self.assertEqual(v["any BRAKE_ERROR (0x1B0)"], "PASS")
     self.assertEqual(v["a moving pump-off at cb >= 100 longer than 6.1 s"], "PASS")
     self.assertEqual(v["a steady-gain band weaker by > 0.10 per 100 counts (>= 60 s each)"], "n.a.")
+
+  def test_a_held_lead_is_no_car(self):
+    # FORK(HONDA_ACCORD_9G_AU): radard's clutter guard marks a held lead (radarTrackId -2 or less); its dRel is made
+    # up, so the stop checks must not read it as a stopped car
+    self.assertEqual((brc.HELD_ID_BASE, brc.real_lead), (held_lead.HELD_ID_BASE, held_lead.real_lead))
+    F = brc.build_frames(brc.load_route(self.held, force_rlog=True, workers=1))
+    t = F["t"] - F["t"][0]
+    self.assertFalse(F["lead"][(t > 25.0) & (t < 29.5)].any())
+    self.assertTrue(F["lead"][(t > 30.5) & (t < 39.5)].all())
 
   def test_a_route_that_ran_the_retired_c1(self):
     # flag 16: the tool still knows C1 and replays it from its own transcription

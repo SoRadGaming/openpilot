@@ -72,6 +72,7 @@ from openpilot.cereal import custom, log
 from opendbc.car.structs import car
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import HudSettings, NEXT_OFF, SIGN_ALWAYS, SIGN_ZONES
+from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import real_lead
 
 SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
 PlanSource = log.LongitudinalPlan.LongitudinalPlanSource
@@ -341,7 +342,7 @@ class StandstillBanner:
       self.reset()
       return False
     lead = sm['radarState'].leadOne
-    if fresh(sm, 'radarState', started_frame) and lead.present and lead.vLead > LEAD_DEPART_MS:
+    if fresh(sm, 'radarState', started_frame) and real_lead(lead) and lead.vLead > LEAD_DEPART_MS:
       if self._moving_since is None:
         self._moving_since = now
       if now - self._moving_since >= LEAD_DEPART_S:
@@ -604,7 +605,7 @@ class RailState:
       return None
     lead = sm['radarState'].leadOne
     margin = LEAD_KEEP_M if self._stop_on.state else LEAD_MARGIN_M
-    raw = d is not None and not (lead.present and lead.dRel <= d + margin)
+    raw = d is not None and not (real_lead(lead) and lead.dRel <= d + margin)  # a held lead's dRel is made up
     if raw:
       self._stop_m = _smooth(self._stop_m, d, dt, STOP_DIST_TAU_S)
       self._stop_fig, self._stop_rising = stop_figure(self._stop_m, self._stop_fig, self._stop_rising)

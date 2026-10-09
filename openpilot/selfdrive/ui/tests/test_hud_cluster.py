@@ -601,6 +601,9 @@ class TestRailRules(OpenpilotTestCase):
     sm = rail_sm(stop_m=25.0, lead_d=10.0)
     sm['radarState'].leadOne.present = False
     assert Rail().step(sm, 1.0).kind == HM.RAIL_STOP, "a lead slot the radar does not mark present is no car"
+    sm = rail_sm(stop_m=25.0, lead_d=10.0)
+    sm['radarState'].leadOne.radarTrackId = -2 - 2633  # held_lead.held_id(): radard's clutter guard, made-up dRel
+    assert Rail().step(sm, 1.0).kind == HM.RAIL_STOP, "a held lead is no car"
 
   def test_a_lead_appearing_hides_it_after_the_debounce(self):
     r = Rail()

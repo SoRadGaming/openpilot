@@ -103,6 +103,14 @@ from collections.abc import Callable
 
 import numpy as np
 
+try:
+  from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import HELD_ID_BASE, real_lead
+except ImportError:  # run outside the tree: the same mark (held_lead.py; test_brake_route_check pins the two equal)
+  HELD_ID_BASE = -2
+
+  def real_lead(lead) -> bool:
+    return bool(lead.present) and lead.radarTrackId > HELD_ID_BASE
+
 G = 9.81
 DT = 0.02                       # the 0x1FA timeline: 50 Hz
 SENT = 128                      # src of the echo of a frame openpilot sent on bus 0
@@ -329,7 +337,8 @@ def _read_rlog(fn: str) -> dict:
       lp["at"].append(m.longitudinalPlan.aTarget)
     elif w == "radarState":
       ld = m.radarState.leadOne
-      for k, v in (("t", t), ("st", ld.present), ("d", ld.dRel), ("vl", ld.vLead)):   # `present` was `status`, same field
+      # `present` was `status`, same field. A held lead (radard's clutter guard, held_lead.py) is no car: its dRel is made up
+      for k, v in (("t", t), ("st", real_lead(ld)), ("d", ld.dRel), ("vl", ld.vLead)):
         rad[k].append(v)
     elif w == "gpsLocationExternal":
       o = m.gpsLocationExternal
@@ -504,10 +513,13 @@ def read_parquet(pdir: str) -> dict:
   tb = table("longitudinalPlan", ["_logMonoTime", "aTarget"])
   if tb is not None:
     S["lp"]["t"], S["lp"]["at"] = list(col(tb, "_logMonoTime")), list(as_float(col(tb, "aTarget")))
-  tb = table("radarState", ["_logMonoTime", "leadOne.status", "leadOne.dRel", "leadOne.vLead"])
+  tb = table("radarState", ["_logMonoTime", "leadOne.status", "leadOne.dRel", "leadOne.vLead", "leadOne.radarTrackId"])
   if tb is not None:
     for k, c in (("t", "_logMonoTime"), ("st", "leadOne.status"), ("d", "leadOne.dRel"), ("vl", "leadOne.vLead")):
       S["rad"][k] = list(col(tb, c))
+    # a held lead (radarTrackId HELD_ID_BASE or below, held_lead.py) is no car; parquet without the column has none
+    tid = col(tb, "leadOne.radarTrackId", -1)
+    S["rad"]["st"] = [bool(st) and (x is None or int(x) > HELD_ID_BASE) for st, x in zip(S["rad"]["st"], tid, strict=True)]
   tb = table("gpsLocationExternal", ["_logMonoTime", "hasFix", "vNED"])
   if tb is not None:
     vned = col(tb, "vNED", None)

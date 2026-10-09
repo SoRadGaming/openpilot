@@ -11,6 +11,7 @@ from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
+from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import real_lead  # FORK(HONDA_ACCORD_9G_AU)
 
 
 class ChevronOptions:
@@ -128,7 +129,7 @@ class ChevronMetrics:
     lead_one = radar_state.leadOne
     lead_two = radar_state.leadTwo
 
-    has_lead_one = lead_one.present if lead_one else False
+    has_lead_one = real_lead(lead_one)  # FORK(HONDA_ACCORD_9G_AU): not a held lead (held_lead.py)
     has_lead_two = lead_two.present if lead_two else False
 
     self.update_alpha(has_lead_one or has_lead_two)

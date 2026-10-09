@@ -12,6 +12,7 @@ from numpy import interp
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.constants import WMACConstants
+from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import real_lead  # FORK(HONDA_ACCORD_9G_AU)
 from typing import Literal
 
 # d-e2e, from modeldata.h
@@ -217,7 +218,9 @@ class DynamicExperimentalController:
       self._standstill_count = max(0, self._standstill_count - 1)
 
     # Lead detection
-    self._lead_filter.add_data(float(lead_one.present))
+    # FORK(HONDA_ACCORD_9G_AU): a held lead (radard's clutter guard) is a lead for the MPC only: it must not switch DEC
+    # to ACC, which would take e2e's stop away from it
+    self._lead_filter.add_data(float(real_lead(lead_one)))
     lead_value = self._lead_filter.get_value() or 0.0
     self._has_lead_filtered = lead_value > WMACConstants.LEAD_PROB
 

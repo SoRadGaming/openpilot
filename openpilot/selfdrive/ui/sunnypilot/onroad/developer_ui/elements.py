@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.text_measure import measure_text_cached
+from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import real_lead  # FORK(HONDA_ACCORD_9G_AU)
 
 
 @dataclass
@@ -42,7 +43,7 @@ class LeadInfoElement:
   @staticmethod
   def get_lead_status(sm):
     lead_one = sm['radarState'].leadOne
-    return lead_one.present, lead_one.dRel, lead_one.vRel
+    return real_lead(lead_one), lead_one.dRel, lead_one.vRel  # FORK(HONDA_ACCORD_9G_AU): not a held lead
 
   @staticmethod
   def get_lead_color(lead_d_rel: float, lead_v_rel: float = 0.0, use_v_rel: bool = False) -> rl.Color:
