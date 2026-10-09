@@ -235,7 +235,7 @@ def eps_grid(tq: list) -> list[tuple[float, float]]:
 
 
 def _solve3(a: list[list[float]], b: list[float]) -> list[float] | None:
-  m = [row[:] + [bb] for row, bb in zip(a, b)]
+  m = [row[:] + [bb] for row, bb in zip(a, b, strict=False)]
   for i in range(3):
     p = max(range(i, 3), key=lambda r: abs(m[r][i]))
     if abs(m[p][i]) < 1e-12:
@@ -244,7 +244,7 @@ def _solve3(a: list[list[float]], b: list[float]) -> list[float] | None:
     for r in range(3):
       if r != i:
         f = m[r][i] / m[i][i]
-        m[r] = [x - f * y for x, y in zip(m[r], m[i])]
+        m[r] = [x - f * y for x, y in zip(m[r], m[i], strict=False)]
   return [m[i][3] / m[i][i] for i in range(3)]
 
 
@@ -355,8 +355,8 @@ def check_app_slot_image(image: bytes) -> str | None:
   magic, origin, _git, _flags = struct.unpack("<4I", image[APP_ID_OFFSET:APP_ID_OFFSET + 16])
 
   if magic != APP_ID_MAGIC:
-    return (f"no app-slot marker at {APP_ID_OFFSET:#x} (found {magic:#010x}) - this looks "
-            f"like a STANDALONE image linked for 0x08000000 and must not be installed")
+    return (f"no app-slot marker at {APP_ID_OFFSET:#x} (found {magic:#010x}) - this looks " +
+            "like a STANDALONE image linked for 0x08000000 and must not be installed")
   if origin != APP_ORIGIN:
     return f"linked for {origin:#010x}, not {APP_ORIGIN:#010x}"
   if not 0x20000000 <= sp <= 0x20024000:
@@ -395,7 +395,7 @@ class PandaTransport:
   """
 
   def __init__(self, bus: int = 0, serial: str | None = None):
-    from panda import Panda                              # noqa: PLC0415 - device only
+    from panda import Panda                              # device only
 
     self.bus = bus
     # cli=False matters: it defaults True and prompts on stdin via input() when
@@ -408,8 +408,8 @@ class PandaTransport:
     # hardware rather than at this file.
     mode = self.p.health().get("safety_mode")
     if mode != SAFETY_ELM327:
-      raise RuntimeError(f"panda is in safety mode {mode}, not elm327 ({SAFETY_ELM327}); "
-                         f"0x710/0x712 would be dropped")
+      raise RuntimeError(f"panda is in safety mode {mode}, not elm327 ({SAFETY_ELM327}); " +
+                         "0x710/0x712 would be dropped")
     self.p.can_clear(0xFFFF)
 
   def describe(self) -> str:
@@ -468,10 +468,10 @@ class BenchTransport:
   """
 
   def __init__(self, bitrate: int = 500000):
-    import can                                           # noqa: PLC0415 - bench only
-    import usb.core                                      # noqa: PLC0415
+    import can                                           # bench only
+    import usb.core
     try:
-      import libusb_package                              # noqa: PLC0415
+      import libusb_package
       backend = libusb_package.get_libusb1_backend()
     except ImportError:
       backend = None
@@ -479,7 +479,7 @@ class BenchTransport:
     if dev is None:
       raise RuntimeError("no candleLight adapter (VID 1d50 PID 606f)")
     name = dev.product
-    import usb.util                                      # noqa: PLC0415
+    import usb.util
     usb.util.dispose_resources(dev)                      # WinUSB is exclusive
     del dev
     self._can = can
@@ -915,7 +915,7 @@ class Flasher:
     base = marks[0][0]
     health = dict(self._health)
     out = []
-    for (a, label), (b, _next) in zip(marks, marks[1:]):
+    for (a, label), (b, _next) in zip(marks, marks[1:], strict=False):
       seg = [(t, y) for t, y in grid if a <= t < b]
       r = [v for t, v in rpm if a <= t < b]
       ld = [v for t, v in load if a <= t < b]
@@ -955,12 +955,12 @@ class Flasher:
       return None
     try:
       os.makedirs(directory, exist_ok=True)
-      path = os.path.join(directory, f"flash-{int(time.time())}.csv")
+      path = os.path.join(directory, f"flash-{int(time.time())}.csv")  # noqa: TID251 - wall clock: a file name kept across boots
       t0 = self._trace[0][0]
       with open(path, "w") as fh:
-        fh.write("# EPS-LKAS flash steering trace.\n"
-                 "# t = seconds from the first frame captured.\n"
-                 "# 0x156 STEERING_SENSORS, 0x18F STEER_STATUS - decode with\n"
+        fh.write("# EPS-LKAS flash steering trace.\n" +
+                 "# t = seconds from the first frame captured.\n" +
+                 "# 0x156 STEERING_SENSORS, 0x18F STEER_STATUS - decode with\n" +
                  "# opendbc honda _steering_sensors_c / _steering_control_e.\n")
         fh.write("t,addr,data\n")
         for t, addr, data in self._trace:
@@ -1012,7 +1012,7 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
     hello = f.wait_hello(hello_timeout)
     f.mark("hello")
     if hello is None:
-      return False, ("no HELLO. Either the board has no bootloader (it needs one SWD "
+      return False, ("no HELLO. Either the board has no bootloader (it needs one SWD " +
                      "visit), or it never reset.")
     if hello[0] == RSP_NAK:
       return False, f"refused: {describe_nak(hello)}"
@@ -1062,7 +1062,7 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
       return False, f"refused: {describe_nak(after)}"
     a = describe_hello(after)
     if not a["appOk"]:
-      return False, (f"installed, but the board refuses to run it "
+      return False, ("installed, but the board refuses to run it " +
                      f"(HELLO appOk=0, appId={a['appId']})")
     if a["git"] != ident["git"]:
       return False, f"board reports {a['git']} after installing {ident['git']}"
@@ -1100,7 +1100,7 @@ def load_bundled_image() -> tuple[bytes | None, str]:
 
 
 def main() -> int:
-  import argparse                                          # noqa: PLC0415
+  import argparse
   ap = argparse.ArgumentParser(description=__doc__)
   ap.add_argument("--bin", default=None, help="image to install (default: the bundled one)")
   ap.add_argument("--bench", action="store_true", help="candleLight adapter instead of the panda")

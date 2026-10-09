@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import json
 import os
 import time
 import threading
@@ -345,7 +344,7 @@ class Car:
     now = time.monotonic()
     if now - self._board_fw_seen_at > 60.0:
       self._board_fw_seen_at = now
-      self.params.put("EpsLkasBoardSeenAt", str(int(time.time())))
+      self.params.put("EpsLkasBoardSeenAt", str(int(time.time())))  # noqa: TID251 - wall clock, kept across boots
 
   def log_flash_trace(self) -> None:
     """Emit the last flash's steering trace into this route, once.
