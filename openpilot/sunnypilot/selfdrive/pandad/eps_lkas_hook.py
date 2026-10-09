@@ -80,7 +80,7 @@ def _existing_build(params: Params) -> dict:
     if isinstance(raw, dict):
       return dict(raw)
     if raw:
-      import json                                        # noqa: PLC0415
+      import json
       return dict(json.loads(raw))
   except Exception:
     pass
@@ -210,7 +210,7 @@ def flash_if_requested(panda_serial: str, bus: int = 0, transport_factory=None) 
                     "appSlot": True, "bootloader": True})
       params.put(VERSION_PARAM, msg)
       params.put(BUILD_PARAM, build)
-      params.put(SEEN_PARAM, str(int(time.time())))
+      params.put(SEEN_PARAM, str(int(time.time())))  # noqa: TID251 - wall clock, kept across boots (board.py reads it)
       cloudlog.event("eps-lkas.flashed", version=msg)
     else:
       params.put(STATE_PARAM, f"failed: {msg}")

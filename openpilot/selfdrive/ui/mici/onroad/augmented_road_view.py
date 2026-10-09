@@ -159,7 +159,7 @@ class AugmentedRoadView(CameraView):
     self._alert_renderer = AlertRenderer()
     self._driver_state_renderer = DriverStateRenderer()
     self._confidence_ball = ConfidenceBall()
-    # FORK(HUD): speed, speed-limit sign, next lower limit and the stop time, top right (hud_cluster.py)
+    # FORK(HUD): the stop time, top right (hud_cluster.py); it also hands the alert renderer to the HUD renderer
     self._hud_cluster = HudCluster(self._hud_renderer, self._alert_renderer)
     # FORK(HUD): the planned stop or the curve at the top of the confidence ball's strip, the ball kept below it
     self._hud_rail = HudRail(self._confidence_ball)

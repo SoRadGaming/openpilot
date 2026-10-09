@@ -64,24 +64,15 @@ STOCK_ACC_DESC = tr_noop("The car's own cruise control does gas and brake; openp
                          "the car's CANCEL button or the brake. CMBS is unaffected. 2013-15 Accord (Elesys) only.")
 STOCK_ACC_OFFROAD_NOTE = tr_noop("Can only be changed while the car is off.")
 
-# FORK(HONDA_ACCORD_9G_AU): the brake pump rule and the brake law, read once at ignition by opendbc's _initialize_honda
-# (openpilot longitudinal only, never in stock ACC mode) into CarParamsSP.flags. Offroad only like stock ACC, so the
-# route that follows records the setting it ran. Defaults as in params_keys.h: pump rule C1b on, the law off.
+# FORK(HONDA_ACCORD_9G_AU): the brake pump rule, read once at ignition by opendbc's _initialize_honda (openpilot
+# longitudinal only, never in stock ACC mode) into CarParamsSP.flags. Offroad only like stock ACC, so the route that
+# follows records the setting it ran. Default as in params_keys.h: pump rule C1b on.
 PUMP_C1B_PARAM = "HondaElesysPumpC1b"
 PUMP_C1B_TITLE = tr_noop("Quiet pump at stops")
 PUMP_C1B_DESC = tr_noop("On: the brake pump runs like the previous rule while braking, from the first moment of every " +
                         "application, and stays silent through long stops - no top-ups once a stop is held. Off: the " +
                         "previous pump rule, which also tops a held stop up every 30 s. sunnypilot longitudinal on " +
                         "the 2013-15 Accord (Elesys) only. Takes effect at the next car start.")
-BRAKE_LAW_V2_PARAM = "HondaElesysBrakeLawV2"
-BRAKE_LAW_V2_TITLE = tr_noop("Measured brake law (testing)")
-BRAKE_LAW_V2_DESC = tr_noop("On: the brake command follows this car's measured coast-down and brake response in each " +
-                            "speed band, and no brake is sent where coasting alone gives the slowing asked for. Stops " +
-                            "use the current law, with the learned brake correction held at x1.00 while it is on. Off: " +
-                            "the current brake law. Being tested, and it does not yet pass all of its acceptance checks " +
-                            "(it brakes a little late as braking begins) - leave it off unless you are testing it. Needs " +
-                            "the measured gas pedal law; with that off, this stays off. sunnypilot longitudinal on the " +
-                            "2013-15 Accord (Elesys) only. Takes effect at the next car start.")
 
 # reading 13 params at 60 fps would be 13 file reads a frame; once a second is
 # plenty for a readout that only changes once a minute anyway
@@ -212,18 +203,11 @@ class HondaSettings(BrandSettings):
       param=PUMP_C1B_PARAM,
       enabled=ui_state.is_offroad)
 
-    self.brake_law_v2_toggle = toggle_item_sp(
-      title=tr(BRAKE_LAW_V2_TITLE),
-      description=tr(BRAKE_LAW_V2_DESC),
-      param=BRAKE_LAW_V2_PARAM,
-      enabled=ui_state.is_offroad)
+    self.items = [self.dynamic_tuning_toggle, self.learned_values_item, self.stock_acc_toggle, self.pump_c1b_toggle]
 
-    self.items = [self.dynamic_tuning_toggle, self.learned_values_item, self.stock_acc_toggle,
-                  self.pump_c1b_toggle, self.brake_law_v2_toggle]
-
-    # the toggles whose params can also change behind this panel (Settings > Cruise, sunnylink)
+    # the toggles whose params can also change behind this panel (sunnylink)
     self._synced_toggles = ((TUNING_PARAM, self.dynamic_tuning_toggle), (STOCK_ACC_PARAM, self.stock_acc_toggle),
-                            (PUMP_C1B_PARAM, self.pump_c1b_toggle), (BRAKE_LAW_V2_PARAM, self.brake_law_v2_toggle))
+                            (PUMP_C1B_PARAM, self.pump_c1b_toggle))
     self._toggle_params = {param: item.action_item.get_state() for param, item in self._synced_toggles}
 
   def _on_reset_clicked(self) -> None:
@@ -250,8 +234,8 @@ class HondaSettings(BrandSettings):
     return text
 
   def _sync_toggles(self) -> None:
-    # keep the toggles honest: the same two params also have toggles in
-    # Settings > Cruise, and ToggleSP only reads its param at construction.
+    # keep the toggles honest: the same params can also be set from the sunnylink
+    # app, and ToggleSP only reads its param at construction.
     # Edge triggered on the param, never level: a tap writes its param
     # non-blocking, so a level sync would drag the toggle back to the old value
     # for the frame or two before that write lands.
@@ -278,11 +262,10 @@ class HondaSettings(BrandSettings):
       self.stock_acc_toggle.set_description(stock_acc_desc)
     self.stock_acc_toggle.show_description(True)
 
-    # the pump rule and the brake law: offroad only, read at the next car start, like stock ACC
-    for item, desc in ((self.pump_c1b_toggle, PUMP_C1B_DESC), (self.brake_law_v2_toggle, BRAKE_LAW_V2_DESC)):
-      full_desc = tr(desc) + ("" if ui_state.is_offroad() else "<br>" + tr(STOCK_ACC_OFFROAD_NOTE))
-      if item.description != full_desc:
-        item.set_description(full_desc)
+    # the pump rule: offroad only, read at the next car start, like stock ACC
+    pump_desc = tr(PUMP_C1B_DESC) + ("" if ui_state.is_offroad() else "<br>" + tr(STOCK_ACC_OFFROAD_NOTE))
+    if self.pump_c1b_toggle.description != pump_desc:
+      self.pump_c1b_toggle.set_description(pump_desc)
 
     now = time.monotonic()
     if not self._learned_text or now - self._learned_updated > LEARNED_REFRESH_S:

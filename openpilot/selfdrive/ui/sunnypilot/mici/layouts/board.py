@@ -14,7 +14,8 @@ question once and a terrible way to answer it before deciding whether to reflash
 
 WHY IT SAYS "last seen". card is only_onroad and the board sends its identity
 once a minute, so nothing here is live: it is what the board said the last time
-it was driven, latched into params by card.publish_board_firmware(). Labelling
+it was driven, latched into params by card's stage_board_firmware() and
+write_board_firmware(). Labeling
 it honestly is the whole difference between a useful page and a misleading one --
 a board that has been stood down to the read-only image transmits nothing at
 all, and would otherwise show its old hash forever with no hint that it is
@@ -75,7 +76,7 @@ def board_last_seen() -> str:
   if not raw:
     return ""
   try:
-    age = time.time() - int(raw)
+    age = time.time() - int(raw)  # noqa: TID251 - EpsLkasBoardSeenAt is wall-clock time, written on an earlier boot
   except (ValueError, TypeError):
     return ""
   # A negative age means the device clock moved backwards between the write and

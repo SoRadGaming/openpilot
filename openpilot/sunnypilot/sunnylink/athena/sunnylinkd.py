@@ -55,17 +55,18 @@ BLOCKED_PARAMS = {
   "HasAcceptedTermsSP",
   "OnroadCycleRequested",      # Prevent remote cycle trigger
   "ParamsVersion",         # Device-managed version counter
+  # FORK(NSW-ZONES): written by the NSW data downloader only (the installed data date, the last check's result)
+  "NswZonesStatus",
+  "NswZonesVersion",
 }
 
 # FORK(HONDA_ACCORD_9G_AU): changed only while offroad. Read once at ignition, so an onroad cycle requested from any
 # other settings page would apply it mid-drive: openpilot longitudinal on or off under a moving car. sunnylink's
-# offroad_only enablement is advice to the app; this is the device enforcing it. The pump rule and the brake law
-# (batch 3; the pump rule is C1b since 2026-10-06) are read at ignition the same way: a later onroad cycle or card
-# restart would switch them mid-drive.
+# offroad_only enablement is advice to the app; this is the device enforcing it. The pump rule (batch 3; C1b since
+# 2026-10-06) is read at ignition the same way: a later onroad cycle or card restart would switch it mid-drive.
 OFFROAD_ONLY_PARAMS = {
   "HondaElesysStockAcc",
   "HondaElesysPumpC1b",
-  "HondaElesysBrakeLawV2",
 }
 
 
@@ -262,8 +263,9 @@ def saveParams(params_to_update: dict[str, str], compression: bool = False) -> N
 
   # Increment version counter for frontend change detection
   try:
-    current = int(params.get("ParamsVersion") or "0")
-    params.put("ParamsVersion", str(current + 1), block=True)
+    current = int(params.get("ParamsVersion") or 0)
+    # FORK(NSW-ZONES): an INT param - a str raised TypeError (swallowed below), so the counter never moved
+    params.put("ParamsVersion", current + 1, block=True)
   except Exception:
     pass
 

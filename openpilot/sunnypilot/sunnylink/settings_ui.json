@@ -951,59 +951,6 @@
                   "description": "Prompt only for a new speed limit, not when the limit disappears or the same one returns. On a road the map has no limit for, forget the previous road's map limit after 10 seconds instead of keeping it for the rest of the drive. While GPS is lost (tunnels), keep the limit you entered with instead of the streets overhead, until the map has found the road again, and do not prompt for it when engaging."
                 },
                 {
-                  "key": "SpeedLimitNswZones",
-                  "widget": "multiple_button",
-                  "title": "NSW Speed Zones",
-                  "description": "In New South Wales, take the map speed limit from Transport for NSW's speed zones and school zones instead of OpenStreetMap, and keep it through tunnels by following the tunnel's zones. OSM is used where NSW has no zone. Log Only records what NSW would say without using it. Turning it on from Off takes effect after the next reboot. Contains data from Transport for NSW (Speed Zones, School Zones), licensed CC BY 4.0. Modified. Not endorsed by Transport for NSW.",
-                  "options": [
-                    {
-                      "value": 0,
-                      "label": "Off"
-                    },
-                    {
-                      "value": 1,
-                      "label": "Log Only"
-                    },
-                    {
-                      "value": 2,
-                      "label": "Live"
-                    }
-                  ]
-                },
-                {
-                  "key": "NswZonesAutoUpdate",
-                  "widget": "toggle",
-                  "title": "Update NSW Speed Zones Weekly",
-                  "description": "Check for new NSW speed zone data once a week, only while parked on wi-fi that is not marked metered. The first download (about 22 MB) happens by itself.",
-                  "visibility": [
-                    {
-                      "type": "param_compare",
-                      "key": "SpeedLimitNswZones",
-                      "op": ">",
-                      "value": 0
-                    }
-                  ]
-                },
-                {
-                  "key": "NswZonesUpdateCheck",
-                  "widget": "toggle",
-                  "title": "Update NSW Speed Zones Now",
-                  "description": "Check for new NSW speed zone data now, on any network (about 22 MB when there is new data). Works whenever the device is offroad, Always Offroad with the car on included; a request while driving is refused. The device switches it back off within a second, taken or refused; the app shows that the next time it loads the settings. After that, switching it on again asks again.",
-                  "visibility": [
-                    {
-                      "type": "param_compare",
-                      "key": "SpeedLimitNswZones",
-                      "op": ">",
-                      "value": 0
-                    }
-                  ],
-                  "enablement": [
-                    {
-                      "type": "offroad_only"
-                    }
-                  ]
-                },
-                {
                   "key": "OsmAutoUpdateWeekly",
                   "widget": "toggle",
                   "title": "Update OSM Maps Weekly",
@@ -1058,6 +1005,94 @@
                       "value": 0
                     }
                   ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "nsw_speed_zones",
+          "title": "NSW Speed Zones",
+          "description": "Transport for NSW speed zone and school zone data for the map speed limit",
+          "items": [
+            {
+              "key": "SpeedLimitNswZones",
+              "widget": "multiple_button",
+              "title": "NSW Speed Zones",
+              "description": "In New South Wales, take the map speed limit from Transport for NSW's speed zones and school zones instead of OpenStreetMap, and keep it through tunnels by following the tunnel's zones. OSM is used where NSW has no zone. Log Only records what NSW would say without using it. Turning it on from Off takes effect after the next reboot. Contains data from Transport for NSW (Speed Zones, School Zones), licensed CC BY 4.0. Modified. Not endorsed by Transport for NSW.",
+              "options": [
+                {
+                  "value": 0,
+                  "label": "Off"
+                },
+                {
+                  "value": 1,
+                  "label": "Log Only"
+                },
+                {
+                  "value": 2,
+                  "label": "Live"
+                }
+              ]
+            },
+            {
+              "key": "NswZonesUpdateCheck",
+              "widget": "toggle",
+              "title": "Update NSW Speed Zones Now",
+              "description": "Check for new NSW speed zone data now, on any network (about 22 MB when there is new data). Works whenever the device is offroad, Always Offroad with the car on included; a request while driving is refused and Last NSW check says \"offroad only\". The device switches it back off within a second, taken or refused, and writes the result to Last NSW check when the check finishes; the app shows both the next time it loads the settings.",
+              "visibility": [
+                {
+                  "type": "param_compare",
+                  "key": "SpeedLimitNswZones",
+                  "op": ">",
+                  "value": 0
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "offroad_only"
+                }
+              ]
+            },
+            {
+              "key": "NswZonesAutoUpdate",
+              "widget": "toggle",
+              "title": "Update NSW Speed Zones Weekly",
+              "description": "Check for new NSW speed zone data once a week, only while parked on wi-fi that is not marked metered. The first download (about 22 MB) happens by itself.",
+              "visibility": [
+                {
+                  "type": "param_compare",
+                  "key": "SpeedLimitNswZones",
+                  "op": ">",
+                  "value": 0
+                }
+              ]
+            },
+            {
+              "key": "NswZonesVersion",
+              "widget": "info",
+              "title": "Installed NSW data",
+              "description": "The date of the NSW speed zone data on the device. Empty until the first download.",
+              "visibility": [
+                {
+                  "type": "param_compare",
+                  "key": "SpeedLimitNswZones",
+                  "op": ">",
+                  "value": 0
+                }
+              ]
+            },
+            {
+              "key": "NswZonesStatus",
+              "widget": "info",
+              "title": "Last NSW check",
+              "description": "How the last check ended and when (device time), weekly or asked for - \"updated to <date>\", \"up to date\", \"offroad only\", \"cancelled\" (the car started during it), \"no network\", or the reason it failed. Empty until the first check on this software.",
+              "visibility": [
+                {
+                  "type": "param_compare",
+                  "key": "SpeedLimitNswZones",
+                  "op": ">",
+                  "value": 0
                 }
               ]
             }
@@ -1637,7 +1672,7 @@
         {
           "id": "hud_comma4",
           "title": "HUD",
-          "description": "The comma 4 driving screen - speed, speed limit, next limit, stops, smaller alerts, and the planned stop or curve in the right strip. Changes show within a second.",
+          "description": "The comma 4 driving screen - the stop timer, the coming speed limit, smaller alerts, and the planned stop or curve in the right strip. Changes show within a second.",
           "visibility": [
             {
               "type": "capability",
@@ -1647,125 +1682,10 @@
           ],
           "items": [
             {
-              "key": "HudSpeedCluster",
-              "widget": "toggle",
-              "title": "Speed and Speed Limit",
-              "description": "Your speed, as the car's speedometer shows it, beside the speed limit sign, top right. Current Speed below can leave the speed out; Speed Limit Sign says when the sign shows; it is always hidden when Speed Limit is Off, and shown in grey while the limit is only being held from earlier. While the set speed shows after a change (or the speed a confirm prompt would set) the speed hides, and the whole group fades out while a full-screen alert is up."
-            },
-            {
-              "key": "HudCurrentSpeed",
-              "widget": "toggle",
-              "title": "Current Speed",
-              "description": "Your speed, top right, as the car's speedometer shows it. Off - the speed is not drawn; it is on the car's own dash. The speed limit sign, the next lower limit and the stop time stay where they are; with Speed Limit Sign Off they sit in the corner on their own. After a change the set speed still shows as MAX, top left.",
-              "visibility": [
-                {
-                  "type": "param",
-                  "key": "HudSpeedCluster",
-                  "equals": true
-                }
-              ]
-            },
-            {
-              "key": "HudLimitSign",
-              "widget": "multiple_button",
-              "title": "Speed Limit Sign",
-              "description": "When the sign beside your speed is drawn. Always - whenever there is a limit. School & Variable Zones - only in a NSW school zone while it is on, or a variable speed limit zone, and for about 12 seconds after, so it does not blink at a limit change; this needs NSW Speed Zones on Live and Speed Limit not Off. Off - never. With no sign, your speed, the stop time and the next lower limit slide into its place in the corner, and a confirm prompt with a speed limit offset names the limit itself ('limit 50 +5').",
-              "options": [
-                {
-                  "value": 0,
-                  "label": "Off"
-                },
-                {
-                  "value": 1,
-                  "label": "School & Variable Zones"
-                },
-                {
-                  "value": 2,
-                  "label": "Always"
-                }
-              ],
-              "visibility": [
-                {
-                  "type": "param",
-                  "key": "HudSpeedCluster",
-                  "equals": true
-                }
-              ]
-            },
-            {
-              "key": "HudNextLimit",
-              "widget": "multiple_button",
-              "title": "Next Lower Limit",
-              "description": "A small sign for the next LOWER limit under the speed (or where the speed would be), once it is within 15 seconds or 500 m. Bar shrinks toward the sign as you get closer; Distance shows how far, as the map rounds it; Both shows the distance over the bar. Never while stopped, never for a higher limit, and never from a tunnel's guessed position.",
-              "options": [
-                {
-                  "value": 0,
-                  "label": "Off"
-                },
-                {
-                  "value": 1,
-                  "label": "Bar"
-                },
-                {
-                  "value": 2,
-                  "label": "Distance"
-                },
-                {
-                  "value": 3,
-                  "label": "Both"
-                }
-              ],
-              "visibility": [
-                {
-                  "type": "param",
-                  "key": "HudSpeedCluster",
-                  "equals": true
-                }
-              ]
-            },
-            {
-              "key": "HudSchoolZoneCue",
-              "widget": "toggle",
-              "title": "School Zone Lights",
-              "description": "When the limit shown is a NSW school zone, two amber lights on the sign flash in turn and SCHOOL shows under it while the zone is on; outside its hours the lights are grey. Needs NSW Speed Zones on Live, and Speed Limit Sign not Off.",
-              "visibility": [
-                {
-                  "type": "param",
-                  "key": "HudSpeedCluster",
-                  "equals": true
-                },
-                {
-                  "type": "param_compare",
-                  "key": "HudLimitSign",
-                  "op": ">",
-                  "value": 0
-                }
-              ]
-            },
-            {
-              "key": "HudVariableLimitSign",
-              "widget": "toggle",
-              "title": "Electronic Sign in Variable Zones",
-              "description": "In a NSW variable speed limit zone (motorways and tunnels with overhead signs) the sign is drawn like the electronic one - black, with white digits - because the overhead sign can show less than the limit here. Needs NSW Speed Zones on Live, and Speed Limit Sign not Off.",
-              "visibility": [
-                {
-                  "type": "param",
-                  "key": "HudSpeedCluster",
-                  "equals": true
-                },
-                {
-                  "type": "param_compare",
-                  "key": "HudLimitSign",
-                  "op": ">",
-                  "value": 0
-                }
-              ]
-            },
-            {
               "key": "HudStoppedTimer",
               "widget": "toggle",
               "title": "Stop Timer",
-              "description": "After a second at a standstill the speed becomes a stopwatch and how long you have been stopped (with Current Speed off too). While engaged, a stop raises the 'take control' prompt, which covers the screen - and the stopwatch - unless Compact Take Control Banner When Stopped is on."
+              "description": "After a second at a standstill, a stopwatch and how long you have been stopped, top right. While engaged, a stop raises the 'take control' prompt, which covers the screen - and the stopwatch - unless Compact Take Control Banner When Stopped is on."
             },
             {
               "key": "HudStoppedBanner",
@@ -1774,16 +1694,16 @@
               "description": "At a standstill the 'take control, resume driving manually' prompt is a small banner top left instead of covering the screen. It goes back to full screen when the car ahead moves off, until you drive away; the next stop starts small again."
             },
             {
-              "key": "HudConfirmLimit",
+              "key": "HudApproachingLimit",
               "widget": "toggle",
-              "title": "Show the Limit in the Confirm Prompt",
-              "description": "The full-screen 'press - (or +) to confirm speed limit' prompt shows the limit it is asking about, with a dashed ring until you confirm it, beside the green - or +. A speed limit offset shows as a small number on the sign, as on sunnypilot's own sign. With Compact Speed Limit Prompts on, the sign top right turns dashed instead while the prompt is up."
+              "title": "Approaching Limit",
+              "description": "A coming speed limit change - lower or higher - top left, where MAX shows the set speed, once it is within 15 seconds or 500 m - the new limit in a dashed box, an arrow down or up, and 'in 300 m' in a bar that empties as you get there ('now' close in). It stays until the new limit is in force, then the confirm prompt or MAX takes the same place. It waits while MAX or any alert is showing, and the driver-monitoring face makes way for it, as it does for MAX. Never while stopped, never for a car-sourced limit, and never in a tunnel, where the map only guesses the position. Needs Speed Limit not Off."
             },
             {
               "key": "HudCompactLimitPrompts",
               "widget": "toggle",
               "title": "Compact Speed Limit Prompts",
-              "description": "'Auto adjusting to speed limit' and 'set speed changed' no longer cover the road: the new set speed shows as MAX top left, as after any change, and your speed and sign stay. 'Press + (or -) to confirm' shows the speed the confirm would set (the limit plus any offset) top left, where and as big as MAX, in a dashed box - not set yet - with 'press + to confirm' and the green key under it; once confirmed it is the usual MAX. With no limit to show it is a one-line banner. The sounds are unchanged."
+              "description": "'Auto adjusting to speed limit' and 'set speed changed' no longer cover the road: the new set speed shows as MAX top left, as after any change. 'Press + (or -) to confirm' shows the speed the confirm would set (the limit plus any offset) top left, where and as big as MAX, in a dashed box - not set yet - with 'press + to confirm' and the green key under it, and 'limit 50 +5' when there is an offset. The box flashes twice when it appears, then its dashes run round it until you confirm; once confirmed it is the usual MAX. With no limit to show it is a one-line banner. The sounds are unchanged."
             },
             {
               "key": "HudCompactDisengage",
@@ -2546,19 +2466,6 @@
           "title": "Quiet pump at stops",
           "description": "On - the brake pump runs like the previous rule while braking, from the first moment of every application, and stays silent through long stops - no top-ups once a stop is held. Off - the previous pump rule, which also tops a held stop up every 30 s. sunnypilot longitudinal on the 2013-15 Accord (Elesys) only. Applies at the next drive.",
           "details": "The pump builds brake pressure; measured on this car, a rise in braking arrives only while it runs, and a steady brake or a built standstill hold keeps without it. On, every brake application gets a short burst at its first moment and every further rise past a small deadband one more, at once; firm braking (over 200 counts) above 9 km/h and braking over 100 counts while creeping into a stop below 9 km/h run it continuously, and braking at 100 counts or more while moving runs it at least every 6 s. While stopped it runs only to build the hold, or to deliver a rise of more than 15 counts (the soft stop's rise to the full hold) - never to top a hold up. It replaces \"Quieter brake pump\", which was quieter while moving, and starts on whatever that setting was. Turn it off to go back to the previous rule if a stop ever falls short or a hold creeps.",
-          "enablement": [
-            {
-              "type": "offroad_only"
-            }
-          ]
-        },
-        {
-          "key": "HondaElesysBrakeLawV2",
-          "widget": "toggle",
-          "needs_onroad_cycle": true,
-          "title": "Measured brake law (testing)",
-          "description": "On - the brake command follows this car's measured coast-down and brake response in each speed band, and no brake is sent where coasting alone gives the slowing asked for. Stops use the current law, with the learned brake correction held at x1.00 while it is on. Off - the current brake law. Being tested, and it does not yet pass all of its acceptance checks; leave it off unless you are testing it. Needs the Measured Gas Pedal Law; with that off, this stays off. sunnypilot longitudinal on the 2013-15 Accord (Elesys) only. Applies at the next drive.",
-          "details": "Applies at the next drive - the car reads it once when it goes onroad; the drive's car parameters record the setting and its log lines record which law actually ran. The gas pedal's zero point moves with it, so the hand-over between gas and brake stays consistent. NOT YET ACCEPTED - in its offline fit the 20-25 m/s band is off by 0.076 m/s^2 (the limit is 0.05) and there is no held-out data above 25 m/s; in the simulator openpilot's correction while braking misses its +-0.05 limit (-0.08 at 18-36 km/h, -0.06 at 54-72 km/h), and in the first second of braking the car slows about 0.18 m/s^2 less than asked (0.09 today). Both errors are toward less brake. The simulator cannot judge stops or holds; those are measured in the car. Turn it on only to test it, with the owner's sign-off, and check each drive with brake_route_check.py. A sunnylink restore brings this setting back like any other.",
           "enablement": [
             {
               "type": "offroad_only"

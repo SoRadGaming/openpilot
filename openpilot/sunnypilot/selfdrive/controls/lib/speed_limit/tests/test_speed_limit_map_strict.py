@@ -21,6 +21,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot.selfdrive.car.cruise_ext import VCruiseHelperSP
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode, Policy
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.change_hold import SpeedLimitChangeHold
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist, \
   PRE_ACTIVE_GUARD_PERIOD, V_CRUISE_UNSET
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver, \
@@ -55,9 +56,10 @@ class FakeSM:
 
 
 class Drive:
-  """Resolver -> SLA -> VCruiseHelperSP, one plannerd frame per step()."""
+  """Resolver -> the 1 s change hold -> SLA -> VCruiseHelperSP, one plannerd frame per step()."""
   def __init__(self, CP, CP_SP):
     self.resolver = SpeedLimitResolver()
+    self.hold = SpeedLimitChangeHold()  # plannerd hands SLA, and publishes, what this holds
     self.sla = SpeedLimitAssist(CP, CP_SP)
     self.v_cruise = VCruiseHelperSP(CP, CP_SP)
     self.events_sp = EventsSP()
@@ -67,12 +69,14 @@ class Drive:
   def step(self, map_limit_kph: float, gps_ok: bool = True, long_enabled: bool = True, v_cruise_kph: float = 80.,
            car_limit_kph: float = 0., road_name: str = "") -> None:
     self.resolver.update(V_EGO, FakeSM(map_limit_kph, gps_ok, car_limit_kph, road_name))  # ty: ignore[invalid-argument-type]
-    has_speed_limit = self.resolver.speed_limit_valid or self.resolver.speed_limit_last_valid
+    self.hold.update(self.resolver)
+    limit = self.hold
+    has_speed_limit = limit.speed_limit_valid or limit.speed_limit_last_valid
 
     state_prev = self.sla.state
     self.events_sp.clear()
-    self.sla.update(long_enabled, False, V_EGO, 0., v_cruise_kph * CV.KPH_TO_MS, self.resolver.speed_limit,
-                    self.resolver.speed_limit_final_last, has_speed_limit, self.resolver.distance, self.events_sp,
+    self.sla.update(long_enabled, False, V_EGO, 0., v_cruise_kph * CV.KPH_TO_MS, limit.speed_limit,
+                    limit.speed_limit_final_last, has_speed_limit, self.resolver.distance, self.events_sp,
                     map_limit_frozen=self.resolver.map_limit_frozen)
     if self.sla.state == SpeedLimitAssistState.preActive and state_prev != SpeedLimitAssistState.preActive:
       assert EventNameSP.speedLimitPreActive in self.events_sp.names
@@ -82,9 +86,9 @@ class Drive:
 
     # what card's VCruiseHelperSP sees of this frame
     LP_SP = custom.LongitudinalPlanSP.new_message()
-    LP_SP.speedLimit.resolver.speedLimitValid = self.resolver.speed_limit_valid
-    LP_SP.speedLimit.resolver.speedLimitLastValid = self.resolver.speed_limit_last_valid
-    LP_SP.speedLimit.resolver.speedLimitFinalLast = float(self.resolver.speed_limit_final_last)
+    LP_SP.speedLimit.resolver.speedLimitValid = limit.speed_limit_valid
+    LP_SP.speedLimit.resolver.speedLimitLastValid = limit.speed_limit_last_valid
+    LP_SP.speedLimit.resolver.speedLimitFinalLast = float(limit.speed_limit_final_last)
     LP_SP.speedLimit.assist.state = self.sla.state
     self.v_cruise.v_cruise_cluster_kph = v_cruise_kph  # ty: ignore[invalid-assignment]
     self.v_cruise.update_speed_limit_assist(True, LP_SP)

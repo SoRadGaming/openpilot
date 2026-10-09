@@ -6,8 +6,8 @@ See the LICENSE.md file in the root directory for more details.
 
 FORK(HUD): drawing primitives for the comma 4 HUD (536x240; sizes are device pixels).
 
-Ported from the approved mockups (2026-10-03), which were drawn with these same raylib calls over the real onroad
-view. What they need that the stock widgets do not do:
+Ported from the approved mockups (2026-10-03, round 5 2026-10-09), which were drawn with these same raylib calls over
+the real onroad view. What they need that the stock widgets do not do:
   * text placed by its INK box, not its line box: the digits of a 60 px sign sit in its center, and a 35 px number lines
     up with the sign beside it whatever the font's ascent;
   * condensed digits - each glyph squeezed horizontally to ~0.8 - so "110" reaches ~24 px tall inside a 60 px sign, as
@@ -25,20 +25,6 @@ from openpilot.system.ui.lib.application import gui_app, FontWeight, FONT_SCALE
 AU_RED = rl.Color(204, 31, 46, 255)
 AU_WHITE = rl.Color(255, 255, 255, 255)
 AU_BLACK = rl.Color(12, 12, 12, 255)
-# NSW electronic variable speed limit sign: black face, red LED ring, white LED legend
-LED_RED = rl.Color(232, 36, 36, 255)
-LED_WHITE = rl.Color(246, 246, 240, 255)
-VSL_FACE = rl.Color(14, 14, 14, 255)
-# a limit the resolver is only holding (not a current one): the grey sunnypilot's own sign uses
-HELD_GREY = rl.Color(145, 155, 149, 255)
-# NSW school-zone flashing lights
-LAMP_AMBER = rl.Color(255, 170, 0, 255)
-LAMP_AMBER_GLOW = rl.Color(255, 185, 40, 170)
-LAMP_AMBER_OFF = rl.Color(105, 72, 18, 255)
-LAMP_BEZEL = rl.Color(22, 22, 22, 235)
-LAMP_GREY = rl.Color(64, 64, 64, 255)
-LAMP_GREY_RIM = rl.Color(150, 150, 150, 255)
-SCHOOL_AMBER = rl.Color(255, 176, 0, 255)
 # the green of sunnypilot's own img_minus_arrow_down.png / img_plus_arrow_up.png (median of the opaque pixels)
 KEY_GREEN = rl.Color(42, 255, 96, 255)
 WHITE = rl.Color(255, 255, 255, 255)
@@ -158,67 +144,26 @@ def text_shadow(right_x: float, cy: float, w: float, h: float, alpha: float = 0.
 
 
 # ------------------------------------------------------------------------------------------- signs
-def sign(cx: float, cy: float, d: float, value: int, alpha: float = 1.0, dashed: bool = False, electronic: bool = False,
-         shadow: bool = True, held: bool = False, ring_frac: float = 0.18):
-  """AU R4-1 roundel (white face, red annulus, black legend), or with electronic=True the NSW electronic variable
-  speed limit sign (black face, red LED ring, white LED digits). dashed = a limit not yet confirmed. held = a limit the
-  resolver is only holding: grey legend, as sunnypilot's own sign does."""
+def sign(cx: float, cy: float, d: float, value: int, alpha: float = 1.0, dashed: bool = False, shadow: bool = True,
+         ring_frac: float = 0.18):
+  """AU R4-1 roundel (white face, red annulus, black legend). dashed = a limit not yet confirmed (the confirm banner's
+  pending sign)."""
   r = d / 2
   if shadow:
     soft_disc(cx, cy, r * 1.4, 0.45 * alpha)
-  face = VSL_FACE if electronic else AU_WHITE
-  ring = LED_RED if electronic else AU_RED
-  legend = HELD_GREY if held else (LED_WHITE if electronic else AU_BLACK)
   c = rl.Vector2(cx, cy)
-  rl.draw_circle_v(c, r, a(face, alpha))
+  rl.draw_circle_v(c, r, a(AU_WHITE, alpha))
   ring_in = r * (1 - ring_frac)
   if dashed:
     for k in range(12):
       s = k * 30 + 4
-      rl.draw_ring(c, ring_in, r, s, s + 19, 8, a(ring, alpha))
+      rl.draw_ring(c, ring_in, r, s, s + 19, 8, a(AU_RED, alpha))
   else:
-    rl.draw_ring(c, ring_in, r, 0, 360, 64, a(ring, alpha))
-  if electronic:
-    # the LED ring sits on a black housing: a thin dark rim inside it
-    rl.draw_ring(c, ring_in - 1.2, ring_in - 0.2, 0, 360, 64, rl.Color(0, 0, 0, int(255 * alpha)))
+    rl.draw_ring(c, ring_in, r, 0, 360, 64, a(AU_RED, alpha))
   txt = str(int(value))
   cap = d * (0.40 if len(txt) >= 3 else 0.44)
   size, sx = fit_digits(txt, round(cap, 2), round(ring_in * 2 * 0.86, 2))
-  text_ink(txt, size, cx, cy, a(legend, alpha), sx=sx)
-
-
-def school_cue(cx: float, cy: float, d: float, active: bool, t: float, alpha: float = 1.0):
-  """The NSW school-zone cue on a round speed sign of diameter d at (cx, cy). THE ONE PLACE TO RESTYLE IT.
-
-  The sign itself keeps the shape every other limit has; only this is added:
-    active   - two amber lamps on the rim at 10:30 and 1:30, alternating about once a second (one lit for 0.5 s, then
-               the other), as the lights on a NSW school-zone sign do, and "SCHOOL" in amber under the sign.
-    inactive - the same two lamps, unlit grey, and no text: a school zone is here, and it is not on now.
-  t = seconds on any steady clock (it only picks the lit lamp)."""
-  r = d / 2
-  k = 0.7071  # 45 degrees
-  lamps = ((cx - r * k, cy - r * k), (cx + r * k, cy - r * k))
-  lamp_r = max(4.0, d * 0.09)  # ~11 px across on the 60 px sign
-  lit = int(t * 2.0) % 2 if active else -1
-  for i, (lx, ly) in enumerate(lamps):
-    c = rl.Vector2(lx, ly)
-    rl.draw_circle_v(c, lamp_r + 1.6, a(LAMP_BEZEL, alpha))
-    if not active:
-      rl.draw_circle_v(c, lamp_r, a(LAMP_GREY, alpha))
-      rl.draw_ring(c, lamp_r - 1.0, lamp_r, 0, 360, 20, a(LAMP_GREY_RIM, alpha))
-    elif i == lit:
-      rl.draw_circle_gradient(c, lamp_r * 2.3, a(LAMP_AMBER_GLOW, alpha), rl.BLANK)
-      rl.draw_circle_v(c, lamp_r, a(LAMP_AMBER, alpha))
-    else:
-      rl.draw_circle_v(c, lamp_r, a(LAMP_AMBER_OFF, alpha))
-  if active:
-    cap = d * 0.25  # 15 px on the 60 px sign: the smallest text the approved mockups used
-    size, sx = fit_digits("SCHOOL", round(cap, 2), round(d, 2), sx=0.92, min_sx=0.7)
-    lw, _, _, _ = ink("SCHOOL", size, sx)
-    ly = cy + r + 4 + cap / 2 + 3
-    rl.draw_rectangle_rounded(rl.Rectangle(cx - lw / 2 - 5, ly - cap / 2 - 4, lw + 10, cap + 8), 0.5, 8,
-                              rl.Color(0, 0, 0, int(150 * alpha)))
-    text_ink("SCHOOL", size, cx, ly, a(SCHOOL_AMBER, alpha), sx=sx)
+  text_ink(txt, size, cx, cy, a(AU_BLACK, alpha), sx=sx)
 
 
 def stopwatch_glyph(right_x: float, cy: float, size: float = 28, alpha: float = 0.95) -> float:
@@ -237,40 +182,10 @@ def stopwatch_glyph(right_x: float, cy: float, size: float = 28, alpha: float = 
 
 
 def big_digits(right_x: float, cy: float, txt: str, size: float = 50, alpha: float = 1.0) -> tuple[float, float]:
-  """The speed (or the stop time): ~35 px white digits on a soft radial shadow, right-aligned at right_x."""
+  """The stop time: ~35 px white digits on a soft radial shadow, right-aligned at right_x."""
   w, h, _, _ = ink(txt, size)
   text_shadow(right_x, cy, w, h, 0.45 * alpha)
   return text_ink(txt, size, right_x, cy, a(WHITE, alpha), anchor="right", shadow=0.75)
-
-
-# ------------------------------------------------------------------------------------------- next limit
-NEXT_BAR_LEN = 62
-DIST_TEXT_SIZE = 26  # ~18 px cap
-
-
-def next_row(right_x: float, cy: float, value: int, frac: float, dist_text: str, bar: bool, text: bool, d: float = 36,
-             alpha: float = 1.0) -> float:
-  """The next LOWER limit: its small sign right-aligned at right_x and, to its left, a bar that starts full when the
-  limit comes into range and shrinks toward the sign (frac = what is left, 0..1), the distance as ~18 px text, or both
-  (the text over the bar). Returns the row's left x."""
-  sign(right_x - d / 2, cy, d, value, alpha=alpha, shadow=True)
-  x1 = right_x - d - 8
-  left = x1
-  if bar:
-    h = 6 if text else 8
-    bcy = cy + 11 if text else cy
-    L = NEXT_BAR_LEN
-    f = max(0.06, min(1.0, frac))
-    x0 = x1 - L
-    rl.draw_rectangle_rounded(rl.Rectangle(x0 - 1.5, bcy - h / 2 - 1.5, L + 3, h + 3), 1.0, 8, rl.Color(0, 0, 0, int(140 * alpha)))
-    rl.draw_rectangle_rounded(rl.Rectangle(x0, bcy - h / 2, L, h), 1.0, 8, rl.Color(255, 255, 255, int(70 * alpha)))
-    rl.draw_rectangle_rounded(rl.Rectangle(x1 - L * f, bcy - h / 2, L * f, h), 1.0, 8, rl.Color(255, 255, 255, int(235 * alpha)))
-    left = min(left, x0)
-  if text:
-    tcy = cy - 7 if bar else cy
-    iw, _ = text_ink(dist_text, DIST_TEXT_SIZE, x1, tcy, a(WHITE, alpha), w=FontWeight.SEMI_BOLD, anchor="right", shadow=0.7)
-    left = min(left, x1 - iw)
-  return left
 
 
 # ------------------------------------------------------------------------------------------- alerts
@@ -293,7 +208,7 @@ def standstill_banner(x: float, y: float, line1: str, line2: str, color: rl.Colo
 
 BANNER_LINE_H = 40   # a one-line compact alert
 CONFIRM_H = 46       # the compact confirm, with room for the pending sign
-CONFIRM_SIGN_D = 36  # the pending sign it carries when the cluster draws none (the next limit's size)
+CONFIRM_SIGN_D = 36  # the pending sign it carries
 KEY_W, KEY_H = 22, 10
 
 
@@ -338,8 +253,8 @@ def key_glyph(x: float, cy: float, lower: bool, alpha: float = 1.0):
 def confirm_banner(x: float, y: float, text: str, lower: bool | None, color: rl.Color, alpha: float = 1.0,
                    key_alpha: float = 1.0, value: int = 0, offset: int = 0, max_w: float | None = None) -> tuple[float, float]:
   """The speed-limit confirm as a compact banner: 'press + to confirm', the green key (blinking as the arrow does;
-  none while the direction is not known) and, with value > 0, the pending limit as a dashed sign with its offset badge
-  - for when the cluster draws no sign of its own to show it. Returns (w, h)."""
+  none while the direction is not known) and, with value > 0, the pending limit as a dashed sign with its offset badge.
+  Returns (w, h)."""
   pad, gap = 14, 12
   h = CONFIRM_H if value > 0 else BANNER_LINE_H
   extra = (gap + KEY_W if lower is not None else 0) + (gap + CONFIRM_SIGN_D if value > 0 else 0)
@@ -362,8 +277,14 @@ def confirm_banner(x: float, y: float, text: str, lower: bool | None, color: rl.
   return w, h
 
 
-def dashed_rrect(x: float, y: float, w: float, h: float, r: float, thick: float, dash: float, gap: float, col: rl.Color):
-  """A rounded rectangle's outline in round-capped dashes, walked clockwise from the top edge's left end."""
+def dashed_rrect(x: float, y: float, w: float, h: float, r: float, thick: float, dash: float, gap: float, col: rl.Color,
+                 phase: float | None = None):
+  """A rounded rectangle's outline in round-capped dashes, walked clockwise from the top edge's left end.
+
+  phase (px along the outline, clockwise) animates it: the dashes are drawn that far on, so a phase growing with time
+  marches them round the box. With a phase, dash and gap are stretched a little so a whole number of them fits the
+  outline - no seam where the walk starts, so the march has no short dash blinking there. None: the plain dashes, as
+  before the phase existed."""
   r = max(0.0, min(r, w / 2, h / 2))
   path = [(rl.Vector2(x + r, y), rl.Vector2(x + w - r, y))]
   corners = ((x + w - r, y + r, -90.0), (x + w - r, y + h - r, 0.0), (x + r, y + h - r, 90.0), (x + r, y + r, 180.0))
@@ -376,6 +297,12 @@ def dashed_rrect(x: float, y: float, w: float, h: float, r: float, thick: float,
     if edge is not None:
       path.append(edge)
   on, left = True, dash
+  if phase is not None:
+    per = sum(math.hypot(p1.x - p0.x, p1.y - p0.y) for p0, p1 in path)
+    k = per / (max(1, round(per / (dash + gap))) * (dash + gap))
+    dash, gap = dash * k, gap * k
+    p = (-phase) % (dash + gap)
+    on, left = (True, dash - p) if p < dash else (False, dash + gap - p)
   for p0, p1 in path:
     seg = math.hypot(p1.x - p0.x, p1.y - p0.y)
     pos = 0.0
@@ -402,13 +329,16 @@ PENDING_PILL_GAP = 6     # the outline to the pill
 
 def pending_max(pos: rl.Vector2, size: float, value: int, text: str, lower: bool | None, color: rl.Color,
                 alpha: float = 1.0, key_alpha: float = 1.0, note: str = "", max_w: float | None = None,
-                shadow_c: "rl.Vector2 | None" = None) -> tuple[float, float, float, float]:
+                shadow_c: "rl.Vector2 | None" = None, lit: bool = False,
+                phase: float | None = None) -> tuple[float, float, float, float]:
   """The compact speed-limit confirm in the stock MAX number's place: the set speed the confirm would set, in the stock
   MAX digits (the caller passes their exact place, pos, and size - the DISPLAY font, as HudRenderer._draw_set_speed
   draws them), with a dashed rounded outline round them instead of 'MAX' (dashed: not set yet, as the HUD's pending sign
   is), and under it, where 'MAX' would be, a pill in the alert's color: 'press + to confirm', the green key (blinking as
   the arrow does; none while the direction is not known) and an optional note ('limit 50 +5'). Wider than max_w, the
-  pill's words are squeezed, then shrunk. Returns the (x0, y0, x1, y1) it drew in."""
+  pill's words are squeezed, then shrunk. The outline's animation (hud_model.box_outline): lit = one solid line with a
+  soft halo (a flash), else the dashes at phase (None: still). Only the outline moves: the digits never blink.
+  Returns the (x0, y0, x1, y1) it drew in."""
   txt = str(int(value))
   if shadow_c is not None:
     # the stock MAX number's drop shadow, a little bigger: the pill sits under it
@@ -416,9 +346,17 @@ def pending_max(pos: rl.Vector2, size: float, value: int, text: str, lower: bool
   rl.draw_text_ex(gui_app.font(FontWeight.DISPLAY), txt, pos, size, 0, rl.Color(255, 255, 255, int(255 * 0.9 * alpha)))
   iw, ih, ix0, iy0 = ink(txt, size, 1.0, FontWeight.DISPLAY)
   bx, by, bw, bh = pos.x + ix0 - PENDING_PAD, pos.y + iy0 - PENDING_PAD, iw + 2 * PENDING_PAD, ih + 2 * PENDING_PAD
-  # a dark underlay first, so the dashes hold on a bright sky
-  dashed_rrect(bx + 1, by + 1, bw, bh, 10, 3.4, 9, 6, rl.Color(0, 0, 0, int(110 * alpha)))
-  dashed_rrect(bx, by, bw, bh, 10, 2.4, 9, 6, rl.Color(255, 255, 255, int(235 * alpha)))
+  if lit:
+    # the flash: the outline closes into one solid, thicker line with a soft white halo round it
+    for th, al in ((16, 55), (11, 95), (7, 150)):
+      _solid_rrect(bx - (th - 3) / 2, by - (th - 3) / 2, bw + th - 3, bh + th - 3, 10 + (th - 3) / 2, th,
+                   rl.Color(255, 255, 255, int(al * alpha)))
+    _solid_rrect(bx + 1, by + 1, bw, bh, 10, 4.4, rl.Color(0, 0, 0, int(110 * alpha)))
+    _solid_rrect(bx, by, bw, bh, 10, 3.4, rl.Color(255, 255, 255, int(255 * alpha)))
+  else:
+    # a dark underlay first, so the dashes hold on a bright sky
+    dashed_rrect(bx + 1, by + 1, bw, bh, 10, 3.4, 9, 6, rl.Color(0, 0, 0, int(110 * alpha)), phase=phase)
+    dashed_rrect(bx, by, bw, bh, 10, 2.4, 9, 6, rl.Color(255, 255, 255, int(235 * alpha)), phase=phase)
 
   pad, gap = 12, 10
   top = by + bh + PENDING_PILL_GAP
@@ -441,6 +379,53 @@ def pending_max(pos: rl.Vector2, size: float, value: int, text: str, lower: bool
   return bx, by, max(bx + bw, bx + pw), top + PENDING_PILL_H
 
 
+def _solid_rrect(x: float, y: float, w: float, h: float, r: float, thick: float, col: rl.Color):
+  rl.draw_rectangle_rounded_lines_ex(rl.Rectangle(x, y, w, h), min(1.0, 2 * r / min(w, h)), 12, thick, col)
+
+
+# ------------------------------------------------------------------------------------------- the coming limit
+APPROACH_SIZE = 64        # the coming limit's digits: the stock MAX number's DISPLAY font at 64 (MAX is 112)
+APPROACH_PAD = 6          # the dashed outline, this far round the digits' ink
+APPROACH_PILL_H = 28
+APPROACH_PILL_TEXT = 21
+APPROACH_CHEVRON = 15
+
+
+def chevron(cx: float, cy: float, s: float, down: bool, col: rl.Color):
+  """A filled chevron-triangle s px wide, pointing down (a lower limit coming) or up (a higher one)."""
+  k = 1 if down else -1
+  _tri(rl.Vector2(cx - s / 2, cy - k * s * 0.28), rl.Vector2(cx + s / 2, cy - k * s * 0.28), rl.Vector2(cx, cy + k * s * 0.36),
+       col)
+
+
+def approach_max(pos: rl.Vector2, value: int, lower: bool, text: str, frac: float, alpha: float = 1.0,
+                 shadow_c: "rl.Vector2 | None" = None) -> tuple[float, float, float, float]:
+  """The coming limit in the stock MAX number's place (the owner's option C, round 5): the limit in the MAX digits'
+  DISPLAY font at APPROACH_SIZE, its ink's top left at pos, in a dashed outline (dashed: not in force yet - the pending
+  box's language, smaller and still), a chevron left of it (down: lower, up: higher), and under it a dark pill with the
+  distance ('in 300 m', 'now') whose light fill drains as the change comes (frac, what is left of the window). Returns
+  the (x0, y0, x1, y1) it drew in."""
+  txt = str(int(value))
+  if shadow_c is not None:
+    rl.draw_circle_gradient(shadow_c, 80, rl.Color(0, 0, 0, int(110 * alpha)), rl.BLANK)
+  rl.draw_text_ex(gui_app.font(FontWeight.DISPLAY), txt, pos, APPROACH_SIZE, 0, rl.Color(255, 255, 255, int(230 * alpha)))
+  iw, ih, ix0, iy0 = ink(txt, APPROACH_SIZE, 1.0, FontWeight.DISPLAY)
+  P = APPROACH_PAD
+  bx, by, bw, bh = pos.x + ix0 - P, pos.y + iy0 - P, iw + 2 * P, ih + 2 * P
+  dashed_rrect(bx + 1, by + 1, bw, bh, 8, 3.0, 7, 5, rl.Color(0, 0, 0, int(110 * alpha)))
+  dashed_rrect(bx, by, bw, bh, 8, 2.2, 7, 5, rl.Color(255, 255, 255, int(235 * alpha)))
+  chevron(bx - 12, by + bh / 2, APPROACH_CHEVRON, lower, rl.Color(255, 255, 255, int(235 * alpha)))
+  top, ph = by + bh + 6, APPROACH_PILL_H
+  tw = ink(text, APPROACH_PILL_TEXT, 1.0, FontWeight.SEMI_BOLD)[0]
+  pw = max(bw, tw + 22)
+  rl.draw_rectangle_rounded(rl.Rectangle(bx, top, pw, ph), 0.5, 10, rl.Color(0, 0, 0, int(170 * alpha)))
+  fw = pw * max(0.0, min(1.0, frac))
+  if fw >= ph:   # narrower than its own rounded ends it would be a blob, not a bar: drained
+    rl.draw_rectangle_rounded(rl.Rectangle(bx, top, fw, ph), 0.5, 10, rl.Color(255, 255, 255, int(55 * alpha)))
+  text_ink(text, APPROACH_PILL_TEXT, bx + pw / 2, top + ph / 2, a(WHITE, alpha), w=FontWeight.SEMI_BOLD)
+  return bx - 12 - APPROACH_CHEVRON / 2, by, bx + max(bw, pw), top + ph
+
+
 def offset_badge(cx: float, cy: float, r: float, offset: int, alpha: float = 1.0):
   """A speed-limit offset on a sign, as sunnypilot's own sign shows it: a small black disc with a grey rim and the
   offset in white - '5' for +5, '-5' for -5."""
@@ -451,25 +436,6 @@ def offset_badge(cx: float, cy: float, r: float, offset: int, alpha: float = 1.0
   cap = r * (0.95 if len(txt) < 3 else 0.8)
   size, sx = fit_digits(txt, round(cap, 2), round(r * 1.55, 2), sx=0.9, min_sx=0.7)
   text_ink(txt, size, cx, cy, a(WHITE, alpha), sx=sx)
-
-
-def pending_icon(bx: float, by: float, size: float, value: int, lower: bool, key_alpha: float = 1.0, sign_alpha: float = 1.0,
-                 offset: int = 0):
-  """In place of the green arrow of the 'press - to confirm speed limit' alert (the same size x size box): the PENDING
-  limit as a sign with a dashed ring (= not confirmed yet), beside the same green '-' (or '+') the arrow image carries,
-  and a non-zero offset as sunnypilot's badge on the ring, up and right, inside the box.
-  The key keeps the arrow's blink (key_alpha); the sign stays solid so it can be read."""
-  d = size * 0.70
-  scx, scy = bx + size - d / 2, by + size / 2
-  sign(scx, scy, d, value, alpha=sign_alpha, dashed=True, shadow=True)
-  if offset:
-    r = d / 2
-    offset_badge(scx + r * 0.60, scy - r * 0.80, d * 0.2, offset, alpha=sign_alpha)
-  bw, bh = size * 0.22, size * 0.12
-  col = a(KEY_GREEN, key_alpha)
-  rl.draw_rectangle_rounded(rl.Rectangle(bx, scy - bh / 2, bw, bh), 0.5, 6, col)
-  if not lower:
-    rl.draw_rectangle_rounded(rl.Rectangle(bx + bw / 2 - bh / 2, scy - bw / 2, bh, bw), 0.5, 6, col)
 
 
 # ------------------------------------------------------------------------------------------- the right rail

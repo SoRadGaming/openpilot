@@ -88,7 +88,8 @@ the comparative ones only against a baseline whose routes all ran v5; otherwise 
 WHAT RAN. The pump rule: CarParamsSP flags 64 / 16, else the route's pump= tag, else --rule (a --rule that disagrees
 with the log is ignored, with a warning). The brake law: the route's blaw= tag (hondadyn/hondashadow lines, which say
 what ran), else CarParamsSP flag 32. Flag 32 is the SETTING: without gas law v2 the law does not run, the lines say
-blaw=v1, and the report says 'v1 (v2 requested by flag 32, not run)'.
+blaw=v1, and the report says 'v1 (v2 requested by flag 32, not run)'. Brake law v2 was removed on 2026-10-09: later
+builds never set flag 32 and always say blaw=v1, so v2 can only be read on routes of 2026-10-05 to 2026-10-09.
 
 What a log cannot judge -- a VSA/ABS lamp or a new DTC on the post-drive scan -- is listed as a manual check. This
 script only reads.
@@ -1333,8 +1334,8 @@ def check_route(path: str, rule: str | None = None, force_rlog: bool = False, wo
 def what_ran(fl: int | None, tags: dict, rule: str | None) -> tuple[str, str, str, str, list[str]]:
   """(pump rule, how known, brake law, how known, warnings). The pump rule: CarParamsSP flag 64 (c1b) or 16 (v6, the
   retired C1), else the route's pump= tag, else --rule, else v5 assumed; a --rule the log contradicts is ignored. The
-  brake law: the route's blaw= tag (it says what RAN - set_brake_law_v2 corrects it when gas law v2 is off), else flag
-  32 (the setting)."""
+  brake law: the route's blaw= tag (it says what RAN - while the law existed, the tuner corrected it when gas law v2
+  was off), else flag 32 (the setting)."""
   warn = []
   if fl is not None:
     ran = "c1b" if fl & FLAG_C1B else ("v6" if fl & FLAG_C1 else "v5")

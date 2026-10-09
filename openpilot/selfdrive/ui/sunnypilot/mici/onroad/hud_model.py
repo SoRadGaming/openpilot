@@ -4,32 +4,38 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 
-FORK(HUD): what the comma 4 HUD shows, decided from the messages - no drawing here (hud_cluster.py and hud_alerts.py
-draw it), so every rule is testable without a window.
+FORK(HUD): what the comma 4 HUD shows, decided from the messages - no drawing here (hud_cluster.py, hud_alerts.py and
+hud_renderer.py draw it), so every rule is testable without a window.
 
-WHAT FEEDS THE CLUSTER, and what it does when that is missing:
-  carState              speed (vEgoCluster once it has been non-zero, as the stock HUD does: the Accord's own
-                        speedometer reading), standstill. None received this drive: nothing is drawn.
-  longitudinalPlanSP    the resolver's limit (speedLimitLast while valid or last-valid; last-valid only = "held",
-                        drawn with a grey legend as sunnypilot's own sign does). Missing or stale: no sign.
+THE CLUSTER, top right (HudStoppedTimer), is the stop time only: after TIMER_DELAY_S at a standstill (carState), a
+stopwatch and m:ss. Round 5 (2026-10-09, the owner's option A) removed the live speed, the speed-limit sign with its
+school-zone lamps and electronic-sign styling, and the next lower limit, with their settings: the car's own dash has the
+speed, and the coming limit is announced top left instead (below). Nothing on the screen marks a school zone now.
+
+THE COMING LIMIT (HudApproachingLimit, ApproachState; drawn by hud_renderer.py in the stock MAX number's place - the
+owner's option C), from:
+  longitudinalPlanSP    the resolver's limit (speedLimitLast while valid or last-valid), source map: a car-sourced limit
+                        is never paired with a map look-ahead, as sunnypilot's own sign does. Missing or stale: nothing.
   liveMapDataSP         the next limit (speedLimitAhead*, exactly what mapd published - never nswZone's own look-ahead,
-                        which mapd deliberately does not publish while dead reckoning in a tunnel) and nswZone (school
-                        zone, Variable zone). Missing or stale: no next limit, no school cue, the plain white sign.
-                        It arrives once a second: between messages the next limit's distance is run down by the car's
-                        own speed (vEgo), for at most one period, so the bar shrinks smoothly instead of in ~30 m steps.
-The next limit is shown only while the limit on screen comes from the map (source map, as sunnypilot's own sign does):
-a car-sourced limit is never paired with a map look-ahead.
-The school cue and the electronic sign are shown only when the limit on screen IS the NSW limit mapd published (live
-mode, source map, the same number, nswZone.state matched or dead reckoning): in log-only mode, where the resolver holds
-another value, or in an ambiguous or unmatched state, nswZone describes a limit that is not the one shown.
-WHETHER THE SIGN IS DRAWN (HudLimitSign): always (whenever there is a limit), off, or only in a zone - a school zone that
-is on, or a Variable zone, by those same rules and whatever the two cue settings say (they only style a sign that is
-shown). Zone matching flickers at limit changes (route 10f: one Variable zone broke into 10 pieces, gaps of 2-58 s), so
-the zone is debounced (SignSlot): on after SIGN_ZONE_ON_S, off after SIGN_ZONE_OFF_S. Without the sign the limit is still
-known: the next lower limit is still shown, and the speed takes the sign's place.
-WHETHER THE SPEED IS DRAWN (HudCurrentSpeed): off, the live speed is never drawn and nothing else changes - the sign,
-the next lower limit and the stop time keep their places (they never depended on the digits), and the stop time still
-replaces the speed at a standstill (its own setting, HudStoppedTimer).
+                        which mapd deliberately does not publish while dead reckoning in a tunnel, where the look-ahead
+                        gave limits that never came). nswZone.state 4 or 7 (dead reckoning, or GPS still lost after it):
+                        nothing, whatever else says so. Missing or stale: nothing.
+                        It arrives once a second: between messages the distance is run down by the car's own speed (vEgo),
+                        for at most one period, so the pill drains smoothly instead of in ~30 m steps.
+  carState              vEgo, standstill: never at a standstill.
+A limit LOWER or HIGHER than the one now in force, once it is within 15 s of travel or 500 m (next_window_m). While the
+same change is coming its distance only counts down - unless mapd's figure comes back up by more than one period's
+run-down plus APPROACH_JUMP_M, which is news (the map matched it elsewhere), taken as it is.
+When the look-ahead stops giving it, what happens depends on how far away it was (the last distance shown, run down by
+vEgo since):
+  REACHED - within APPROACH_NEAR_S of travel, or under sunnypilot's 'Near' (50 m, 100 ft): HELD, drawn 'now', until the
+            resolver's limit becomes it (the hand-over: the confirm prompt or the stock MAX number takes the same place),
+            for at most APPROACH_HOLD_S after the look-ahead ended: on route 10f mapd stopped publishing the 100 at 773.75
+            and MAX 100 came at 774.8, a second with nothing on screen.
+  further out - a 1 Hz message missed, the window shrinking as the car slows: the distance keeps running down, drawn as
+            a distance, for at most APPROACH_GAP_S; it becomes held if it reaches the change in that time, and goes if
+            not. Never a jump to 'now' (route 10f t 196.7-202.2, braking for a red light with the 70 still 40-65 m off:
+            'now' for 8 s for a limit that never came, before round 5's fix round 1).
 
 COMPACT ALERTS (HudCompactLimitPrompts / HudCompactDisengage / HudCompactTurn, drawn by hud_alerts.py): an alert is drawn
 small only when its FULL ALERT TYPE (event name AND event type, COMPACT_TYPES) is in an enabled group below AND it is
@@ -71,7 +77,7 @@ from openpilot.common.constants import CV
 from openpilot.cereal import custom, log
 from opendbc.car.structs import car
 from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import HudSettings, NEXT_OFF, SIGN_ALWAYS, SIGN_ZONES
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import HudSettings
 from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import real_lead
 
 SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
@@ -82,24 +88,31 @@ MapState = custom.LongitudinalPlanSP.SmartCruiseControl.MapState
 AlertStatus = log.SelfdriveState.AlertStatus
 VisualAlert = car.CarControl.HUDControl.VisualAlert
 
-NEXT_MAX_M = 500.0      # the next lower limit shows from the earlier of 500 m ...
+NEXT_MAX_M = 500.0      # the coming limit shows from the earlier of 500 m ...
 NEXT_MAX_S = 15.0       # ... or 15 s of travel at the current speed
-TIMER_DELAY_S = 1.0     # a standstill this long before the stopwatch replaces the speed
+TIMER_DELAY_S = 1.0     # a standstill this long before the stopwatch shows
 MAP_EXTRAPOLATE_MAX_S = 1.0  # liveMapDataSP is 1 Hz: the distance is run down for at most one period, then held
-
-NSW_MODE_LIVE = 2
-NSW_STATES_SHOWN = (2, 4)  # nswZone.state: 2 matched, 4 dead reckoning (the tunnel line's limit is published)
-SCHOOL_NONE = 0         # nswZone.schoolZone: 0 none, 1 inactive, 2 active, 3 unknown (nothing is published then)
-SCHOOL_INACTIVE = 1
-SCHOOL_ACTIVE = 2
+APPROACH_HOLD_S = 3.0   # once the look-ahead ends at the change, the coming limit is held (as 'now') this long at most
+                        # for the resolver to take it: mapd's last look-ahead to the limit in force took 1.05 s on route
+                        # 10f, and plannerd's 1 s stability hold (speed_limit/change_hold.py) comes on top
+APPROACH_NEAR_S = 2.0   # the change is REACHED once the distance left is within this much travel ...
+NEAR_M = 50.0           # ... or under sunnypilot's 'Near' (SpeedLimitRenderer._format_dist: 50 m metric ...
+NEAR_FT = 100.0         # ... 100 ft imperial), which the pill already draws 'now'
+APPROACH_GAP_S = 2.0    # the look-ahead lost further out: the distance runs down by vEgo this long at most, then it goes
+APPROACH_JUMP_M = 10.0  # mapd's figure coming back up by one period's run-down + this is noise (held); more is news
+NSW_NO_LOOKAHEAD = (4, 7)  # nswZone.state: dead reckoning in a tunnel, and GPS still lost after it - never announced
 
 STANDSTILL_EVENT = 'manualRestart'
 LEAD_DEPART_MS = 1.0    # m/s: the car ahead is moving off ...
 LEAD_DEPART_S = 0.4     # ... continuously for this long (radarState is 20 Hz: 8 frames), so radar noise cannot do it
 
-SIGN_ZONE_ON_S = 0.3    # HudLimitSign = zones: the sign appears once the zone has held this long ...
-SIGN_ZONE_OFF_S = 12.0  # ... and goes once it has been gone this long - the gaps in one zone on route 10f were 2-19 s,
-                        # bar one of 58 s
+# the compact confirm's dashed box (hud_draw.pending_max), from the frame it is first half visible: the outline flashes
+# solid BOX_BLINKS times, BOX_BLINK_ON_S lit and BOX_BLINK_OFF_S dashed - 2.8 flashes a second, under the 3 Hz
+# photosensitivity line - then its dashes march clockwise at BOX_MARCH_PX_S while the prompt waits. The digits never blink.
+BOX_BLINKS = 2
+BOX_BLINK_ON_S = 0.18
+BOX_BLINK_OFF_S = 0.18
+BOX_MARCH_PX_S = 30.0
 
 # the compact alerts, by event name (hud_alerts.py draws them), each only under the one event type it has today
 # (COMPACT_TYPES): a new type of a listed name - a '/noEntry' 'openpilot Unavailable', which is normal / LOW / none like
@@ -133,27 +146,11 @@ COMPACT_TEXT = {
 
 @dataclass
 class HudFrame:
-  speed: int | None = None        # display units; None = no digits
-  timer_s: float | None = None    # seconds stopped, when the stopwatch replaces the speed
-  sign_slot: bool = False         # the sign's place is kept (SpeedLimitMode is not off; HudLimitSign)
-  sign_shown: bool = False        # the sign is drawn: a limit, and HudLimitSign says so
-  zone: bool = False              # a NSW school zone that is on, or a Variable zone, and it is the limit shown
-  limit: int = 0                  # display units; 0 = none (the next lower limit needs one, the sign drawn or not)
-  limit_held: bool = False        # the resolver's last limit, not a current one
-  electronic: bool = False
-  school: int = SCHOOL_NONE
-  next_limit: int = 0             # 0 = no next row
-  next_dist: float = 0.0          # m
-  next_frac: float = 0.0          # what is left of the approach window, 0..1
-  next_mode: int = NEXT_OFF
-
-  @property
-  def visible(self) -> bool:
-    return self.speed is not None or self.timer_s is not None or self.limit > 0
+  timer_s: float | None = None    # seconds stopped, when the stopwatch shows; None: nothing top right
 
 
 def next_window_m(v_ego: float) -> float:
-  """How far ahead a next lower limit is shown: the earlier of 15 s of travel and 500 m."""
+  """How far ahead a coming limit is shown: the earlier of 15 s of travel and 500 m."""
   return min(NEXT_MAX_M, max(v_ego, 1.0) * NEXT_MAX_S)
 
 
@@ -167,87 +164,152 @@ def fresh(sm, service: str, started_frame: int) -> bool:
   return received(sm, service, started_frame) and bool(sm.alive[service])
 
 
-def build_frame(sm, s: HudSettings, *, started_frame: int, is_metric: bool, speed_limit_mode_on: bool,
-                stopped_s: float | None, v_ego_cluster_seen: bool, max_visible: bool, map_age_s: float = 0.0) -> HudFrame:
-  """What the cluster shows this frame. Pure: everything it reads is passed in. map_age_s = seconds since the
-  liveMapDataSP in sm arrived."""
-  f = HudFrame(next_mode=s.next_limit)
-  if not (s.speed_cluster or s.stopped_timer):
-    return f
-  if not received(sm, 'carState', started_frame):
-    return f
-
-  conv = CV.MS_TO_KPH if is_metric else CV.MS_TO_MPH
-  cs = sm['carState']
-  v_ego = max(0.0, float(cs.vEgoCluster) if v_ego_cluster_seen else float(cs.vEgo))
-  standstill = bool(cs.standstill)
-
-  if s.stopped_timer and standstill and stopped_s is not None and stopped_s >= TIMER_DELAY_S:
+def build_frame(sm, s: HudSettings, *, started_frame: int, stopped_s: float | None) -> HudFrame:
+  """What the cluster shows this frame: the stop time, after TIMER_DELAY_S at a standstill. Pure: everything it reads is
+  passed in."""
+  f = HudFrame()
+  if s.stopped_timer and received(sm, 'carState', started_frame) and sm['carState'].standstill and \
+     stopped_s is not None and stopped_s >= TIMER_DELAY_S:
     f.timer_s = stopped_s
-  elif s.speed_cluster and s.current_speed and not max_visible:
-    f.speed = int(round(v_ego * conv))
-
-  if not s.speed_cluster:
-    return f
-
-  _limit_and_zone(f, sm, s, cs, conv, v_ego, standstill, started_frame=started_frame,
-                  speed_limit_mode_on=speed_limit_mode_on, map_age_s=map_age_s)
-  if s.limit_sign == SIGN_ALWAYS:
-    f.sign_slot, f.sign_shown = speed_limit_mode_on, f.limit > 0
-  elif s.limit_sign == SIGN_ZONES:
-    f.sign_slot = f.sign_shown = f.zone  # undebounced: SignSlot.apply does that
   return f
 
 
-def _limit_and_zone(f: HudFrame, sm, s: HudSettings, cs, conv: float, v_ego: float, standstill: bool, *,
-                    started_frame: int, speed_limit_mode_on: bool, map_age_s: float) -> None:
-  res = None
-  if speed_limit_mode_on and fresh(sm, 'longitudinalPlanSP', started_frame):
-    res = sm['longitudinalPlanSP'].speedLimit.resolver
-    if res.speedLimitValid or res.speedLimitLastValid:
-      limit = int(round(res.speedLimitLast * conv))
-      if limit > 0:
-        f.limit = limit
-        f.limit_held = not res.speedLimitValid
-  if not f.limit or not fresh(sm, 'liveMapDataSP', started_frame):
-    return
-
-  lmd = sm['liveMapDataSP']
-  z = lmd.nswZone
-  from_map = res is not None and res.source == SpeedLimitSource.map
-  nsw_shown = (from_map and int(z.mode) == NSW_MODE_LIVE and int(z.state) in NSW_STATES_SHOWN
-               and z.speedLimit > 0 and int(round(z.speedLimit * conv)) == f.limit)
-  if nsw_shown and s.variable_sign and z.variable:
-    f.electronic = True
-  if nsw_shown and s.school_cue and int(z.schoolZone) in (SCHOOL_ACTIVE, SCHOOL_INACTIVE):
-    f.school = int(z.schoolZone)
-  f.zone = nsw_shown and (bool(z.variable) or int(z.schoolZone) == SCHOOL_ACTIVE)
-
-  if s.next_limit != NEXT_OFF and not standstill and from_map and lmd.speedLimitAheadValid:
-    ahead = int(round(lmd.speedLimitAhead * conv))
-    run_down = max(0.0, float(cs.vEgo)) * min(max(map_age_s, 0.0), MAP_EXTRAPOLATE_MAX_S)
-    dist = float(lmd.speedLimitAheadDistance) - run_down
-    window = next_window_m(v_ego)
-    if 0 < ahead < f.limit and 0 < dist <= window:
-      f.next_limit = ahead
-      f.next_dist = dist
-      f.next_frac = dist / window
+# ------------------------------------------------------------------------------------------- the coming limit
+@dataclass(frozen=True)
+class Approach:
+  limit: int          # the coming limit, display units
+  lower: bool         # lower than the one in force (a down chevron), else higher
+  dist: float         # m to it; 0 while held
+  frac: float         # what is left of the 15 s / 500 m window, 0..1; 0 while held
+  held: bool = False  # the look-ahead has ended and the resolver has not taken it yet: drawn 'now'
 
 
-class SignSlot:
-  """HudLimitSign = zones: the sign, and the place it keeps, follow the zone debounced - on after SIGN_ZONE_ON_S, off
-  after SIGN_ZONE_OFF_S - so the speed does not move every time the zone match blinks. One per cluster; apply() every
-  frame, on a steady clock. The other modes pass through untouched."""
+def approach_text(dist_text: str, held: bool) -> str:
+  """The pill's words: 'in 300 m' from sunnypilot's own rounding (SpeedLimitRenderer._format_dist), which says 'Near'
+  close in - that, and a held limit, is 'now'."""
+  return "now" if held or not dist_text[:1].isdigit() else f"in {dist_text}"
+
+
+def resolver_map_limit(sm, started_frame: int, conv: float) -> int:
+  """The limit in force as the resolver has it (display units), when it is a map limit; 0 otherwise."""
+  if not fresh(sm, 'longitudinalPlanSP', started_frame):
+    return 0
+  res = sm['longitudinalPlanSP'].speedLimit.resolver
+  if not (res.speedLimitValid or res.speedLimitLastValid) or res.source != SpeedLimitSource.map:
+    return 0
+  return max(0, int(round(res.speedLimitLast * conv)))
+
+
+def approach_now(sm, *, started_frame: int, is_metric: bool, limit: int, map_age_s: float) -> Approach | None:
+  """What mapd's look-ahead says this frame, before any hold: a limit other than `limit` (the resolver's map limit, display
+  units) within the window, or None. Pure."""
+  if limit <= 0 or not (fresh(sm, 'liveMapDataSP', started_frame) and fresh(sm, 'carState', started_frame)):
+    return None
+  cs, lmd = sm['carState'], sm['liveMapDataSP']
+  if cs.standstill or not lmd.speedLimitAheadValid or int(lmd.nswZone.state) in NSW_NO_LOOKAHEAD:
+    return None
+  conv = CV.MS_TO_KPH if is_metric else CV.MS_TO_MPH
+  ahead = int(round(lmd.speedLimitAhead * conv))
+  v_ego = max(0.0, float(cs.vEgo))
+  dist = float(lmd.speedLimitAheadDistance) - v_ego * min(max(map_age_s, 0.0), MAP_EXTRAPOLATE_MAX_S)
+  window = next_window_m(v_ego)
+  if ahead <= 0 or ahead == limit or not 0 < dist <= window:
+    return None
+  return Approach(limit=ahead, lower=ahead < limit, dist=dist, frac=dist / window)
+
+
+def reached(dist: float, v_ego: float, is_metric: bool) -> bool:
+  """The change is here: the distance left (m) is within APPROACH_NEAR_S of travel, or under sunnypilot's 'Near'."""
+  return dist <= max(NEAR_M if is_metric else NEAR_FT * 0.3048, max(v_ego, 0.0) * APPROACH_NEAR_S)
+
+
+class ApproachState:
+  """The coming limit, frame by frame, with its run-down and hold. One per HUD renderer; update() is idempotent within a
+  frame (the same now), as the face asks before the HUD draws."""
   def __init__(self):
-    self._on = Debounce(SIGN_ZONE_ON_S, SIGN_ZONE_OFF_S)
+    self.reset()
 
-  def apply(self, f: HudFrame, s: HudSettings, now: float) -> HudFrame:
-    if not s.speed_cluster or s.limit_sign != SIGN_ZONES:
-      self._on.reset()
-      return f
-    f.sign_slot = self._on.update(f.zone, now)
-    f.sign_shown = f.sign_slot and f.limit > 0
-    return f
+  def reset(self):
+    self.frame: Approach | None = None
+    self._t: float | None = None
+    self._shown: Approach | None = None   # the last approach the look-ahead gave
+    self._from = 0                        # ... and the limit in force then
+    self._dist = 0.0                      # the distance last drawn (run down by vEgo while the look-ahead is lost)
+    self._lost_t: float | None = None     # when the look-ahead stopped giving it
+    self._held = False                    # ... and the change was reached: drawn 'now'
+    self._map_frame = -1
+    self._map_t = 0.0
+
+  def _drop(self) -> None:
+    self.frame = self._shown = self._lost_t = None
+    self._held = False
+
+  def update(self, sm, s: HudSettings, *, started_frame: int, now: float, is_metric: bool,
+             speed_limit_mode_on: bool) -> Approach | None:
+    if self._t == now:
+      return self.frame
+    dt = 0.0 if self._t is None else max(0.0, now - self._t)
+    self._t = now
+    if not (s.approaching_limit and speed_limit_mode_on):
+      self.reset()
+      self._t = now
+      return None
+    map_frame = sm.recv_frame['liveMapDataSP']
+    if map_frame != self._map_frame:
+      self._map_frame, self._map_t = map_frame, now
+    conv = CV.MS_TO_KPH if is_metric else CV.MS_TO_MPH
+    limit = resolver_map_limit(sm, started_frame, conv)
+    moving = fresh(sm, 'carState', started_frame) and not sm['carState'].standstill
+    v_ego = max(0.0, float(sm['carState'].vEgo)) if moving else 0.0
+    raw = approach_now(sm, started_frame=started_frame, is_metric=is_metric, limit=limit, map_age_s=now - self._map_t)
+    if raw is not None:
+      prev = self._shown
+      if prev is not None and prev.limit == raw.limit and self._from == limit and \
+         self._dist < raw.dist <= self._dist + v_ego * MAP_EXTRAPOLATE_MAX_S + APPROACH_JUMP_M:
+        # the same change coming: its distance only counts down. mapd's 1 Hz figure jumps back up a little when the
+        # run-down between messages was ahead of it (route 10f t 194.2-194.8: 'now', 'in 50 m', 'now'); by more than
+        # a period's run-down + APPROACH_JUMP_M it is news and is taken (route 10f t 199.7: 65 m, after 'now')
+        d = max(self._dist, 0.0)
+        raw = Approach(limit=raw.limit, lower=raw.lower, dist=d, frac=min(1.0, d / next_window_m(v_ego)))
+      self._shown, self._from, self._dist, self._lost_t, self._held = raw, limit, raw.dist, None, False
+      self.frame = raw
+      return raw
+    self.frame = None
+    if self._shown is None:
+      return None
+    if self._lost_t is None:
+      self._lost_t = now
+    # kept only while the limit in force is still the one the change was announced from, the car still moving, the map
+    # not dead reckoning; anything else (the resolver took it - the hand-over - or another limit came) ends it
+    tunnel = fresh(sm, 'liveMapDataSP', started_frame) and int(sm['liveMapDataSP'].nswZone.state) in NSW_NO_LOOKAHEAD
+    if limit != self._from or not moving or tunnel:
+      self._drop()
+      return None
+    self._dist -= v_ego * dt
+    lost_s = now - self._lost_t
+    self._held = self._held or reached(self._dist, v_ego, is_metric)
+    if lost_s > (APPROACH_HOLD_S if self._held else APPROACH_GAP_S):
+      self._drop()
+      return None
+    if self._held:
+      self.frame = Approach(limit=self._shown.limit, lower=self._shown.lower, dist=0.0, frac=0.0, held=True)
+    else:
+      # further out: still a distance, running down - never 'now' before it is reached
+      self.frame = Approach(limit=self._shown.limit, lower=self._shown.lower, dist=self._dist,
+                            frac=min(1.0, self._dist / next_window_m(v_ego)))
+    return self.frame
+
+
+def box_outline(t: float) -> tuple[bool, float]:
+  """(lit, phase) of the compact confirm's dashed box t seconds after it was first half visible: lit = the outline is
+  one solid line (a flash), else its dashes drawn phase px along the outline (clockwise) - 0 through the flashes, then
+  marching at BOX_MARCH_PX_S."""
+  period = BOX_BLINK_ON_S + BOX_BLINK_OFF_S
+  flashes = BOX_BLINKS * period
+  t = max(0.0, t)
+  if t < flashes:
+    return (t % period) < BOX_BLINK_ON_S - 1e-9, 0.0
+  return False, BOX_MARCH_PX_S * (t - flashes)
 
 
 # ------------------------------------------------------------------------------------------- alerts
@@ -285,12 +347,6 @@ def frees_top_icons(alert, s: HudSettings) -> bool:
   return compact_kind(alert, s) == COMPACT_LIMIT_KIND and event_name(alert) in COMPACT_QUIET
 
 
-def confirm_pending(alert, s: HudSettings) -> bool:
-  """The compact confirm prompt is up and shows the limit it asks about (HudConfirmLimit): the cluster's sign is that
-  limit, drawn pending (a dashed ring)."""
-  return s.confirm_limit and compact_kind(alert, s) == COMPACT_LIMIT_KIND and event_name(alert) == CONFIRM_EVENT
-
-
 def compact_text(alert) -> tuple[str, str]:
   """(line 1, line 2) of a compact disengage or turn banner: COMPACT_TEXT, or the alert's own words."""
   return COMPACT_TEXT.get(event_name(alert), (alert.text1, alert.text2.lower()))
@@ -320,9 +376,12 @@ class StandstillBanner:
   drive's radarState, still arriving, with leadOne faster than LEAD_DEPART_MS for LEAD_DEPART_S) and stays full until
   the prompt clears; the next stop starts compact again.
 
-  "Until the prompt clears" needs observe(): HudCluster calls it EVERY frame with the alert the renderer will draw (the
-  previous one while it fades out, None when there is none). compact() alone cannot see the prompt go - the alert
-  renderer stops asking the moment there is no alert - and the first departure of a drive would stick for all of it."""
+  "Until the prompt clears" needs observe(): HudRendererSP._update_state calls it EVERY frame with the alert the renderer
+  will draw (the previous one while it fades out, None when there is none). compact() alone cannot see the prompt go - the alert
+  renderer stops asking the moment there is no alert - and the first departure of a drive would stick for all of it.
+  Since round 5 the HUD renderer, drawn AFTER the alert renderer, calls it (the cluster did, before it); it is handed
+  the frame's alert as it was before the alert renderer drew (hud_alerts.frame_alert, looked up once a frame), so it
+  ends the prompt on the same frame as when the cluster called it: the frame after the fade-out finished."""
   def __init__(self):
     self.departed = False
     self._moving_since: float | None = None
@@ -528,11 +587,6 @@ def fmt_stop_dist(d: float, is_metric: bool) -> tuple[str, str]:
   if ft < 2975:
     return str(int(50 * round(ft / 50))), "ft"
   return f"{ft / 5280:.1f}", "mi"
-
-
-def fmt_speed(v: float, is_metric: bool) -> tuple[str, str]:
-  """(figures, unit) for a target speed in m/s, in the units the cluster uses."""
-  return (str(int(round(v * CV.MS_TO_KPH))), "km/h") if is_metric else (str(int(round(v * CV.MS_TO_MPH))), "mph")
 
 
 def speed_unit(is_metric: bool) -> str:

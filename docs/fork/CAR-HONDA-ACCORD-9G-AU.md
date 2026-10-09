@@ -55,7 +55,7 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `opendbc/car/honda/interface.py` | M | transmission detection, longitudinal tuning (no `vEgoStopping` since the 2026-09 merge), `steerActuatorDelay`, `steerAtStandstill`, the `latAccelOffset` seed, safety param, `minEnableSpeed`, and its exemption from the gas-interceptor `-1` in `_get_params_sp()` | the two lateral values exist because of the gateway (B) |
 | `opendbc/car/honda/radar_interface.py` | M | Elesys radar parsing | - |
 | `opendbc/car/honda/carstate.py` | M | gear decode (`update_gear_elesys()`, taken only when the gearbox frame has `GEAR`), `LKAS_PROBLEM` bus, `stockAeb`, `scm_buttons`, `econ_on`; `VEHICLE_DYNAMICS` registered liveness-exempt for the VSA fault monitor (6.6, 2026-10-03); `accFaulted` from `BRAKE_ERROR` also in stock ACC mode (15); `STEER_STATUS` 1 at a standstill in P is not a steering fault (6.4, 2026-10-04) | B/A: `get_can_parsers()` registration of `GW_*`/`EPS_LIN_RAW`; `CarStateExt.update(..., ret_sp, ...)` |
-| `opendbc/car/honda/carcontroller.py` | M | `compute_gb_honda_elesys()`, `brake_pump_hysteresis_elesys()`, dynamic-tuner hooks, 32-count brake release limit, the soft final stop's call (7.8), the NaN-`vEgo` guard in the brake block (7.8), the `CRUISE_OVERRIDE` decision comment (7.7), SCM_BUTTONS re-send, no `LKAS_HUD`; stock ACC mode sends only `0x0E4` and `0x500` (15); batch 3: brake law v2's three call sites (7.10); pump rule C1b (7.2, 2026-10-06; it replaced batch 3's C1) | B: `brake_release_scale()`, LDW bits, the `create_sp_hud_status()` block, the reported torque (`linbus_gateway_actuating()`) |
+| `opendbc/car/honda/carcontroller.py` | M | `compute_gb_honda_elesys()`, `brake_pump_hysteresis_elesys()`, dynamic-tuner hooks, 32-count brake release limit, the soft final stop's call (7.8), the NaN-`vEgo` guard in the brake block (7.8), the `CRUISE_OVERRIDE` decision comment (7.7), SCM_BUTTONS re-send, no `LKAS_HUD`; stock ACC mode sends only `0x0E4` and `0x500` (15); pump rule C1b (7.2, 2026-10-06; it replaced batch 3's C1) | B: `brake_release_scale()`, LDW bits, the `create_sp_hud_status()` block, the reported torque (`linbus_gateway_actuating()`) |
 | `opendbc/car/honda/hondacan.py` | M | `create_brake_command()` units bit, `create_scm_buttons_no_cruise()` | B: `create_steering_control()` LDW, `create_sp_hud_status()` |
 | `opendbc/car/car_helpers.py` | M | `skip_fw_query` | - |
 | `opendbc/car/structs.py` | M | `CarStateSP.vsaFault`, `vsaStoredFault` (6.6, 2026-10-03); described in 6.5 because of the capnp rule | B (`LateralControl`, `LinbusGateway` 0x704/0x70B fields, `driverTorqueStale`), A (`fw*` fields) |
@@ -68,13 +68,11 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `opendbc/sunnypilot/car/honda/carstate_ext.py` | M | `fuelGauge`; `_update_vsa_fault()` (6.6) | B (gateway decode, driver torque), A (`_update_linbus_firmware`) |
 | `opendbc/sunnypilot/car/honda/vsa_fault.py` | A (2026-10-03) | `VsaFaultMonitor`: the VSA's own fault from provisional bits (6.6) | - |
 | `opendbc/sunnypilot/car/honda/test_vsa_fault.py`, `opendbc/sunnypilot/car/honda/fixtures/vsa_fault_frames.json.gz` | A (2026-10-03) | all (6.6) | - |
-| `opendbc/sunnypilot/car/honda/dynamic_tuning.py` | A | all (since 2026-10 also `filtered_pitch()`, read by the soft final stop; since 2026-10-04 it builds and feeds the shadow learners, `_build_shadow()`, 9.3; batch 3: the brake gain held at 1.0 under brake law v2, `set_brake_law_v2()`, 7.10) | - |
+| `opendbc/sunnypilot/car/honda/dynamic_tuning.py` | A | all (since 2026-10 also `filtered_pitch()`, read by the soft final stop; since 2026-10-04 it builds and feeds the shadow learners, `_build_shadow()`, 9.3) | - |
 | `opendbc/sunnypilot/car/honda/shadow_learn.py` | A (2026-10-04) | the shadow longitudinal learners, logged as `hondashadow` lines and applied to nothing (9.3) | - |
 | `opendbc/sunnypilot/car/honda/test_shadow_learn.py` | A (2026-10-04) | all (9.3) | - |
-| `opendbc/sunnypilot/car/honda/elesys_gas.py` | A (2026-10) | the gas law v1/v2, `HondaElesysGasLawV2`, drive-mode slots and crossfade; the v2 launch cap (2026-10-04) (9.2); batch 3: `elesys_pedal_v2_window()` and `ElesysGasLaw.window`, brake law v2's pedal window (7.10) | - |
+| `opendbc/sunnypilot/car/honda/elesys_gas.py` | A (2026-10) | the gas law v1/v2, `HondaElesysGasLawV2`, drive-mode slots and crossfade; the v2 launch cap (2026-10-04) (9.2) | - |
 | `opendbc/sunnypilot/car/honda/elesys_stop.py` | A (2026-10) | the soft final stop: `soft_stop_ceiling()`, `ElesysSoftStop`, `SOFT_STOP_*` (7.8) | - |
-| `opendbc/sunnypilot/car/honda/elesys_brake.py` | A (batch 3) | brake law v2, `HondaElesysBrakeLawV2` (flag 32): `law_frame()`, `BrakeLawV2Frame`, `brake_law_v2_enabled()`, the fitted tables (7.10) | - |
-| `opendbc/sunnypilot/car/honda/test_elesys_brake.py` | A (batch 3) | all (7.10) | - |
 | `opendbc/sunnypilot/car/honda/gas_interceptor.py` | M | the import and the one call into `elesys_gas.py`, and the tuner's `observe_pedal` hook | - |
 | `opendbc/car/honda/tests/test_elesys.py` | A | all | - |
 | `opendbc/car/honda/tests/test_elesys_stock_acc.py` | A (2026-10-04) | all (15.7) | - |
@@ -117,15 +115,14 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `openpilot/sunnypilot/selfdrive/selfdrived/vsa_fault_alert.py`, `openpilot/sunnypilot/selfdrive/selfdrived/events.py` (the three `vsa*` entries and their two callbacks, and `hondaElesysStockAcc`) | A / M (2026-10-03) | `VsaFaultAlert` and its events (10.6); the stock ACC banner (15.5, 2026-10-04) | B owns the rest of `events.py` |
 | `openpilot/selfdrive/controls/lib/desire_helper.py`, `openpilot/selfdrive/modeld/modeld.py`, `openpilot/sunnypilot/modeld_v2/modeld.py` | M | `NUDGE_FIRM` | B: `driver_torque_stale` |
 | `openpilot/sunnypilot/mads/mads.py`, `openpilot/sunnypilot/mads/state.py` | M | `mads.py` in stock ACC mode only: MADS on at any speed, and the drop-out's `speedTooLow` alert (15.5, 2026-10-04); 10.7 notes one rule that applies to every car | B |
-| `openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py` | M | Honda tuner toggle | - |
 | `openpilot/selfdrive/ui/sunnypilot/layouts/settings/vehicle/brands/honda.py` | M | Honda brand page; the stock ACC toggle (15.6) | - |
 | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/vehicle.py` | A | mici vehicle page; the stock ACC toggle (15.6) | - |
 | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py` | M | vehicle button | A: gateway button |
 | `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/cruise.yaml`, `.../vehicle.yaml`, `openpilot/sunnypilot/sunnylink/settings_ui.json` | M | sunnylink rows; `HondaElesysStockAcc` (15.6) | - |
 | `openpilot/sunnypilot/sunnylink/statsd.py` | M | tuner telemetry; `HondaElesysStockAcc` | - |
 | `openpilot/sunnypilot/sunnylink/tools/compile_settings_ui.py` | M | UTF-8 fix (Other, 13.2) | - |
-| `openpilot/sunnypilot/sunnylink/athena/sunnylinkd.py`, `openpilot/sunnypilot/sunnylink/athena/tests/test_sunnylinkd.py` | M (2026-10-04) | `OFFROAD_ONLY_PARAMS` = `HondaElesysStockAcc` (and since batch 3 fix round 1 the pump rule's key - `HondaElesysPumpC1b` since 2026-10-06 - and `HondaElesysBrakeLawV2`): `saveParams()` refuses them unless `IsOffroad` is set; `test_saveParams_offroad_only`, `test_saveParams_pump_rule_and_brake_law_offroad_only` (15.6) | - |
-| `openpilot/selfdrive/car/cruise.py`, `openpilot/sunnypilot/selfdrive/car/cruise_ext.py`, `openpilot/sunnypilot/selfdrive/car/tests/test_speed_limit_confirm_buttons.py`; since 2026-10-06 also `openpilot/selfdrive/controls/plannerd.py`, `openpilot/sunnypilot/selfdrive/controls/lib/speed_limit/speed_limit_assist.py`, `openpilot/sunnypilot/selfdrive/controls/lib/speed_limit/tests/test_speed_limit_confirm_grace.py` | M / A (2026-10-04, narrowed 2026-10-05; grace 2026-10-06) | none: Speed Limit Assist, every non-PCM car; listed because 15.9 relies on it being non-PCM only | SL: a wrong-way press at the confirm prompt may lower the set speed, never raise it; the asked-for press up to 1.0 s after the prompt timed out still confirms (11.3) |
+| `openpilot/sunnypilot/sunnylink/athena/sunnylinkd.py`, `openpilot/sunnypilot/sunnylink/athena/tests/test_sunnylinkd.py` | M (2026-10-04) | `OFFROAD_ONLY_PARAMS` = `HondaElesysStockAcc` (and since batch 3 fix round 1 the pump rule's key - `HondaElesysPumpC1b` since 2026-10-06; `HondaElesysBrakeLawV2` too until round 5): `saveParams()` refuses them unless `IsOffroad` is set; `test_saveParams_offroad_only`, `test_saveParams_pump_rule_offroad_only` (15.6) | - |
+| `openpilot/selfdrive/car/cruise.py`, `openpilot/sunnypilot/selfdrive/car/cruise_ext.py`, `openpilot/sunnypilot/selfdrive/car/tests/test_speed_limit_confirm_buttons.py`; since 2026-10-06 also `openpilot/selfdrive/controls/plannerd.py`, `openpilot/sunnypilot/selfdrive/controls/lib/speed_limit/speed_limit_assist.py`, `openpilot/sunnypilot/selfdrive/controls/lib/speed_limit/tests/test_speed_limit_confirm_grace.py` | M / A (2026-10-04, narrowed 2026-10-05; grace 2026-10-06; lower-limit prompt and 1 s hold 2026-10-09, with `openpilot/sunnypilot/selfdrive/controls/lib/longitudinal_planner.py` and `.../speed_limit/tests/test_speed_limit_drop_prompt.py`) | none: Speed Limit Assist, every non-PCM car; listed because 15.9 relies on it being non-PCM only | SL: a wrong-way press at the confirm prompt may lower the set speed, never raise it; the asked-for press up to 1.0 s after the prompt timed out still confirms; a lower limit is a prompt at any value, and a new limit counts after 1 s (11.3) |
 | `openpilot/selfdrive/controls/tests/test_stopping_debounce.py`, `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py`, `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py`, `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py`, `openpilot/selfdrive/locationd/test/test_torqued_elesys.py`, `openpilot/selfdrive/locationd/test/test_lagd_elesys.py`, `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_vsa_fault_alert.py`, `openpilot/sunnypilot/selfdrive/car/tests/test_honda_stock_acc.py`, `openpilot/sunnypilot/mads/tests/test_mads_honda_stock_acc.py`, `openpilot/sunnypilot/selfdrive/locationd/tests/test_lat_speed_split.py`, `openpilot/sunnypilot/tools/tests/test_shadow_learn_report.py`, `openpilot/sunnypilot/tools/tests/test_brake_route_check.py` | A | see section 12 and 15.7 | B: `test_latcontrol_reported_torque.py` |
 | `CHANGELOG-elesys.md`, `FEATURES-elesys.md`, `docs/CHANGELOG_SERIAL_STEERING.md` | A | history, listed at the top | - |
 | `docs/fork/UPSTREAM-2026-09.md` | A | what the 2026-09 sync brought, and what it does on this car | all |
@@ -794,7 +791,7 @@ All of these do nothing while `HondaDynamicTuningEnabled` is off. Integration se
 | construct | `self.dynamic_tuner = HondaDynamicTuner(CP, CP_SP)` | reads the params once, when the controller is built, which is at ignition |
 | pitch feedforward | `hill_accel = self.dynamic_tuner.update_state(CC, CS)`; `adjust_accel = accel + hill_accel` feeds `compute_gas_brake()` and, without an interceptor, `pcm_accel` | compensates for road grade |
 | aero | `wind_brake * self.dynamic_tuner.wind_scale()` on the brake side, also passed to the interceptor; `self.dynamic_tuner.update_wind(CC, CS, float(wind_brake_ms2))` | **none since 2026-10**: `wind_scale()` returns 1.0 and `update_wind()` does nothing (9.1, retired channels). The calls stay so this upstream file needs no edit. With the tuner on that moved the brake-on point slightly: the persisted scale was about 0.80, so light braking at 25 m/s now gets about 5 counts less brake |
-| brake gain | `brake_gain = self.dynamic_tuner.brake_gain(CC, CS, float(apply_brake))` multiplies `apply_brake` before it is scaled to counts | learned brake scale; held at 1.0 for the whole drive while brake law v2 runs (7.10) |
+| brake gain | `brake_gain = self.dynamic_tuner.brake_gain(CC, CS, float(apply_brake))` multiplies `apply_brake` before it is scaled to counts | learned brake scale |
 | brake release limit | `if self.dynamic_tuner.enabled and CC.longActive and not CS.out.gasPressed and not CS.out.brakePressed: apply_brake = max(self.apply_brake_last - 32, apply_brake)` | the brake command can fall by at most 32 counts per 50 Hz frame, to match factory. This stops the lurch as the car lets go at a stop. It is bypassed on disengage and on driver override, and it runs before the pump logic so the Elesys anchor sees exactly what goes on the wire |
 | soft final stop | `self.soft_stop = ElesysSoftStop() if (CP.carFingerprint in HONDA_ELESYS and self.dynamic_tuner.enabled) else None`; `apply_brake = self.soft_stop.update(CC, CS, apply_brake, self.dynamic_tuner)` after the brake gain, before the release limit | a brake ceiling while still rolling in the stopping state (7.8). Unlike the other hooks it is `HONDA_ELESYS`-only: built for this car with the toggle on, never for another Nidec car |
 | pedal | `GasInterceptorCarController.update(..., self.dynamic_tuner)` | the tuner only observes the pedal (`observe_pedal`, per-mode data counts); see 9.2 |
@@ -892,166 +889,33 @@ The problem: when openpilot brakes, the stop lamps stay dark. Stock ACC braking 
   keyed on `0x1A4` bit 23 (VSA `COMPUTER_BRAKING`, bus 0) or on openpilot's `COMPUTER_BRAKE > 0`. The wiring has not
   been checked.
 
-### 7.10 Brake law v2: the measured brake law (`elesys_brake.py`, `HondaElesysBrakeLawV2`, batch 3, default OFF)
+### 7.10 Brake law v2: removed (round 5, 2026-10-09)
 
-Owner decision 2 (batch 3), learnaudit A_synth section 3 B2. The setting is "Measured brake law (testing)",
-`HondaElesysBrakeLawV2`, **off by default**, read once at ignition into CarParamsSP flag 32 (`ELESYS_BRAKE_LAW_V2`,
-11.1). With it off nothing in this section runs: `law_frame()` is never called and the output is byte-identical to
-before (proofs below).
+Batch 3 (2026-10-05, owner decision 2) added a measured brake law behind "Measured brake law (testing)"
+(`HondaElesysBrakeLawV2`, CarParamsSP flag 32, default off, needing gas law v2): the measured coast-down replaced the
+aero credit, a soft dead zone `c0(v)` and slope `k(v)` per speed band mapped the brake to counts, nothing was sent in
+the coast band, the gas law's pedal-zero point moved to `coast(v) + DELTA(v)`, and the learned brake gain was held at
+1.0. It failed two of the owner's acceptance criteria, both toward less brake (held out, the 20-25 m/s band was off by
+-0.076 m/s^2 against +-0.05; and B4 in the simulator), was never turned on in the car, and round 5 deleted it (owner
+decision D0.1). git keeps it: opendbc `8f844a79` (the law, `elesys_brake.py`, 262 lines, and `test_elesys_brake.py`,
+29 tests) and `41993458` (fix round 1, its acceptance record); sunnypilot `28d880d06` and `1bed54229` (the settings);
+the design, fit and proofs are this section as it stood at sunnypilot `e6a18c839`.
 
-**What is wrong with today's law.** `compute_gb_honda_elesys()` (7.1) maps net accel to brake as `-net/2.6`, the
-count map subtracts an aero credit `wb(v)` (0.001-0.15), and the learned scalar gain (9.1) multiplies the rest. So it
-assumes the car coasts at `-2.6 wb` (-0.10 m/s^2 at 10 m/s, -0.21 at 20) and that every count brakes 2.6/256 m/s^2
-from the first one. Measured, neither holds: the car coasts at -0.3 to -0.5 m/s^2 above 5 m/s, and the brake has a
-dead zone of roughly 20-40 counts. 33% of openpilot's brake time asked for decel coasting alone gives, at a median
-6-9 counts, inside the dead zone: it did nothing but run the pump. Steady-braking RMS against the measured response
-is 0.307 m/s^2.
+What is left of it:
 
-**The law** (`elesys_brake.py`; fit `batch3/fit/PARAMS.json`, reference implementation `batch3/sim/laws.py`):
-
-```
-net    = adjust_accel - creep(adjust_accel, v)          as compute_gb_honda_elesys() makes it
-zb(v)  = coast(v) - creep(v) - D_EXTRA                  brake-on point (D_EXTRA = 0)
-zp(v)  = coast(v) - creep(v) + DELTA(v)                 pedal-zero point
-brake  = max(zb - net, 0) / 2.6                         -> the UNCHANGED actuator_hysteresis and rate limit
-counts = h^-1(brake * 256 / k(v); c0(v), TOE = 10)      no aero credit (coast replaces it), brake gain 1.0
-pedal  = G0(v) + gas * gm2(v)  (net >= 0, launch cap below 6 m/s as in v2);  G0 * (1 - net/zp)  (zp < net < 0);  0
-```
-
-`h` is a soft hinge (0 below `c0 - TOE`, quadratic in the toe, `cb - c0` above it), so the brake comes on at
-`c0 - TOE` = 8-32 counts: the low end of the dead zone. Between `zp` and `zb` is the **coast band**: no pedal, no
-brake. At 10 m/s, -0.5 m/s^2 is 39 counts today and nothing under v2; -1.0 m/s^2 is 89 -> 74 counts at 10 m/s, 77 ->
-94 at 20, 65 -> 107 at 30 (today under-brakes above 25 m/s, bias +0.355).
-
-| v (m/s) | 0.5 | 1.5 | 2.5 | 3.5 | 5 | 7 | 10 | 15 | 20 | 25 | 30 | 35 |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `coast(v)` (m/s^2; D, ECON off, fit routes, 2,094 s) | +0.61 | +0.24 | -0.10 | -0.19 | -0.31 | -0.48 | -0.51 | -0.40 | -0.41 | -0.43 | -0.48 | -0.49 |
-
-| band center (m/s) | 3 | 7.5 | 12.5 | 17.5 | 22.5 | 27.5 |
-|---|---|---|---|---|---|---|
-| `c0` (counts) | 18 | 22 | 26 | 26 | 34 | 42 |
-| `k` (x 2.6/256 m/s^2 per count) | 1.079 | 0.917 | 0.991 | 0.915 | 0.874 | 0.782 |
-
-`DELTA(v)` 0.17-0.37 m/s^2 and `G0(v)` 0.012-0.19 are in the module. `c0` sits at or below the low end of each
-band's bootstrap interval (15-20 m/s: 26 for smoothness; one table with `c0` 36 at 27.5 m/s was rejected, it forced
-`k` 0.70 and 250 counts at -2 m/s^2, 30 m/s).
-
-**Two measured changes beyond the B2 sketch.** Without them v2 was worse than today on pump starts (+24% in the sim):
-
-- **DELTA.** Any positive interceptor command lifts the engine computer's pedal (0x17C) from 0 to about 6.6 counts
-  and ends coasting: 0.17-0.37 m/s^2 over coasting. With the pedal-zero point at `coast(v)` the PID cycles across the
-  brake-on point; at `coast + DELTA` the pedal reaches 0 exactly where the car starts coasting. This is the "moving
-  the gas law's zero-pedal window" of B2 (`elesys_gas.elesys_pedal_v2_window()`, 9.2).
-- **G0 on the current pedal calibration.** 0x17C = -3.2 + 254.7·cmd up to 000000da, 6.6 + 245.1·cmd from 000000dd
-  (same commit 715ea5df6, so the pedal or interceptor changed); 0x200 is unchanged. The same command now gives about
-  10 more engine-computer counts. `G0` is re-measured on routes from 000000dd and is ~0.036 below `ELESYS_FF_G0`.
-  **Gas law v2's own tables (9.2) were fitted mostly before the recalibration**; a refit should use 000000dd onward.
-
-**Where today's path runs, byte for byte.** `law_frame()` returns None - and the frame takes today's code - when
-`longActive` is false, outside `LongControlState.pid` (stopping, starting), at or below `V_LO` = 4 m/s, or on a
-non-finite speed or accel. So the soft stop (7.8), the standstill hold (~174-189 counts), the creep table and the
-launch are unchanged. From 4 to 6 m/s every quantity blends linearly from today's equivalent (`zb = -2.6 wb`,
-`zp = -1.95 wb`, `c0 = 0`, `k = 1`, `TOE = 0`, gas law v2's offset) to v2's, so at 4 m/s the pedal is gas law v2's
-exactly and the count differs from today's only by the aero credit (< 1.5 counts).
-
-**What else changes with it on.**
-
-- **The scalar brake gain is held at 1.0 for the whole drive** (`HondaDynamicTuner.brake_gain()`, 9.1), also on the
-  frames below 4 m/s where today's law runs: the learner learns nothing, the `hondadyn` line shows `brake=1.000`, and
-  the stored `HondaDynBrakeGain` is kept for when the law is turned off. At a standstill the gain was already faded
-  to 1.0, so the hold is untouched; on a rolling approach (1-4 m/s) a stored gain of 0.99-1.03 no longer applies.
-- **It needs gas law v2.** The pedal window is built on v2's slope and was fitted and simulated with it. With
-  `HondaElesysGasLawV2` off, `brake_law_v2_enabled()` leaves the law off for the drive, carlog warns, and the
-  `blaw` build tag in `hondadyn`/`hondashadow` says `v1` (`set_brake_law_v2()`).
-- It runs with Dynamic Tuning on or off; only flag 32 (and gas law v2) select it.
-
-**The code.** `elesys_brake.py` (`law_frame()`, `BrakeLawV2Frame`, `brake_law_v2_enabled()`, the tables) and three
-`FORK`-marked lines in `carcontroller.py`: `blaw = law_frame(...)` before the hysteresis, whose input becomes
-`blaw.brake_lin`; `apply_brake = blaw.brake_frac(self.brake_last)` in place of the aero-credit line (counts/256, exact
-through the existing `int(clip(apply_brake * gain * 256))` since the gain is 1.0); and `self.elesys_gas.window =
-blaw.window` before the gas call. Everything after - the soft stop, the 32-count release limiter, the pump rule - is
-unchanged and sees the new counts.
-
-**Offline acceptance** (B2; steady braking, response = IMU force minus `coast(v)`; fit on routes up to 0000010f,
-held out 110, 113, 114, 115):
-
-| set | seconds / routes | v2 RMS / bias | today RMS |
-|---|---|---|---|
-| fit | 1311 / 50 | 0.171 / -0.003 | 0.306 |
-| **held out** | **82 / 4** | **0.158** / -0.001 | 0.284 |
-| 5-fold by route | 1393 / 54 | 0.172 | 0.305 |
-
-RMS passes (<= 0.17). **The every-band rule does not:** held-out 20-25 m/s is -0.076 on 9.6 s from two routes (-0.03
-and -0.11; the fit set's per-route spread there is 0.08); every band with 3+ held-out routes is within +-0.015; there
-is no held-out data above 25 m/s, and firm braking at 20 m/s and above is extrapolated (steady data there: median 19
-counts, p90 54). The owner decided to build it behind a setting that starts off, knowing this. **With B4 in the
-simulator (below) it fails two of the owner's acceptance criteria, both toward less brake: it needs the owner's
-explicit sign-off before anyone turns it on** (the UI and sunnylink texts say it does not pass all its checks).
-
-**Closed loop** (`batch3/sim`: the real LongControl and controller helpers, a plant fitted separately, 87 engaged min
-on 10f, 113, 115, 110, de, 114, d5; pump C1 on both arms; rerun in fix round 1 with C1 as built - the soft stop's hold burst adds
-about one pump start per stop; tracking and the integrator are unchanged, and on the stop-heavy set v2 now
-reaches 30 stops to 29 - the sim's hold, which it does not model, nudging a stop detection):
-
-| | today | v2 |
-|---|---|---|
-| brake applications / light (< 12 counts) | 248 / 87 | 165 / 0 |
-| moving brake time / at coast-reachable targets (s) | 896 / 512 | 560 / 221 |
-| pump starts / pump time (s) | 284 / 360 | 263 / 314 |
-| tracking RMS: all PID / firm (aT <= -0.6) | 0.135 / 0.266 | 0.132 / 0.264 |
-
-Stop-heavy routes (b0, d3, ac, 99, 9e, a0, b2, c2, cb, d4; 82 min, 29 stops): applications 346 -> 227, light 126 ->
-3, pump starts 495 -> 453 (C1 as built, fix round 1: 465 -> 425 under the pseudo-code); paired stops show median differences <= 0.007 - but see the limits below: the plant cannot
-judge a stop. Overall tracking RMS is equal or better under all 10 plant perturbations, but worse while braking (10f
-0.199 against 0.165). **The cost is the onset, and B4 fails:** in the first second of an application the car
-decelerates 0.18 m/s^2 less than asked (today 0.09) and the integrator over-corrects for about 2 s: its mean while
-braking is -0.08 at 5-10 m/s and -0.06 at 15-20 in the sim, outside B4's +-0.05; at 5-10 m/s it is inside +-0.05 in
-only 3 of the 11 plant variants (coast +0.1: -0.155 / -0.142 / -0.130 at 5-10 / 10-15 / 15-20 m/s; c0 +8: -0.135;
-k -15%: -0.189).
-
-**What the simulator cannot say.** Its plant's coast curve IS this law's `COAST_V` (fit/coast.json), so the coast-band
-results are assumed, not tested; held out, the open-loop coast bias per route reaches -0.103 (110) and +0.109 (114).
-It mis-models the stop (closed-loop decel at the stop -1.21 m/s^2 against -0.68 logged, n 5), has no standstill bleed,
-and its pump delivery model does not separate the pump rules (open-loop RMS with and without it 0.121 / 0.121 on 110,
-0.161 / 0.158 on 115). So "stops unchanged" and the closed-loop pump and hold numbers are not evidence: stops, holds
-and the pump are measured in the car (B4 and pump2 section 4, `brake_route_check.py`).
-
-**The levers, tried (fix round 1, `batch3/sim/lever.py`; 5 routes, B4's worst band at 5-25 m/s):**
-
-| law | nominal plant | plant coast +0.1 | plant coast -0.1 | applications | pump starts |
-|---|---|---|---|---|---|
-| today | 0.052 | 0.149 | 0.116 | 211 | 225 |
-| v2 as built | 0.079 | 0.155 | 0.060 | 132 | 205 |
-| v2, `D_EXTRA` -0.05 | **0.043** | 0.115 | 0.085 | 143 | 220 |
-| v2, `D_EXTRA` -0.10 | 0.053 | 0.076 | 0.101 | 162 | 244 |
-| v2, `TOE` 5 or 0 | 0.079 | 0.155 | 0.060 | 132 | 207 |
-
-No variant passes B4 under the plant's coast +-0.1 - and neither does today's law - so that gate measures the coast
-curve's error, which the integrator exists to absorb. `D_EXTRA` -0.05 passes on the nominal plant for +8%
-applications, but brakes inside the coast band (against "nothing sent where coasting delivers"); `TOE` does nothing.
-None is adopted; the law is as fitted, off by default, and the owner's call.
-
-**Proof the code is the law that was simulated.** The simulator was rerun with the REAL `CarController` from this
-tree doing everything after LongControl (`batch3/bimpl/real.py`: the tuner's pitch term, the law, hysteresis, rate
-limit, count map, soft stop, release limiter, pump C1, `ElesysGasLaw`). On all 17 routes and both planner modes
-(2,027,232 v2 frames) the pump bit equals the reference implementation's on every frame and BRAKE_COMMAND on all but
-4 (route c2, one count: the pose is float32 in `orientationNED`, which moves the pitch term by ~1e-8 and once tips the
-hysteresis; the pedal differs by ~1e-8 throughout), and every closed-loop number above comes out identical. With flag
-32 clear, routes 115 and 10f replayed through the real CarInterface (`batch3/bimpl/b3replay_b.py`) give every CAN
-frame and actuator output identical to `~/sp-merge`, tuner on and off: 115 101,825 control steps / 249,474 frames,
-10f 291,185 / 713,406. With it set (open loop on the logged commands, so a smoke test only) both routes run with no
-exception and a 0x1FA on every even step, tuner on and off, with and without pump C1.
-
-**On the road** (B4): `brake_route_check.py` (9.4) prints the integrator's braking mean per band, brake RMS and the
-stop numbers per arm; accept if the bands move into +-0.05, brake RMS falls from about 0.20, stops are unchanged
-(about 0.97 m/s^2 and 174 counts at standstill; "unchanged" means today's code path with the brake gain at x1.00, so
-a stop approach can brake up to ~3% differently from a stored 0.99-1.03), and there are no new FCW/AEB events, VSA
-errors or driver brake take-overs. The route check takes the law that RAN from the route's `blaw=` tags: flag 32 is
-the setting and stays set when the law cannot run (gas law v2 off). `HondaElesysBrakeLawV2` is `BACKUP` (the fixed
-contract), so a sunnylink restore can turn it back on; check the setting after a restore. Known limits: `coast(v)` is D with ECON off and is used in every mode; coasting at 3-6 m/s varies by route
-(110: about 0); the plant's absolute onset figures rest on brake dynamics the logs barely identify.
-
-Tests: `opendbc/sunnypilot/car/honda/test_elesys_brake.py` (29, see 12).
+- **Flag 32 is RESERVED** (`HondaFlagsSP.ELESYS_BRAKE_LAW_V2`, `values_ext.py`), like 16: `_initialize_honda()` never
+  sets it and `CarController` ignores it, so an old CarParamsSP carrying it sends today's `0x1FA`, frame for frame
+  (`test_elesys.py` `test_the_retired_brake_law_flag_runs_todays_law`). Do not reuse it.
+- **`HondaElesysBrakeLawV2` is not registered.** A device keeps its file, unread, and a sunnylink restore skips it;
+  `initialize_params()` no longer hands it over (`test_honda_elesys_pump_brake.py`), and
+  `test_retired_keys_are_gone_everywhere` fails if a setting screen, sunnylink, statsd, the hooks or `carcontroller.py`
+  name it, `BRAKE_LAW_V2_PARAM`, `brake_law_v2` or `elesys_brake` again.
+- **The `blaw=` tag stays** in the `hondadyn` and `hondashadow` lines and always says `v1` (`shadow_learn.brake_law_tag()`),
+  so lines keep their shape and the report never pools them with the `v2` lines of 2026-10-05 to 2026-10-09.
+  `brake_route_check.py` (9.4) still reads flag 32 and `blaw=` on those routes.
+- **What runs is what ran with the setting off:** today's brake law (7.1, with the learned gain of 9.1) and gas law v2's
+  `elesys_pedal_v2()` on every frame (9.2). Through the real `CarInterface` on routes `10f`, `115` and `120`, CarParams,
+  CarParamsSP and every sendcan frame are byte-identical to `e6a18c839` with the setting absent and with it `0`.
 
 ## 8. Panda safety (`opendbc/safety/modes/honda.h`)
 
@@ -1159,7 +1023,7 @@ The fix for the gas side is the measured law in 9.2, not a better learner. `Hond
 
 **Logging mode (batch 3, learnaudit B1).** On the Elesys Accord with the interceptor and openpilot longitudinal (`self.logging`: the shadow learners could be built), the tuner runs its logging with the toggle OFF too: the shadow learners (9.3), the pitch filter and plant model they read, the `modemov` counter, and the `hondadyn` line every 5 s marked `tuner=0`. Every live part stays behind the toggle: `update_state()` still returns a pitch feedforward of exactly 0.0, `brake_gain()` exactly 1.0, `filtered_pitch()` None, the soft stop, the stopping debounce and the release limiter are not built, and nothing is written to Params (no writer thread). Never in stock ACC mode: openpilot longitudinal is off there, so the tuner does not apply.
 
-**Under brake law v2 (batch 3, 7.10)** the brake channel is held: `brake_gain()` returns exactly 1.0 and learns nothing for the whole drive (`self.brake_law_v2`, from CarParamsSP flag 32 and confirmed by `CarController` through `set_brake_law_v2()`, which also keeps the `blaw` build tag true when the law needs gas law v2 and that is off). The stored `HondaDynBrakeGain` is not touched and is persisted unchanged, for when the law is turned off; the `hondadyn` line's `brake=` shows the 1.000 in force, `brakec=` the stored value. The shadow learners get the law's own counts (`counts/256` as `brake_frac`, gain 1.0), so `bcb` stays the command the law produced.
+**Under brake law v2 (batch 3)** the brake channel was held at 1.0; that went with the law in round 5 (7.10).
 
 **Rules that must not be relaxed.** The module header lists four:
 
@@ -1231,7 +1095,7 @@ Fit: 51 routes (99..103), engaged, D, pedal steady for 1 s and lagged 0.4 s, res
 
 **Never raises.** `ElesysGasLaw.update()` runs inside `CarController.update()`. NaN, None and missing inputs fall back to v1 and then to 0.0; the result is always a finite float in [0, 1], and 0.0 when not `longActive`.
 
-**Brake law v2's window (batch 3, 7.10).** On the frames brake law v2 runs (flag 32 with gas law v2, PID, above 4 m/s), `CarController` sets `ElesysGasLaw.window = (net, off, zp)` and `_v2()` computes `elesys_pedal_v2_window()` instead: `off + gas * gm2 / k_mult` at net >= 0 (launch cap as below), `off * (1 - net/zp)` down to the pedal-zero point `zp = coast(v) + DELTA(v)`, 0 below it, with `off` the law's G0 re-measured on the current pedal calibration. That is the move the skeptic review above asked for: the offset rises (0.053 against 0.043 at 10 m/s) only together with the brake-on point moving to the measured coast, and the window gets gentler (0.20-0.56 pedal per m/s^2 against 0.46-0.85). Blended from v2's own offset and `-1.95 wb` at 4-6 m/s, so at 4 m/s it is `elesys_pedal_v2()` exactly; the drive-mode crossfade applies to it unchanged. Everywhere else, and always with the flag clear (`window` stays None), v2 runs as described here.
+**Brake law v2's window (batch 3)** went with the law in round 5 (7.10): `_v2()` is `elesys_pedal_v2()` on every frame again.
 
 **The launch cap (2026-10-04, owner decision 8, A_synth L2a).** Route 115 t 511 asked 1.6-2.0 m/s^2 from a stop and
 got 2.4-2.7 (aEgo), with openpilot's integrator wound down to -0.8. Below `LAUNCH_CAP_V_END` = 6 m/s, v2 is now also
@@ -1367,10 +1231,10 @@ batch 2 (115 and earlier) have no lines; it says so.
 **What a line was measured on (batch 3, learnaudit B1).** `LOG_VERSION` 2: every `hondashadow` line starts
 `v=2 commit= gaslaw= cap= pump= blaw= tuner=` (`shadow_learn.BUILD_KEYS`): the commit (Params `GitCommit`, which
 manager writes at every start), the gas law (`v1`/`v2`, from the interceptor path), `cap` (1 when the law has the launch
-cap, i.e. v2), the pump rule (`v5`, or `c1b` with CarParamsSP flag 64 - `pump_rule_tag()`; lines of 2026-10-05/06 say `v6`, the retired C1, flag 16), the brake law (`v1`, or `v2`
-with flag 32 - `brake_law_tag()`; `v1` again when the law stays off for want of gas law v2, set by `CarController`
-through `HondaDynamicTuner.set_brake_law_v2()`, 7.10) and whether Dynamic Tuning's live parts were on. The flag values are the fixed
-contract (`values_ext.py` `ELESYS_PUMP_C1B = 64`, `ELESYS_BRAKE_LAW_V2 = 32`; 16 reserved); the tags fall back to those literals
+cap, i.e. v2), the pump rule (`v5`, or `c1b` with CarParamsSP flag 64 - `pump_rule_tag()`; lines of 2026-10-05/06 say `v6`, the retired C1, flag 16), the brake law (`v1` - `brake_law_tag()`; lines of
+2026-10-05 to 2026-10-09 can say `v2`, the retired brake law v2, flag 32, 7.10) and whether Dynamic Tuning's live
+parts were on. The flag value is the fixed
+contract (`values_ext.py` `ELESYS_PUMP_C1B = 64`; 16 and 32 reserved); the tag falls back to that literal
 so they never depend on an import. A line is also attempted when card exits at ignition-off (`flush()`, 9.1); manager
 stops loggerd in the same pass, so whether it reaches the route is unproven (the replays have no loggerd) - check the
 first drive for a last `hondashadow`/`hondadyn` line within ~1 s of the route's end. What is certain is the persisted
@@ -1441,8 +1305,8 @@ criteria. Nothing is written but `--json`.
 
 * **Which rule ran**: CarParamsSP flag 64 = `c1b`, flag 16 = `v6` (the retired C1, routes `120`/`121`), neither = `v5`
   (read from the rlog even for a parquet route: the owner's export cannot decode CarParamsSP), else the route's
-  `pump=` tag, else `--rule` (a `--rule` the log contradicts is ignored, with a warning). **Which law ran**: the route's `blaw=` tag (it says what ran: `set_brake_law_v2` corrects it when gas law
-  v2 is off), else flag 32, which is only the setting; flag 32 with `blaw=v1` reads "v1 (v2 requested, not run)". It
+  `pump=` tag, else `--rule` (a `--rule` the log contradicts is ignored, with a warning). **Which law ran**: the route's `blaw=` tag (it says what ran: while the law existed the tuner corrected it when gas
+  law v2 was off; `v1` on every line since round 5), else flag 32, which is only the setting; flag 32 with `blaw=v1` reads "v1 (v2 requested, not run)". It
   replays the controller's own
   `brake_pump_hysteresis_elesys` (v5) and `brake_pump_c1b_elesys` (C1b) - its own transcription of C1b only on a tree
   without it, tested equal to the controller's - and its transcription of the retired C1 (`_c1_reference`; no tree
@@ -1696,7 +1560,7 @@ Since 2026-10-06 the gateway's override pause on this car ends only on a fresh `
 
 ## 11. UI, sunnylink and statsd
 
-There are two settings. `HondaDynamicTuningEnabled` can be reached from four places; `HondaElesysGasLawV2` (the gas law, 9.2) from sunnylink, and the mici and big UI show its value. Both take effect at the next ignition, because they are read only once. Batch 3 (2026-10-05) adds two more, offroad only on the big UI, the mici page and sunnylink: the pump rule and `HondaElesysBrakeLawV2` ("Measured brake law (testing)", off). The pump rule's setting is `HondaElesysPumpC1b` ("Quiet pump at stops", on; 7.2) since 2026-10-06; it replaced `HondaElesysPumpV6` ("Quieter brake pump", rule C1), which is no longer registered. Both are read once, at ignition, by opendbc's `_initialize_honda()` into `CarParamsSP.flags` (64 and 32), for `HONDA_ELESYS` with openpilot longitudinal only and never in stock ACC mode; the controller reads only the flags, so each route records which rule and law it ran. There are read-only views of the learned brake gain and the engaged time per drive mode.
+There are two settings. `HondaDynamicTuningEnabled` can be reached from three places (round 5 removed the comma 3X Cruise panel's copy); `HondaElesysGasLawV2` (the gas law, 9.2) from sunnylink, and the mici and big UI show its value. Both take effect at the next ignition, because they are read only once. Batch 3 (2026-10-05) added two more, offroad only on the big UI, the mici page and sunnylink: the pump rule and `HondaElesysBrakeLawV2` ("Measured brake law (testing)", off), which went with brake law v2 in round 5 (7.10). The pump rule's setting is `HondaElesysPumpC1b` ("Quiet pump at stops", on; 7.2) since 2026-10-06; it replaced `HondaElesysPumpV6` ("Quieter brake pump", rule C1), which is no longer registered. Both are read once, at ignition, by opendbc's `_initialize_honda()` into `CarParamsSP.flags` (64), for `HONDA_ELESYS` with openpilot longitudinal only and never in stock ACC mode; the controller reads only the flag, so each route records which rule it ran. There are read-only views of the learned brake gain and the engaged time per drive mode.
 
 ### 11.1 Params (`openpilot/common/params_keys.h`)
 
@@ -1708,19 +1572,17 @@ There are two settings. `HondaDynamicTuningEnabled` can be reached from four pla
 | `HondaElesysGasLawV2` | `PERSISTENT`, `BACKUP` | BOOL | `1` |
 | `HondaElesysStockAcc` | `PERSISTENT` (deliberately not `BACKUP`) | BOOL | `0` |
 | `HondaElesysStockAccSaved` | `PERSISTENT` | JSON | - |
-| `HondaElesysBrakeLawV2` | `PERSISTENT`, `BACKUP` | BOOL | `0` |
 | `HondaElesysPumpC1b` | `PERSISTENT`, `BACKUP` | BOOL | `1` |
 
-`HondaDynPedalGain0`-`5` and `HondaDynWindFactor` were removed in 2026-10 with their learners, and `HondaElesysPumpV6` (rule C1) on 2026-10-06: `HondaElesysPumpC1b` is a new key so that C1b starts on even where C1 had been switched off (7.2). The learned values are not `BACKUP`. They change every 60 s and belong to one car, and a restored backup could bring back a tune learned on different hardware. The type must stay FLOAT: statsd depends on it to send numeric fields, and `_ParamWriter` counts write errors if a key is missing. The `EpsLkas*` keys in the same hunk belong to area A.
+`HondaDynPedalGain0`-`5` and `HondaDynWindFactor` were removed in 2026-10 with their learners, `HondaElesysPumpV6` (rule C1) on 2026-10-06, and `HondaElesysBrakeLawV2` (brake law v2) on 2026-10-09: `HondaElesysPumpC1b` is a new key so that C1b starts on even where C1 had been switched off (7.2). The learned values are not `BACKUP`. They change every 60 s and belong to one car, and a restored backup could bring back a tune learned on different hardware. The type must stay FLOAT: statsd depends on it to send numeric fields, and `_ParamWriter` counts write errors if a key is missing. The `EpsLkas*` keys in the same hunk belong to area A.
 
 ### 11.2 Big UI (comma 3/3X)
 
-**`openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py`**
-
-- Adds `self.honda_dyn_toggle`, titled `Honda Nidec Dynamic Longitudinal Learning (Alpha)`, after the custom ACC items.
-- The description strings are `HONDA_DYN_DESC`, `HONDA_DYN_VEHICLE_NOTE` and `HONDA_DYN_IGNITION_NOTE`.
-- `_sync_honda_dyn_toggles()` edge-syncs the toggle from the param. It is needed because `ToggleSP` reads its param only once, at construction, and the same param is edited from other places.
-- The toggle is not gated on brand.
+**`openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py`** is upstream's file again (round 5, 2026-10-09). It
+carried a second copy of the learning toggle (`honda_dyn_toggle`, "Honda Nidec Dynamic Longitudinal Learning (Alpha)",
+with `_sync_honda_dyn_toggles()`), in four upstream hunks; the owner drives a comma 4, which has no Cruise panel, so it
+went. The param is unchanged and is set from the Honda panel below, the mici page and sunnylink;
+`test_the_toggle_lives_on_the_honda_panel_only` keeps the Cruise panel free of it.
 
 **`openpilot/selfdrive/ui/sunnypilot/layouts/settings/vehicle/brands/honda.py`**
 
@@ -1759,10 +1621,27 @@ The comma 4 runs the small UI. It has no Cruise or Vehicle panel, so neither pag
   `update_buttons(release_toggle, pressed)`) can only accept a subset of what card accepted. The other button, a press
   after the 1.0 s and a press after the limit changed are ordinary set-speed steps; PCM cruise has no grace. Replays of
   both presses, and the tests: `CHANGELOG_SERIAL_STEERING.md`, 2026-10-06.
+- **A lower limit is a prompt, never a silent rewrite (2026-10-09, round 5, not car-gated: non-PCM cruise, area SL).**
+  Upstream asks for the confirm only for a new limit below 80 km/h; anything else rewrote the set speed with a 5 s
+  "Auto adjusting to speed limit" chime. On the M4 eastbound that turned 110 into 100 at about -33.7950, 150.8440 and
+  100 into 90 at about -33.8134, 150.9525 on every commute (routes c8, dd, fc, 10f), and on fc (812.94) the driver
+  gassed back to 109 believing the set speed was still 110 and was braked again on release. Now, with Speed Limit
+  Assist active, a new limit below the set speed is the "press - to confirm" prompt at any value
+  (`apply_confirm_speed_threshold`, owner decision D5.1); SET/- confirms it, nothing changes the set speed until then,
+  and an unanswered prompt leaves the driver's set speed. A higher limit still raises the set speed by itself, as
+  upstream. And a new limit counts only once it has held for 1 s (`SpeedLimitChangeHold`, D5.2), on every car: a flicker
+  shorter than that never prompts, and every prompt and rewrite comes 1 s after the map's change. Route dd's
+  110/100/110/100 flips were 2.0 s apart, longer than the hold, so they are not suppressed: the replay shows two '-'
+  prompts and, between them, the limit back at the set speed confirming itself (with its chime), the set speed never
+  touched. Replays: `CHANGELOG_SERIAL_STEERING.md`, 2026-10-09. Two older fork rules come with the prompt, and now
+  apply to every motorway drop, not only below 80 km/h: while the "press -" box is up, **+ does nothing** (for the whole
+  5 s prompt, `update_speed_limit_assist_pre_active_raise_blocked`); and a **- pressed within about a second after the
+  box has gone still confirms** the lower limit - 110 straight to 100 on one press (the confirm grace, 2026-10-06).
+  After that second a - is an ordinary 1 km/h step. The hold itself is `speed_limit/change_hold.py` (fork-owned).
 
 ### 11.4 sunnylink
 
-- `settings_ui_src/pages/vehicle.yaml`: a section with `id: honda` (it compiles to `vehicle_settings.honda` in `settings_ui.json`) holding the two toggles, `HondaDynamicTuningEnabled` and `HondaElesysGasLawV2` ("Measured Gas Pedal Law (2013-15 Accord)", whose description says what it does and that it applies at the next drive, and whose details say the per-mode time is counted only with the learning toggle on), each with `needs_onroad_cycle: true` and offroad-only enablement. The 2026-10 hunks there, in `cruise.yaml`, `params_keys.h` and `statsd.py` carry `FORK(HONDA_ELESYS)`. Since then the section also holds "Stock ACC (testing)" (`HondaElesysStockAcc`, 2026-10-04) and, batch 3, the pump rule - "Quiet pump at stops" (`HondaElesysPumpC1b`) since 2026-10-06, "Quieter brake pump" (`HondaElesysPumpV6`) before - and "Measured brake law (testing)" (`HondaElesysBrakeLawV2`), all three with the `offroad` macro and `needs_onroad_cycle`; the brake law's description (here and on both UIs) says it needs the measured gas pedal law and stays off without it.
+- `settings_ui_src/pages/vehicle.yaml`: a section with `id: honda` (it compiles to `vehicle_settings.honda` in `settings_ui.json`) holding the two toggles, `HondaDynamicTuningEnabled` and `HondaElesysGasLawV2` ("Measured Gas Pedal Law (2013-15 Accord)", whose description says what it does and that it applies at the next drive, and whose details say the per-mode time is counted only with the learning toggle on), each with `needs_onroad_cycle: true` and offroad-only enablement. The 2026-10 hunks there, in `cruise.yaml`, `params_keys.h` and `statsd.py` carry `FORK(HONDA_ELESYS)`. Since then the section also holds "Stock ACC (testing)" (`HondaElesysStockAcc`, 2026-10-04) and, batch 3, the pump rule - "Quiet pump at stops" (`HondaElesysPumpC1b`) since 2026-10-06, "Quieter brake pump" (`HondaElesysPumpV6`) before - both with the `offroad` macro and `needs_onroad_cycle`. Batch 3's "Measured brake law (testing)" (`HondaElesysBrakeLawV2`) was here too until round 5 (7.10).
 - `settings_ui_src/pages/cruise.yaml`: a section `honda_dynamic_learning`, visible when the capability `brand == honda`. It shows `HondaDynBrakeGain` and the three `HondaDynModeSec*` keys as `widget: info` rows. They carry no `step`: the `step: 0.001` display hint that `d11d2c9a8` added is not an info-widget field, and on its own, without `min`/`max`, it failed upstream's `test_settings_schema` `test_numeric_constraints`, so it was removed in the 2026-09 merge.
 - Two lessons, both now pinned by tests. First, `blocked: true` means DEVICE_ONLY and the dashboard hides the row, so it must not be used to mean read-only (`d033e3dbd`). Second, info rows did not render inside a brand's vehicle section, only on a page, so they live on the Cruise page (`4131c8778`). A key may appear in only one place.
 - `settings_ui.json` is generated by `openpilot/sunnypilot/sunnylink/tools/compile_settings_ui.py`. Recompile it; never merge it by hand.
@@ -1771,7 +1650,7 @@ The comma 4 runs the small UI. It has no Cruise or Vehicle panel, so neither pag
 
 ### 11.5 `openpilot/sunnypilot/sunnylink/statsd.py`
 
-Adds `HondaDynamicTuningEnabled`, `HondaDynBrakeGain`, the three `HondaDynModeSec*` totals, `HondaElesysGasLawV2`, `HondaElesysStockAcc` and (batch 3) the pump rule's key (`HondaElesysPumpC1b` since 2026-10-06) and `HondaElesysBrakeLawV2` to the `sp_stats` device-params list, so they can be watched without pulling a route. The toggle is included because a gain of 1.000 could mean either converged or never switched on.
+Adds `HondaDynamicTuningEnabled`, `HondaDynBrakeGain`, the three `HondaDynModeSec*` totals, `HondaElesysGasLawV2`, `HondaElesysStockAcc` and (batch 3) the pump rule's key (`HondaElesysPumpC1b` since 2026-10-06; `HondaElesysBrakeLawV2` too until round 5) to the `sp_stats` device-params list, so they can be watched without pulling a route. The toggle is included because a gain of 1.000 could mean either converged or never switched on.
 
 ### 11.6 Test
 
@@ -1783,7 +1662,7 @@ Adds `HondaDynamicTuningEnabled`, `HondaDynBrakeGain`, the three `HondaDynModeSe
 - `test_gas_law_param_is_registered_on_by_default_and_backed_up`
 - `test_retired_keys_are_gone_everywhere`
 - `test_statsd_reports_only_registered_honda_keys`
-- `test_both_panels_drive_the_same_params`
+- `test_the_toggle_lives_on_the_honda_panel_only` (until round 5 `test_both_panels_drive_the_same_params`, when the Cruise panel had a copy)
 - `test_honda_panel_publishes_its_items`
 - `test_mici_page_shares_the_panel_params`
 - `test_mici_settings_registers_the_vehicle_page`
@@ -1793,7 +1672,7 @@ Adds `HondaDynamicTuningEnabled`, `HondaDynBrakeGain`, the three `HondaDynModeSe
 - `test_sunnylink_keys_are_registered_and_unique`
 - `test_panel_defaults_match_the_tuner`
 - since 2026-10-04, for the stock ACC toggle (15.6): `test_stock_acc_is_registered_off_and_never_restored_from_a_backup`, `test_stock_acc_reaches_the_hook_under_one_name`, `test_stock_acc_toggle_is_offroad_only_on_both_screens`, `test_sunnylink_stock_acc_is_offroad_only_and_never_the_longitudinal_macro`
-- since batch 3 (2026-10-05), for the pump rule and the brake law (7.2): `test_pump_and_brake_law_are_registered_backed_up_with_their_defaults`, `test_pump_and_brake_law_reach_the_hook_under_one_name` (statsd included), `test_pump_and_brake_law_toggles_are_offroad_only_on_both_screens`, `test_sunnylink_exposes_pump_and_brake_law_offroad_only`; since 2026-10-06 the key is `HondaElesysPumpC1b` and `test_retired_keys_are_gone_everywhere` also fails on `HondaElesysPumpV6` (in the params, both screens, sunnylink, statsd, `sunnylinkd.py`, `initialize_params()` and `_initialize_honda()`)
+- since batch 3 (2026-10-05), for the pump rule (7.2): `test_pump_rule_is_registered_backed_up_with_its_default`, `test_pump_rule_reaches_the_hook_under_one_name` (statsd included), `test_pump_rule_toggle_is_offroad_only_on_both_screens`, `test_sunnylink_exposes_pump_rule_offroad_only` (they covered the brake law too until round 5); since 2026-10-06 the key is `HondaElesysPumpC1b` and `test_retired_keys_are_gone_everywhere` also fails on `HondaElesysPumpV6` (in the params, both screens, sunnylink, statsd, `sunnylinkd.py`, `initialize_params()` and `_initialize_honda()`), and since round 5 on `HondaElesysBrakeLawV2`, `BRAKE_LAW_V2_PARAM`, `brake_law_v2` and `elesys_brake` (`carcontroller.py` included)
 
 `test_panel_defaults_match_the_tuner` also checks the panel's `MODE_SLOTS`, `GAS_LAW_PARAM` and `GAS_LAW_DEFAULT` against `elesys_gas.py`. None of them checks the display inconsistency in 11.4.
 
@@ -1803,10 +1682,9 @@ Adds `HondaDynamicTuningEnabled`, `HondaDynBrakeGain`, the three `HondaDynModeSe
 
 | test | repo | how to run | what it pins |
 |---|---|---|---|
-| `opendbc/car/honda/tests/test_elesys.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys` (103 tests) | category membership and dispatch (`compute_gas_brake(accel, speed, CP)`); the upstream Nidec map untouched; the Elesys gas/brake golden table; the pump (20 cases); the gas curve; the units bit (`create_brake_command(..., is_metric=, elesys=)`); the gear dwell; the stock AEB truth table and DBC signal names (not the `carstate.py` branch, 6.3). Since 2026-10 also the lateral tune (2.4, 5.1): `TestElesysTorquePrior`, `TestElesysSteerDelay`, and the area-B `TestElesysReportedTorque`, `TestElesysReportedTorqueSeam`, `TestElesysTorqueScale`; since 2026-10-04 `TestElesysKeyOffSteerStatus` (6.4); since 2026-10-06 `TestBrakePumpC1b` (22: the onset burst at the first frame, rises with no gap, the crawl run and its edges, the firm run, standstill silence, the one hold-build and hold-rise burst, the creep guard, release, NaN speed, and the rule against c1weak's replay rule on a random trace), `TestElesysPumpRuleSelection` (3, flag 16 runs v5) and `TestElesysC1bWithTheSoftStop` (2, with the 0x1FA pump bit through the soft stop's crawl run), 7.2 (they replaced batch 3's `TestBrakePumpC1`) |
-| `opendbc/sunnypilot/car/honda/test_elesys_brake.py` | opendbc | `python -m unittest opendbc.sunnypilot.car.honda.test_elesys_brake` (29 tests) | 7.10: the law against the fit's golden values (63 points), the tables, today's constants pinned to `compute_gb_honda_elesys()`; the coast band sends nothing, the brake-on jump is `c0 - TOE`, the soft hinge round trip; counts and pedal monotonic, never brake and pedal together; at 4 m/s today's parameters and gas law v2's pedal exactly, nothing steps across 4-35 m/s; where `law_frame()` hands back to today's path, `brake_frac()` exact and never raising. Through the real `CarController`: flag clear never builds a frame and is today's law, flag with gas law v1 identical to flag clear, below 4 m/s and stopping identical (with the tuner on, but for the gain held at 1.0), flag set gives the law's counts, the coast band and the moved pedal, the stop unchanged, the gain held at 1.0 with the stored value kept, only on this car with openpilot long, NaN/inf never raise |
-| `opendbc/car/honda/tests/test_elesys_pump_brake_flags.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys_pump_brake_flags` (7 tests) | flags 64 and 32 from `_initialize_honda()`: both off byte-identical to no hook, each setting only its own bit, the retired `HondaElesysPumpV6` and flag 16 never read or set, never in stock ACC mode, without openpilot long or on another Honda (7.2, 11) |
-| `openpilot/sunnypilot/selfdrive/car/tests/test_honda_elesys_pump_brake.py` | sunnypilot | `python tools/test_runner.py <path>` (6 tests) | the defaults (C1b on, law off) reaching the hook through `initialize_params()`, C1b on whatever the retired key's file says (7.2, 11) |
+| `opendbc/car/honda/tests/test_elesys.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys` (104 tests) | category membership and dispatch (`compute_gas_brake(accel, speed, CP)`); the upstream Nidec map untouched; the Elesys gas/brake golden table; the pump (20 cases); the gas curve; the units bit (`create_brake_command(..., is_metric=, elesys=)`); the gear dwell; the stock AEB truth table and DBC signal names (not the `carstate.py` branch, 6.3). Since 2026-10 also the lateral tune (2.4, 5.1): `TestElesysTorquePrior`, `TestElesysSteerDelay`, and the area-B `TestElesysReportedTorque`, `TestElesysReportedTorqueSeam`, `TestElesysTorqueScale`; since 2026-10-04 `TestElesysKeyOffSteerStatus` (6.4); since 2026-10-06 `TestBrakePumpC1b` (22: the onset burst at the first frame, rises with no gap, the crawl run and its edges, the firm run, standstill silence, the one hold-build and hold-rise burst, the creep guard, release, NaN speed, and the rule against c1weak's replay rule on a random trace), `TestElesysPumpRuleSelection` (4: flag 16 runs v5; since round 5 flag 32 runs today's law, 7.10) and `TestElesysC1bWithTheSoftStop` (2, with the 0x1FA pump bit through the soft stop's crawl run), 7.2 (they replaced batch 3's `TestBrakePumpC1`) |
+| `opendbc/car/honda/tests/test_elesys_pump_brake_flags.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys_pump_brake_flags` (7 tests) | flag 64 from `_initialize_honda()`: off byte-identical to no hook, the setting only its own bit, the retired `HondaElesysPumpV6` / flag 16 and (round 5) `HondaElesysBrakeLawV2` / flag 32 never read or set, never in stock ACC mode, without openpilot long or on another Honda (7.2, 7.10, 11) |
+| `openpilot/sunnypilot/selfdrive/car/tests/test_honda_elesys_pump_brake.py` | sunnypilot | `python tools/test_runner.py <path>` (7 tests) | the default (C1b on) reaching the hook through `initialize_params()`, the retired keys neither registered nor handed over, C1b on and flags 16/32 clear whatever their files say (7.2, 7.10, 11) |
 | `opendbc/sunnypilot/car/honda/test_elesys_gas.py` | opendbc | `python -m unittest opendbc.sunnypilot.car.honda.test_elesys_gas` (38 tests) | the gas law and the launch cap, 9.2 |
 | `opendbc/sunnypilot/car/honda/test_elesys_stop.py` | opendbc | `python -m unittest opendbc.sunnypilot.car.honda.test_elesys_stop` (28 tests) | the soft final stop, 7.8 |
 | `opendbc/safety/tests/test_honda.py` (`TestHondaElesysScmStanddownSafety`, `TestHondaElesysStanddownGasInterceptorSafety`; since 2026-10-04 `TestHondaElesysStockAccSafety`, `TestHondaElesysStockAccStanddownConflictSafety`) and `common.py` | opendbc | `python -m unittest opendbc.safety.tests.test_honda`; builds `libsafety` on import (1091 run, OK, skipped=73, 2026-10-05, with stock ACC mode and batch 2; 942 after the 2026-09 merge) | section 8, 15.7 |
@@ -2038,7 +1916,7 @@ Title "Stock ACC (testing)" in three places, all offroad only, none with an onro
 | `opendbc/car/honda/tests/test_elesys_stock_acc.py` (17) | toggle off: CarParams bytes and CarParamsSP identical to no hook at all, with and without the pedal, for every "off" spelling; the running values (36, SP 2, interceptor, pcmCruise False); on: 68, SP 0, no bit 32, pcmCruise, no interceptor, `autoResumeSng` False, flag 8, `minEnableSpeed` kept, and only those fields changed; never 32 and 64 together; other Hondas ignore the param; CarController over 1200 frames with cancel, resume and both alternating: only `0x0E4` every frame and `0x500` every 10th, no empty frame; toggle off still sends the long frames and the stand-down, byte-identical with and without the hook; `accFaulted` from `STANDSTILL.BRAKE_ERROR_1` in stock mode, unchanged toggle off, and not for a pcmCruise car without the flag; since the merge with batch 2 (`TestStockAccBesideBatch2`, 15.9): with the dynamic tuner's toggle on, stock mode builds no tuner and no shadow learners and still sends only `0x0E4` and `0x500`, while toggle off builds both |
 | `openpilot/sunnypilot/selfdrive/car/tests/test_honda_stock_acc.py` (15) | the param reaches the hook through `initialize_params()`; with a UI model that reads `CarParamsPersistent` and deletes later in its tick, and manager's default loop as `reboot()`: a stock drive and back restores every setting; a reboot between (and between two stock drives) loses nothing; a UI tick that read the stock CarParams deleting at any params-thread tick before the settle cannot win; the snapshot stays until `CarParamsPersistent` has held this drive's bytes for `SETTLE_FRAMES`; a drive that ends sooner keeps it for the next start; a left-over snapshot is refreshed at the next stock start; a choice made in between stands; a start without openpilot long keeps the snapshot; absent settings stay absent; a broken snapshot (a wrong type, not a dict) never raises and is dropped; the banner for exactly `STOCK_ACC_ANNOUNCE_FRAMES` in stock mode only, PERMANENT and silent |
 | `openpilot/sunnypilot/mads/tests/test_mads_honda_stock_acc.py` (14) | selfdrived.step in miniature (real `CarEvents`, real `StateMachine`, MADS, alerts): MADS on at 0, 1 m/s, 20 and 29 km/h and off/on again at a standstill; MADS on at 35, 29, 25 and 10 km/h while openpilot is engaged on stock ACC; upstream's refusal without the flag; `pcmEnable` engages openpilot and MADS; no engagement below 19 mph, and the refused edge shows the NO_ENTRY alert once, MADS off or on, unified engagement or not; the 22 km/h drop-out gives "openpilot Canceled / Speed too low", normal status, MADS still active for 300 frames with no critical alert; at 39, 80 and 100 km/h "Cruise Is Off" with MADS on or off; the two alerts meet at 37.8 km/h; a brake cancel (edge before the drop) is never critical; MADS off: upstream's alert; without the flag: upstream's strip |
-| `openpilot/sunnypilot/sunnylink/athena/tests/test_sunnylinkd.py` (+2) | `saveParams()` refuses `HondaElesysStockAcc` onroad and while `IsOffroad` is unknown, and writes it offroad; the same for the pump rule's key (`HondaElesysPumpC1b` since 2026-10-06) and `HondaElesysBrakeLawV2` (batch 3 fix round 1: both are read at ignition, so a write applied by a later onroad cycle or card restart would switch the pump rule or the brake law mid-drive). `HondaElesysGasLawV2` and `HondaDynamicTuningEnabled` have the same gap and are not in the set |
+| `openpilot/sunnypilot/sunnylink/athena/tests/test_sunnylinkd.py` (+2) | `saveParams()` refuses `HondaElesysStockAcc` onroad and while `IsOffroad` is unknown, and writes it offroad; the same for the pump rule's key (`HondaElesysPumpC1b` since 2026-10-06) (batch 3 fix round 1: it is read at ignition, so a write applied by a later onroad cycle or card restart would switch the pump rule mid-drive; `HondaElesysBrakeLawV2` was in the set until round 5). `HondaElesysGasLawV2` and `HondaDynamicTuningEnabled` have the same gap and are not in the set |
 | `openpilot/selfdrive/ui/tests/test_honda_dynamic_settings.py` (+4) | the key BOOL "0", PERSISTENT, not BACKUP, the snapshot key JSON; one name from the panels to the hook; both screens offroad only, no onroad cycle; sunnylink offroad only, never `has_longitudinal_control`, and the description's facts |
 
 The panda side is in `opendbc/safety/tests/test_honda.py` (8.3 and the stock-mode classes there): besides the TX list and forwarding, `RELAY_MALFUNCTION_ADDRS` includes the radar's `0x1FA`/`0x30C` on bus 0, `honda_elesys_wire()` feeds the car's and the radar's frames in the firmware's order with the relay open (no malfunction, everything forwarded) and closed (one wire, as on a passive route: the radar's first frame on bus 0 trips it, nothing forwarded after), the transition window is respected, a refused `0x1FA` does not move the AEB latch, and the 32|64 case keeps the same relay check.

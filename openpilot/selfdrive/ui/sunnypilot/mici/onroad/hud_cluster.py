@@ -4,102 +4,68 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 
-FORK(HUD): the comma 4's speed cluster - top right, left of the confidence ball:
+FORK(HUD): the comma 4's stop timer - top right, left of the confidence ball, in the corner:
 
-    [speed | stopwatch m:ss] [speed-limit sign]
-          [distance / bar] [next lower limit]
+    [stopwatch m:ss]
 
-The design the owner approved on 2026-10-03 (Layout B "speed cluster", v2 sizes): a 60 px Australian roundel, ~35 px
-speed digits from carState.vEgoCluster (the Accord's own speedometer reading, as the stock HUD uses), and a 36 px sign
-for the next LOWER limit within 15 s or 500 m. At a standstill the speed becomes a stopwatch and the time stopped.
-A NSW school zone keeps the round sign and adds amber lamps (and SCHOOL) - hud_draw.school_cue; a Variable zone is drawn
-as the electronic sign.
+After a second at a standstill (HudStoppedTimer), a stopwatch and how long the car has been stopped, ~35 px digits. It
+is all that is left of the 2026-10-03 speed cluster: round 5 (2026-10-09, the owner's option A) removed the live speed,
+the speed-limit sign and the next lower limit (hud_model.py); the timer stays exactly where it was drawn with the sign
+off, in the corner.
 
-WHAT IS SHOWN, from which message, and what a missing message does: hud_model.py decides; this file only draws.
+WHERE IT IS DRAWN: under the alerts, and it fades out (fast) while an alert is up, and comes back only once the alert
+has finished fading out, so the two never overlap - except a compact alert (hud_alerts.py), which leaves the top right
+free: its banner stops short of the timer (it reads hud_alerts.cluster_edge, filled in here). The 60 px strip on the
+right (the confidence ball) is outside the content rect and is never painted.
 
-WHERE IT IS DRAWN: under the alerts, and the whole cluster fades out (fast) while an alert is up, and comes back only
-once the alert has finished fading out, so the two never overlap - except a compact alert (hud_alerts.py), which leaves
-the top right free: its banner stops short of what the cluster drew (it reads hud_alerts.cluster_edge, filled in here),
-and while the compact confirm is up the sign is drawn pending (dashed). The 60 px strip on the right (the confidence
-ball) is outside the content rect and is never painted. While the stock MAX number shows (2.5 s after a set-speed change)
-- or the compact confirm's target in its place (hud_alerts.py, item 4) - the speed digits hide, so two big numbers are
-never on screen together. HudCurrentSpeed off never draws them at all; nothing else moves (hud_model.build_frame).
-WITHOUT THE SIGN (HudLimitSign off, or zones and not in one) the speed, the stop time and the next lower limit take its
-place in the corner; they slide there and back rather than jump.
-
-Every piece has its own param (hud_settings.py); all of them off draws nothing at all.
+This widget also hands the alert renderer to the HUD renderer (HudRendererSP asks this frame's alert whether the
+confirm's box or the coming limit is up) - it is built with both, in augmented_road_view.py.
 """
-import math
-
 import pyray as rl
 
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_draw as hd
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (HudFrame, SignSlot, build_frame, compact_kind,
-                                                                     confirm_pending, pending_limit, received,
-                                                                     COMPACT_NONE, SCHOOL_NONE, SCHOOL_ACTIVE)
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import HudSettings, hud_settings, NEXT_BAR, NEXT_TEXT, NEXT_BOTH
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_alerts import cluster_edge, standstill_banner
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import HudFrame, build_frame, compact_kind, received, \
+  COMPACT_NONE
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import HudSettings, hud_settings
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_alerts import cluster_edge, frame_alert, standstill_banner
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import Widget
 
 # layout, device pixels from the content rect's top-right corner (the content rect is 476 wide on the comma 4)
-SIGN_D = 60
-SIGN_MARGIN = 10        # sign to the content edge
-ROW_CY = 36             # the sign spans 6..66
-GAP = 10                # speed digits to the sign
-SPEED_SIZE = 50         # nominal; ~35 px digits
-ROW2_CY = 77            # the next-limit sign spans 59..95: at or above the horizon, clear of the overtaking lane
-NEXT_D = 36
+MARGIN = 10             # the timer to the content edge
+ROW_CY = 36
+GAP = 10                # the stopwatch glyph to the digits
+TIMER_SIZE = 50         # nominal; ~35 px digits
 STOPWATCH_SIZE = 28
 TIMER_WIDEST = "59:59"  # the stop time up to this is drawn at full size; "1:00:00" and up shrink to its width, so the
                         # stopwatch never reaches into the compact banner
-SLIDE_RC = 0.12         # s: the speed sliding into the sign's place and back (HudLimitSign)
-SIGN_FADE_PX = 25       # the sign fades in over the digits' last 25 px out of its place
 
 
 def timer_size(txt: str) -> float:
-  """The stop time's nominal size: SPEED_SIZE up to the width of TIMER_WIDEST, smaller beyond it."""
-  tw, max_w = hd.ink(txt, SPEED_SIZE)[0], hd.ink(TIMER_WIDEST, SPEED_SIZE)[0]
-  return SPEED_SIZE if tw <= max_w else SPEED_SIZE * max_w / tw
-
-
-def _format_dist(d: float) -> str:
-  # sunnypilot's own rounding for "AHEAD" (metric: Near / 300 m / 1.2 km; imperial in ft / mi)
-  from openpilot.selfdrive.ui.sunnypilot.onroad.speed_limit import SpeedLimitRenderer
-  return SpeedLimitRenderer._format_dist(d)
+  """The stop time's nominal size: TIMER_SIZE up to the width of TIMER_WIDEST, smaller beyond it."""
+  tw, max_w = hd.ink(txt, TIMER_SIZE)[0], hd.ink(TIMER_WIDEST, TIMER_SIZE)[0]
+  return TIMER_SIZE if tw <= max_w else TIMER_SIZE * max_w / tw
 
 
 class HudCluster(Widget):
   def __init__(self, hud_renderer=None, alert_renderer=None):
     super().__init__()
-    self._hud_renderer = hud_renderer
     self._alert_renderer = alert_renderer
     self._alpha = FirstOrderFilter(0.0, 0.05, 1 / gui_app.target_fps)
     self._stop_start: float | None = None
-    self._v_ego_cluster_seen = False
-    self._map_frame = -1
-    self._map_t = 0.0
     self._alert = None
     self._now = 0.0
     self.settings: HudSettings = hud_settings.settings
     self.frame = HudFrame()
-    self._sign_slot = SignSlot()
-    self._speed_r: FirstOrderFilter | None = None
-    self._pending = False
-    # the sunnypilot HUD renderer asks this frame's alert whether the confirm's box is up (hud_renderer.py)
+    # the sunnypilot HUD renderer asks this frame's alert whether the confirm's box (or the coming limit) is up, and
+    # tells the standstill banner every frame what the alert renderer will draw (hud_renderer.py)
     if hud_renderer is not None and hasattr(hud_renderer, "alert_renderer"):
       hud_renderer.alert_renderer = alert_renderer
 
-  def _max_visible(self) -> bool:
-    # the stock MAX number as stock (last frame's fade), or the compact confirm's box by THIS frame's alert
-    # (HudRendererSP.drawing_top_icons): the frame any other alert replaces the confirm, the speed is back as it would be
-    # with no confirm before it
-    return bool(self._hud_renderer is not None and self._hud_renderer.drawing_top_icons())
-
   def _alert_covers(self) -> bool:
-    """An alert is drawn this frame - including the previous one while it fades out, so the cluster comes back only
+    """An alert is drawn this frame - including the previous one while it fades out, so the timer comes back only
     once it has gone - and it is not the compact banner."""
     alert = self._alert
     return alert is not None and not standstill_banner.compact(alert, self.settings, ui_state.sm, ui_state.started_frame,
@@ -109,91 +75,26 @@ class HudCluster(Widget):
     self.settings = hud_settings.get()
     sm = ui_state.sm
     now = self._now = rl.get_time()
-    # what the alert renderer will draw this frame (it renders after the cluster); every frame, so the standstill
-    # banner sees the prompt clear even though the renderer stops asking once there is no alert
-    self._alert = self._alert_renderer.will_render()[0] if self._alert_renderer is not None else None
-    standstill_banner.observe(self._alert)
-    # liveMapDataSP is 1 Hz: how long ago the one in sm arrived, to run the next limit's distance down in between
-    map_frame = sm.recv_frame['liveMapDataSP']
-    if map_frame != self._map_frame:
-      self._map_frame, self._map_t = map_frame, now
-    if received(sm, 'carState', ui_state.started_frame):
-      cs = sm['carState']
-      self._v_ego_cluster_seen = self._v_ego_cluster_seen or cs.vEgoCluster != 0.0
-      if cs.standstill:
-        if self._stop_start is None:
-          self._stop_start = now
-      else:
-        self._stop_start = None
+    # what the alert renderer will draw this frame (it renders after the cluster)
+    self._alert = frame_alert.get(self._alert_renderer)[0]
+    if received(sm, 'carState', ui_state.started_frame) and sm['carState'].standstill:
+      if self._stop_start is None:
+        self._stop_start = now
     else:
       self._stop_start = None
     stopped_s = (now - self._stop_start) if self._stop_start is not None else None
-    self.frame = self._sign_slot.apply(
-      build_frame(sm, self.settings, started_frame=ui_state.started_frame, is_metric=ui_state.is_metric,
-                  speed_limit_mode_on=ui_state.speed_limit_mode != 0, stopped_s=stopped_s,
-                  v_ego_cluster_seen=self._v_ego_cluster_seen, max_visible=self._max_visible(), map_age_s=now - self._map_t),
-      self.settings, now)
-    self._pending = confirm_pending(self._alert, self.settings)
-
-  def _slide(self, target: float) -> float:
-    """The digits' right edge, sliding to target (the sign's place coming or going); exactly target once there."""
-    if self._speed_r is None:
-      self._speed_r = FirstOrderFilter(target, SLIDE_RC, 1 / gui_app.target_fps)
-    elif self._speed_r.x != target:
-      self._speed_r.update(target)
-      if abs(self._speed_r.x - target) < 0.25:
-        self._speed_r.x = target
-    return self._speed_r.x
+    self.frame = build_frame(sm, self.settings, started_frame=ui_state.started_frame, stopped_s=stopped_s)
 
   def _render(self, rect: rl.Rectangle):
     cluster_edge.reset()
     f = self.frame
-    if not f.visible:
-      return
+    # the fade runs every frame, the timer shown or not: it appears at once after its second (as it did beside the
+    # speed), and an alert that comes or goes during a stop still hides it until it has faded out
     alpha = self._alpha.update(0.0 if self._alert_covers() else 1.0)
-    if alpha < 0.01:
+    if f.timer_s is None or alpha < 0.01:
       return
-
-    sign_cx = rect.x + rect.width - SIGN_MARGIN - SIGN_D / 2
-    cy = rect.y + ROW_CY
-    # the digits keep their place while the limit comes and goes; with no sign at all they take the sign's place
-    slot_r, corner_r = sign_cx - SIGN_D / 2 - GAP, rect.x + rect.width - SIGN_MARGIN
-    speed_r = self._slide(slot_r if f.sign_slot else corner_r)
-    row1 = math.inf
-
-    if f.next_limit:
-      hd.soft_disc(speed_r - 40, rect.y + ROW2_CY, 52, 0.35 * alpha)
-
-    if f.limit and f.sign_shown:
-      # a sign coming back fades in over the last SIGN_FADE_PX of the digits' slide out of its place, so the two barely
-      # overlap
-      sa = alpha if speed_r <= slot_r else alpha * max(0.0, 1.0 - (speed_r - slot_r) / SIGN_FADE_PX)
-      hd.sign(sign_cx, cy, SIGN_D, f.limit, alpha=sa, electronic=f.electronic, held=f.limit_held, dashed=self._pending)
-      if self._pending:
-        _, offset = pending_limit(ui_state.sm, ui_state.is_metric)
-        if offset:
-          # up and right on the ring, as sunnypilot's own sign has it - but that is where a school zone's right lamp
-          # is, so with the lamps it sits low on the right of the ring instead, clear of the digits and of SCHOOL
-          bx, by = (SIGN_D * 0.40, SIGN_D / 3) if f.school != SCHOOL_NONE else (SIGN_D * 0.30, -SIGN_D * 0.40)
-          hd.offset_badge(sign_cx + bx, cy + by, SIGN_D * 0.2, offset, alpha=sa)
-      if f.school != SCHOOL_NONE:
-        hd.school_cue(sign_cx, cy, SIGN_D, f.school == SCHOOL_ACTIVE, rl.get_time(), alpha=sa)
-      # the banner (hud_alerts) carries the pending sign itself until this one is at least half faded in, so while it
-      # slides back there is always one limit on screen
-      row1, cluster_edge.sign = sign_cx - SIGN_D / 2, sa > 0.5 * alpha
-
-    if f.timer_s is not None:
-      txt = hd.fmt_mmss(f.timer_s)
-      w, _ = hd.big_digits(speed_r, cy, txt, timer_size(txt), alpha=alpha)
-      sw = hd.stopwatch_glyph(speed_r - w - GAP, cy, size=STOPWATCH_SIZE, alpha=alpha)
-      row1 = min(row1, speed_r - w - GAP - sw)
-    elif f.speed is not None:
-      w, _ = hd.big_digits(speed_r, cy, str(f.speed), SPEED_SIZE, alpha=alpha)
-      row1 = min(row1, speed_r - w)
-    cluster_edge.row1 = row1
-
-    if f.next_limit:
-      cluster_edge.row2 = hd.next_row(speed_r, rect.y + ROW2_CY, f.next_limit, f.next_frac, _format_dist(f.next_dist),
-                                      bar=f.next_mode in (NEXT_BAR, NEXT_BOTH), text=f.next_mode in (NEXT_TEXT, NEXT_BOTH),
-                                      d=NEXT_D, alpha=alpha)
-      cluster_edge.row2_top = rect.y + ROW2_CY - NEXT_D / 2
+    right, cy = rect.x + rect.width - MARGIN, rect.y + ROW_CY
+    txt = hd.fmt_mmss(f.timer_s)
+    w, _ = hd.big_digits(right, cy, txt, timer_size(txt), alpha=alpha)
+    sw = hd.stopwatch_glyph(right - w - GAP, cy, size=STOPWATCH_SIZE, alpha=alpha)
+    cluster_edge.timer_left = right - w - GAP - sw

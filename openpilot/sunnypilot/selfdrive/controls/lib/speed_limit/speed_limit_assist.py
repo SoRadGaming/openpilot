@@ -244,7 +244,12 @@ class SpeedLimitAssist:
     # at/above CST:
     # - new speed limit >= CST: auto change
     # - new speed limit < CST: user confirmation required
-    return bool(self.speed_limit_final_last_conv < CONFIRM_SPEED_THRESHOLD[self.is_metric])
+    # FORK(SPEED-LIMIT): - non-PCM cruise: a new limit BELOW the set speed, whatever its value: user confirmation
+    #   required. Upstream rewrote 110 -> 100 (and 100 -> 90) on the M4 with nothing but a 5 s chime alert, and the
+    #   driver drove on believing the set speed was still 110 (routes c8 747.64, dd 728.30, fc 812.94, 10f 771.07). It
+    #   is now the 'press - to confirm' prompt; a higher limit still raises the set speed by itself, as upstream.
+    return bool(self.speed_limit_final_last_conv < CONFIRM_SPEED_THRESHOLD[self.is_metric]) or \
+      (not self.pcm_op_long and self.speed_limit_final_last_conv < self.v_cruise_cluster_conv)
 
   def get_current_acceleration_as_target(self) -> float:
     return self.a_ego

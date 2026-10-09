@@ -4,6 +4,9 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+from unittest import mock
+
+from openpilot.common.params import Params
 from openpilot.sunnypilot.sunnylink.athena import sunnylinkd
 from openpilot.common.test import OpenpilotTestCase
 
@@ -21,6 +24,15 @@ class TestSunnylinkdMethods(OpenpilotTestCase):
 
   def teardown_method(self):
     sunnylinkd.save_param_from_base64_encoded_string = self.original_save  # ty: ignore[invalid-assignment]
+
+  def test_saveParams_bumps_params_version(self):
+    # FORK(NSW-ZONES): ParamsVersion is an INT param - the str upstream wrote raised (swallowed), and it never moved
+    p = Params()
+    with mock.patch.object(sunnylinkd, "params", p):
+      sunnylinkd.saveParams({"SpeedLimitOffset": "5"})
+      assert p.get("ParamsVersion") == 1
+      sunnylinkd.saveParams({"SpeedLimitOffset": "6"})
+      assert p.get("ParamsVersion") == 2
 
   def test_saveParams_blocked(self):
     blocked_params = {
@@ -72,9 +84,9 @@ class TestSunnylinkdMethods(OpenpilotTestCase):
     sunnylinkd.saveParams({"HondaElesysStockAcc": "MQ=="})
     assert [p[0] for p in self.saved_params] == ["HondaElesysStockAcc"]
 
-  def test_saveParams_pump_rule_and_brake_law_offroad_only(self):
+  def test_saveParams_pump_rule_offroad_only(self):
     # FORK(HONDA_ACCORD_9G_AU) batch 3 fix round 1: read at ignition like stock ACC, so never written onroad
-    keys = ("HondaElesysPumpC1b", "HondaElesysBrakeLawV2")
+    keys = ("HondaElesysPumpC1b",)
     sunnylinkd.params.put_bool("IsOffroad", False, block=True)
     sunnylinkd.saveParams(dict.fromkeys(keys, "MQ=="))
     assert self.saved_params == []

@@ -186,13 +186,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // FORK(HONDA_ELESYS): the gas law. 1 = v2, the measured pedal response; 0 = v1, the law before it.
     // A setting, so BACKUP; read once at ignition (elesys_gas.py).
     {"HondaElesysGasLawV2", {PERSISTENT | BACKUP, BOOL, "1"}},
-    // FORK(HONDA_ACCORD_9G_AU): the brake pump rule (1 = C1b, "Quiet pump at stops"; 0 = v5, the rule before it) and
-    // the brake law (1 = v2, the measured law; 0 = today's). Settings, so BACKUP; read once at ignition by opendbc's
-    // _initialize_honda, openpilot longitudinal only, into CarParamsSP.flags (ELESYS_PUMP_C1B / ELESYS_BRAKE_LAW_V2).
-    // HondaElesysPumpC1b is a NEW key so that C1b starts on even where the owner had switched the retired rule C1 off;
-    // C1's key (HondaElesysPumpV6, 2026-10-05/06) is no longer registered - a device keeps the file, unread, and a
+    // FORK(HONDA_ACCORD_9G_AU): the brake pump rule (1 = C1b, "Quiet pump at stops"; 0 = v5, the rule before it). A
+    // setting, so BACKUP; read once at ignition by opendbc's _initialize_honda, openpilot longitudinal only, into
+    // CarParamsSP.flags (ELESYS_PUMP_C1B). HondaElesysPumpC1b is a NEW key so that C1b starts on even where the owner had
+    // switched the retired rule C1 off. Two retired keys are no longer registered - C1's HondaElesysPumpV6 (2026-10-05/06)
+    // and brake law v2's HondaElesysBrakeLawV2 (2026-10-05 to 2026-10-09): a device keeps the file, unread, and a
     // sunnylink restore skips it.
-    {"HondaElesysBrakeLawV2", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"HondaElesysPumpC1b", {PERSISTENT | BACKUP, BOOL, "1"}},
     // FORK(HONDA_ACCORD_9G_AU): stock ACC mode - the car's ACC does gas and brake, openpilot steers only. Read once at
     // ignition (opendbc _initialize_honda). Not BACKUP: a sunnylink restore must never turn it on behind the driver's
@@ -201,26 +200,17 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"HondaElesysStockAcc", {PERSISTENT, BOOL, "0"}},
     {"HondaElesysStockAccSaved", {PERSISTENT, JSON}},
     // FORK(HUD): the comma 4 HUD, one setting per piece (sunnylink Visuals > HUD). All default on; all off is the stock
-    // screen. HudNextLimit: 0 off, 1 bar, 2 distance, 3 both. Read by the UI at most once a second.
-    // FORK(HUD): HudPlannedStop and HudCurve are the right strip's two items (hud_rail.py).
-    // FORK(HUD): HudCompact* draw named normal alerts small (hud_model.COMPACT_EVENTS). HudLimitSign: 0 off, 1 school and
-    // variable zones only, 2 always.
+    // screen. Read by the UI at most once a second. HudPlannedStop and HudCurve are the right strip's two items
+    // (hud_rail.py); HudCompact* draw named normal alerts small (hud_model.COMPACT_TYPES); HudApproachingLimit announces
+    // the coming limit in the MAX number's place (round 5, 2026-10-09, which removed the speed, sign and next-limit keys).
+    {"HudApproachingLimit", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCompactDisengage", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCompactLimitPrompts", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCompactTurn", {PERSISTENT | BACKUP, BOOL, "1"}},
-    {"HudConfirmLimit", {PERSISTENT | BACKUP, BOOL, "1"}},
-    // FORK(HUD): HudCurrentSpeed off hides only the live speed in the cluster.
-    {"HudCurrentSpeed", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCurve", {PERSISTENT | BACKUP, BOOL, "1"}},
-    {"HudLimitSign", {PERSISTENT | BACKUP, INT, "2"}},
-    {"HudNextLimit", {PERSISTENT | BACKUP, INT, "3"}},
     {"HudPlannedStop", {PERSISTENT | BACKUP, BOOL, "1"}},
-    // FORK(HUD): the two zone cues only style a sign that is shown (HudLimitSign).
-    {"HudSchoolZoneCue", {PERSISTENT | BACKUP, BOOL, "1"}},
-    {"HudSpeedCluster", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudStoppedBanner", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudStoppedTimer", {PERSISTENT | BACKUP, BOOL, "1"}},
-    {"HudVariableLimitSign", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"IntelligentCruiseButtonManagement", {PERSISTENT | BACKUP , BOOL}},
     {"InteractivityTimeout", {PERSISTENT | BACKUP, INT, "0"}},
     // EPS-LKAS gateway board. PERSISTENT because the settings page is offroad and card,
@@ -341,6 +331,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NswZonesAutoUpdate", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"NswZonesUpdateCheck", {CLEAR_ON_MANAGER_START, BOOL}},
     {"NswZonesVersion", {PERSISTENT, STRING}},
+    // FORK(NSW-ZONES): one line, the last check's result and time, for sunnylink's "Last NSW check". Written by the
+    // downloader only when a check ends or a request is refused (never as progress). Not BACKUP: it describes this device.
+    {"NswZonesStatus", {PERSISTENT, STRING}},
     {"Offroad_OSMUpdateRequired", {CLEAR_ON_MANAGER_START, JSON}},
     {"Offroad_NswZonesStale", {CLEAR_ON_MANAGER_START, JSON}},  // FORK(NSW-ZONES): old data / school calendar ending
     // FORK(SPEED-LIMIT): mapd_manager re-requests the OSM tiles once per boot when offroad, unmetered and a week old.

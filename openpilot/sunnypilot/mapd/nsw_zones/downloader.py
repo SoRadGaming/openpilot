@@ -83,6 +83,10 @@ STORED_NAME = "nsw_zones_stored.npz"
 AUTO_UPDATE_PARAM = "NswZonesAutoUpdate"
 CHECK_PARAM = "NswZonesUpdateCheck"
 VERSION_PARAM = "NswZonesVersion"
+STATUS_PARAM = "NswZonesStatus"
+PARAMS_VERSION_PARAM = "ParamsVersion"
+# refusals whose own words would puzzle in the app
+STATUS_WORDS = {"no deviceState": "starting up, ask again"}
 
 MAX_AGE_S = 7 * 24 * 3600
 RETRY_S = 3600.0  # a failed automatic check waits this long before the next one (this boot)
@@ -109,6 +113,16 @@ def data_dir() -> str:
 def wall_now() -> float:
   """Unix seconds, the same clock osm_auto_update uses (time.time is banned in this repo)."""
   return datetime.now().timestamp()
+
+
+def status_line(text: str, when: float) -> str:
+  """NswZonesStatus: one line, the result then the device's local time, e.g. 'updated to 2026-10-04 · 2026-10-09
+  18:02 AEDT'."""
+  try:
+    stamp = datetime.fromtimestamp(when).astimezone().strftime('%Y-%m-%d %H:%M %Z').strip()
+  except (OverflowError, OSError, ValueError):
+    stamp = "time unknown"
+  return f"{text} · {stamp}"
 
 
 # ============================================================================ small file helpers
@@ -241,6 +255,15 @@ class FetchResult:
   why: str = ""
   data_version: str = ""
   sha256: str = ""
+
+
+def result_text(r: FetchResult) -> str:
+  """What a finished check says in NswZonesStatus."""
+  if r.ok and r.changed:
+    return f"updated to {r.data_version}" if r.data_version else "updated"
+  if r.ok:
+    return f"up to date ({r.data_version})" if r.data_version else "up to date"
+  return r.why or "failed"
 
 
 def http_get(url: str, timeout: float = TIMEOUT_S):
@@ -407,6 +430,14 @@ class NswZonesUpdater:
 
   NEVER RAISES into mapd_manager, the process that publishes liveMapDataSP: an error disables it for this boot.
   NswZonesVersion is written here and only here: it names the installed data date for the maps page.
+
+  sunnylink: NswZonesStatus (one line: how the last check ended, and when) is written when a check ends - automatic
+  or asked for - and when a request is refused, never for progress (that stays in status.json, for the maps page).
+  ParamsVersion, the counter sunnylinkd's comment says the app watches for changes, is bumped after each of those writes
+  and when the request (NswZonesUpdateCheck) is cleared. Whether the app re-reads the settings on it is NOT confirmed:
+  sunnylinkd's own bump wrote a str to this INT param and raised (swallowed) until round 5's fix round 1, so it never
+  moved on this device - the yaml text still says the app shows the result the next time it loads the settings. Both
+  are best effort: a failure there must not stop the updater.
   """
 
   def __init__(self, params, d: str | None = None, base_url: str = BASE_URL, on_installed: Callable[[], None] | None = None, sm=None, get=http_get):
@@ -441,6 +472,17 @@ class NswZonesUpdater:
         write_json_atomic(os.path.join(self.dir, STATUS_NAME), st)
       except OSError:
         pass
+
+  def _report(self, status: str | None = None) -> None:
+    """FORK(NSW-ZONES): tell sunnylink. `status`, when given, is the NswZonesStatus text; ParamsVersion is bumped
+    either way. Never raises."""
+    try:
+      if status is not None:
+        self.params.put(STATUS_PARAM, status_line(status, wall_now()), block=True)
+      # blocking: a read-add-write behind a queued write of the same counter would lose a bump (once a check, not a tick)
+      self.params.put(PARAMS_VERSION_PARAM, int(self.params.get(PARAMS_VERSION_PARAM) or 0) + 1, block=True)
+    except Exception:
+      cloudlog.exception("nsw_zones: could not report to sunnylink")
 
   def _sync_version(self) -> None:
     """NswZonesVersion follows current.json (a wiped data directory clears it)."""
@@ -492,6 +534,7 @@ class NswZonesUpdater:
     if r.changed:
       self._sync_version()
       self._install_pending = True  # loaded by _update, and only offroad (see there)
+    self._report(result_text(r))  # after the version, so the app reads both at once
 
   def _update(self) -> bool:
     self.sm.update(0)
@@ -546,11 +589,13 @@ class NswZonesUpdater:
       # the button is answered either way: a request that cannot run now is not left to fire later
       self.params.remove(CHECK_PARAM)
       self._write_status(last_attempt=wall_now(), last_result=why)
+      self._report(STATUS_WORDS.get(why, why))
       return False
     if not due:
       return False
     if forced:
       self.params.remove(CHECK_PARAM)
+      self._report()  # the switch goes back off in the app; the result follows when the check ends
     self._forced = forced
     self._cancel = threading.Event()
     self._write_status(state='checking', progress=0.0)

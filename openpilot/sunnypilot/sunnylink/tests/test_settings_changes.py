@@ -224,8 +224,10 @@ class TestNotEngagedReplacement(OpenpilotTestCase):
 
 # FORK(NSW-ZONES) ------------------------------------------------------------------------------------------------------
 MAP_DATA_SUB_PANEL = "speed_limit_settings"
+NSW_SECTION = "nsw_speed_zones"
 MAP_DATA_NOW = ("NswZonesUpdateCheck", "OsmDbUpdatesCheck")      # requests mapd_manager consumes and clears
 MAP_DATA_WEEKLY = ("NswZonesAutoUpdate", "OsmAutoUpdateWeekly")
+NSW_INFO = ("NswZonesVersion", "NswZonesStatus")                 # written by the device, read-only in the app
 
 
 def _sub_panel_items(schema: dict[str, Any], sub_panel_id: str) -> list[dict[str, Any]]:
@@ -240,11 +242,24 @@ class TestMapDataControls(OpenpilotTestCase):
   """The mici maps page's update buttons and weekly toggles, from the phone. The "Now" items are toggles: nothing in
   this tree says what the app does for a `button` widget, and the device clears the param once it has the request."""
 
-  def test_they_sit_with_the_nsw_mode(self, schema):
+  def test_osm_sits_with_the_speed_limit_settings(self, schema):
     keys = [item.get("key") for item in _sub_panel_items(schema, MAP_DATA_SUB_PANEL)]
-    assert "SpeedLimitNswZones" in keys
-    for key in (*MAP_DATA_NOW, *MAP_DATA_WEEKLY):
+    for key in ("OsmDbUpdatesCheck", "OsmAutoUpdateWeekly"):
       assert key in keys, f"{key} is not in the {MAP_DATA_SUB_PANEL} sub-panel"
+
+  def test_nsw_has_its_own_section(self, schema):
+    """Owner decision D3.2: not behind the SpeedLimitMode sub-panel. The mode, now, weekly, then what is installed and
+    how the last check went, beside the button."""
+    section = _find_section(schema, "cruise", NSW_SECTION)
+    assert section is not None
+    assert section.get("title") == "NSW Speed Zones"
+    assert not section.get("visibility"), "the mode is always reachable: it is the off switch"
+    keys = [item.get("key") for item in section.get("items", [])]
+    assert keys == ["SpeedLimitNswZones", "NswZonesUpdateCheck", "NswZonesAutoUpdate", "NswZonesVersion",
+                    "NswZonesStatus"], keys
+    assert not section["items"][0].get("visibility"), "nor the mode on its own"
+    in_sub_panel = [item.get("key") for item in _sub_panel_items(schema, MAP_DATA_SUB_PANEL)]
+    assert not set(keys) & set(in_sub_panel), "each item once"
 
   @parameterized.expand([*MAP_DATA_NOW, *MAP_DATA_WEEKLY], names=["key"])
   def test_they_are_toggles_over_bool_params(self, schema, key):
@@ -261,19 +276,54 @@ class TestMapDataControls(OpenpilotTestCase):
     assert "offroad_only" in _flatten_rule_types(item.get("enablement")), f"{key}: the app grays it out while driving"
     desc = item.get("description", "")
     assert "offroad" in desc and "switches it back off" in desc, desc
-    # the device clears the param without bumping ParamsVersion: the app only sees it on its next load
+
+  def test_update_osm_now_says_the_app_sees_it_on_its_next_load(self, schema):
+    """mapd_manager clears the OSM request without bumping ParamsVersion: the app only sees it on its next load."""
+    item = _find_item(schema, "OsmDbUpdatesCheck")
+    assert item is not None and "next time it loads" in item.get("description", ""), item
+
+  def test_update_nsw_now_points_at_the_result(self, schema):
+    item = _find_item(schema, "NswZonesUpdateCheck")
+    assert item is not None
+    desc = item.get("description", "")
+    assert "Last NSW check" in desc and "offroad only" in desc, desc
+    # the device bumps ParamsVersion, but that the app re-reads the settings on it is not confirmed (round 5 fix round 1:
+    # sunnylinkd's own bump never worked on this device): promise only the next load
     assert "next time it loads" in desc, desc
 
+  @parameterized.expand(list(NSW_INFO), names=["key"])
+  def test_nsw_info_rows_are_read_only_strings(self, schema, key):
+    from openpilot.common.params import Params, ParamKeyType
+    from openpilot.sunnypilot.sunnylink.athena import sunnylinkd
+    item = _find_item(schema, key)
+    assert item is not None and item["widget"] == "info", item
+    assert Params().get_type(key) == ParamKeyType.STRING
+    assert key in sunnylinkd.BLOCKED_PARAMS, "the device writes it; the app only shows it"
+
   def test_update_nsw_now_is_dimmed_with_the_mode_off(self, schema):
-    """With NSW zones off a tap would still download ~22 MB for a disabled feature: same rule as its weekly sibling."""
-    now, weekly = _find_item(schema, "NswZonesUpdateCheck"), _find_item(schema, "NswZonesAutoUpdate")
-    assert now is not None and weekly is not None
-    assert now.get("visibility") and now.get("visibility") == weekly.get("visibility"), now.get("visibility")
+    """With NSW zones off a tap would still download ~22 MB for a disabled feature: same rule as its weekly sibling,
+    and the two info rows go with them."""
+    now = _find_item(schema, "NswZonesUpdateCheck")
+    assert now is not None and now.get("visibility")
+    for key in ("NswZonesAutoUpdate", *NSW_INFO):
+      item = _find_item(schema, key)
+      assert item is not None and item.get("visibility") == now.get("visibility"), (key, item)
 
   def test_update_osm_now_says_driving_off_does_not_stop_it(self, schema):
     """mapd has no cancel: an OSM download started offroad runs on after the car drives off."""
     item = _find_item(schema, "OsmDbUpdatesCheck")
     assert item is not None and "Driving off does not stop" in item.get("description", "")
+
+  @parameterized.expand(list(NSW_INFO), names=["key"])
+  def test_sunnylink_cannot_write_what_the_device_reports(self, key):
+    import base64
+
+    from openpilot.common.params import Params
+    from openpilot.sunnypilot.sunnylink.athena import sunnylinkd
+    Params().put(key, "2026-10-04")
+    sunnylinkd.saveParams({key: base64.b64encode(b"forged").decode()})
+    assert Params().get(key) == "2026-10-04"
+    assert base64.b64decode(sunnylinkd.getParams([key])[key]) == b"2026-10-04"
 
   @parameterized.expand(list(MAP_DATA_NOW), names=["key"])
   def test_sunnylink_can_write_the_request_and_sees_it_cleared(self, key):
