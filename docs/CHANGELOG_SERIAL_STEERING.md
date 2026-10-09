@@ -15,6 +15,44 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-09 — round 5 and the radar fix together (integration)
+
+Round 5 (build A, the next entry down, with opendbc `b24613cf`: brake law v2 removed) and the radar fix (the two entries
+below it: radard's clutter guard, and the `REL_SPEED` scale in opendbc `83c8b5b0`) are merged into one tree, with
+opendbc carrying both. They touch different code. These are the places they share, and how each was checked:
+
+* **The HUD's lead readers.** Round 5 rewrote the HUD (options A and C: the sign and next-limit settings are gone).
+  The radar fix makes every `leadOne` reader except the MPC use `real_lead()`, so a held lead (`vLead` = `vEgo`,
+  marked in `radarTrackId`) is not a car. Two readers survive round 5's rewrite: the right rail and the standstill
+  banner's departure rule. Both still call `real_lead()`. The rail already had a held-lead test. The banner now has
+  one too: a held lead moving off at 2 m/s leaves the prompt compact, and the same track without the mark brings the
+  full prompt back. Swapping the banner's `real_lead()` for `present` fails it.
+* **What the car is sent.** Routes 115 and 120 were replayed through the controls, with the route's settings and with
+  the defaults. sendcan (251,014 and 129,327 frames), CarParams and CarParamsSP are byte-identical to the radar fix
+  alone and to round 5 alone. carState is identical to the radar fix alone.
+* **radard.** Routes 10f, 06 and c0 were replayed through radard and the planner. Every frame is identical to the
+  radar fix alone: 58,437, 27,717 and 15,607 frames, of which 1,384, 480 and 336 have a held lead. aTarget,
+  shouldStop, FCW and hasLead are included in that comparison.
+* **Speed Limit Assist.** Round 5's motorway replay gives the same events, to the frame, as round 5 alone.
+* **The screen.** The 191 HUD renders are pixel-identical to round 5's, and their 25 frame logs are identical. The
+  logged routes carry no held lead, so the renders cannot show one. The banner's new test covers that case.
+
+Three fixes for things CI would have refused. None of them changes what runs:
+
+* `longitudinal_planner.py` and `tools/brake_route_check.py` have a shebang but lost their executable bit in the
+  radar fix's commits, which `check_shebang_scripts_are_executable` refuses. The bit is restored. opendbc had the
+  reverse problem: `test_elesys_radar.py` was executable with no shebang. That bit is now cleared.
+* The radar guard's fixture `elesys_radar_guard_frames.json.gz` was 198 KB, over the 120 KB that
+  `check_added_large_files` allows. It is now 104 KB and still holds the same seven windows and every frame. It is
+  stored by column, with times in whole ms, the speeds and the model's leads as float32 text, and radar points as
+  integers in the DBC's steps, written only on new radar updates. All 42,116 values of the 1,002 frames decode equal
+  to the old file's. The guard's 26 tests pass, and every documented mutation still fails its test.
+* codespell reads `assertIn` as a misspelling. The guard's odometer test now uses `assertEqual` on the whole moving
+  set, which is stricter.
+
+The test counts in `docs/fork/README.md` and the CAR doc are corrected (test_elesys 103, test_brake_route_check 28,
+test_shadow_learn 31, opendbc 49 files and `FORK.md`).
+
 ## 2026-10-09 — round 5 (build A): a lower speed limit asks, sunnylink shows the NSW data, and the HUD announces the coming limit
 
 Owner decisions 5, 3, 1, 1b, 2 and 0 (D0.1, D0.3, D0.4 and the lint hygiene) of round 5. Nothing here changes how the car follows,
