@@ -18,7 +18,9 @@ With the tile on, on a comma 4 only:
     in 2 s (NUDGE_REFUSED_GAP_FRAMES) - the limit lives there, not here, because the UI flashes the tile on the same
     rising edge: one source, so the flash and the chime are always a pair.
   * with another alert on screen (LOW and up) the chime (Priority.LOWER) does not play and the tile is not drawn: a
-    refused nudge then has no answer, and that alert has the screen and the sound.
+    refused nudge then has no answer, and that alert has the screen and the sound. A banner at LOWER or LOWEST
+    (such as experimental mode switched, bookmark saved, startup, the EPS-latched reminder) is the exception: the chime takes
+    its place for 0.2 s and plays, and the tile stays undrawn.
 With it off, or on any other device (the comma 3X keeps its own alerts), selfdrived is as upstream.
 """
 from openpilot.cereal import log, custom

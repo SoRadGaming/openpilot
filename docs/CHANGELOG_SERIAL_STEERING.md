@@ -35,12 +35,13 @@ when a lane change is refused or started: RELC, `NUDGE_FIRM` and the stale-torqu
 * **Silent until a nudge is refused.** The block no longer chimes when it appears. A nudge toward the blinker that
   would have started the change but for the block (`DesireHelper.nudge_refused`, published as
   `modelDataV2SP.laneChangeNudgeRefused @3`) flashes the tile's rim twice and plays one `prompt`
-  (`laneChangeNudgeRefused @32`, size none, `Priority.LOWER`: above `steerOverride`, below every alert drawn on
-  screen). One nudge is one refusal: the flag holds until the wheel has been let go for 0.2 s
+  (`laneChangeNudgeRefused @32`, size none, `Priority.LOWER`: above `steerOverride`, below every alert at LOW and
+  up; the few LOWER or LOWEST banners - such as experimental mode switched, bookmark saved, startup, the EPS-latched reminder -
+  it preempts for its 0.2 s). One nudge is one refusal: the flag holds until the wheel has been let go for 0.2 s
   (`NUDGE_RELEASE_FRAMES`; frames with a stale torque do not count as let go); a stale gateway torque is no nudge. And
   it rises at most once in 2 s (`NUDGE_REFUSED_GAP_FRAMES`): a nudge inside that is refused silently and must be let go
   before the next one counts. The limit is in DesireHelper, not selfdrived, so that the chime and the flash - both on
-  the flag's rising edge - are always a pair. While another alert is on screen a refused nudge has no answer at all:
+  the flag's rising edge - are always a pair. While another alert (LOW and up) is on screen a refused nudge has no answer at all:
   the chime does not play and the tile is not drawn; that alert has the screen and the sound. selfdrived drops the two
   block alerts and raises the chime only with the setting on and only on a comma 4 (`lane_block_alert.py`); the events
   are still raised and logged. With the setting off, and on the comma 3X, selfdrived is upstream; the arrow fix below

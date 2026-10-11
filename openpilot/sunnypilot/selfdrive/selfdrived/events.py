@@ -290,8 +290,10 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
   # FORK(HUD): one chime for a lane-change nudge a block refused, with the comma 4's lane-block tile on (raised by
   # lane_block_alert.py on the nudge's first frame, at most once in 2 s; the tile flashes for it). Nothing drawn.
   # Priority.LOWER: above steerOverride (LOWEST, restarted on every new steeringPressed - a tie it would win, cutting
-  # the chime short), below every alert drawn on screen (LOW and up), whose place it never takes. With one of those up
-  # a refused nudge has no answer: the tile is not drawn either (hud_lane_block.py), and that alert has the screen.
+  # the chime short), below every alert at LOW and up, whose place it never takes. With one of those up a refused nudge
+  # has no answer: the tile is not drawn either (hud_lane_block.py), and that alert has the screen. The few banners at
+  # LOWER or LOWEST (such as experimental mode switched, bookmark saved, startup, the EPS-latched reminder) it does preempt,
+  # as the newer alert of a tie: the chime plays and the banner is off the screen for its 0.2 s.
   EventNameSP.laneChangeNudgeRefused: {
     ET.WARNING: Alert(
       "",

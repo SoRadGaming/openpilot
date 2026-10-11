@@ -26,8 +26,9 @@ Truthful only: it is drawn while modelV2 says the change is waiting (preLaneChan
 is set - carState's blind spot first, then modelDataV2SP's road edge, selfdrived's own order - never predicted. Any
 alert on screen other than the lane-change ones wins: the tile goes on the frame (as the coming limit does), and while
 that alert is up a refused nudge has no answer at all - no flash, as the tile is not drawn, and no chime, as the chime
-(Priority.LOWER) never takes the place of an alert on screen. That alert has the screen and the sound; the refusal
-itself is unchanged and the tile is back when the alert has gone. A left tile has the top left: the driver-monitoring
+(Priority.LOWER) never takes the place of an alert at LOW or above (a banner at LOWER or LOWEST it does preempt for its
+0.2 s, so there the chime plays without the flash). That alert has the screen and the sound; the refusal itself is
+unchanged and the tile is back when the alert has gone. A left tile has the top left: the driver-monitoring
 face, the stock MAX number, the coming limit and the confirm's box make way while it shows.
 """
 from dataclasses import dataclass
