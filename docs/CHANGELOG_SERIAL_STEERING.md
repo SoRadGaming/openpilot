@@ -35,7 +35,8 @@ raised no steering alert on any lane change on 10f-121. Two causes, and this fix
   1.0 m/s² and undershooting: of 195 saturated frames on 115/120/121, all were within 2 s of a press and none was over
   1.0. 120 at 486.24 s and 121 at 330.31 s alarmed this way.
 * Not this fix: 10f at 1318.23 s and 2047.85 s alarmed through the board's own `hard` rule (|command| at 90 % of
-  authority for 300 ms) after a one-touch indicator lifted the ceiling mid-change. That is the board half.
+  authority for 300 ms) after a one-touch indicator lifted the ceiling mid-change. That is the board half, bundled
+  here (below).
 
 **(a) The report** (opendbc `carcontroller.py`, `carstate_ext.py`, `structs.py`, `_sunnypilot_linbus_gw.dbc`;
 sunnypilot `custom.capnp`). `0x704 INH_BLINKER` (byte 5 bit 5; it already holds through the 500 ms dwell) is decoded
@@ -95,6 +96,16 @@ inside the window, cleared on staleness). sunnypilot: new `test_steer_saturated.
 window, a 20 000-frame fuzz against the old block, selfdrived calls the helper, controlsd_ext fills `steerSaturated`
 and 121 at 330.6 s does not set it); `test_latcontrol_reported_torque.py` 9 (a railed request under the ceiling does
 not saturate, both torque controllers); the seam test carries both new fields.
+
+**The board half, bundled.** `eps_lkas_appslot.bin` is now board `686e4603` (branch `lc-alarm` on `c8221c29`, 49,664
+bytes, SHA-256 `82fefd72c7e09ab43ef8c3f8b3f3388ef90b08ad03a826569c5a4e88b7f717f1`, `APL1` at `0x08004000`, flags
+`0x04`). Its `hud_gw()` no longer counts `hard` while the blinker ceiling is in force (500 ms dwell included) or within
+2 s of |driver torque| over 20 counts, and a gated tick restarts the 300 ms debounce; `op_saturated`, `steer_req`,
+`ldw`, the command path and `GW_BLINK_CEIL_PCT` 50 are unchanged (board `HANDOFF.md` 0n). Replayed from the raw CAN
+of 10f-121 it removes 10f's two lane-change `hard` alarms (and three non-lane-change ones within 0.33 s of a hand),
+delays one by 0.41 s, and leaves 120/121's `op_saturated` pair to the change above. **The two halves go together:**
+with `hard` gated, 115 at 925.06 s becomes a new `OP_SATURATED` edge on the old openpilot (`hard` used to stay true
+across it), and this entry's `OP_SATURATED` is 0 on the whole of 115.
 
 ---
 
