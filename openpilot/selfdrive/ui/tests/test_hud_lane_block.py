@@ -7,7 +7,8 @@ See the LICENSE.md file in the root directory for more details.
 FORK(HUD): the comma 4's lane-block tile (selfdrive/ui/sunnypilot/mici/onroad/hud_lane_block.py; HudLaneBlock).
 
 The rules without a window: which block it shows (selfdrived's own order: a car in the blind spot, then a road edge;
-only while the change waits), the flash's timing, the fades, what cuts it, one flash per refused nudge.
+only while the change waits), the flash's timing, the fades, what cuts it, the hand-over, one flash per refused nudge,
+one step a frame however many times it is asked.
 
 Then the real AugmentedRoadView in a headless raylib window (a child process, as test_hud_render.py; skipped where no
 window opens; HUD_RENDER_OUT=<dir> keeps the PNGs), each frame against the same view with the tile neutralised - the
@@ -16,9 +17,9 @@ stock drawing:
     stays up); EDGE and CAR differ only in the word;
   * a left tile has the top left: the face and the stock MAX number make way;
   * a refused nudge flashes the rim twice, then the rim is still;
-  * when the block clears the tile is gone within 0.15 s, the stock 'steer right' alert and its green arrow take the
-    corner, and the screen is then the stock one pixel for pixel; a change that starts straight from a block gets the
-    green arrow on the model's side;
+  * when the block clears the tile goes on the frame the stock 'steer right' alert comes (never a struck-through arrow
+    over its green one), that alert and its green arrow take the corner, and the screen is then the stock one pixel for
+    pixel; a change that starts straight from a block gets the green arrow on the model's side;
   * every state without a block, and the setting off with a block, is the stock screen pixel for pixel.
 """
 import json
@@ -91,11 +92,11 @@ class TestTile(OpenpilotTestCase):
     from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_lane_block import LaneBlockTile
     return LaneBlockTile()
 
-  def run_tile(self, t, frames, sm, a=None, t0=100.0, dt=0.05, on=True):
+  def run_tile(self, t, frames, sm, a=None, t0=100.0, dt=0.05, on=True, a_out=False):
     alphas = []
     for i in range(frames):
       sm.frame += 1
-      t.update(sm, on, a, t0 + i * dt, 1)
+      t.update(sm, on, a, t0 + i * dt, 1, a_out)
       alphas.append(t.alpha)
     return alphas
 
@@ -119,6 +120,22 @@ class TestTile(OpenpilotTestCase):
                   t0=101.0)
     assert t.alpha == 0.0 and t.side() is None
 
+  def test_it_hands_over_to_the_green_arrow_on_the_frame(self):
+    """The block clears and 'steer right' (or 'changing lanes') is up: gone at once, no struck arrow over the green one.
+    The same alert still fading out from before the block is no hand-over: the tile fades as usual."""
+    for kind in ("preLaneChangeRight", "laneChange"):
+      t = self.tile()
+      self.run_tile(t, 20, FakeSM(edge=True))
+      self.run_tile(t, 1, FakeSM(), a=alert(kind), t0=101.0)
+      assert t.alpha == 0.0 and t.side() is None, kind
+    t = self.tile()
+    self.run_tile(t, 20, FakeSM(edge=True))
+    self.run_tile(t, 1, FakeSM(), a=alert("preLaneChangeRight"), a_out=True, t0=101.0)
+    assert 0.0 < t.alpha < 1.0 and t.side() == "right"
+    t = self.tile()
+    self.run_tile(t, 60, FakeSM(edge=True), a=alert("preLaneChangeRight"))
+    assert t.alpha > 0.99, "while the block holds, the tile stays: selfdrived drops 'steer right' then"
+
   def test_the_setting_off_shows_nothing(self):
     t = self.tile()
     assert max(self.run_tile(t, 20, FakeSM(edge=True), on=False)) == 0.0 and t.block is None
@@ -139,12 +156,33 @@ class TestTile(OpenpilotTestCase):
     assert t._flash_t0 == 103.0, "the next refused nudge flashes again"
 
   def test_once_a_frame(self):
-    t = self.tile()
-    sm = FakeSM(edge=True)
+    """The face, the MAX number's gate, the HUD's state, the box and the coming limit all ask in one frame, on a clock
+    that runs between them (rl.get_time()): one step, at the frame's first time."""
+    from openpilot.system.ui.lib.application import gui_app
+    alphas = {}
+    for calls in (1, 6):
+      t, sm, now, alphas[calls] = self.tile(), FakeSM(edge=True), 100.0, []
+      for _ in range(8):
+        sm.frame += 1
+        for c in range(calls):
+          t.update(sm, True, None, now + c * 0.0005, 1)
+        alphas[calls].append(t.alpha)
+        assert t._t == now
+        now += 1 / gui_app.target_fps
+    assert alphas[6] == alphas[1] and alphas[1][0] < 0.3, alphas
+
+  def test_render_ends_the_frame(self):
+    """A sim that advances neither gui_app's nor the SubMaster's frame (as hud_alerts.FrameAlert): the render ends it."""
+    import pyray as rl
+    t, sm = self.tile(), FakeSM(edge=True)
     t.update(sm, True, None, 100.0, 1)
     a = t.alpha
-    t.update(sm, True, None, 100.0, 1)
-    assert t.alpha == a, "the face, the MAX gate and the render ask in one frame: one step"
+    t.update(sm, True, None, 100.05, 1)
+    assert t.alpha == a and t._t == 100.0
+    t._shown = None   # nothing to draw: render() only ends the frame, no window needed
+    t.render(rl.Rectangle(0, 0, 536, 240))
+    t.update(sm, True, None, 100.05, 1)
+    assert t.alpha > a and t._t == 100.05
 
   def test_the_other_blinker_is_a_new_tile(self):
     t = self.tile()
@@ -158,7 +196,7 @@ class TestHooks(OpenpilotTestCase):
     src = HUD_RENDERER_SP.read_text(encoding="utf-8")
     for needle in ("hud_lane_block import BlockTurnIntent, LaneBlockTile  # FORK(HUD)",
                    "self._lane_block_now()  # FORK(HUD)",
-                   "self._lane_block.render(rect, rl.get_time())  # FORK(HUD)",
+                   "self._lane_block.render(rect)  # FORK(HUD)",
                    "or self._approach_top_icon() or self._lane_block_left()",
                    "if self._lane_block_left():  # FORK(HUD): the lane-block tile has the top left\n      return APPROACH_CUT",
                    "if self._lane_block_left():  # FORK(HUD): the lane-block tile has the top left; the box"):
@@ -494,6 +532,7 @@ class TestLaneBlockRender(OpenpilotTestCase):
     s = self.r["seq"]
     block, c1, c2, c3, steer, changing = range(6)
     assert s["alpha"][1] > 0.95 and s["alpha"][2] < s["alpha"][1] and s["alpha"][4] == 0.0, f"gone in 0.15 s {s}"
+    assert s["alpha"][2] == 0.0 and s["tile_orange"][c1] == 0, f"gone on the frame 'steer right' comes {s}"
     assert s["tile_orange"][c3] == 0 and s["arrow_green"][steer] > 300, f"the green arrow in the corner {s}"
     assert s["vs_stock"][steer] == 0 and s["vs_stock"][changing] == 0, f"then the stock screen {s}"
 

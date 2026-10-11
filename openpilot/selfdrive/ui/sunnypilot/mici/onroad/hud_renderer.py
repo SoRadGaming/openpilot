@@ -57,7 +57,7 @@ class HudRendererSP(HudRenderer):
     super()._render(rect)
     self._draw_pending_max(rect)  # FORK(HUD)
     self._draw_approach(rect)  # FORK(HUD)
-    self._lane_block.render(rect, rl.get_time())  # FORK(HUD): over the top-left items, which make way for it
+    self._lane_block.render(rect)  # FORK(HUD): over the top-left items, which make way for it
     self.blind_spot_indicators.render(rect)
     hud_alerts.frame_alert.clear()  # FORK(HUD): the last to ask this frame
 
@@ -73,8 +73,8 @@ class HudRendererSP(HudRenderer):
   # FORK(HUD): the lane-block tile (hud_lane_block.py)
   def _lane_block_now(self) -> LaneBlockTile:
     """This frame's tile, decided once a frame - by whoever asks first: the face, the MAX number's gate or the render."""
-    alert = self._frame_alert()[0] if self.alert_renderer is not None else None
-    self._lane_block.update(ui_state.sm, hud_settings.get().lane_block, alert, rl.get_time(), ui_state.started_frame)
+    alert, out = self._frame_alert() if self.alert_renderer is not None else (None, False)
+    self._lane_block.update(ui_state.sm, hud_settings.get().lane_block, alert, rl.get_time(), ui_state.started_frame, out)
     return self._lane_block
 
   def _lane_block_left(self) -> bool:  # FORK(HUD)

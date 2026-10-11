@@ -15,15 +15,20 @@ this tile shows the block instead:
   * 92 x 100 px in the top corner on the blinker side - where the stock green lane-change arrow goes - with the arrow
     dimmed and struck through in orange and the reason under it: EDGE (a road edge) or CAR (a car in the blind spot);
   * silent. A nudge toward the blinker that the block refused (modelDataV2SP.laneChangeNudgeRefused, from
-    DesireHelper) flashes its rim twice, and selfdrived chimes once for it;
-  * when the block clears, it fades out (0.15 s) and the stock 'steer left / right' or 'changing lanes' alert brings
-    the green arrow up in the same place; meanwhile the turn-intent arrow over the wheel stays up (BlockTurnIntent).
+    DesireHelper) flashes its rim twice, and selfdrived chimes once for it - both on the flag's rising edge, which
+    DesireHelper lets come at most once in 2 s, so the flash and the chime are always a pair;
+  * when the block clears and the stock 'steer left / right' or 'changing lanes' alert comes, the tile goes on the frame
+    and that alert's green arrow takes the same place (never a struck-through arrow over a green one); a block that
+    clears with no alert to follow (the blinker off) fades out in 0.15 s. Meanwhile the turn-intent arrow over the wheel
+    stays up (BlockTurnIntent).
 
 Truthful only: it is drawn while modelV2 says the change is waiting (preLaneChange) and the block selfdrived acts on
 is set - carState's blind spot first, then modelDataV2SP's road edge, selfdrived's own order - never predicted. Any
-alert on screen other than the lane-change ones wins: the tile goes on the frame (as the coming limit does). A left
-tile has the top left: the driver-monitoring face, the stock MAX number, the coming limit and the confirm's box make
-way while it shows.
+alert on screen other than the lane-change ones wins: the tile goes on the frame (as the coming limit does), and while
+that alert is up a refused nudge has no answer at all - no flash, as the tile is not drawn, and no chime, as the chime
+(Priority.LOWER) never takes the place of an alert on screen. That alert has the screen and the sound; the refusal
+itself is unchanged and the tile is back when the alert has gone. A left tile has the top left: the driver-monitoring
+face, the stock MAX number, the coming limit and the confirm's box make way while it shows.
 """
 from dataclasses import dataclass
 
@@ -113,12 +118,20 @@ def cuts_tile(alert) -> bool:
   return alert is not None and event_name(alert) not in HANDOVER and not hud_alerts.frees_top_icons(alert)
 
 
+def hands_over(alert, alert_out: bool) -> bool:
+  """A lane-change alert the tile hands over to is up (not animating out): its green arrow has the tile's corner."""
+  return alert is not None and not alert_out and event_name(alert) in HANDOVER
+
+
 def tile_x(rect: rl.Rectangle, side: str) -> float:
   return rect.x + MARGIN if side == LEFT else rect.x + rect.width - MARGIN - TILE_W
 
 
 class LaneBlockTile:
-  """One per HUD renderer. update() once a frame (idempotent within one), then render()."""
+  """One per HUD renderer. update() any number of times a frame - the face, the MAX number's gate, the confirm's box,
+  the coming limit and the HUD's own state all ask - and it steps once: a frame is a gui_app frame and a SubMaster
+  frame, and render() ends it (for a sim that advances neither, as hud_alerts.FrameAlert). `now` is read on the
+  frame's first call only, and render() draws at that time."""
   def __init__(self):
     self._alpha = FirstOrderFilter(0.0, FADE_IN_S, 1 / gui_app.target_fps)
     self.block: Block | None = None   # this frame's block, with the setting on
@@ -129,8 +142,9 @@ class LaneBlockTile:
     self._key = None
     self._t = -1e9
 
-  def update(self, sm, on: bool, alert, now: float, started_frame: int = 0) -> None:
-    key = (sm.frame, now)
+  def update(self, sm, on: bool, alert, now: float, started_frame: int = 0, alert_out: bool = False) -> None:
+    """alert, alert_out: this frame's alert and whether it is animating out (AlertRenderer.will_render())."""
+    key = (gui_app.frame, sm.frame)
     if key == self._key:
       return
     self._key = key
@@ -143,8 +157,8 @@ class LaneBlockTile:
       self._flash_t0 = now
     self._refused = b is not None and b.refused
     self.block = b
-    if self._cut:
-      self._alpha.x = 0.0     # an alert has the screen: gone on the frame, no tail
+    if self._cut or (b is None and hands_over(alert, alert_out)):
+      self._alpha.x = 0.0     # an alert has the screen, or the green arrow has the corner: gone on the frame, no tail
     if b is not None and not self._cut:
       if self._shown is not None and self._shown.side != b.side:
         self._alpha.x = 0.0   # the other blinker: a new tile, not a slide
@@ -168,11 +182,13 @@ class LaneBlockTile:
   def covers_left(self) -> bool:
     return self.side() == LEFT
 
-  def render(self, rect: rl.Rectangle, now: float) -> None:
+  def render(self, rect: rl.Rectangle) -> None:
+    """Draws this frame's tile, and ends the frame: the next update() steps."""
+    self._key = None
     b = self._shown
     if b is None or self._alpha.x < 1e-2:
       return
-    lit = self._flash_t0 is not None and flash_lit(now - self._flash_t0)
+    lit = self._flash_t0 is not None and flash_lit(self._t - self._flash_t0)
     draw_tile(tile_x(rect, b.side), rect.y + MARGIN, b.side, b.word, self._alpha.x, lit)
 
 

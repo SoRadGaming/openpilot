@@ -14,8 +14,12 @@ With the tile on, on a comma 4 only:
     logged (onroadEvents / onroadEventsSP);
   * a nudge the block refused (modelDataV2SP.laneChangeNudgeRefused, from DesireHelper, which alone knows the nudge,
     NUDGE_FIRM and a stale gateway torque) raises laneChangeNudgeRefused on its rising edge: one size-none alert with
-    one 'prompt' chime per refused nudge, never repeated while it is held.
-With it off, or on any other device (the comma 3X keeps its own alerts), everything is as upstream.
+    one 'prompt' chime per refused nudge, never repeated while it is held. DesireHelper lets the flag rise at most once
+    in 2 s (NUDGE_REFUSED_GAP_FRAMES) - the limit lives there, not here, because the UI flashes the tile on the same
+    rising edge: one source, so the flash and the chime are always a pair.
+  * with another alert on screen (LOW and up) the chime (Priority.LOWER) does not play and the tile is not drawn: a
+    refused nudge then has no answer, and that alert has the screen and the sound.
+With it off, or on any other device (the comma 3X keeps its own alerts), selfdrived is as upstream.
 """
 from openpilot.cereal import log, custom
 from openpilot.sunnypilot.selfdrive.selfdrived.events import IS_MICI

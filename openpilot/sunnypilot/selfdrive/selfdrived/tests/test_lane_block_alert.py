@@ -49,17 +49,18 @@ def frame_state(edge=False, blindspot=False, refused=False, state=LCS.preLaneCha
                                                 rightLaneChangeEdgeBlock=False))
 
 
-def drive(lba: LaneBlockAlert, frames, other=None):
+def drive(lba: LaneBlockAlert, frames, other=None, types=(ET.WARNING,)):
   """selfdrived's per-frame path for a left lane change: 'Handle lane change' (blind spot, then road edge, else
   preLaneChange), the helper's events, create_alerts, the helper's filter, the AlertManager. other: an extra event raised
-  every frame. Returns [(alert_type, audible_alert)] per frame."""
+  every frame, or a list of one event (or None) per frame. Returns [(alert_type, audible_alert)] per frame."""
   am, ev, ev_sp = AlertManager(), Events(), EventsSP()
   out = []
   for frame, f in enumerate(frames):
     ev.clear()
     ev_sp.clear()
-    if other is not None:
-      ev.add(other)
+    e_other = other[frame] if isinstance(other, list) else other
+    if e_other is not None:
+      ev.add(e_other)
     if f.state == LCS.preLaneChange:
       if f.blindspot:
         ev.add(EN.laneChangeBlocked)
@@ -69,8 +70,7 @@ def drive(lba: LaneBlockAlert, frames, other=None):
         ev.add(EN.preLaneChangeLeft)
     for e in lba.update(f.state, f.mdv2sp):
       ev_sp.add(e)
-    types = [ET.WARNING]
-    alerts, alerts_sp = ev.create_alerts(types), ev_sp.create_alerts(types)
+    alerts, alerts_sp = ev.create_alerts(list(types)), ev_sp.create_alerts(list(types))
     alerts, alerts_sp = lba.drop_block_alerts(alerts, alerts_sp)
     am.add_many(frame, alerts + alerts_sp)
     am.process_alerts(frame, set())
@@ -119,10 +119,21 @@ class TestTileOn(OpenpilotTestCase):
     assert chimes(out) == 0
 
   def test_it_never_takes_the_place_of_an_alert_on_screen(self):
-    """Priority.LOWEST: with another alert up, the tile's flash answers the nudge on its own."""
+    """Priority.LOWER: with another alert up the nudge has no answer - no chime here, and the tile is not drawn either
+    (test_hud_lane_block.py): that alert has the screen and the sound."""
     frames = seconds(0.5, edge=True) + seconds(0.5, edge=True, refused=True)
     out = drive(helper(), frames, other=EN.steerSaturated)
     assert all(t == "steerSaturated/warning" for t, _, _ in out)
+
+  def test_steer_override_does_not_cut_the_chime_short(self):
+    """steerOverride (LOWEST) restarts on every new steeringPressed; a hand that lets go for 30 ms right after the nudge
+    must not take the chime's place before soundd (20 Hz) has seen it: it stays current for its 0.2 s."""
+    pressed = [True] * 30 + [True] * 3 + [False] * 3 + [True] * 40
+    frames = seconds(0.3, edge=True) + seconds(0.46, edge=True, refused=True)
+    out = drive(helper(), frames, other=[EN.steerOverride if p else None for p in pressed],
+                types=(ET.WARNING, ET.OVERRIDE_LATERAL))
+    current = [t == "laneChangeNudgeRefused/warning" for t, _, _ in out]
+    assert chimes(out) == 1 and sum(current) >= 0.2 * FPS - 1, current
 
   def test_the_preLaneChange_alert_is_untouched(self):
     out = drive(helper(), seconds(1.0))
@@ -154,7 +165,7 @@ class TestTheEvent(OpenpilotTestCase):
     assert set(entry) == {ET.WARNING}
     a = entry[ET.WARNING]
     assert a.alert_size == AlertSize.none and a.alert_text_1 == "" and a.alert_text_2 == ""
-    assert a.audible_alert == AudibleAlert.prompt and a.priority == Priority.LOWEST
+    assert a.audible_alert == AudibleAlert.prompt and a.priority == Priority.LOWER
 
   def test_in_the_schema(self):
     names = custom.OnroadEventSP.EventName.schema.enumerants

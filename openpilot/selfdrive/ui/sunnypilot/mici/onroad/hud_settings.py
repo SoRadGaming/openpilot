@@ -8,8 +8,9 @@ FORK(HUD): the comma 4 HUD's settings - one param per piece, set from sunnylink 
 
 READ AT MOST ONCE A SECOND, from the render thread: nine small param reads a second, never one per frame.
 
-EVERY KEY DEFAULTS TO ON (params_keys.h), and every key off gives exactly the stock comma 4 screen. A key that cannot be
-read at all - a build whose params library predates it - reads as OFF, so a half-installed update draws the stock
+EVERY KEY DEFAULTS TO ON (params_keys.h), and every key off gives the stock comma 4 screen - but for one fix behind no
+key: the 'changing lanes' arrow takes its side from the model (mici alert_renderer.py, 2026-10-12). A key that cannot
+be read at all - a build whose params library predates it - reads as OFF, so a half-installed update draws the stock
 screen rather than half a HUD.
 
 Round 5 (2026-10-09, the owner's option A) took the live speed, the speed-limit sign and its zone styling, and the next
