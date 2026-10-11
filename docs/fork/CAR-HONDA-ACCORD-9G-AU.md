@@ -791,7 +791,7 @@ All of these do nothing while `HondaDynamicTuningEnabled` is off. Integration se
 |---|---|---|
 | construct | `self.dynamic_tuner = HondaDynamicTuner(CP, CP_SP)` | reads the params once, when the controller is built, which is at ignition |
 | pitch feedforward | `hill_accel = self.dynamic_tuner.update_state(CC, CS)`; `adjust_accel = accel + hill_accel` feeds `compute_gas_brake()` and, without an interceptor, `pcm_accel` | compensates for road grade |
-| aero | `wind_brake * self.dynamic_tuner.wind_scale()` on the brake side, also passed to the interceptor; `self.dynamic_tuner.update_wind(CC, CS, float(wind_brake_ms2))` | **none since 2026-10**: `wind_scale()` returns 1.0 and `update_wind()` does nothing (9.1, retired channels). The calls stay so this upstream file needs no edit. With the tuner on that moved the brake-on point slightly: the persisted scale was about 0.80, so light braking at 25 m/s now gets about 5 counts less brake |
+| aero | `wind_brake * self.dynamic_tuner.wind_scale()` on the brake side, also passed to the interceptor; `self.dynamic_tuner.update_wind(CC, CS, float(wind_brake_ms2))` | **none since 2026-10**: `wind_scale()` returns 1.0 and `update_wind()` does nothing (9.1, retired channels). The calls stay so this upstream file needs no edit. With the tuner on that moved the brake-on point slightly: the persisted scale was about 0.80, so light braking at 25 m/s now gets about 5 counts less brake. Since 2026-10-12 the brake-side credit is 0 at full brake on this car (7.11) |
 | brake gain | `brake_gain = self.dynamic_tuner.brake_gain(CC, CS, float(apply_brake))` multiplies `apply_brake` before it is scaled to counts | learned brake scale |
 | brake release limit | `if self.dynamic_tuner.enabled and CC.longActive and not CS.out.gasPressed and not CS.out.brakePressed: apply_brake = max(self.apply_brake_last - 32, apply_brake)` | the brake command can fall by at most 32 counts per 50 Hz frame, to match factory. This stops the lurch as the car lets go at a stop. It is bypassed on disengage and on driver override, and it runs before the pump logic so the Elesys anchor sees exactly what goes on the wire |
 | soft final stop | `self.soft_stop = ElesysSoftStop() if (CP.carFingerprint in HONDA_ELESYS and self.dynamic_tuner.enabled) else None`; `apply_brake = self.soft_stop.update(CC, CS, apply_brake, self.dynamic_tuner)` after the brake gain, before the release limit | a brake ceiling while still rolling in the stopping state (7.8). Unlike the other hooks it is `HONDA_ELESYS`-only: built for this car with the toggle on, never for another Nidec car |
@@ -917,6 +917,38 @@ What is left of it:
 - **What runs is what ran with the setting off:** today's brake law (7.1, with the learned gain of 9.1) and gas law v2's
   `elesys_pedal_v2()` on every frame (9.2). Through the real `CarInterface` on routes `10f`, `115` and `120`, CarParams,
   CarParamsSP and every sendcan frame are byte-identical to `e6a18c839` with the setting absent and with it `0`.
+
+### 7.11 Full brake: no aero credit (2026-10-12)
+
+Owner decision 2026-10-12 (option F of the longitudinal-fidelity study). The brake block sends
+`np.clip(self.brake_last - wind_credit, 0.0, 1.0)`, where `wind_credit` is upstream's `wind_brake * wind_scale()` - the
+drag the car gets for free, taken off the brake so a steady request lands the same decel at every speed. On
+`HONDA_ELESYS` it now goes through `elesys_wind_credit(self.brake_last, wind_credit)`, which returns 0 once `brake_last`
+is at or above `ELESYS_FULL_BRAKE` (`FORK(HONDA_ACCORD_9G_AU)` above `process_hud_alert()`).
+
+- **Why.** At full brake the credit only lowered the ceiling: `(0.99 - wind_brake) x 256` was 245 counts at 30 km/h,
+  236 at 60 (measured 235-236 on route 121 t243-247, where the plan asked -2.25 to -3.02 m/s^2 and the car gave -2.2 to
+  -2.58) and 223 at 100, against 253 standing still. Now it is 253 at every speed with a brake gain of 1.0.
+- **Why 0.99.** `actuator_hysteresis()` holds a rising request `brake_hyst_gap` (0.01) under itself, so a request of 1.0
+  leaves `brake_last` at exactly 0.99; `brake_last >= 1.0` is never true. `ELESYS_FULL_BRAKE = 0.99 - 1e-6`. A request
+  of 0.999 or less settles at 0.989 or less and keeps the credit.
+- **The count.** `int(0.99 x gain x 256)`: 253 at gain 1.0, 252 at 0.9974 (121's stored gain), and 255 - the code's
+  `NIDEC_BRAKE_MAX - 1`, panda's `max_brake` - from a gain of 1.0062 (130's 1.0158). The 254 the study expected does
+  not occur at gain 1.0.
+- **What it touches.** Every frame below the ceiling is bit-identical. Entering it, the command rises by the credit (0
+  to 38 counts at 0 to 35 m/s) in one 50 Hz frame; that is above 200 counts, where v5 and C1b already run the pump
+  continuously while moving, so the pump bit does not change. Leaving it, the credit returns and the 32 counts/frame
+  release limiter (7.6) smooths the step. The soft stop (7.8) still applies after it. Stock AEB: panda forwards the
+  CMBS `0x1FA` while its brake is >= openpilot's (8.2), and a real CMBS brake is 320-1022 counts
+  (`S:/OP/CMBS_AEB_bitmap.md`), so a higher openpilot ceiling cannot hold the forward back. A NaN `vEgo` still never
+  raises: either the credit is 0 or the 7.8 fallback replaces a non-finite result.
+- **The brake learner (9.1)** weights its error by the commanded fraction, which at full brake is now 0.99 instead of
+  0.99 - wind. It needs 150 frames of a steady plan, so it rarely learns in an emergency; on routes 120, 121 and 130 no
+  frame after a full-brake episode changed. It was already learning against the hardware ceiling there before; this is
+  not new.
+
+Replays and tests: `docs/CHANGELOG_SERIAL_STEERING.md` 2026-10-12 (push6). `test_elesys.py`
+`TestElesysFullBrakeNoWindCredit` (10).
 
 ## 8. Panda safety (`opendbc/safety/modes/honda.h`)
 
@@ -1454,6 +1486,7 @@ This car has two rules, on top of upstream's lane-change logic. Since the 2026-0
 - 600 catches those weak nudges without changing any nudge that already worked.
 - Why this car needs it: below the EPS's 50 km/h floor the wheel is unassisted, so a nudge easily passes 1200. With 160 counts of gateway assist in the wheel, the same nudge lands around 900.
 - 600 is the value the 11G Accord already uses (opendbc `b7d15a98`, sunnypilot `715ea5df6`).
+- **Debounced since 2026-10-12** (owner decision; `carstate_ext.py` `STEERING_PRESSED_MIN_COUNT = 5`, area C inside an area-B function). At 600 the flag sat just above the noise floor - 10 serial counts on the board's mirror, 57-104 press onsets a minute on 115-130, most of them blips under 100 ms - and every blip froze the lateral integrator, restarted torqued's and lagd's 2 s no-learning window and blanked the "steer required" check for 2 s. `_update_driver_torque_validity()` now sets `steeringPressed` once per frame from the final torque (0x18F, or the `0x700` mirror) through upstream's `CarStateBase.update_steering_pressed(abs(torque) > STEER_THRESHOLD, 5)`, as Hyundai, VW, Ford, Tesla and PSA do: a press registers on its 6th consecutive frame (50 ms late), a blip of 1-5 frames never does, a press held 11 frames or more releases on its 6th clear frame. The threshold stays 600. Replayed on 115-130: onsets per engaged minute 55-99 -> 8-25, engaged time 2 s or more after a press 18-37% -> 30-81%; on d9 the 11 nudges that armed and the four of b7d15a98's six that arm today still arm, three of them 50 ms later and one 150 ms earlier; 12d at 833.2 s arms 0.85 s earlier because the debounced flag bridges a one-frame dip in the push (CHANGELOG 2026-10-12, push6).
 
 **2. `NUDGE_FIRM`: a nudge must be firm, or held.** With the threshold at 600, a single 10 ms reading of 645 counts confirmed a lane change (route `fc`, t = 768.8), and the driver reported that touching the wheel with the blinker on started a lane change.
 
@@ -1471,7 +1504,7 @@ This car has two rules, on top of upstream's lane-change logic. Since the 2026-0
 
 The commit message says its figures came from driving the real `desire_helper` over the windows. I could not tell which set describes the code as committed. If the replay is re-run, fix the comment to match.
 
-Cars not in the table keep upstream's single-frame rule. `steeringPressed` itself does not change, so DM and the lateral controller still see a light hand on the wheel.
+Cars not in the table keep upstream's single-frame rule. `NUDGE_FIRM` does not change `steeringPressed`, so DM and the lateral controller still see a light hand on the wheel (debounced, item 1).
 
 Wiring: `openpilot/selfdrive/modeld/modeld.py` and `openpilot/sunnypilot/modeld_v2/modeld.py` construct `DesireHelper(CP.carFingerprint)`, subscribe to `carStateSP`, and call `DH.update(..., left_edge, right_edge, driver_torque_stale=sm['carStateSP'].driverTorqueStale)`. That argument is area B: a latched torque cannot confirm a nudge (`torque_applied = carstate.steeringPressed and not driver_torque_stale and ...`). It is the last parameter and passed by keyword, because upstream put its two road-edge parameters in the slot the fork used to fill positionally. The hunks carry `FORK(HONDA_ACCORD_9G_AU)` (the constructor) and `FORK(LKAS-GATEWAY)` (the rest).
 
@@ -1686,7 +1719,7 @@ Adds `HondaDynamicTuningEnabled`, `HondaDynBrakeGain`, the three `HondaDynModeSe
 
 | test | repo | how to run | what it pins |
 |---|---|---|---|
-| `opendbc/car/honda/tests/test_elesys.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys` (103 tests) | category membership and dispatch (`compute_gas_brake(accel, speed, CP)`); the upstream Nidec map untouched; the Elesys gas/brake golden table; the pump (20 cases); the gas curve; the units bit (`create_brake_command(..., is_metric=, elesys=)`); the gear dwell; the stock AEB truth table and DBC signal names (not the `carstate.py` branch, 6.3). Since 2026-10 also the lateral tune (2.4, 5.1): `TestElesysTorquePrior`, `TestElesysSteerDelay`, and the area-B `TestElesysReportedTorque`, `TestElesysReportedTorqueSeam`, `TestElesysTorqueScale`; since 2026-10-04 `TestElesysKeyOffSteerStatus` (6.4); since 2026-10-06 `TestBrakePumpC1b` (22: the onset burst at the first frame, rises with no gap, the crawl run and its edges, the firm run, standstill silence, the one hold-build and hold-rise burst, the creep guard, release, NaN speed, and the rule against c1weak's replay rule on a random trace), `TestElesysPumpRuleSelection` (4: flag 16 runs v5; since round 5 flag 32 runs today's law, 7.10) and `TestElesysC1bWithTheSoftStop` (2, with the 0x1FA pump bit through the soft stop's crawl run), 7.2 (they replaced batch 3's `TestBrakePumpC1`) |
+| `opendbc/car/honda/tests/test_elesys.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys` (125 tests) | category membership and dispatch (`compute_gas_brake(accel, speed, CP)`); the upstream Nidec map untouched; the Elesys gas/brake golden table; the pump (20 cases); the gas curve; the units bit (`create_brake_command(..., is_metric=, elesys=)`); the gear dwell; the stock AEB truth table and DBC signal names (not the `carstate.py` branch, 6.3). Since 2026-10 also the lateral tune (2.4, 5.1): `TestElesysTorquePrior`, `TestElesysSteerDelay`, and the area-B `TestElesysReportedTorque`, `TestElesysReportedTorqueSeam`, `TestElesysTorqueScale`; since 2026-10-04 `TestElesysKeyOffSteerStatus` (6.4); since 2026-10-06 `TestBrakePumpC1b` (22: the onset burst at the first frame, rises with no gap, the crawl run and its edges, the firm run, standstill silence, the one hold-build and hold-rise burst, the creep guard, release, NaN speed, and the rule against c1weak's replay rule on a random trace), `TestElesysPumpRuleSelection` (4: flag 16 runs v5; since round 5 flag 32 runs today's law, 7.10) and `TestElesysC1bWithTheSoftStop` (2, with the 0x1FA pump bit through the soft stop's crawl run), 7.2 (they replaced batch 3's `TestBrakePumpC1`); since 2026-10-12 `TestElesysFullBrakeNoWindCredit` (10, 7.11) and `TestElesysSteeringPressedDebounce` (9, 10.2) |
 | `opendbc/car/honda/tests/test_elesys_pump_brake_flags.py` | opendbc | `python -m unittest opendbc.car.honda.tests.test_elesys_pump_brake_flags` (7 tests) | flag 64 from `_initialize_honda()`: off byte-identical to no hook, the setting only its own bit, the retired `HondaElesysPumpV6` / flag 16 and (round 5) `HondaElesysBrakeLawV2` / flag 32 never read or set, never in stock ACC mode, without openpilot long or on another Honda (7.2, 7.10, 11) |
 | `openpilot/sunnypilot/selfdrive/car/tests/test_honda_elesys_pump_brake.py` | sunnypilot | `python tools/test_runner.py <path>` (7 tests) | the default (C1b on) reaching the hook through `initialize_params()`, the retired keys neither registered nor handed over, C1b on and flags 16/32 clear whatever their files say (7.2, 7.10, 11) |
 | `opendbc/sunnypilot/car/honda/test_elesys_gas.py` | opendbc | `python -m unittest opendbc.sunnypilot.car.honda.test_elesys_gas` (38 tests) | the gas law and the launch cap, 9.2 |

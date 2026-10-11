@@ -680,10 +680,10 @@ held    = frames STEER_TORQUE_SENSOR has been bit-identical (capped at STEER_TOR
 latched = STEER_STATUS.STEER_CONTROL_ACTIVE and held >= 25          # both, not either
 if latched and _eps_lin_driver_torque_valid(cp):                    # short-circuit: called ONLY when latched
     steeringTorque  = SERIAL_TORQUE_TO_CAN * EPS_LIN_RAW.STEER_TORQUE     # -64.5
-    steeringPressed = abs(steeringTorque) > STEER_THRESHOLD.get(fingerprint, 1200)   # 600 on this car (area C)
     latched = False
 driverTorqueStale = latched
-if latched: steeringPressed = False
+pressed = not latched and abs(steeringTorque) > STEER_THRESHOLD.get(fingerprint, 1200)  # 600 on this car (area C)
+steeringPressed = update_steering_pressed(pressed, 5) and not latched    # once per frame, both paths (2026-10-12)
 
 _eps_lin_driver_torque_valid(cp):
     ts = ts_nanos["EPS_LIN_RAW"]["STEER_TORQUE"]

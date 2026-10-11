@@ -15,6 +15,109 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-12 — full brake without the aero credit; `steeringPressed` debounced (push6)
+
+The owner's two decisions of 2026-10-12, both "yes, next push": (F) no wind allowance at full braking, and (A) a
+5-frame debounce on "hands on wheel", with `STEER_THRESHOLD` 600 unchanged. opendbc `push6`, sunnypilot `push6` (both
+from `lcalert`). Not pushed, not flashed; no board change.
+
+**(F) Full brake reaches the ceiling at any speed** (opendbc `carcontroller.py`, `ELESYS_FULL_BRAKE`,
+`elesys_wind_credit()`; car doc 7.11). The brake block sends `brake_last - wind_brake`: upstream takes the drag the
+car gets for free off the brake. At full brake that only lowered the ceiling - 245 counts at 30 km/h, 236 at 60
+(measured 235-236 on 121), 223 at 100, against 253 standing still. Once `brake_last` sits at its ceiling the credit is
+now skipped, on `HONDA_ELESYS` only. The ceiling is 0.99, not the 1.0 the study named: `actuator_hysteresis()` holds a
+rising request 0.01 under itself, so a request of 1.0 leaves `brake_last` at exactly 0.99 and `brake_last >= 1.0` is
+never true. Full brake is therefore `int(0.99 x gain x 256)`: **253 counts** at a brake gain of 1.0 (not the 254 the
+study expected), 255 (the code's `NIDEC_BRAKE_MAX - 1` and panda's `max_brake`) from a learned gain of 1.0062. About
++0.07 to +0.14 m/s² in emergencies (inferred, the study's figure).
+
+* Every frame below full brake is bit-identical. The release limiter (32 counts/frame) is unchanged and smooths the
+  credit coming back as the request leaves full brake (up to 38 counts at 35 m/s). Both pump rules already run the
+  pump continuously above 200 counts while moving, so the pump bit does not change. The soft stop's ceiling still
+  applies after it. Stock AEB is untouched: panda forwards the CMBS `0x1FA` while its brake is >= openpilot's, and a
+  real CMBS brake is 320-1022 counts.
+* **One interaction, kept:** the brake learner weights its error by the commanded fraction, which at full brake is now
+  0.99 instead of 0.99 - wind. It is gated on 150 frames of a steady plan, so it rarely runs during an emergency; on
+  the replays below no frame after a full-brake episode changed.
+
+Replayed open loop: this tree's `CarInterface` driven by each route's CAN, `CarController.apply()` on the LOGGED
+`carControl` with the route's own stored brake gain and CarParamsSP flags; old = `lcalert`. Old reproduces the logged
+`COMPUTER_BRAKE` exactly on 98.4-99.6% of frames.
+
+| route | full-brake `0x1FA` frames | where | logged / old → new | other `0x1FA` frames |
+|---|---|---|---|---|
+| 120 | 18 | t 114.8-115.2, 57→54 km/h, plan -3.0 to -3.1 | 237-238 → 253 (gain 0.9996) | identical (26 050) |
+| 121 | 244 | t 239.9-244.7, 61→20 km/h, plan -2.5 to -4.0 (the study's t243-247 ask) | 235-248 → 252 (gain 0.9974) | identical (23 231) |
+| 130 | 62 | t 47.5-48.8, 33→23 km/h, plan -2.3 to -2.6 | 248-252 → 255 (gain 1.0158, clipped) | identical (55 588) |
+| 115, 12d | 0 | - | - | identical (50 913, 71 014) |
+
+130's 77 km/h stop at about 376-390 s never reached full brake (plan -2.25 m/s² at most, `brake_last` 0.878, 208
+counts) and is unchanged. The pump bit and `0x0E4` are identical on every frame of all five routes. Closed loop (the
+lateral harness below, which also runs longcontrol) gives the same picture with a gain of 1.0: 120 21 frames 237-238
+→ 253, 121 242 frames 235-249 → 253, 130 62 frames 245-248 → 253, nothing else in `0x1FA`.
+
+**(A) `steeringPressed` is debounced** (opendbc `carstate_ext.py`, `STEERING_PRESSED_MIN_COUNT = 5`; car doc 10.2,
+LKAS-GATEWAY-PROTOCOL 8.2). `_update_driver_torque_validity()` now decides `steeringPressed` once per frame from the
+FINAL torque - 0x18F's, or the board's `0x700` mirror substituted for a latched 0x18F - through upstream's
+`CarStateBase.update_steering_pressed(abs(torque) > STEER_THRESHOLD, 5)`, the count Hyundai, VW, Ford, Tesla and PSA
+use. One counter sees every frame on both paths, so a push that spans the switch from 0x18F to the mirror is not cut.
+It overwrites upstream's `carstate.py` line (no double application). A latched value with no board frame counts as not
+pressed and the output is False outright, as before. The counter climbs on a pressed frame, falls on any other, is
+clipped to 0..11 and reads pressed above 5: **a press registers on its 6th consecutive frame (50 ms late), a blip of
+1-5 frames never does, and a press held 11 frames or more releases on its 6th clear frame.** Single dropped frames
+inside a hold no longer flick the flag. Other Hondas keep upstream's single-frame flag; the threshold stays 600.
+
+Replayed: this tree's CarState on each route's CAN (old reproduces the logged flag on 99.5-99.8% of frames). Engaged
+= `latActive` above 52 km/h; "free" = engaged time 2 s or more after the last press, which is what torqued and lagd
+learn on and when the "steer required" check is armed; MADS = rising/falling edges of the flag while MADS is enabled
+or overriding, i.e. its `overriding` entries and exits (the logged state machine's own count in brackets).
+
+| route | pressed old → new | onsets per engaged minute | free | MADS override entries / exits |
+|---|---|---|---|---|
+| 115 | 8.9 → 6.4% | 80.4 → 11.5 | 37.2 → 81.1% | 974/972 → 257/252 (976) |
+| 120 | 7.3 → 4.5% | 80.5 → 8.2 | 29.1 → 78.3% | 551/550 → 100/99 (549) |
+| 121 | 19.0 → 16.8% | 99.2 → 20.3 | 29.4 → 64.2% | 513/509 → 154/148 (519) |
+| 12d | 49.0 → 48.9% | 55.3 → 23.8 | 17.9 → 29.5% | 596/590 → 309/304 (599) |
+| 130 | 40.7 → 40.3% | 70.0 → 24.9 | 22.0 → 37.3% | 783/777 → 373/366 (783) |
+
+As the study predicted, the night routes (blips) change most and 12d/130 (long holds) least in pressed time, but
+every route loses 55-90% of its onsets.
+
+**Lane-change nudges** (this tree's `DesireHelper` on the replayed CarState, the logged `latActive` and lane-change
+probability). Route d9, 28 logged `preLaneChange` windows: the 11 that armed in the log arm old and new, 9 at the same
+instant and 2 50 ms later (216.8 s, 248.3 s). Of the six that opendbc `b7d15a98` rescued (logged 0x18F peaks
+600-1225): 609.7 s (937) arms 150 ms EARLIER, 768.8 and 854.5 s unchanged, 850.8 s 50 ms later, and 889.9 s (644)
+and 70.8 s (1225, 32 km/h, under the lane-change speed) arm neither old nor new - at 889.9 the board's mirror shows
+the push going left on a right blinker. The four with a wrong-way logged 0x18F (450.7, 460.6, 727.7, 757.7 s) arm on
+the mirror, unchanged. One re-arm is lost (866.3 s, inside a window both had already armed at 860.65 s; the push
+crossed 600 one model frame before the blinker went off). Routes 115/120/121/12d/130 (36 windows): every arm kept,
+6 of them 50 ms later, and **12d at 833.2 s arms 0.85 s EARLIER**: a push that started at 1935 counts dipped for one frame
+(1935, 1419, 129, 645, 516); the old flag dropped on the dip and reset `NUDGE_HOLD_FRAMES`, the debounced one bridged
+it, and the lane change armed in the push's release tail. That is the only timing change over 50 ms in the wanted
+direction.
+
+**Closed loop, lateral** (lcalert's harness: the real controlsd lateral step against the real `CarInterface`, now fed
+the replayed `steeringPressed`): the debounce changes when the integrator is frozen, so `0x0E4` moves a little through
+most of the engaged time. 120: 80.2% of `0x0E4` frames differ, median 1.8, max 5.6 serial counts (of 160); 121: 63.0%,
+median 1.5, max 6.4; 130: 48.8%, median 0.2, max 1.25. 94.5/92.6/79.7% of the differing frames are within 10 s of a
+frame where the flag differs. Lateral error is unchanged to 4 decimals (mean |desired - actual| 0.0533 / 0.0764 /
+0.0736 m/s² old and new); selfdrived `steerSaturated` 0 old and new; `lac.saturated` 53 → 72 (120), 77 → 83 (121),
+0 → 0 (130). `0x500` differs only in `INTEGRATOR` and `OP_STATE`/`RELEASE_DRIVER`, which follow the flag; the board
+parses those two and reads neither, and `OP_SATURATED` does not change.
+
+**Tests.** opendbc `test_elesys.py` 106 → 125: `TestElesysFullBrakeNoWindCredit` (10: 253 at 30/60/100 km/h where
+the old rule gave 245/236/223; with the tuner on, 0.99 x the learned gain; the 0.99 threshold against
+`actuator_hysteresis()`; every frame below full brake bit-identical to the old rule on a light/firm/full/release
+trace at 15-110 km/h; with the tuner on only the release limiter or the learner carry a difference past full brake;
+the release limiter still bounds every drop at 32; NaN speed still sends; the pump at full brake; the rule; the
+CR-V keeps upstream's credit) and `TestElesysSteeringPressedDebounce` (9: threshold still 600; 1-5 frame blips both
+signs; the 6th frame presses; release after a long and a short press; chatter inside a hold; the `0x700` path the
+same; one counter across the 0x18F → mirror switch and back; latched with no board is False; other Hondas
+undebounced). 13 of the 19 fail on `lcalert`. opendbc Honda 154, sunnypilot Honda 132, `test_car_interfaces` 270,
+safety Honda 1091, the integration script: all pass.
+
+---
+
 ## 2026-10-12 — lane changes: `OP_SATURATED` is openpilot's own alert; the board's blinker ceiling stays unreported (lcalert)
 
 The owner's decision of 2026-10-11, after the lane-change investigation: fix the alert on both sides now (this entry
