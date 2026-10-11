@@ -15,6 +15,44 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-12 — a refused lane change is a tile on the blinker side (the owner's option 3)
+
+The owner kept the refusal (lane changes toward a detected road edge stay refused; upstream PR #2049 declined) and
+asked for a better display of it. Of the three mock-ups he chose option 3, the blinker-side tile. Nothing here changes
+when a lane change is refused or started: RELC, `NUDGE_FIRM` and the stale-torque guard are untouched.
+
+* **The tile (comma 4, `HudLaneBlock`, on by default; sunnylink Visuals → HUD → Lane Change Block Tile).** While the
+  blinker asks for a change that a road edge or a car in the blind spot refuses, a 92 x 100 px tile sits in the top
+  corner on the blinker's side - the stock green arrow's place - with the arrow dimmed and struck through in orange
+  and EDGE or CAR under it. It replaces the orange road-edge alert (which filled the whole road view with three lines
+  and no side) and the orange blind-spot band. It is drawn only while modelV2 says the change waits (preLaneChange)
+  and the same block selfdrived acts on is set, in selfdrived's order. When the block clears it fades out in 0.15 s
+  and the stock 'steer left / right' (or 'changing lanes') brings the green arrow up in the same corner. The
+  turn-intent arrow over the wheel now stays up during the block (upstream hid it). Any other alert takes the screen
+  at once. A left tile has the top left: the face, the stock MAX number, the coming limit and the confirm's box make
+  way while it shows (`hud_lane_block.py`; hooks in `HudRendererSP`).
+* **Silent until a nudge is refused.** The block no longer chimes when it appears. A nudge toward the blinker that
+  would have started the change but for the block (`DesireHelper.nudge_refused`, published as
+  `modelDataV2SP.laneChangeNudgeRefused @3`) flashes the tile's rim twice and plays one `prompt`
+  (`laneChangeNudgeRefused @32`, size none, `Priority.LOWEST` so it never hides an alert on screen). One nudge is one
+  refusal: the flag holds until the wheel has been let go for 0.2 s (`NUDGE_RELEASE_FRAMES`); a stale gateway torque
+  is no nudge. selfdrived drops the two block alerts and raises the chime only with the setting on and only on a
+  comma 4 (`lane_block_alert.py`); the events are still raised and logged. The comma 3X and the setting off are
+  upstream.
+* **Upstream fix in passing (mici `alert_renderer.py`).** The 'changing lanes' arrow took its side from the last icon
+  drawn. After a block there is no 'steer left / right' before the change, so the arrow was missing (after today's
+  road-edge alert too) or on an earlier change's side. It now takes the side from `modelV2.meta.laneChangeDirection`.
+* **Replayed** on the logged routes with this build's RELC (enabled) and DesireHelper and selfdrived's lane-change
+  logic: route 120 t 485.6-489.25 right (refused at the median; one chime at 487.8 for the push of 487.7-488.4, which
+  dips under steeringPressed for 50 ms at 488.0; the edge clears at 489.25, 'steer right' with the green arrow, the
+  change starts on the next nudge at 490.15); route 114 t 773.1 left (the kerb lane, refused with a chime at 773.25);
+  route 115 t 837.45 left (the blinker still on after a finished change, before a turn: the tile, silent - his
+  torque points the other way - until the speed drops under 32 km/h at 840.85). Renders of the real UI are in the
+  session's scratchpad (`edgetile/renders/sheet.png`).
+* **Tests.** New `test_lane_change_nudge_refused.py` (14), `test_lane_block_alert.py` (14) and `test_hud_lane_block.py`
+  (20, 9 of them in a headless window). `test_hud_cluster.py` counts nine settings. The 332 HUD renders (PNGs) of
+  `test_hud_render.py` are pixel-identical to `d95ce71c3`'s.
+
 ## 2026-10-09 — round 5 and the radar fix together (integration)
 
 Round 5 (build A, the next entry down, with opendbc `b24613cf`: brake law v2 removed) and the radar fix (the two entries

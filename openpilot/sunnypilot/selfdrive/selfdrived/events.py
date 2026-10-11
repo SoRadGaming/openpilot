@@ -287,6 +287,17 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 0.1),
   },
 
+  # FORK(HUD): one chime for a lane-change nudge a block refused, with the comma 4's lane-block tile on (raised by
+  # lane_block_alert.py on the nudge's first frame; the tile flashes for it). Nothing drawn. Priority.LOWEST: it never
+  # takes the place of an alert on screen - with one up, the tile's flash is the only answer.
+  EventNameSP.laneChangeNudgeRefused: {
+    ET.WARNING: Alert(
+      "",
+      "",
+      AlertStatus.normal, AlertSize.none,
+      Priority.LOWEST, VisualAlert.none, AudibleAlert.prompt, 0.2),
+  },
+
   EventNameSP.bigModelReady: {
     ET.PERMANENT: Alert(
       "Big Model Ready",

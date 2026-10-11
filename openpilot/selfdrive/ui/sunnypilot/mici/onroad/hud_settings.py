@@ -6,7 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 
 FORK(HUD): the comma 4 HUD's settings - one param per piece, set from sunnylink (Visuals > HUD).
 
-READ AT MOST ONCE A SECOND, from the render thread: eight small param reads a second, never one per frame.
+READ AT MOST ONCE A SECOND, from the render thread: nine small param reads a second, never one per frame.
 
 EVERY KEY DEFAULTS TO ON (params_keys.h), and every key off gives exactly the stock comma 4 screen. A key that cannot be
 read at all - a build whose params library predates it - reads as OFF, so a half-installed update draws the stock
@@ -31,12 +31,15 @@ PARAM_COMPACT_LIMIT = "HudCompactLimitPrompts"  # the speed-limit prompts small:
 PARAM_COMPACT_DISENGAGE = "HudCompactDisengage"  # 'cruise off' / 'lane centering off' as a banner
 PARAM_COMPACT_TURN = "HudCompactTurn"       # 'turning left / right' as a banner
 PARAM_APPROACHING_LIMIT = "HudApproachingLimit"  # the coming limit (lower or higher) in MAX's place, before it changes
+# a refused lane change as a tile on the blinker side, silent until a nudge is refused (hud_lane_block.py); selfdrived
+# reads it too, to drop the two block alerts and chime on the refused nudge (lane_block_alert.py)
+PARAM_LANE_BLOCK = "HudLaneBlock"
 
 # every key (all BOOL) and the HudSettings field it switches: the one list
 FIELDS = {PARAM_STOPPED_TIMER: "stopped_timer", PARAM_STOPPED_BANNER: "stopped_banner",
           PARAM_PLANNED_STOP: "planned_stop", PARAM_CURVE: "curve", PARAM_COMPACT_LIMIT: "compact_limit",
           PARAM_COMPACT_DISENGAGE: "compact_disengage", PARAM_COMPACT_TURN: "compact_turn",
-          PARAM_APPROACHING_LIMIT: "approaching_limit"}
+          PARAM_APPROACHING_LIMIT: "approaching_limit", PARAM_LANE_BLOCK: "lane_block"}
 ALL_PARAMS = tuple(FIELDS)
 
 
@@ -50,6 +53,7 @@ class HudSettings:
   compact_disengage: bool = False
   compact_turn: bool = False
   approaching_limit: bool = False
+  lane_block: bool = False
 
 
 ALL_OFF = HudSettings()

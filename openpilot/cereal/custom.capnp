@@ -367,6 +367,9 @@ struct OnroadEventSP @0xda96579883444c35 {
     # FORK(HONDA_ACCORD_9G_AU): stock ACC mode (HondaElesysStockAcc), shown for a few seconds at the start of a drive.
     # Same rule as above if upstream takes this ordinal.
     hondaElesysStockAcc @31;
+    # FORK(HUD): one prompt chime for a lane-change nudge refused by a block, with the comma 4's lane-block tile on
+    # (HudLaneBlock, lane_block_alert.py). Same rule as above if upstream takes this ordinal.
+    laneChangeNudgeRefused @32;
   }
 }
 
@@ -617,6 +620,11 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
   laneTurnDirection @0 :TurnDirection;
   leftLaneChangeEdgeBlock @1 :Bool;
   rightLaneChangeEdgeBlock @2 :Bool;
+  # FORK(HUD): DesireHelper.nudge_refused - a nudge toward the blinker that would have started the lane change but for
+  # a block (road edge or blind spot), held until the wheel is let go: its rising edge is one refused nudge. Read by
+  # selfdrived (sunnypilot/selfdrive/selfdrived/lane_block_alert.py) and the comma 4 HUD (hud_lane_block.py). If
+  # upstream takes @3, give it the ordinal and move this to the next free one.
+  laneChangeNudgeRefused @3 :Bool;
 
   enum TurnDirection {
     none @0;

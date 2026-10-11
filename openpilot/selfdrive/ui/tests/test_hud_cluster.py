@@ -140,7 +140,7 @@ class TestHudParams(OpenpilotTestCase):
       flags = m.group(1)
       assert "PERSISTENT" in flags and "BACKUP" in flags, f"{key}: a setting, kept and backed up"
       assert "BOOL" in flags and '"1"' in flags, f"{key} defaults to on"
-    assert set(HS.FIELDS) == set(HS.ALL_PARAMS) and len(HS.ALL_PARAMS) == 8
+    assert set(HS.FIELDS) == set(HS.ALL_PARAMS) and len(HS.ALL_PARAMS) == 9
     assert {f.name for f in dataclasses.fields(HS.HudSettings)} == set(HS.FIELDS.values())
 
   def test_the_built_params_library_knows_them(self):
@@ -1263,7 +1263,7 @@ class TestUpstreamHunks(OpenpilotTestCase):
                        "hud_rail import HudRail", "self._hud_rail = HudRail(", "self._hud_rail.render(",
                        "import hud_alerts", "hud_alerts.frees_top_icons("))
     marked(BALL, ("self.hud_floor_y = -math.inf", "max(dot_height, self.hud_floor_y)"), window=0)
-    marked(ALERTS, ("import hud_alerts", "hud_alerts.draw_compact("))
+    marked(ALERTS, ("import hud_alerts", "hud_alerts.draw_compact(", "meta.laneChangeDirection"))
     marked(PARAMS_KEYS, [f'"{k}"' for k in HS.ALL_PARAMS], window=12)
     marked(VISUALS_YAML, ("id: hud_comma4",))
     marked(MICI_SETTINGS, ("import cloudlog", "def gateway_icon():", "icons_mici/gateway.png", "gateway_icon())"), window=5)

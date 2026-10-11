@@ -115,6 +115,14 @@ sections:
     title: Compact Turn Notices
     description: '''Turning left'' and ''turning right'', while the blinker is on below lane-change speed, are a small
       banner top left instead of covering the screen.'
+  - key: HudLaneBlock
+    widget: toggle
+    title: Lane Change Block Tile
+    description: When a lane change is refused - a road edge or a car in the blind spot on the blinker's side - a small
+      tile in that top corner, where the green lane-change arrow shows, instead of the orange alert over the road - the
+      arrow struck through and EDGE or CAR under it. Silent; if you steer toward the blinker anyway, the tile flashes
+      twice and chimes once. When the change is allowed, the tile gives way to the usual green arrow in the same place.
+      The arrow over the wheel stays up while you wait. The refusal itself is unchanged.
   - key: HudPlannedStop
     widget: toggle
     title: Planned Stop
