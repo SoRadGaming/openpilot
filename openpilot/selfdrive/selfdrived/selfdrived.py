@@ -35,6 +35,7 @@ from openpilot.sunnypilot.selfdrive.selfdrived.button_state_tracker import Butto
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.selfdrive.selfdrived.eps_latch_alert import EpsLatchAlert  # FORK(LKAS-GATEWAY)
 from openpilot.sunnypilot.selfdrive.selfdrived.vsa_fault_alert import VsaFaultAlert  # FORK(HONDA_ACCORD_9G_AU)
+from openpilot.sunnypilot.selfdrive.controls.lib.steer_saturated import SteerSaturatedAlert  # FORK(LKAS-GATEWAY)
 
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
@@ -139,7 +140,7 @@ class SelfdriveD(CruiseHelper):
     self.active = False
     self.mismatch_counter = 0
     self.cruise_mismatch_counter = 0
-    self.last_steering_pressed_frame = 0
+    self.steer_saturated = SteerSaturatedAlert()  # FORK(LKAS-GATEWAY): was last_steering_pressed_frame
     self.distance_traveled = 0
     self.last_functional_fan_frame = 0
     self.events_prev = []
@@ -496,20 +497,13 @@ class SelfdriveD(CruiseHelper):
         self.events.add(EventName.cruiseMismatch)
 
     # Send a "steering required alert" if saturation count has reached the limit
-    if CS.steeringPressed:
-      self.last_steering_pressed_frame = self.sm.frame
-    recent_steer_pressed = (self.sm.frame - self.last_steering_pressed_frame)*DT_CTRL < 2.0
+    # FORK(LKAS-GATEWAY): the conditions live in steer_saturated.py, unchanged, because controlsd_ext sends the same
+    # decision to the HONDA_ELESYS gateway board as 0x500 OP_SATURATED and the two must never disagree.
     controlstate = self.sm['controlsState']
     lac = getattr(controlstate.lateralControlState, controlstate.lateralControlState.which())
-    if lac.active and not recent_steer_pressed and not self.CP.notCar:
-      clipped_speed = max(CS.vEgo, 0.3)
-      actual_lateral_accel = controlstate.curvature * (clipped_speed**2)
-      desired_lateral_accel = self.sm['modelV2'].action.desiredCurvature * (clipped_speed**2)
-      undershooting = abs(desired_lateral_accel) / abs(1e-3 + actual_lateral_accel) > 1.2
-      turning = abs(desired_lateral_accel) > 1.0
-      # TODO: lac.saturated includes speed and other checks, should be pulled out
-      if undershooting and turning and lac.saturated:
-        self.events.add(EventName.steerSaturated)
+    if self.steer_saturated.update(CS.steeringPressed, lac.active, lac.saturated, CS.vEgo, controlstate.curvature,
+                                   self.sm['modelV2'].action.desiredCurvature, self.CP.notCar, frame=self.sm.frame):
+      self.events.add(EventName.steerSaturated)
 
     # Check for FCW
     stock_long_is_braking = self.enabled and not self.CP.openpilotLongitudinalControl and CS.aEgo < -1.25

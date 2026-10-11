@@ -17,6 +17,7 @@ from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.selfdrive.controls.lib.blinker_pause_lateral import BlinkerPauseLateral
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
+from openpilot.sunnypilot.selfdrive.controls.lib.steer_saturated import SteerSaturatedAlert
 
 
 class ControlsExt(ModelStateBase):
@@ -26,6 +27,7 @@ class ControlsExt(ModelStateBase):
     self.params = params
     self._param_update_time: float = 0.0
     self.blinker_pause_lateral = BlinkerPauseLateral()
+    self.steer_saturated = SteerSaturatedAlert()  # FORK(LKAS-GATEWAY): 0x500 OP_SATURATED, see state_control_ext
 
     cloudlog.info("controlsd_ext is waiting for CarParamsSP")
     self.CP_SP = messaging.log_from_bytes(params.get("CarParamsSP", block=True), custom.CarParamsSP)
@@ -112,6 +114,15 @@ class ControlsExt(ModelStateBase):
     if 'i' in fields:
       CC_SP.lateralControl.integrator = float(lac_log.i)
       CC_SP.lateralControl.saturated = bool(lac_log.saturated)
+    # FORK(LKAS-GATEWAY): what 0x500 OP_SATURATED carries - selfdrived's steerSaturated decision, not the raw
+    # timer (steer_saturated.py). Same inputs selfdrived uses, one frame earlier: it reads this frame's
+    # controlsState (curvature, lac) on its next carState. curvature is controlsd's (Controls sets it in
+    # state_control, before this runs). Evaluated every frame so the 2 s steering-press window is never missed.
+    if lac_log is not None and hasattr(lac_log, 'saturated') and hasattr(lac_log, 'active'):
+      CS = sm['carState']
+      CC_SP.lateralControl.steerSaturated = self.steer_saturated.update(
+        bool(CS.steeringPressed), bool(lac_log.active), bool(lac_log.saturated), float(CS.vEgo),
+        float(getattr(self, 'curvature', 0.0)), float(sm['modelV2'].action.desiredCurvature), bool(self.CP.notCar))
     if LaC is not None:
       CC_SP.lateralControl.integratorFrozen = bool(getattr(LaC, 'integrator_frozen', False))
 

@@ -46,6 +46,7 @@ def run_checks() -> list[tuple[str, bool, str]]:
   msg.lateralControl.integrator = 0.65
   msg.lateralControl.saturated = True
   msg.lateralControl.integratorFrozen = True
+  msg.lateralControl.steerSaturated = True
   msg.mads.enabled = True
   cc_sp = convert_carControlSP(msg.as_reader())
 
@@ -60,6 +61,10 @@ def run_checks() -> list[tuple[str, bool, str]]:
         f"{integrator!r} ({type(cc_sp.lateralControl).__name__})")
   check("lateralControl flags survive the seam",
         getattr(cc_sp.lateralControl, "saturated", False) and getattr(cc_sp.lateralControl, "integratorFrozen", False))
+  # what hondacan puts in 0x500 OP_SATURATED (selfdrived's steerSaturated decision)
+  check("lateralControl.steerSaturated survives the seam", getattr(cc_sp.lateralControl, "steerSaturated", False))
+  check("lateralControl.steerSaturated defaults False",
+        convert_carControlSP(custom.CarControlSP.new_message().as_reader()).lateralControl.steerSaturated is False)
 
   # the exact expression that crashed card, on a default message too
   cc_sp_default = convert_carControlSP(custom.CarControlSP.new_message().as_reader())
@@ -78,6 +83,9 @@ def run_checks() -> list[tuple[str, bool, str]]:
   check("CarStateSP nested linbusGateway converts to capnp", bool(cap.linbusGateway.present) and bool(cap.linbusGateway.actuating))
   r = cap.as_reader()
   check("...and round-trips", r.linbusGateway.present and r.linbusGateway.actuating and r.linbusGateway.valid and not r.linbusGateway.dryRun)
+  check("blinkerCapped defaults False", not r.linbusGateway.blinkerCapped)
+  cs_sp.linbusGateway.blinkerCapped = True
+  check("blinkerCapped (0x704 INH_BLINKER) converts", convert_to_capnp(cs_sp).as_reader().linbusGateway.blinkerCapped)
 
   # The firmware-identity fields, which are the ones most likely to drift: they are
   # written by a decoder in the opendbc submodule and read by a UI page in this repo,

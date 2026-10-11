@@ -6,6 +6,10 @@ actuating. controlsd then sets steer_limited_by_safety = |actuators.torque - act
 which freezes the integrator and keeps _check_saturation from counting, so no "turn exceeds limit" alert
 fires for a car that is not being steered. While the board IS actuating the report is last_torque, so a
 real saturation still alerts.
+
+Since lcalert the report is also clipped to +-0.5 while the board's lane-change ceiling is in force (0x704 INH_BLINKER,
+carStateSP.linbusGateway.blinkerCapped): a request railed at 1.0 under the ceiling is limited by safety, so the
+integrator holds and the saturation timer runs down instead of up - routes 120@486.24 and 121@330.31 saturated there.
 """
 from pathlib import Path
 
@@ -45,7 +49,7 @@ def _setup(cls):
 class _CarCS:
   """What the Honda CarController reads, plus the gateway state."""
 
-  def __init__(self, actuating):
+  def __init__(self, actuating, capped=False):
     self.out = structs.CarState.new_message()
     self.out.vEgo = 30.0
     self.out.cruiseState.speed = 30.0
@@ -60,9 +64,10 @@ class _CarCS:
     gw = self.out_sp.linbusGateway
     gw.present = True
     gw.engaged = gw.valid = gw.actuating = actuating
+    gw.blinkerCapped = capped
 
 
-def _closed_loop(cls, actuating, frames=1000):
+def _closed_loop(cls, actuating, frames=1000, capped=False):
   """controlsd's loop, cut down: LaC -> CarController -> the steer_limited_by_safety rule -> LaC.
 
   Asks for far more curvature than the car can give, so the torque controller rails at 1.0."""
@@ -73,7 +78,7 @@ def _closed_loop(cls, actuating, frames=1000):
   CS.steeringPressed = False
   vehicle_params = log.VehicleParameters.new_message()
   pose = Pose.from_device_motion(generate_deviceMotion().deviceMotion)
-  car_cs = _CarCS(actuating)
+  car_cs = _CarCS(actuating, capped)
   steer_limited_by_safety = False
   saturated, limited = [], []
   for i in range(frames):
@@ -119,6 +124,13 @@ class TestReportedTorqueAndSaturation(OpenpilotTestCase):
     saturated, limited = _closed_loop(cls, actuating=True)
     self.assertTrue(saturated[-1], label)
     self.assertFalse(limited[-1], label)
+
+  @parameterized.expand(CONTROLLERS, names=["label", "cls"], ids=lambda label, cls: label)
+  def test_no_saturation_under_the_blinker_ceiling(self, label, cls):
+    # the same railed request that saturates while actuating (test above) does not under the ceiling
+    saturated, limited = _closed_loop(cls, actuating=True, capped=True)
+    self.assertFalse(any(saturated), label)
+    self.assertTrue(all(limited[20:]), label)   # from the frame the rate-limited command passes 0.51
 
   def test_controlsd_still_uses_the_reported_torque(self):
     # the closed loop above copies this line; if upstream changes it, revisit the opendbc report

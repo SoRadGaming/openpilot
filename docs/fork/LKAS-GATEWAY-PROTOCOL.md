@@ -80,11 +80,11 @@ the hunk. Integration-test sections ("integration §N") refer to
 
 | repo | file | area-B hunk | commits | pinned by |
 |---|---|---|---|---|
-| odbc | `opendbc/car/honda/hondacan.py` | `create_steering_control(..., serial_gateway=False, ldw_left=False, ldw_right=False)`; `SP_HUD_PROTOCOL_VERSION`, `SP_OP_STATE_*`, `SP_HUD_MAX_TORQUE`, `create_sp_hud_status()`; `HONDA_ELESYS` added to the import. (`create_brake_command(..., is_metric, ...)` and `create_scm_buttons_no_cruise()` are area C) | `031743c4` `ad76c278` `02e7fd71` `1a133e47` | integration §7, §10, §11 |
-| odbc | `opendbc/car/honda/carcontroller.py` | `BRAKE_RELEASE_FRAMES`, `brake_release_scale()`, `self.brake_release_frames`, the brake ceiling on `limited_torque`, the `serial_gateway` call, the `0x500` block that replaces `create_lkas_hud` on ELESYS (`release_brake`, `release_driver`, `lat_ready`, `op_state`); the reported torque, `linbus_gateway_actuating()` and the `new_actuators.torque = 0.0` hunk (section 3.6). Everything longitudinal in this file is area C | `031743c4` `ad76c278` `a091808d` `02e7fd71` `1a133e47` `43a98b9d` `bddc6395` | integration §7, §10, §11, §12; `test_elesys.py` `TestElesysReportedTorque*`; `test_latcontrol_reported_torque.py` |
+| odbc | `opendbc/car/honda/hondacan.py` | `create_steering_control(..., serial_gateway=False, ldw_left=False, ldw_right=False)`; `SP_HUD_PROTOCOL_VERSION`, `SP_OP_STATE_*`, `SP_HUD_MAX_TORQUE`, `create_sp_hud_status()`; `HONDA_ELESYS` added to the import. Since 2026-10-12 `OP_SATURATED` is `CC_SP.lateralControl.steerSaturated` (section 4.1). (`create_brake_command(..., is_metric, ...)` and `create_scm_buttons_no_cruise()` are area C) | `031743c4` `ad76c278` `02e7fd71` `1a133e47` | integration §7, §10, §11 |
+| odbc | `opendbc/car/honda/carcontroller.py` | `BRAKE_RELEASE_FRAMES`, `brake_release_scale()`, `self.brake_release_frames`, the brake ceiling on `limited_torque`, the `serial_gateway` call, the `0x500` block that replaces `create_lkas_hud` on ELESYS (`release_brake`, `release_driver`, `lat_ready`, `op_state`); the reported torque, `linbus_gateway_actuating()` and the `new_actuators.torque = 0.0` hunk (section 3.6); since 2026-10-12 `GW_BLINK_CEIL`, `linbus_gateway_blinker_capped()` and the clip to it in the same hunk (section 3.6, the blinker ceiling). Everything longitudinal in this file is area C | `031743c4` `ad76c278` `a091808d` `02e7fd71` `1a133e47` `43a98b9d` `bddc6395` | integration §7, §10, §11, §12; `test_elesys.py` `TestElesysReportedTorque*`; `test_latcontrol_reported_torque.py` |
 | odbc | `opendbc/car/honda/carstate.py` | `get_can_parsers()` registers `GW_ACTIVE`, `GW_STEER_GRANT`, `EPS_LIN_RAW`, `GW_VERSION`, `GW_BUILD` with `float("nan")`; `CarStateExt.update(self, ret, ret_sp, can_parsers)`. The ELESYS `carFaultedNonCritical` branch is area C but described in [section 10.1](#101-lkas_problem-read-back-carstatepy) | `ad76c278` `02e7fd71` `2cc16a02` `124465ca` | integration §8, §13 |
 | odbc | `opendbc/sunnypilot/car/honda/carstate_ext.py` | `_update_linbus_gateway`, `_update_linbus_grant`, `_update_linbus_firmware` (area A), `_update_driver_torque_validity`, `_eps_lin_driver_torque_valid`, the constants, the `ret_sp` parameter. `FUEL_LEVEL_FULL` and `fuelGauge` are area C | `ad76c278` `02e7fd71` `1a133e47` `23dce590` `2cc16a02` `124465ca` `2619b404` | integration §8, §13, §14, §14b |
-| odbc | `opendbc/car/structs.py` | `CarControlSP.LateralControl`, `CarStateSP.driverTorqueStale`, `CarStateSP.LinbusGateway` | `ad76c278` `02e7fd71` `23dce590` `124465ca` `2619b404` | `test_car_control_sp_seam.py` |
+| odbc | `opendbc/car/structs.py` | `CarControlSP.LateralControl` (since 2026-10-12 with `steerSaturated`), `CarStateSP.driverTorqueStale`, `CarStateSP.LinbusGateway` (since 2026-10-12 with `blinkerCapped`) | `ad76c278` `02e7fd71` `23dce590` `124465ca` `2619b404` | `test_car_control_sp_seam.py` |
 | odbc | `opendbc/car/honda/interface.py` | `ret.steerAtStandstill = True` for HONDA_ELESYS (it exists for the lane graphic). `steerActuatorDelay` is area C | `bb0fe222` | none |
 | odbc | `opendbc/dbc/generator/honda/_sunnypilot_linbus_gw.dbc` | new: `0x500`, `0x700`, `0x704`, `0x707`, `0x70B`, `0x70F`. **Created as `_sunnypilot_hud.dbc` in `031743c4` and renamed in `ad76c278`**: use `git log --follow` or the history starts at `ad76c278` | `031743c4` `ad76c278` `a091808d` `02e7fd71` `1a133e47` `2cc16a02` `124465ca` `43a98b9d` `cf583b37` | integration §7, §8, §13, §14b |
 | odbc | `opendbc/dbc/generator/honda/_steering_control_e.dbc` | new: `0x0E4` with byte 2 split into `LDW_LEFT`/`LDW_RIGHT`/`SET_ME_X00_3`; `0x18F` with `STEER_CONTROL_ACTIVE` at bit 32 | `2f19864a` `02e7fd71` `1a133e47` | integration §11, §14 |
@@ -93,9 +93,10 @@ the hunk. Integration-test sections ("integration §N") refer to
 | odbc | `opendbc/safety/tests/test_honda.py` | `[0x500, 0]` in the two ELESYS `TX_MSGS` | `031743c4` `a091808d` | itself |
 | odbc | `opendbc/safety/tests/common.py` (added in the 2026-09 merge) | `test_tx_hook_on_wrong_safety_mode` no longer checks `0x500` between the two `TestHondaElesys*` classes: both stand-down TX lists carry it, so each mode "allowed" the other's frame. It is still checked against every other brand, and the area C exemptions (`0x1A6`, `0x30C`) are unchanged. Tagged `FORK(LKAS-GATEWAY)` | 2026-09 merge | `test_honda.py` (942 run, OK) |
 | odbc | `opendbc/sunnypilot/car/honda/test_dynamic_tuning_integration.py` | sections 7, 8, 10–15 are protocol tests (1–6 and 9 are area C). Since the 2026-09 merge §10 sets `mads.enabled` for the `LAT_READY` case and adds the MADS-off case, §15 passes `driver_torque_stale=` by keyword, and `TestDynamicTuningIntegration` lets unittest discovery report the script | `031743c4` `ad76c278` `02e7fd71` `1a133e47` `23dce590` `2cc16a02`, 2026-09 merge | runs standalone, or under discovery |
-| sp | `openpilot/cereal/custom.capnp` | `CarControlSP.lateralControl @5`; `CarStateSP.linbusGateway @1`, `driverTorqueStale @2`; `LinbusGateway @0–@18` (`@19–@26` are area A) | `176e6c07c` `27048ebaa` `98f657457` `56a404318` | seam test |
+| sp | `openpilot/cereal/custom.capnp` | `CarControlSP.lateralControl @5` (`LateralControl.steerSaturated @3` since 2026-10-12); `CarStateSP.linbusGateway @1`, `driverTorqueStale @2`; `LinbusGateway @0–@18`, `@27`, `@28` (`@19–@26` are area A) | `176e6c07c` `27048ebaa` `98f657457` `56a404318` | seam test |
 | sp | `openpilot/selfdrive/car/helpers.py` | `convert_carControlSP` rebuilds `lateralControl` | `d11d2c9a8` | seam test |
-| sp | `openpilot/sunnypilot/selfdrive/controls/controlsd_ext.py` | `state_control_ext(sm, lac_log=None, LaC=None)` fills `CC_SP.lateralControl`; `run_ext(sm, pm, lac_log=None, LaC=None)` | `176e6c07c` | integration §7 (the car side only) |
+| sp | `openpilot/sunnypilot/selfdrive/controls/controlsd_ext.py` | `state_control_ext(sm, lac_log=None, LaC=None)` fills `CC_SP.lateralControl`; `run_ext(sm, pm, lac_log=None, LaC=None)`; since 2026-10-12 `self.steer_saturated` and `lateralControl.steerSaturated` (section 4.2) | `176e6c07c`, 2026-10-12 | integration §7 (the car side); `test_steer_saturated.py` `TestControlsExtOpSaturated` |
+| sp | `openpilot/sunnypilot/selfdrive/controls/lib/steer_saturated.py` (new, 2026-10-12) | `SteerSaturatedAlert`, `STEER_PRESSED_HOLDOFF`, `UNDERSHOOT_RATIO`, `TURNING_LAT_ACCEL`, `MIN_SPEED`: selfdrived's `steerSaturated` conditions in one place, used by selfdrived and by `controlsd_ext` for `0x500 OP_SATURATED` (section 4.2) | 2026-10-12 | `test_steer_saturated.py` (9 tests, one a 20 000-frame fuzz against a verbatim copy of upstream's block) |
 | sp | `openpilot/selfdrive/controls/controlsd.py` | `'carStateSP'` in the SubMaster, the `LaC.set_linbus_gateway()` call before upstream's 3-value `LaC.update()`, `self.run_ext(self.sm, self.pm, lac_log, self.LaC)` | `176e6c07c` | none |
 | sp | `openpilot/selfdrive/controls/lib/latcontrol.py` | `LINBUS_I_CARRY_MAX`, `LINBUS_I_HOLD_TAU`, the `linbus_gateway_*`/`_linbus_was_actuating`/`integrator_frozen` attributes, `set_linbus_gateway()`, `_linbus_integrator_gate()` | `176e6c07c` `39b857567` | the freeze only: `test_latcontrol_gateway_hold.py`. The carry and the decay have no test |
 | sp | `openpilot/selfdrive/controls/lib/latcontrol_torque.py`, `openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py` | `linbus_hold = self._linbus_integrator_gate()` plus `or linbus_hold` in `freeze_integrator` | `176e6c07c` `946b5fa21` | `test_latcontrol_gateway_hold.py` (both controllers, through the extension) |
@@ -104,14 +105,14 @@ the hunk. Integration-test sections ("integration §N") refer to
 | sp | `openpilot/selfdrive/modeld/modeld.py`, `openpilot/sunnypilot/modeld_v2/modeld.py` | `"carStateSP"` in upstream's renamed SubMaster, `driver_torque_stale=sm['carStateSP'].driverTorqueStale` passed to `DH.update` by keyword after the edges. `DesireHelper(CP.carFingerprint)` is area C | `56a404318`, 2026-09 merge | none |
 | sp | `openpilot/sunnypilot/mads/mads.py` | `LINBUS_REASON_DRIVER_OVERRIDE`, `self._gw_paused`, the gateway pause block, and `if self._gw_paused: return False` at the top of `should_silent_lkas_enable()` (`2cfcd3c6a`). Also the steer-rate emergency takeover (`EMERGENCY_STEER_RATE`, `EMERGENCY_STEER_RATES`, `EMERGENCY_STEER_FRAMES`, `self._fast_steer`, and since 2026-09-30 its two settings: `read_emergency_steer_rate()`, and `self.emergency_steer_disable`/`self.emergency_steer_rate` read in `__init__` and `read_params()`), see "Other" in section 9. Since the 2026-09 merge the gateway block also fires on the frame MADS is being turned on (`self.enabled or ...check_contains(ET.ENABLE)`), so an LKAS press or UEM engagement during an override no longer gives one active frame, and a `KeyError` fallback treats a `SubMaster` without `carStateSP` (upstream's MADS tests) as "no gateway". Since 2026-10-06 the pause ends only on a fresh `0x70B` frame (`grantSeq`, `_gw_grant_seq`) or after `GATEWAY_SILENT_RESUME_FRAMES` without one (`_gw_silent`), see section 9 | `ef4f29432` `4932aa73c` `35622a994` `2cfcd3c6a`, 2026-09 merge, 2026-09-30, 2026-10-06 | `test_mads_gateway_pause.py` (55 tests) |
 | sp | `openpilot/sunnypilot/mads/state.py` (added in the 2026-09 merge) | DISABLED branch: an ENABLE that arrives with `silentLkasDisable` goes to `paused`, not `enabled`/`overriding`. Only the gateway block can raise `silentLkasDisable` while MADS is disabled | 2026-09 merge | `test_mads_gateway_pause.py::test_turning_mads_on_during_an_override_starts_paused` |
-| sp | `openpilot/selfdrive/selfdrived/selfdrived.py` | `'carStateSP'` added to upstream's SubMaster, for MADS. Since 2026-10-01 also `self.eps_latch_alert = EpsLatchAlert()` and the call in `update_events()` that adds its events to `events_sp` | `ef4f29432`, 2026-10-01 | `test_mads_gateway_pause.py::test_selfdrived_subscribes_the_gateway_state`, `test_eps_latch_alert.py::TestSelfdrivedWiring` |
+| sp | `openpilot/selfdrive/selfdrived/selfdrived.py` | `'carStateSP'` added to upstream's SubMaster, for MADS. Since 2026-10-01 also `self.eps_latch_alert = EpsLatchAlert()` and the call in `update_events()` that adds its events to `events_sp`. Since 2026-10-12 upstream's `steerSaturated` block calls `self.steer_saturated.update(..., frame=self.sm.frame)` (`steer_saturated.py`, conditions unchanged) in place of `self.last_steering_pressed_frame` and the inline conditions | `ef4f29432`, 2026-10-01 | `test_mads_gateway_pause.py::test_selfdrived_subscribes_the_gateway_state`, `test_eps_latch_alert.py::TestSelfdrivedWiring` |
 | sp | `openpilot/sunnypilot/selfdrive/selfdrived/eps_latch_alert.py` (new, 2026-10-01) | `EpsLatchAlert`, `LATCH_CONFIRM_FRAMES`, `LATCH_CLEAR_FRAMES`, `ANNOUNCE_FRAMES`, `REMINDER_PERIOD_FRAMES`, `REMINDER_FRAMES`: the "restart the car" alert for `latchedUntilKeyOff`, see section 9 | 2026-10-01 | `test_eps_latch_alert.py` (18 tests) |
 | sp | `openpilot/sunnypilot/selfdrive/selfdrived/events.py`, `openpilot/cereal/custom.capnp` | `OnroadEventSP.EventName` `lkasGatewayEpsLatched @26`, `lkasGatewayEpsLatchedReminder @27`, and their `ET.WARNING`-only `EVENTS_SP` entries | 2026-10-01 | `test_eps_latch_alert.py::TestEpsLatchAlertDefinitions` |
 | sp | `openpilot/selfdrive/car/tests/test_car_control_sp_seam.py` | the capnp ↔ dataclass seam for `lateralControl` and `linbusGateway` | `d11d2c9a8` `2dd8827d5` | itself |
 | sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | two tests: `test_a_stale_torque_still_confirms_nothing` and `test_driver_torque_stale_comes_after_the_road_edges` (the rest is area C) | `10e088a2d`, 2026-09 merge | itself |
 | sp | `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | the gateway pause and its resume, every brake mode, the brake and regen guard, the emergency takeover beside an override, no board no pause, `selfdrived`'s subscription, the enable-frame cases, (`TestFastWheelSetting`) the takeover's switch and threshold, and (`TestGatewayPauseNeedsAFreshFrame`, 2026-10-06) the fresh-frame resume and the 3 s fallback | `2cfcd3c6a`, 2026-09 merge, 2026-09-30, 2026-10-06 | itself |
 | sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` (added in the 2026-09 merge) | 300 frames on `HONDA_ACCORD_9G_AU` with Lateral Jerk on and the board present but not actuating: `pid.i` stays 0.0 in both torque controllers. Control case: with no gateway the same run winds `abs(i)` above 1e-3, as upstream does | 2026-09 merge | itself |
-| sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_reported_torque.py` (2026-10) | the zero reported torque keeps `_check_saturation` from firing while the board is not actuating, closed loop through the real Honda `CarController`, both torque controllers; a real saturation still alerts while actuating; a source guard on controlsd's `steer_limited_by_safety` line | `7e9ffe547` | itself |
+| sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_reported_torque.py` (2026-10) | the zero reported torque keeps `_check_saturation` from firing while the board is not actuating, closed loop through the real Honda `CarController`, both torque controllers; a real saturation still alerts while actuating; since 2026-10-12 the same railed request does not saturate under the blinker ceiling; a source guard on controlsd's `steer_limited_by_safety` line | `7e9ffe547`, 2026-10-12 | itself |
 
 `openpilot/selfdrive/car/card.py` has no area-B hunk. It already published `carStateSP` before the fork.
 Its fork additions (`stage_board_firmware`, `write_board_firmware`, `log_flash_trace`) are
@@ -154,7 +155,8 @@ ramp (`t * soft / GW_SOFTSTART_FRAMES`, 0 to 1 over 2 s after each engagement), 
 driver-torque fade, section 9) and `GW_BLINK_CEIL_PCT` = 50 % while an indicator is on
 (`gw_active.c` lines 1981–1995 at `d995bc9`). So openpilot's full scale of ±1.0 equals the
 board's authority in steady state, outside the soft start, the driver-torque fade and the
-blinker ceiling, all of which can only lower it. In that steady state openpilot's saturation
+blinker ceiling, all of which can only lower it. Since 2026-10-12 the blinker ceiling is reported back
+(section 3.6); the soft start and the driver-torque fade are not. In that steady state openpilot's saturation
 flag means the same thing at every step of the authority ladder, with no change on this side.
 The history of how this came about (the reference boards took only the low byte and wrapped)
 is in `docs/SP_GATEWAY_FIRMWARE.md` §0.
@@ -290,10 +292,52 @@ Hondas unaffected) and `TestElesysReportedTorqueSeam` (`0x704` frames through th
 `CarInterface`: none, engaged, dry run, disengaged, stale); `test_latcontrol_reported_torque.py`
 and `test_torqued_elesys.py` on the sunnypilot side.
 
+**The blinker ceiling (2026-10-12).** While a turn signal is on, and for `GW_BLINKER_DWELL_MS`
+(500 ms) after, the board clips its command to `GW_BLINK_CEIL_PCT` = 50 % of its authority and
+says so in `0x704 INH_BLINKER` (byte 5 bit 5, the dwell included: `blink` clears only 500 ms after
+`0x294` does). `0x0E4`'s full scale maps onto the authority, so the ceiling is ±0.5 of openpilot's
+torque whatever the authority is; `CMD_APPLY_STEER` never exceeded 80 under `INH_BLINKER` on
+10f/115/120/121. Reported uncapped, openpilot could not see it: the report said 1.0 while the EPS
+got 0.5, `steer_limited_by_safety` stayed false and the 0.8 s saturation timer ran, and on 120 at
+486.24 s and 121 at 330.31 s `lac.saturated` set and reached the board as `OP_SATURATED`, which
+lit its "steer required" alarm (section 4.2 for the other half of that fix). So:
+
+```python
+GW_BLINK_CEIL = 0.5   # the board's GW_BLINK_CEIL_PCT 50
+def linbus_gateway_blinker_capped(CS) -> bool   # CS.out_sp.linbusGateway.blinkerCapped; False if missing or odd
+...
+if self.CP.carFingerprint in HONDA_ELESYS:
+  if not linbus_gateway_actuating(CS):
+    new_actuators.torque = 0.0
+  elif linbus_gateway_blinker_capped(CS):
+    new_actuators.torque = float(np.clip(self.last_torque, -GW_BLINK_CEIL, GW_BLINK_CEIL))
+```
+
+`blinkerCapped` is `valid and INH_BLINKER` (carstate_ext), so a stale or absent `0x704` clips
+nothing - though a stale one already reports 0 through `actuating`. The wire is still
+`last_torque`. `0x704` is 10 Hz, so the clip can start and end up to about 100 ms after the
+board's.
+
+* **The ceiling, not the board's command.** `CMD_APPLY_STEER`/`CMD_TARGET` is the bullet above
+  ("Not the wire torque"): a 10 Hz frame a cycle late, `CMD_TARGET` quantised to 2 counts
+  (0.0125, over the 0.01 threshold), and shaped by the soft start and the driver fade. Reported
+  as carOutput it would have set `steer_limited_by_safety` on 11-27 % of the actuating,
+  non-blinker `0x704` frames of 10f/115/120/121. The driver fade starts at 20 counts, which is
+  where `steeringPressed` already freezes the integrator and stops the saturation timer.
+* **What it changes** (closed-loop replay, the real controlsd lateral loop and the real
+  `CarInterface`, 10f/115/120/121, old vs new): `lac.saturated` on the lane changes goes from 53
+  and 79 frames to 0 on 120 and 121; 115's saturation (925.57 s, not a lane change, wheel pressed)
+  is unchanged. `0x0E4` is identical up to the first capped window and differs afterwards by at
+  most 19 counts of 2560 inside a window and 18 outside one: on this car the integrator is
+  already held on most lane-change frames (rate limiter, nudges, the board not actuating), so the
+  railed output under the cap is feedforward and P, and the request after the cap lifts is the
+  same to within a few counts. torqued keeps 5 more points in 28 391 and its filtered
+  `latAccelFactor` moves by at most 0.0045.
+
 **Re-apply:** in the upstream `CarController.update()`, between
 `new_actuators.torque = self.last_torque` and `new_actuators.torqueOutputCan = apply_torque`. If
 upstream starts reporting something other than `last_torque` there, keep its value for the
-actuating case.
+actuating case, and clip that to `GW_BLINK_CEIL` under the ceiling.
 
 ---
 
@@ -338,7 +382,7 @@ Stage 10 live image.
 | 1.1:0 | `ALERT_LEVEL` | 3 FCW, 2 steer-required or LDW, 1 enabled, 0 none | parsed, not read |
 | 2 | `SET_SPEED` | `setSpeed` in **km/h** (never display units), 0 when not visible, clipped to 0–255 | parsed, not read |
 | 3 | `INTEGRATOR` | `int8(clip(round(CC_SP.lateralControl.integrator × 100), ±127))` | first-engagement guard: if the absolute value exceeds 15 (`GW_INTEG_MAX`) before the first engagement, with a fresh v2+ frame, it sets `INH_ENGAGE_GUARD` (`0x704` inhibit bit `0x40`) and `0x70B REASON` 11 (`GW_RSN_INTEGRATOR`) |
-| 4.0 | `OP_SATURATED` | `CC_SP.lateralControl.saturated` | `hud_gw` escalation trigger while solid |
+| 4.0 | `OP_SATURATED` | `CC_SP.lateralControl.steerSaturated` (since 2026-10-12; `saturated` before): selfdrived's `steerSaturated` conditions, see 4.2 | `hud_gw` escalation trigger while solid |
 | 4.1 | `INTEGRATOR_FROZEN` | `CC_SP.lateralControl.integratorFrozen` | parsed, not read. It is the acknowledgement that openpilot runs the v2 hold |
 | 5.0 | `WANT_CONTROL` | `CC.latActive` | parsed, not read. `0x0E4` bit 7 remains what actually asks |
 | 5.1 | **`LAT_READY`** | **`CC_SP.mads.enabled or CC.latActive`** | **the lane graphic**, see [section 10](#10-the-lane-graphic) |
@@ -381,9 +425,20 @@ The CarController cannot see `controlsState`, so the integrator travels on `carC
 1. `controlsd.py` passes `lac_log` and `self.LaC` into `self.run_ext(self.sm, self.pm, lac_log, self.LaC)`.
 2. `controlsd_ext.state_control_ext()` copies `lac_log.i` and `lac_log.saturated`, when the
    log's schema has an `i` field (torque/PID). It also copies `LaC.integrator_frozen`. The angle
-   controller reports zero.
+   controller reports zero. Since 2026-10-12 it also fills `steerSaturated`: `lac_log.saturated`
+   AND no `steeringPressed` in the last 2 s AND |`modelV2` desired lateral accel| > 1.0 m/s²
+   AND undershooting (desired / actual > 1.2) AND not `notCar` - selfdrived's `steerSaturated`
+   rule exactly, through the one class both call (`steer_saturated.py`; selfdrived passes its own
+   `sm.frame`). The inputs are the same messages selfdrived reads, one frame earlier: selfdrived
+   sees this frame's `controlsState` on its next `carState`. **This is what `0x500 OP_SATURATED`
+   carries.** The raw timer made the board alarm where openpilot never would: on 115/120/121 all
+   195 saturated frames were within 2 s of a steering press and none was over 1.0 m/s² desired,
+   and 120 at 486.24 s and 121 at 330.31 s lit `RDM_HUD` with a held chime. openpilot's own
+   `steerSaturated` already reaches the board as `STEERING_REQUIRED` (`VisualAlert.steerRequired`),
+   so `OP_SATURATED` now says the same thing at the same moment. The bit, its position and the
+   board's decoder are unchanged.
 3. `cereal CarControlSP.lateralControl @5 :LateralControl { integrator @0 :Float32;
-   saturated @1 :Bool; integratorFrozen @2 :Bool; }`
+   saturated @1 :Bool; integratorFrozen @2 :Bool; steerSaturated @3 :Bool; }`
 4. `card` converts it with `helpers.convert_carControlSP()`. **Every nested struct has to be
    rebuilt there by hand.** When `lateralControl` was first added it was not, so it arrived as a
    dict, `CC_SP.lateralControl.integrator` raised every frame, and card died (routes `b5`–`b8`,
@@ -420,7 +475,7 @@ Cabana beside the Honda DBC to see everything.
 | `0x700` | `EPS_LIN_RAW` | 100 Hz (one per EPS serial frame) | `CarState.steeringTorque` / `steeringPressed` substitution | `STEER_TORQUE` (serial counts, scale 2, **left negative**), `CHECKSUM_OK`. `EPS_LKAS_ON` and `GW_COUNTER` are declared but not read |
 | `0x701` | `LKAS_LIN_RAW` | | not decoded | |
 | `0x702`, `0x703` | `GW_STATUS`, `GW_STEER_CMD` | | not decoded | |
-| `0x704` | `GW_ACTIVE` | 10 Hz. It lost 27–35 % of frames on early firmware (blackouts up to 94.5 s, `HANDOFF.md` "Known-broken: `0x704` telemetry transmit"); later measured at 10.0 Hz with none lost | `linbusGateway.engaged/dryRun/valid/actuating/present` | `ENGAGED` (byte 6 bit 0), `DRY_RUN` (byte 5 bit 7). The rest (`CMD_APPLY_STEER`, `DRIVER_TORQUE`, the `INH_*` bits, `AUTHORITY`) is in the board DBC only |
+| `0x704` | `GW_ACTIVE` | 10 Hz. It lost 27–35 % of frames on early firmware (blackouts up to 94.5 s, `HANDOFF.md` "Known-broken: `0x704` telemetry transmit"); later measured at 10.0 Hz with none lost | `linbusGateway.engaged/dryRun/valid/actuating/present/blinkerCapped` | `ENGAGED` (byte 6 bit 0), `DRY_RUN` (byte 5 bit 7), since 2026-10-12 `INH_BLINKER` (byte 5 bit 5). The rest (`CMD_APPLY_STEER`, `DRIVER_TORQUE`, the `INH_*` bits, `AUTHORITY`) is in the board DBC only |
 | `0x705`, `0x706` | `GW_CAN_DIAG`, `GW_SPLIT_STATUS` | | not decoded | |
 | `0x707` | `GW_VERSION` | at mode entry, once a minute, and on a domain change | `linbusGateway.fwGitHash`, `fwValid` (area A) | `GIT_HASH`. The other flags are declared, not decoded |
 | `0x708` | `GW_LIN_STATUS` | 10 Hz, after `0x704` | **not decoded** | the EPS's latest checksum-good status frame plus the camera's request. Useful in Cabana |
@@ -461,7 +516,7 @@ The `ret_sp` argument is itself a fork change to the upstream signature.
 
 | method | frame | staleness | output rules |
 |---|---|---|---|
-| `_update_linbus_gateway` | `0x704` | `LINBUS_GW_STALE_FRAMES = 50` carstate frames (500 ms), counted off `ts_nanos["GW_ACTIVE"]["ENGAGED"]` | `present = True`; `actuating = engaged and not dryRun and valid`. In a dry run the board still sets `ENGAGED`, so `ENGAGED` alone would claim control that does not exist |
+| `_update_linbus_gateway` | `0x704` | `LINBUS_GW_STALE_FRAMES = 50` carstate frames (500 ms), counted off `ts_nanos["GW_ACTIVE"]["ENGAGED"]` | `present = True`; `actuating = engaged and not dryRun and valid`. In a dry run the board still sets `ENGAGED`, so `ENGAGED` alone would claim control that does not exist. `blinkerCapped = valid and INH_BLINKER` (2026-10-12, section 3.6) |
 | `_update_linbus_grant` | `0x70B` | `LINBUS_GRANT_STALE_FRAMES = 50` | `granted = valid and STATE in GRANT_STATES_STEERING` (3 INTRO, 4 ACTIVE, 5 LIMITED). **Absence is never permission.** A stale frame reports zeros. `latchedUntilKeyOff = valid and RETRY_IN == GRANT_RETRY_KEY_CYCLE (255)`, not sticky, and `EPS_LATCHED` is deliberately **not** ORed in (it is a 3 s or 60 s timed hold). The log key `(valid, STATE, REASON)` is updated on every change, but `carlog.warning("LIN-bus gateway not steering: STATE=… REASON=… RETRY_IN=… EPS_ERR=…")` is emitted only when the change lands in a valid, non-steering state. A change into INTRO/ACTIVE/LIMITED, or to invalid, is silent |
 | `_update_linbus_firmware` | `0x707`, `0x70F` | **none**: latches on first sight | area A. `int()` around the values is needed because pycapnp refuses a float for UInt32 |
 | `_update_driver_torque_validity` | `0x18F` + `0x700` | see section 8 | |
@@ -496,6 +551,7 @@ comments in `structs.py` that say "names and order must stay in lockstep" overst
 | `  integrator @0` | Float32 | `torqueState.i` |
 | `  saturated @1` | Bool | `torqueState.saturated` |
 | `  integratorFrozen @2` | Bool | the gateway hold specifically (`LaC.integrator_frozen`) |
+| `  steerSaturated @3` | Bool | `saturated` and selfdrived's other `steerSaturated` conditions (2026-10-12, section 4.2); `0x500 OP_SATURATED` |
 
 **`CarStateSP`** (`@0xb86e6369214c01c8`)
 
@@ -529,6 +585,7 @@ comments in `structs.py` that say "names and order must stay in lockstep" overst
 | 18 | `latchedUntilKeyOff` | Bool | `RETRY_IN == 255` | `selfdrived` → `eps_latch_alert.py` (the "restart the car" alert, section 9) |
 | 19–26 | `fwValid` … `fwBuildValid` | | `0x707` / `0x70F` | area A (`card`, `board.py`) |
 | 27 | `grantSeq` | UInt32 | +1 per `0x70B` frame that arrived (wraps at 2^32; 0 before the first); unlike `grantValid` it does not move while the 500 ms window only holds the last frame (2026-10-06) | `mads` (ending the override pause) |
+| 28 | `blinkerCapped` | Bool | `0x704 INH_BLINKER` from a fresh frame: the board's 50 % lane-change ceiling is in force (2026-10-12) | the Honda `CarController` (the reported torque, section 3.6) |
 
 Fields with no reader appear only in the route log (`carStateSP` is logged), and the only
 driver-facing surface for them is the `carlog.warning` above. Since 2026-10-01
@@ -1038,8 +1095,9 @@ Run them in the openpilot venv, from the repo root (WSL `~/sp-merge` for the syn
 | `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | the gateway pause and resume (section 9), 41 tests, 23 of them the fast-wheel settings | runner |
 | `openpilot/selfdrive/ui/tests/test_mads_fast_wheel_settings.py` | the fast-wheel settings agree across `params_keys.h`, `mads.py`, the mici page and `settings_ui.json`; what sunnylink writes reads back the way `mads.py` reads it; the FORK markers, 15 tests | runner |
 | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` | the integrator freeze through the torque-controller extension, 4 tests | runner |
-| `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_reported_torque.py` | the zero reported torque blocks the saturation alert while the board is not actuating, and a real saturation still alerts (section 3.6), 7 tests | runner |
-| `opendbc_repo/opendbc/car/honda/tests/test_elesys.py` `TestElesysReportedTorque`, `TestElesysReportedTorqueSeam`, `TestElesysTorqueScale` | section 3.6, and the 2560 scale with byte 2 bit 2 clear | `python -m unittest opendbc.car.honda.tests.test_elesys` from `opendbc_repo` |
+| `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_reported_torque.py` | the zero reported torque blocks the saturation alert while the board is not actuating, and a real saturation still alerts (section 3.6); the blinker ceiling blocks it too (2026-10-12), 9 tests | runner |
+| `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_steer_saturated.py` (2026-10-12) | `steer_saturated.py` against a verbatim copy of upstream's selfdrived block (each condition, the 2 s window, a 20 000-frame fuzz), selfdrived calling it, and `controlsd_ext` filling `steerSaturated` (121 at 330.6 s does not set it), 9 tests | runner |
+| `opendbc_repo/opendbc/car/honda/tests/test_elesys.py` `TestElesysReportedTorque`, `TestElesysReportedTorqueSeam`, `TestElesysBlinkerCeilingReport`, `TestElesysTorqueScale` | section 3.6 (since 2026-10-12 with the blinker ceiling: clipped with its sign, wire bit-identical, nothing below the ceiling moves, `INH_BLINKER` through the real parser), and the 2560 scale with byte 2 bit 2 clear | `python -m unittest opendbc.car.honda.tests.test_elesys` from `opendbc_repo` |
 
 After the merge all of these pass: the fork's sunnypilot targets together with upstream's
 MADS, lateral and sunnylink tests gave 309 passed and 1 skipped (a sunnylink test that needs
@@ -1061,7 +1119,7 @@ that expects `LAT_READY` clear, so the rule is pinned both ways. The script also
 `__main__`.
 
 **Gaps:** nothing tests the integrator carry and decay or the `integrator_frozen` echo,
-`controlsd_ext` filling `lateralControl`, the steer-rate takeover on any car other than through
+`controlsd_ext` filling `lateralControl` (other than `steerSaturated`, since 2026-10-12), the steer-rate takeover on any car other than through
 a gateway override, or the mirror-freshness case in section 8.2.
 
 ---

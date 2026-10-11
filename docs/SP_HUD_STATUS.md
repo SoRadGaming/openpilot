@@ -169,7 +169,7 @@ byte 7   7 6      5 4        3 2 1 0
 | `ALERT_LEVEL` | b1[1:0] | `0` none, `1` info, `2` warning, `3` critical. |
 | `SET_SPEED` | b2 | Cruise set speed in **km/h**, always — never the cluster's display units. |
 | `INTEGRATOR` | b3 | `int8(clip(round(torqueState.i × 100), −127, 127))`. Lets the board refuse its first engagement while `|i| > 0.15` (`GW_INTEG_MAX`). |
-| `OP_SATURATED` | b4[0] | `torqueState.saturated`. |
+| `OP_SATURATED` | b4[0] | openpilot's own `steerSaturated` ("Turn Exceeds Steering Limit") decision: `torqueState.saturated` AND no steering press in 2 s AND desired lateral accel over 1.0 m/s² AND undershooting - selfdrived's conditions, `steer_saturated.py`. Until 2026-10-12 it was `torqueState.saturated` alone, which made the board alarm on lane changes openpilot itself never alerted on. |
 | `INTEGRATOR_FROZEN` | b4[1] | `1` while the gateway hold in the section above is active. **The acknowledgement**: if the board sees this low while `0x704` says not-engaged, the sunnypilot side is not running this protocol. |
 | `WANT_CONTROL` | b5[0] | v3. openpilot intends to steer and is asking. The redundant statement of `0x0E4 STEER_TORQUE_REQUEST`, which remains the thing that actually asks. |
 | `LAT_READY` | b5[1] | v3. openpilot would steer if the board allowed it. |

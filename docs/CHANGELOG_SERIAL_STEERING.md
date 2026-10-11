@@ -15,6 +15,89 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-12 — lane changes: openpilot sees the board's blinker ceiling, and `OP_SATURATED` is openpilot's own alert (lcalert)
+
+The owner's decision of 2026-10-11, after the lane-change investigation: fix the alert on both sides now (this entry
+is the openpilot half; the board's alarm is a board change), and raise the board's 50 % lane-change ceiling to 75 %
+later, as its own image. **Nothing here changes `GW_BLINK_CEIL_PCT` or anything the board commands, and the CAN
+bytes openpilot sends are those of the same request.** opendbc `lcalert`, sunnypilot `lcalert` (from `nsw-live`).
+
+**What the owner gets.** On some lane changes the dash lights the lane-departure lamp with a held chime: the board's
+case (ii) escalation, `hud.c` `allow && (hard || ((op_saturated || steer_req) && solid) || ldw)`. openpilot itself
+raised no steering alert on any lane change on 10f-121. Two causes, and this fixes the one openpilot owns:
+
+* **The ceiling openpilot could not see.** While a turn signal is on, and 500 ms after, the board clamps the command
+  to 50 % of its authority (80 of 160 counts; `0x704 INH_BLINKER`). carOutput reported the full request, so
+  `steer_limited_by_safety` stayed false, the output pinned at 1.0 (0.88 s on 120, 1.09 s on 121) and after 0.8 s
+  `lac.saturated` set.
+* **`OP_SATURATED` was the raw timer.** controlsd_ext sent `lac.saturated` as `0x500 OP_SATURATED`, and the board
+  alarms on it. openpilot's own `steerSaturated` also needs no steering press in 2 s, desired lateral accel over
+  1.0 m/s² and undershooting: of 195 saturated frames on 115/120/121, all were within 2 s of a press and none was over
+  1.0. 120 at 486.24 s and 121 at 330.31 s alarmed this way.
+* Not this fix: 10f at 1318.23 s and 2047.85 s alarmed through the board's own `hard` rule (|command| at 90 % of
+  authority for 300 ms) after a one-touch indicator lifted the ceiling mid-change. That is the board half.
+
+**(a) The report** (opendbc `carcontroller.py`, `carstate_ext.py`, `structs.py`, `_sunnypilot_linbus_gw.dbc`;
+sunnypilot `custom.capnp`). `0x704 INH_BLINKER` (byte 5 bit 5; it already holds through the 500 ms dwell) is decoded
+into `carStateSP.linbusGateway.blinkerCapped @28` from fresh frames only. While it is set the reported torque is
+`clip(last_torque, ±GW_BLINK_CEIL)`, `GW_BLINK_CEIL = 0.5` = the board's `GW_BLINK_CEIL_PCT` 50, sign kept. A stale or
+absent `0x704` clips nothing (and already reports 0 through `actuating`). Only the report changes: `last_torque`,
+the rate limiter, `torqueOutputCan` and `0x0E4` are those of the same request. The ceiling rather than the board's
+reported command: `CMD_APPLY_STEER` never exceeded 80 under `INH_BLINKER` on 10f/115/120/121, so the ceiling is exact,
+while the command is a 10 Hz frame a cycle late, `CMD_TARGET` is quantised to 0.0125 (over controlsd's 0.01), and
+reported as carOutput it would have set `steer_limited_by_safety` on 11-27 % of actuating, non-blinker `0x704` frames.
+
+What reads the report: controlsd's `steer_limited_by_safety` (freezes the integrator, runs the saturation timer
+down), torqued (bucket bounds are [-0.5, 0.5), so a clipped -0.5 can now be kept as a point - it is what the EPS
+got - and +0.5 still is not), the comma 4 torque bar and the onroad model renderer (they now show half scale under the
+ceiling, which is what the car gets). No fork code reads it otherwise (`hondashadow`/`latsplit` take torqued's points).
+
+**(b) `OP_SATURATED`** (sunnypilot `steer_saturated.py`, `selfdrived.py`, `controlsd_ext.py`; opendbc `hondacan.py`,
+`structs.py`; `custom.capnp` `CarControlSP.LateralControl.steerSaturated @3`). selfdrived's `steerSaturated`
+conditions moved, unchanged, into `SteerSaturatedAlert`; selfdrived calls it with its own `sm.frame`, and
+controlsd_ext calls it with the same inputs (carState, `modelV2.action.desiredCurvature`, controlsd's curvature, the
+lateral log) one frame earlier than selfdrived sees them. Its answer is `lateralControl.steerSaturated`, and that is
+what `OP_SATURATED` now carries. `saturated` is still logged as before. Same bit, same position: the board needs no
+change to decode it.
+
+**Replayed** (new: closed loop, the real controlsd lateral step - `state_control`, `publish`, `run_ext` - against the
+real `CarInterface` driven by the route's CAN, with carOutput fed back from the simulated CarController; the old code
+is `nsw-live`/`batch1` through the same harness. Fidelity against the logs: `lac.saturated` 53/79/64/1 frames vs
+logged 52/77/63/0 on 120/121/115/10f; request median |sim - logged| 0.002-0.011):
+
+| route | `lac.saturated` frames old → new | `0x500 OP_SATURATED` old → new | max abs delta `0x0E4`, in / outside capped windows | steerSaturated |
+|---|---|---|---|---|
+| 120 | 53 (487.14-487.69) → 0 | 5 (logged 6, 487.19-487.70) → 0 | 6 / 4 counts of 2560 | 0 → 0 |
+| 121 | 79 (330.57-331.35) → 0 | 8 (logged 7, 330.66-331.26) → 0 | 14 / 4 | 0 → 0 |
+| 115 | 64 → 64 (925.57-926.21, not a lane change, wheel pressed) | 7 → 0 | 19 / 18 | 0 → 0 |
+| 10f | 1 → 1 | 0 → 0 | 6 / 6 | 0 → 0 |
+
+* `0x0E4` is byte-identical up to each route's first capped window. After it the request differs by a few counts,
+  because the integrator held for a few hundred more frames (374/525/23/322 newly limited frames under the ceiling on
+  120/121/115/10f) and stays slightly different. The wind-up the cap caused was small to begin with: the integrator is
+  already held on most lane-change frames (the rate limiter, the nudge's `steeringPressed`, the board not actuating),
+  so the railed output under the cap was feedforward and P. The largest request in the 1.5 s after a cap lifted is
+  the same to within 17 counts (mean 901/902, 986/985, 1234/1236, 1254/1254) - this fixes the alarm, not the
+  overshoot.
+* `0x500` differs only in `OP_SATURATED` (above), `INTEGRATOR` (the held integrator, in hundredths) and, on 4/6/2/25
+  frames, `OP_STATE` flipping between requesting and active where a near-zero request rounds to 0 in one run and ±1
+  in the other.
+* selfdrived's `steerSaturated`: none old or new on any of the four routes (none in the logs either), and the new
+  helper agreed with a verbatim copy of the old block on every frame (45 523 + 41 050 + 89 454 + 257 246).
+* torqued, chained 10f → 115 → 120 → 121 from the prior: 28 391 points old, 28 396 new; the filtered
+  `latAccelFactor` moves by at most 0.0045 (end 1.3642 → 1.3625), the offset by 0.0009, friction by 0.0001.
+
+**Tests.** opendbc `test_elesys.py` 111 (`TestElesysBlinkerCeilingReport`, 7: clipped with its sign and the wire
+identical, nothing below the ceiling moves, the clip ends the frame the bit does, not actuating still 0, default and
+odd state, other Hondas; and `INH_BLINKER` through the real parser in `TestElesysReportedTorqueSeam`); the
+integration script's §7 (`OP_SATURATED` follows `steerSaturated`, not `saturated`) and §8 (`INH_BLINKER` decode, held
+inside the window, cleared on staleness). sunnypilot: new `test_steer_saturated.py` (9: each condition, the 2 s
+window, a 20 000-frame fuzz against the old block, selfdrived calls the helper, controlsd_ext fills `steerSaturated`
+and 121 at 330.6 s does not set it); `test_latcontrol_reported_torque.py` 9 (a railed request under the ceiling does
+not saturate, both torque controllers); the seam test carries both new fields.
+
+---
+
 ## 2026-10-09 — round 5 and the radar fix together (integration)
 
 Round 5 (build A, the next entry down, with opendbc `b24613cf`: brake law v2 removed) and the radar fix (the two entries

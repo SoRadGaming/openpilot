@@ -405,6 +405,9 @@ struct CarControlSP @0xa5cd762cd951a455 {
     integrator @0 :Float32;        # torqueState.i
     saturated @1 :Bool;            # torqueState.saturated
     integratorFrozen @2 :Bool;     # the integrator is being held, e.g. gateway not actuating
+    # FORK(LKAS-GATEWAY): saturated AND selfdrived's other steerSaturated conditions (no steeringPressed in 2 s,
+    # |desired lat accel| > 1.0, undershooting) - steer_saturated.py. What 0x500 OP_SATURATED carries.
+    steerSaturated @3 :Bool;
   }
 
   struct Param {
@@ -575,6 +578,12 @@ struct CarStateSP @0xb86e6369214c01c8 {
     # has to tell a new frame from a held one. A consumer keeps the last value it saw; a
     # different value means at least one new frame, and the grant fields are its contents.
     grantSeq @27 :UInt32;
+
+    # GW_ACTIVE (0x704) INH_BLINKER, from a fresh frame only: the board is holding its command under its
+    # lane-change ceiling - 50 % of its authority (GW_BLINK_CEIL_PCT) while a turn signal is on and 500 ms
+    # after. carcontroller clips carOutput's reported torque to +-0.5 while this is set, so controlsd sees the
+    # cap (steer_limited_by_safety) instead of counting it as its own saturation. The wire is unchanged.
+    blinkerCapped @28 :Bool;
   }
 }
 
