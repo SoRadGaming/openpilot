@@ -20,7 +20,8 @@ from typing import NamedTuple
 
 import pyray as rl
 
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import CARD_APPROACH, CARD_PENDING, CARD_DONE, MaxCard,   prompt_parts
+from openpilot.selfdrive.ui.mici.onroad.hud_renderer import FONT_SIZES
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import CARD_APPROACH, CARD_PENDING, CARD_DONE, MaxCard, prompt_parts
 from openpilot.system.ui.lib.application import gui_app, FontWeight, FONT_SCALE
 from openpilot.system.ui.lib.multilang import tr
 
@@ -401,10 +402,11 @@ def _flash_outline(x: float, y: float, w: float, h: float, r: float, line: float
 # take the same hud_model.MaxCard - what to show and where each animation is, decided once by HudRendererSP - and
 # return the (x0, y0, x1, y1) they drew in. They keep to the stock MAX number's corner: HudRenderer._draw_set_speed puts
 # its digits at (x + 13 + 4, y + 3 - 8 - 3 + 4) in the DISPLAY font at FONT_SIZES.set_speed, 'MAX' at
-# (x + 25, y + set_speed - 7 + 4) in SemiBold 36, in white at 0.9, over a black radial shadow of radius 81.
+# (x + 25, y + set_speed - 7 + 4) in SemiBold at FONT_SIZES.max_speed, in white at 0.9, over a black radial shadow of
+# radius 81. The sizes are upstream's own; the offsets are literals inside _draw_set_speed, copied.
 MAX_DIGITS_X, MAX_DIGITS_Y = 13 + 4, 3 - 8 - 3 + 4
-MAX_SIZE = 112
-MAX_LABEL_X, MAX_LABEL_Y, MAX_LABEL_SIZE = 25, MAX_SIZE - 7 + 4, 36
+MAX_SIZE = FONT_SIZES.set_speed
+MAX_LABEL_X, MAX_LABEL_Y, MAX_LABEL_SIZE = 25, MAX_SIZE - 7 + 4, FONT_SIZES.max_speed
 MAX_SHADOW_R = 162 // 2
 MAX_WHITE = 0.9
 
@@ -450,24 +452,41 @@ def _sp_row(c: MaxCard) -> list[tuple]:
   return row
 
 
-def _sp_row_w(row: list[tuple]) -> float:
+def _sp_row_w(row: list[tuple], size: float = SP_LABEL, sx: float = 1.0) -> float:
   w = 0.0
   for p in row:
-    w += ink(p[1], SP_LABEL, 1.0, p[2])[0] if p[0] == "text" else SP_CHEVRON if p[0] == "chev" else \
+    w += ink(p[1], size, sx, p[2])[0] if p[0] == "text" else SP_CHEVRON if p[0] == "chev" else \
       KEY_W if p[0] == "key" else p[1]
   return w
 
 
-def _sp_draw_row(row: list[tuple], x: float, cy: float, alpha: float):
-  """The row on ONE baseline, its caps centered on cy: 'press' (a descender) and 'to set 100' line up."""
+def _sp_row_fit(row: list[tuple], max_w: float) -> tuple[float, float]:
+  """(nominal size, squeeze) for the row's words so the row is no wider than max_w, as _fit does a banner's: squeezed
+  down to 0.8 first, then smaller. The key, the chevron and the gaps keep their size."""
+  words = _sp_row_w([p for p in row if p[0] == "text"])
+  fixed = _sp_row_w(row) - words
+  room = max(1.0, max_w - fixed)
+  if words <= room or words <= 0:
+    return SP_LABEL, 1.0
+  sx = max(0.8, room / words)
+  return (SP_LABEL if words * sx <= room else SP_LABEL * room / (words * sx)), sx
+
+
+def _sp_draw_row(row: list[tuple], x: float, cy: float, alpha: float, size: float = SP_LABEL, sx: float = 1.0):
+  """The row on ONE baseline, its caps centered on cy: 'press' (a descender) and 'to set 100' line up. size and sx: the
+  words squeezed / shrunk to fit (_sp_row_fit), on the same baseline."""
   for p in row:
     if p[0] == "text":
-      iw, _, ix0, _ = ink(p[1], SP_LABEL, 1.0, p[2])
-      cap = ink("H", SP_LABEL, 1.0, p[2])[1]
-      top = cy + cap / 2 - unit_baseline(SP_LABEL, p[2])
-      rl.draw_text_ex(gui_app.font(p[2]), p[1], rl.Vector2(x - ix0, top), SP_LABEL, 0,
-                      rl.Color(255, 255, 255, int(p[3] * alpha)))
-      x += iw
+      iw, ih, ix0, iy0 = ink(p[1], size, 1.0, p[2])
+      cap = ink("H", size, 1.0, p[2])[1]
+      top = cy + cap / 2 - unit_baseline(size, p[2])
+      col = rl.Color(255, 255, 255, int(p[3] * alpha))
+      if sx == 1.0:
+        rl.draw_text_ex(gui_app.font(p[2]), p[1], rl.Vector2(x - ix0, top), size, 0, col)
+      else:
+        # squeezed: the same ink box, on the same baseline (top + its ink's offset), narrower
+        text_ink(p[1], size, x, top + iy0 + ih / 2, col, sx=sx, w=p[2], anchor="left")
+      x += iw * sx
     elif p[0] == "chev":
       chevron(x + SP_CHEVRON / 2, cy, SP_CHEVRON, p[1], rl.Color(255, 255, 255, int(240 * alpha)))
       x += SP_CHEVRON
@@ -503,7 +522,9 @@ def stock_plus_card(c: MaxCard, x0: float, y0: float) -> tuple[float, float, flo
   _, mh, _, my0 = ink("MAX", MAX_LABEL_SIZE, 1.0, FontWeight.SEMI_BOLD)
   cy_p = y0 + MAX_LABEL_Y + my0 + mh / 2
   row_cy = cy_a + (cy_p - cy_a) * g
-  inner_w = max(iw, _sp_row_w(row))
+  # never past max_right (the stop timer, the road's edge): a long row ('press - to set 110  limit 100 +10') squeezes
+  row_size, row_sx = _sp_row_fit(row, c.max_right - SP_PAD - ink_x)
+  inner_w = max(iw, _sp_row_w(row, row_size, row_sx))
   bottom = row_cy + cap / 2
   bar_y = None
   if c.kind == CARD_APPROACH:
@@ -525,7 +546,7 @@ def stock_plus_card(c: MaxCard, x0: float, y0: float) -> tuple[float, float, flo
     _solid_rrect(bx, by, bw, bh, SP_RADIUS, line, rl.Color(255, 255, 255, int(line_a * ca)))
   rl.draw_text_ex(gui_app.font(FontWeight.DISPLAY), txt, rl.Vector2(ink_x - ix0, ink_y - iy0), size, 0,
                   rl.Color(255, 255, 255, int(255 * MAX_WHITE * a)))
-  _sp_draw_row(row, ink_x, row_cy, a * max(0.0, 1.0 - 2.0 * u))
+  _sp_draw_row(row, ink_x, row_cy, a * max(0.0, 1.0 - 2.0 * u), row_size, row_sx)
   if u > 0:
     rl.draw_text_ex(gui_app.font(FontWeight.SEMI_BOLD), tr("MAX"), rl.Vector2(x0 + MAX_LABEL_X, y0 + MAX_LABEL_Y),
                     MAX_LABEL_SIZE, 0, rl.Color(255, 255, 255, int(255 * MAX_WHITE * a * u)))
@@ -611,7 +632,7 @@ def split_layout(c: MaxCard, x0: float, y0: float) -> SplitLayout:
   else:
     caption, chip = (c.note, False) if c.note else ("now", True)
   tw = ink(str(int(c.value)), ts, tsx, FontWeight.DISPLAY)[0]
-  lw = SC_PAD_X + max(ink(c.current, cs, csx, FontWeight.DISPLAY)[0], ink("MAX", SC_CAPTION, 1.0, FontWeight.SEMI_BOLD)[0]) +     SC_GUTTER
+  lw = SC_PAD_X + max(ink(c.current, cs, csx, FontWeight.DISPLAY)[0], ink("MAX", SC_CAPTION, 1.0, FontWeight.SEMI_BOLD)[0]) + SC_GUTTER
   rw = SC_GUTTER + max(tw, _sc_caption_w("in 300 m", False), _sc_caption_w(caption, chip)) + SC_PAD_X
   return SplitLayout(lw, rw, caption, chip, (x0 + SC_X + lw + SC_GUTTER, y0 + SC_Y + SC_PAD_TOP, tw, SC_TARGET_CAP))
 

@@ -29,7 +29,10 @@ FORK(HUD): the comma 4 onroad view, drawn for real in a headless raylib window, 
     its window, while MAX or an alert shows, or with its setting off; held past the look-ahead and handed over to the
     confirm's card - the same card, no fade between - or to the stock MAX number, in the same place;
   * the style: every state neither card draws is the same pixels in both styles, and switching it while a card is up
-    (coming, waiting, turning into MAX) draws the other style from the next read on.
+    (coming, waiting, turning into MAX) draws the other style from the next read on;
+  * the review fixes: not engaged, the card names no MAX ('–'); the widest confirm stops 40 px short of the road's edge,
+    or 14 px short of the stop timer, which it leaves untouched; a card turning into MAX from a fading prompt starts at
+    the strength it was drawn at.
 
 The real AugmentedRoadView, fed synthetic messages (no camera: the placeholder is black, which keeps the color
 sampling honest). It runs in a child process: a raylib that cannot open a headless window must not take the test
@@ -88,7 +91,8 @@ _banner, _split, _plus = hud_draw.confirm_banner, hud_draw.split_card, hud_draw.
 def reset_calls():
   calls.update(banner=0, banner_text=None, box=0, box_rect=None, box_text=None, box_note=None, box_alpha=None, lit=None,
                phase=None, breath=None, grow=None, approach=0, approach_rect=None, approach_args=None, approach_lit=None,
-               enter=None, done=0, done_args=None, style=None, card=None)
+               enter=None, done=0, done_args=None, style=None, card=None, approach_current=None, box_current=None,
+               done_alpha=None, max_right=None)
 
 
 def counted_banner(*a, **k):
@@ -101,17 +105,19 @@ def counted(real, style):
   def draw(c, x0, y0):
     r = [round(v, 1) for v in real(c, x0, y0)]
     calls["style"], calls["card"] = style, c
+    calls["max_right"] = c.max_right if c.max_right != float("inf") else None
     if c.kind == HM.CARD_PENDING:
       calls["box"] += 1
       calls.update(box_rect=r, box_text=c.text, box_note=c.note, box_alpha=round(c.alpha, 3), lit=bool(c.lit),
-                   phase=c.phase, breath=round(c.breath, 3), grow=round(c.grow, 3))
+                   phase=c.phase, breath=round(c.breath, 3), grow=round(c.grow, 3), box_current=c.current)
     elif c.kind == HM.CARD_APPROACH:
       calls["approach"] += 1
       calls.update(approach_rect=r, approach_args=[c.value, c.lower, c.text, round(c.frac, 3)], approach_lit=bool(c.lit),
-                   enter=round(c.enter, 3))
+                   enter=round(c.enter, 3), approach_current=c.current)
     else:
       calls["done"] += 1
       calls["done_args"] = [c.value, c.current, round(c.done, 3)]
+      calls["done_alpha"] = round(c.alpha, 3)
     return r
   return draw
 
@@ -166,9 +172,10 @@ def put(svc, fill, frame=5):
 
 def scene(v=110 / KPH, limit=110, ahead=0, ahead_dist=0.0, ahead_valid=True, nsw_state=2, source="map",
           standstill=False, alert=None, assist="active", set_kph=110, lead=None, lp=True, cs=True, offset=0, rail=None,
-          map_frame=5):
+          map_frame=5, enabled=True):
   """rail = dict(stop_m, solid, curve_kph, confident): the right rail's messages (modelV2's plan, carControl,
-  longitudinalPlan, smart cruise control) - none of them otherwise. No limit ahead unless ahead > 0."""
+  longitudinalPlan, smart cruise control) - none of them otherwise. No limit ahead unless ahead > 0. enabled=False:
+  openpilot not engaged (selfdriveState), the set speed kept as this non-PCM car keeps it."""
   for svc in SERVICES + RAIL_SERVICES:
     sm.seen[svc] = sm.alive[svc] = sm.updated[svc] = False
     sm.recv_frame[svc] = 0
@@ -194,8 +201,8 @@ def scene(v=110 / KPH, limit=110, ahead=0, ahead_dist=0.0, ahead_valid=True, nsw
     put("carState", car)
 
   def ss(s):
-    s.enabled = True
-    s.state = "enabled"
+    s.enabled = enabled
+    s.state = "enabled" if enabled else "disabled"
     if alert is not None:
       kind, t1, t2, size, status = alert[:5]
       s.alertType, s.alertText1, s.alertText2, s.alertSize, s.alertStatus = kind, t1, t2, size, status
@@ -797,6 +804,48 @@ for when, at in (("coming", 1), ("waiting", 4), ("done", 5)):
 styles["switch"] = switch
 out["styles"] = styles
 
+# not engaged (review M1): the coming limit still comes (it needs no engagement), but the stock MAX is never drawn then
+# and the set speed is only the one this non-PCM car kept - the split card's MAX half shows the stock disabled char
+not_engaged = {}
+for tag, prm in (("d3", ON), ("d1", D1)):
+  scene(**states["approach_lower"], enabled=False)
+  img = render(f"approach_lower_not_engaged_{tag}", prm)
+  not_engaged[tag] = dict(last, max_white=count(img, MAX_BOX, "white"))
+styles["not_engaged"] = not_engaged
+
+# the widest confirm (review M2): a three-digit target and the offset note, 'press - to set 110' + 'limit 100 +10'.
+# Moving, the card stops 40 px short of the road's edge; stopped, short of the stop timer (its widest, past an hour
+# too), which is then untouched - the same pixels as with no confirm, from its left edge on
+WIDE = dict(limit=100, offset=10, v=27 / KPH, alert=CONFIRM, assist="preActive", set_kph=130)
+wide = {}
+for tag, prm in (("d3", ON), ("d1", D1)):
+  for where, kw, jump in (("moving", WIDE, None), ("stopped", dict(WIDE, v=0.0, standstill=True), 30.0),
+                          ("stopped_1h", dict(WIDE, v=0.0, standstill=True), 3725.0)):
+    j = dict(jump_at=10, jump=jump) if jump else {}
+    scene(**kw)
+    img = render(f"confirm_wide_{where}_{tag}", prm, **j)
+    c = dict(last)
+    edge = hud_alerts.cluster_edge.timer_left
+    w = {"calls": c, "timer_left": None if edge == float("inf") else round(edge, 1)}
+    if w["timer_left"] is not None:
+      scene(**{k: v for k, v in kw.items() if k != "alert"})
+      ref = render(f"confirm_wide_{where}_noalert_{tag}", prm, **j)
+      x = int(edge) - 1
+      w["timer_vs_noalert"] = same(box(img, x, 0, STRIP, 80), box(ref, x, 0, STRIP, 80))
+      w["timer_white"] = count(img, (x, 0, STRIP, 80), "white")
+    wide[f"{where}_{tag}"] = w
+styles["wide"] = wide
+
+# the card turning into MAX while the prompt was already fading out (review n1): from the strength it was drawn at
+fade_done = {}
+for k in (1, 2, 3, 4):
+  confirmed = dict(CONF_NONE, alert=CHANGED, set_kph=50, assist="active")
+  run(ON, [(CONF, 60, f"fade_done_{k}_0"), (CONF_TIMEOUT, k, f"fade_done_{k}_1")] +
+      [(confirmed, 1, f"fade_done_{k}_{i + 2}") for i in range(9)])
+  fade_done[k] = [dict(box=c["box"], box_alpha=c["box_alpha"], done=c["done"], done_alpha=c["done_alpha"],
+                       done_u=c["done_args"][2] if c["done_args"] else None) for c in phase_calls[1:]]
+out["fade_done"] = fade_done
+
 # the rail's own settings: each off alone, and both off = the stock strip
 toggles = {}
 for name, label, prm in (("rail_stop", "stop_off", {**ON, HS.PARAM_PLANNED_STOP: False}),
@@ -1033,6 +1082,47 @@ class TestHudRender(OpenpilotTestCase):
           assert p["style"] == ("plus" if i >= at else "split"), f"{when}: phase {i} {phases}"
       assert all(p["top_icons"] for p in phases), f"{when}: nothing ever drops out: {phases}"
       assert phases[at]["approach"] or phases[at]["box"] or phases[at]["done"], f"{when}: drawn on the frame it switched"
+
+  def test_not_engaged_the_card_names_no_max(self):
+    # review M1: the stock MAX is only drawn while openpilot is engaged; the coming limit needs no engagement, and the
+    # set speed this non-PCM car keeps while disengaged is held by nothing - so no 'MAX 110' beside it
+    engaged = self.r["approach_lower"]["calls"]
+    assert engaged["approach"] == 1 and engaged["approach_current"] == "110", engaged
+    for tag, c in self.r["styles"]["not_engaged"].items():
+      assert c["approach"] == 1 and c["approach_args"][:3] == [100, True, "in 300 m"], f"{tag}: it still comes {c}"
+      assert c["approach_current"] == "–", f"{tag}: the stock disabled char, not the kept set speed: {c}"
+      assert c["top_icons"], c
+
+  def test_the_widest_confirm_keeps_clear_of_the_timer(self):
+    # review M2: 'press - to set 110' and 'limit 100 +10' - stock-plus's row alone is ~355 px
+    for name, w in self.r["styles"]["wide"].items():
+      c = w["calls"]
+      assert c["box"] == 1 and c["box_text"] == "press - to set 110" and c["box_note"] == "limit 100 +10", f"{name}: {w}"
+      x1 = c["box_rect"][2]
+      if name.startswith("moving"):
+        assert w["timer_left"] is None and c["max_right"] == 476 - 40 and x1 <= c["max_right"] + 0.5, f"{name}: {w}"
+      else:
+        assert w["timer_left"] is not None and abs(c["max_right"] - (w["timer_left"] - 14)) < 0.1, f"{name}: {w}"
+        assert x1 <= c["max_right"] + 0.5, f"{name}: the card stops 14 px short of the timer: {w}"
+        assert w["timer_vs_noalert"] == 0 and w["timer_white"] > 1000, f"{name}: the timer untouched: {w}"
+    assert self.r["styles"]["wide"]["moving_d1"]["calls"]["box_rect"][2] > 380, "moving, stock-plus's row is not squeezed"
+    assert self.r["styles"]["wide"]["stopped_d1"]["calls"]["box_rect"][2] < 320, "stopped, it is"
+
+  def test_turning_into_max_from_a_fading_prompt_does_not_jump(self):
+    # review n1: the prompt timed out and its card was fading when the press set the speed: the card turns into MAX
+    # from the strength it was drawn at, up to full - never a jump to full on the first frame
+    seen = 0
+    for k, frames in self.r["fade_done"].items():
+      if not frames[1]["done"]:
+        assert all(f["box"] for f in frames) and not any(f["done"] for f in frames), \
+          f"{k}: faded under half - it fades out, as before {frames}"
+        continue
+      seen += 1
+      last = frames[0]["box_alpha"]
+      done = [f["done_alpha"] for f in frames if f["done"]]
+      assert last < 0.9 and abs(done[0] - last) < 0.02, f"{k}: from the strength it was drawn at: {frames}"
+      assert done == sorted(done) and done[-1] == 1.0, f"{k}: up to full: {frames}"
+    assert seen >= 2, self.r["fade_done"]
 
   # ----------------------------------------------------------------------------------------- compact alerts
   def assert_banner(self, c, bottom):

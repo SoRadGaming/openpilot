@@ -4,6 +4,8 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import dataclasses
+
 import pyray as rl
 
 from openpilot.common.filter_simple import FirstOrderFilter
@@ -22,6 +24,7 @@ from openpilot.system.ui.lib.application import gui_app
 
 PENDING_STALE_S = 0.25  # FORK(HUD): no frame drawn for this long - the box's state is old, not fading
 APPROACH_FREE, APPROACH_MAX, APPROACH_CUT = 0, 1, 2  # FORK(HUD): what else has the top left (_approach_blocker)
+CARD_RIGHT_MARGIN = 40  # FORK(HUD): the card in MAX's place stops this far short of the road's right edge (_draw_card)
 
 
 class HudRendererSP(HudRenderer):
@@ -50,8 +53,10 @@ class HudRendererSP(HudRenderer):
     self._grow_t0: float | None = None      # the confirm's card turning from the coming limit's (CARD_GROW_S)
     self._grow_alpha = 0.0
     self._card_current = ""                 # the MAX the confirm's card last showed beside its target
+    self._card_alpha = 0.0                  # ... and how strongly it was last drawn
     self._done_t0: float | None = None      # the press done: the card turning into the stock MAX (CARD_DONE_S) ...
-    self._done_from = ""                   # ... with the MAX it replaces beside it
+    self._done_from = ""                    # ... with the MAX it replaces beside it ...
+    self._done_alpha0 = 1.0                 # ... from the strength the card (or the stock MAX) had: no jump
 
   def _update_state(self) -> None:
     super()._update_state()
@@ -83,13 +88,20 @@ class HudRendererSP(HudRenderer):
       super()._draw_set_speed(rect)
 
   def _current_text(self) -> str:  # FORK(HUD)
-    """The set speed as the stock MAX number shows it (HudRenderer._draw_set_speed)."""
-    if not self.is_cruise_set:
+    """The set speed as the stock MAX number shows it (HudRenderer._draw_set_speed) - and only while it would show it:
+    the stock MAX is never drawn while openpilot is not engaged, and on this non-PCM car the set speed keeps its last
+    value then, so a card beside a coming limit would call a speed nothing holds 'MAX'. Not engaged, or no set speed:
+    the stock disabled char, '–'."""
+    if not self.is_cruise_set or not self._engaged:
       return CRUISE_DISABLED_CHAR
     return str(round(self.set_speed if ui_state.is_metric else self.set_speed * KM_TO_MILE))
 
   def _draw_card(self, rect: rl.Rectangle, card: MaxCard) -> None:  # FORK(HUD)
-    """The one place the style matters: the same card, drawn by the style's drawer."""
+    """The card, drawn by the style's drawer (the 'now' flash's rhythm, the other thing the style decides, is picked in
+    _draw_approach). It keeps left of the stop timer when the timer is up, and CARD_RIGHT_MARGIN short of the road's
+    right edge otherwise (MaxCard.max_right: a card too wide squeezes its words)."""
+    right = min(rect.x + rect.width - CARD_RIGHT_MARGIN, hud_alerts.cluster_edge.timer_left - hud_alerts.BANNER_GAP)
+    card = dataclasses.replace(card, max_right=right)
     if hud_settings.get().limit_style == STYLE_STOCK_PLUS:
       hud_draw.stock_plus_card(card, rect.x, rect.y)
     else:
@@ -159,6 +171,7 @@ class HudRendererSP(HudRenderer):
     alpha = self._pending_alpha.x * (1.0 - self._set_speed_alpha_filter.x)
     if item is not None and self._grow_t0 is not None and now - self._grow_t0 < CARD_GROW_S:
       alpha = max(alpha, self._grow_alpha * (1.0 - self._set_speed_alpha_filter.x))   # no dip at the hand-over
+    self._card_alpha = alpha if self._pending is not None and alpha >= 1e-2 else 0.0
     if self._pending is None or alpha < 1e-2:
       if self._pending_alpha.x < 1e-2:
         self._pending = None
@@ -199,11 +212,14 @@ class HudRendererSP(HudRenderer):
     the stock MAX digits' place and grows to their size, the stock-plus card dissolves round digits that are already
     there - and then the stock MAX number takes over, at full strength, for the rest of its 2.5 s (not while the prompt
     still fades out: until then the end is held). The digits never dip, and the face never shows in between, as it
-    did while the prompt faded. Cut on the frame - no tail - by another alert taking the top left, the road view not
-    drawn for a while, or a new prompt. False: not drawn (the frame goes on as without it)."""
+    did while the prompt faded. It starts from the strength the card was last drawn at (the prompt may already be
+    fading, the stock MAX may be showing) and eases to full with the turn, so its first frame is no jump. Cut on the
+    frame - no tail - by another alert taking the top left, the road view not drawn for a while, or a new prompt.
+    False: not drawn (the frame goes on as without it)."""
     confirm_fading = out and event_name(self._frame_alert()[0]) == CONFIRM_EVENT
     if self._done_t0 is None:
       self._done_t0, self._done_from = now, self._card_current
+      self._done_alpha0 = min(1.0, max(self._card_alpha, self._set_speed_alpha_filter.x))
     elif not (self._can_draw_top_icons or confirm_fading) or self._stale() or (item is not None and not out):
       self._done_t0 = None
       self._pending, self._pending_t0, self._grow_t0 = None, None, None
@@ -211,8 +227,10 @@ class HudRendererSP(HudRenderer):
       return False
     u = (now - self._done_t0) / CARD_DONE_S
     p = self._pending
+    done = ease_in_out(u)
     self._draw_card(rect, MaxCard(CARD_DONE, p.value, p.lower, self._done_from, text=p.text, note=p.note,
-                                  color=(p.color.r, p.color.g, p.color.b), done=ease_in_out(u)))
+                                  alpha=self._done_alpha0 + (1.0 - self._done_alpha0) * done,
+                                  color=(p.color.r, p.color.g, p.color.b), done=done))
     if u >= 1.0 - 1e-6 and self._can_draw_top_icons:
       # landed: the stock MAX number, as it is drawn for its 2.5 s after the change, from the next frame (held landed
       # while the prompt still fades out: the stock MAX may not show before it has gone)

@@ -356,7 +356,8 @@ class MaxCard:
   kind: int
   value: int                  # the coming limit, or the set speed the confirm sets (display units)
   lower: bool | None          # lower (a down chevron, the '-' key), higher (up, '+'); None: no key
-  current: str                # the set speed now, as the stock MAX number shows it ('110', or '–' with none)
+  current: str                # the set speed now, as the stock MAX number shows it ('110'; '–' with none, or while
+  #                             openpilot is not engaged, when the stock MAX is not drawn at all)
   text: str = ""              # 'in 300 m', 'now', 'press - to set 100'
   note: str = ""              # 'limit 50 +5': the limit, when the target is not the limit itself
   frac: float = 0.0           # approach: what is left of the 15 s / 500 m window, 0..1
@@ -369,6 +370,8 @@ class MaxCard:
   enter: float = 1.0          # approach, split card: the card opening, 0..1
   grow: float = 1.0           # pending: turning from the coming limit's card into the confirm's, 0..1
   done: float = 0.0           # CARD_DONE: 0..1, eased
+  max_right: float = math.inf  # the card's right edge stays left of this x (the stop timer, the road's edge): the
+  #                              stock-plus card squeezes its row to fit (the split card is narrower than any limit)
 
 
 # ------------------------------------------------------------------------------------------- alerts

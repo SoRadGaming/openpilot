@@ -1453,6 +1453,23 @@ class TestUpstreamHunks(OpenpilotTestCase):
     assert confirm.index("pending_max.publish(") < confirm.index("return\n") < confirm.index("hd.confirm_banner("), \
       "the box or the banner, never both"
 
+  def test_the_private_upstream_names_the_card_relies_on(self):
+    # HudRendererSP overrides and reads upstream HudRenderer internals (docs/fork/README.md, the auto-merged files to
+    # review): an upstream rename would not conflict, it would quietly break the card - so name them here
+    up = HUD_RENDERER.read_text(encoding="utf-8")
+    for name in ("def _draw_set_speed(self, rect", "self._set_speed_alpha_filter = ", "self._engaged = ",
+                 "self._can_draw_top_icons = ", "self.is_cruise_set = ", "CRUISE_DISABLED_CHAR = ", "KM_TO_MILE = ",
+                 "set_speed: int = ", "max_speed: int = ", "rl.Vector2(x + 13 + 4, y + 3 - 8 - 3 + 4)",
+                 "rl.Vector2(x + 25, y + FONT_SIZES.set_speed - 7 + 4)", "and self._engaged)"):
+      assert name in up, f"upstream HudRenderer changed: {name!r}"
+    draw = (Path(HM.__file__).parent / "hud_draw.py").read_text(encoding="utf-8")
+    assert "MAX_SIZE = FONT_SIZES.set_speed" in draw and "FONT_SIZES.max_speed" in draw, "the stock sizes, not copies"
+    src = HUD_RENDERER_SP.read_text(encoding="utf-8")
+    cur = src[src.index("  def _current_text"):src.index("  def _draw_card")]
+    assert "not self._engaged" in cur, "no MAX named while the stock MAX is not drawn (review M1)"
+    card = src[src.index("  def _draw_card"):src.index("  def _frame_alert")]
+    assert "cluster_edge.timer_left" in card and "max_right=" in card, "the card keeps left of the stop timer (review M2)"
+
 
 # ------------------------------------------------------------------------------------------- the gateway icon
 def git(*args) -> subprocess.CompletedProcess:

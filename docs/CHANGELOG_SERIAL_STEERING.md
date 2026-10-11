@@ -62,10 +62,10 @@ critical and no-entry alerts, the stop timer and standstill are untouched.
 
 Code: `hud_model.MaxCard` is one frame of the card (approach, waiting, done), with the clocks `CARD_ENTER_S`,
 `CARD_GROW_S`, `CARD_DONE_S` and `NOW_HALO_S`, plus `box_breath()`, `confirm_prompt()` and `prompt_parts()`.
-`HudRendererSP` decides the card once and draws it through `_draw_card()`, the one place the style is read. The two
-drawers are `hud_draw.split_card()` (with `split_layout()`) and `hud_draw.stock_plus_card()`, and they replace
-`pending_max()` and `approach_max()`. The stock `_draw_set_speed()` is overridden only to skip a frame while the card
-is turning into MAX.
+`HudRendererSP` decides the card once and draws it through `_draw_card()`, which picks the style's drawer (the 'now'
+flash's rhythm, the only other thing the style decides, is picked in `_draw_approach()`). The two drawers are `hud_draw.split_card()` (with `split_layout()`) and `hud_draw.stock_plus_card()`, and they replace
+`pending_max()` and `approach_max()`. The stock `_draw_set_speed()` is overridden only to skip drawing while the card
+turns into MAX.
 
 Tests: `test_hud_cluster.py` covers the key (registered INT "0", backed up, the default, the range, unknown and
 unreadable values meaning the split card, read live), the sunnylink item (an option with Split Card and Stock-plus,
@@ -79,6 +79,28 @@ over route 10f (M4 110 → 100, Bringelly Rd 50 → 70, stopped, the confirm pro
 every capture neither style draws a card in is pixel-identical to the base commit's (18 of 18 in each style). The
 frames after the press differ by design, until about 1.5 s after it: the stock MAX is at full from the card's end,
 where the base faded it in only after the prompt had gone.
+
+Review fixes, a second commit on the same branch (the review said ship, with these findings):
+
+* **No "MAX" while openpilot is not engaged.** The coming limit needs no engagement, and on this non-PCM car the set
+  speed keeps its last value while disengaged, so the split card's left half said "110 MAX" for a speed nothing
+  held. The stock MAX is only drawn while engaged; the card now follows it and shows the stock disabled char "–"
+  there (`_current_text()`). The coming limit itself is unchanged. Stock-plus never drew that half. A confirm that
+  is done while disengaged no longer turns into a MAX the stock HUD would not show: its card fades as before.
+* **The stock-plus confirm card has a width limit.** "press - to set 110" with "limit 100 +10" made a card reaching
+  x 388, over the stop timer at a standstill. The card now stops 40 px short of the road's right edge, or 14 px short of
+  the timer when it is up, and squeezes its row to fit (to 0.8 wide, then smaller, as the banners do). Moving, no
+  confirm needs the squeeze; stopped with the timer up, any confirm with the offset note does. The split card is
+  narrower than either limit: its right edge is at x 280 in this widest case, inside even an hour-long stop's 286.
+* **The turn into MAX starts where the card was.** If the prompt was already fading when the press set the speed,
+  the first frame of the turn jumped back to full. It now starts at the strength the card was last drawn at and
+  eases to full with the turn.
+* `hud_draw` takes the stock MAX's sizes from upstream's `FONT_SIZES` instead of copies. The fork guide now lists
+  the upstream `HudRenderer` internals the subclass relies on, and a test names them.
+
+Tests: the not-engaged coming limit in both styles; the widest confirm moving, stopped and stopped past an hour,
+in both styles, with the timer pixel-identical to no confirm; the turn into MAX from a prompt 1 and 2 frames into
+its fade; and the upstream names.
 
 ## 2026-10-09 — round 5 and the radar fix together (integration)
 
