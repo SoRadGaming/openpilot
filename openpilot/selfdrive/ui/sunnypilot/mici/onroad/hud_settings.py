@@ -6,11 +6,16 @@ See the LICENSE.md file in the root directory for more details.
 
 FORK(HUD): the comma 4 HUD's settings - one param per piece, set from sunnylink (Visuals > HUD).
 
-READ AT MOST ONCE A SECOND, from the render thread: eight small param reads a second, never one per frame.
+READ AT MOST ONCE A SECOND, from the render thread: nine small param reads a second, never one per frame.
 
-EVERY KEY DEFAULTS TO ON (params_keys.h), and every key off gives exactly the stock comma 4 screen. A key that cannot be
-read at all - a build whose params library predates it - reads as OFF, so a half-installed update draws the stock
-screen rather than half a HUD.
+EVERY TOGGLE DEFAULTS TO ON (params_keys.h), and every toggle off gives exactly the stock comma 4 screen. A key that
+cannot be read at all - a build whose params library predates it - reads as OFF, so a half-installed update draws the
+stock screen rather than half a HUD.
+
+One key is not a toggle: HudLimitStyle (2026-10-12, the owner's 'd1 and d3, allow a toggle') picks how the coming limit
+and the confirm are drawn in MAX's place - STYLE_SPLIT, the split card (D3, the default), or STYLE_STOCK_PLUS (D1). It
+changes the drawing only (hud_draw.split_card / stock_plus_card), never what is shown or when, so it may change while
+driving. Unreadable, or a value this build does not know: the split card.
 
 Round 5 (2026-10-09, the owner's option A) took the live speed, the speed-limit sign and its zone styling, and the next
 lower limit off the screen, with their settings; the stop timer stays top right. The coming limit is now announced in
@@ -31,13 +36,18 @@ PARAM_COMPACT_LIMIT = "HudCompactLimitPrompts"  # the speed-limit prompts small:
 PARAM_COMPACT_DISENGAGE = "HudCompactDisengage"  # 'cruise off' / 'lane centering off' as a banner
 PARAM_COMPACT_TURN = "HudCompactTurn"       # 'turning left / right' as a banner
 PARAM_APPROACHING_LIMIT = "HudApproachingLimit"  # the coming limit (lower or higher) in MAX's place, before it changes
+PARAM_LIMIT_STYLE = "HudLimitStyle"         # INT: how the coming limit and the confirm are drawn there (STYLES)
+
+STYLE_SPLIT, STYLE_STOCK_PLUS = 0, 1        # D3 'split card' (the default), D1 'stock-plus'
+STYLES = (STYLE_SPLIT, STYLE_STOCK_PLUS)
 
 # every key (all BOOL) and the HudSettings field it switches: the one list
 FIELDS = {PARAM_STOPPED_TIMER: "stopped_timer", PARAM_STOPPED_BANNER: "stopped_banner",
           PARAM_PLANNED_STOP: "planned_stop", PARAM_CURVE: "curve", PARAM_COMPACT_LIMIT: "compact_limit",
           PARAM_COMPACT_DISENGAGE: "compact_disengage", PARAM_COMPACT_TURN: "compact_turn",
           PARAM_APPROACHING_LIMIT: "approaching_limit"}
-ALL_PARAMS = tuple(FIELDS)
+ALL_PARAMS = tuple(FIELDS)   # the toggles
+KEYS = ALL_PARAMS + (PARAM_LIMIT_STYLE,)   # every HUD key: the toggles and the style
 
 
 @dataclass(frozen=True)
@@ -50,6 +60,7 @@ class HudSettings:
   compact_disengage: bool = False
   compact_turn: bool = False
   approaching_limit: bool = False
+  limit_style: int = STYLE_SPLIT
 
 
 ALL_OFF = HudSettings()
@@ -65,7 +76,14 @@ def read_settings(params) -> HudSettings:
     except Exception:
       return False
 
-  return HudSettings(**{field: flag(key) for key, field in FIELDS.items()})
+  def style() -> int:
+    try:
+      v = int(params.get(PARAM_LIMIT_STYLE, return_default=True))
+    except Exception:
+      return STYLE_SPLIT
+    return v if v in STYLES else STYLE_SPLIT
+
+  return HudSettings(**{field: flag(key) for key, field in FIELDS.items()}, limit_style=style())
 
 
 class HudSettingsReader:

@@ -12,8 +12,8 @@ stopwatch and m:ss. Round 5 (2026-10-09, the owner's option A) removed the live 
 school-zone lamps and electronic-sign styling, and the next lower limit, with their settings: the car's own dash has the
 speed, and the coming limit is announced top left instead (below). Nothing on the screen marks a school zone now.
 
-THE COMING LIMIT (HudApproachingLimit, ApproachState; drawn by hud_renderer.py in the stock MAX number's place - the
-owner's option C), from:
+THE COMING LIMIT (HudApproachingLimit, ApproachState; drawn by hud_renderer.py in the stock MAX number's place, as a
+card in the style HudLimitStyle picks - MaxCard below), from:
   longitudinalPlanSP    the resolver's limit (speedLimitLast while valid or last-valid), source map: a car-sourced limit
                         is never paired with a map look-ahead, as sunnypilot's own sign does. Missing or stale: nothing.
   liveMapDataSP         the next limit (speedLimitAhead*, exactly what mapd published - never nswZone's own look-ahead,
@@ -106,13 +106,22 @@ STANDSTILL_EVENT = 'manualRestart'
 LEAD_DEPART_MS = 1.0    # m/s: the car ahead is moving off ...
 LEAD_DEPART_S = 0.4     # ... continuously for this long (radarState is 20 Hz: 8 frames), so radar noise cannot do it
 
-# the compact confirm's dashed box (hud_draw.pending_max), from the frame it is first half visible: the outline flashes
-# solid BOX_BLINKS times, BOX_BLINK_ON_S lit and BOX_BLINK_OFF_S dashed - 2.8 flashes a second, under the 3 Hz
-# photosensitivity line - then its dashes march clockwise at BOX_MARCH_PX_S while the prompt waits. The digits never blink.
+# the compact confirm's card outline, from the frame it is first half visible: it flashes solid BOX_BLINKS times,
+# BOX_BLINK_ON_S lit and BOX_BLINK_OFF_S not - 2.8 flashes a second, under the 3 Hz photosensitivity line - then, while
+# the prompt waits, the split card's dashes march clockwise at BOX_MARCH_PX_S and the stock-plus card's outline breathes
+# at BREATH_HZ. The digits never blink.
 BOX_BLINKS = 2
 BOX_BLINK_ON_S = 0.18
 BOX_BLINK_OFF_S = 0.18
 BOX_MARCH_PX_S = 30.0
+BREATH_HZ = 1.0
+
+# the card's own animations (MaxCard), in seconds
+CARD_ENTER_S = 0.25     # split card: it opens out of its MAX half when a coming limit appears
+CARD_GROW_S = 0.25      # the coming limit's card turns into the confirm's (stock-plus: grows to MAX size; split: footer)
+CARD_DONE_S = 0.3       # the confirm done: the split card's target slides into MAX's place, the stock-plus card
+                        # dissolves round its digits - then the stock MAX number takes over
+NOW_HALO_S = 0.2        # stock-plus: 'now' lights the outline once (the split card's red bar glows BOX_BLINKS times)
 
 # the compact alerts, by event name (hud_alerts.py draws them), each only under the one event type it has today
 # (COMPACT_TYPES): a new type of a listed name - a '/noEntry' 'openpilot Unavailable', which is normal / LOW / none like
@@ -301,15 +310,65 @@ class ApproachState:
 
 
 def box_outline(t: float) -> tuple[bool, float]:
-  """(lit, phase) of the compact confirm's dashed box t seconds after it was first half visible: lit = the outline is
-  one solid line (a flash), else its dashes drawn phase px along the outline (clockwise) - 0 through the flashes, then
-  marching at BOX_MARCH_PX_S."""
+  """(lit, phase) of the compact confirm's card outline t seconds after it was first half visible: lit = the outline is
+  one solid line (a flash), else - the split card's dashes - drawn phase px along the outline (clockwise): 0 through the
+  flashes, then marching at BOX_MARCH_PX_S. (The stock-plus card breathes instead: box_breath.)"""
   period = BOX_BLINK_ON_S + BOX_BLINK_OFF_S
   flashes = BOX_BLINKS * period
   t = max(0.0, t)
   if t < flashes:
     return (t % period) < BOX_BLINK_ON_S - 1e-9, 0.0
   return False, BOX_MARCH_PX_S * (t - flashes)
+
+
+def box_breath(t: float) -> float:
+  """The stock-plus card's outline, t seconds after the confirm was first half visible: 1 (full) through the flashes,
+  then breathing 1 -> 0 -> 1 at BREATH_HZ while the prompt waits."""
+  flashes = BOX_BLINKS * (BOX_BLINK_ON_S + BOX_BLINK_OFF_S)
+  if t < flashes:
+    return 1.0
+  return 0.5 + 0.5 * math.cos(2 * math.pi * BREATH_HZ * (t - flashes))
+
+
+def ease_out(u: float) -> float:
+  u = min(1.0, max(0.0, u))
+  return 1 - (1 - u) ** 3
+
+
+def ease_in_out(u: float) -> float:
+  u = min(1.0, max(0.0, u))
+  return 4 * u ** 3 if u < 0.5 else 1 - (-2 * u + 2) ** 3 / 2
+
+
+# ------------------------------------------------------------------------------------------- the card in MAX's place
+CARD_APPROACH, CARD_PENDING, CARD_DONE = 0, 1, 2
+
+
+@dataclass(frozen=True)
+class MaxCard:
+  """One frame of what the MAX number's place shows, decided once (HudRendererSP) and drawn by the style's drawer
+  (hud_draw.split_card, D3; hud_draw.stock_plus_card, D1). The two styles draw the same states from the same fields;
+  each ignores the animations it does not have.
+    CARD_APPROACH  a coming limit (HudApproachingLimit): value, lower, text 'in 300 m' / 'now', frac
+    CARD_PENDING   the confirm waiting for the driver: value = the set speed it would set, text 'press - to set 100'
+    CARD_DONE      the confirm done (the set speed is now its target): done 0..1 turns the card into the stock MAX
+                   number - the split card slides its target there, the stock-plus card dissolves round its digits"""
+  kind: int
+  value: int                  # the coming limit, or the set speed the confirm sets (display units)
+  lower: bool | None          # lower (a down chevron, the '-' key), higher (up, '+'); None: no key
+  current: str                # the set speed now, as the stock MAX number shows it ('110', or '–' with none)
+  text: str = ""              # 'in 300 m', 'now', 'press - to set 100'
+  note: str = ""              # 'limit 50 +5': the limit, when the target is not the limit itself
+  frac: float = 0.0           # approach: what is left of the 15 s / 500 m window, 0..1
+  alpha: float = 1.0
+  color: tuple = (0, 0, 0)    # the confirm alert's color (normal: black)
+  lit: bool = False           # pending: the outline flashing; approach 'now': the glow (split) or halo (stock-plus)
+  phase: float | None = None  # pending, split card: the dashes' march (box_outline)
+  breath: float = 1.0         # pending, stock-plus: the outline's breathing (box_breath)
+  key_alpha: float = 1.0      # the green key's blink, sunnypilot's own arrow's
+  enter: float = 1.0          # approach, split card: the card opening, 0..1
+  grow: float = 1.0           # pending: turning from the coming limit's card into the confirm's, 0..1
+  done: float = 0.0           # CARD_DONE: 0..1, eased
 
 
 # ------------------------------------------------------------------------------------------- alerts
@@ -357,6 +416,26 @@ def confirm_text(text1: str) -> str:
   it say which limit."""
   t = text1.lower()
   return t[:-len(" speed limit")] if t.endswith(" to confirm speed limit") else t
+
+
+def confirm_prompt(text1: str, target: int) -> str:
+  """The confirm's words on the comma 4 (owner, 2026-10-12): 'Press - to confirm speed limit' as 'press - to set 100' -
+  the key the alert names (sunnypilot's text says the button the confirm accepts since batch 2) and the set speed that
+  press gives. No target (no limit) or a text naming no key: confirm_text."""
+  lower = confirm_lower(text1)
+  if lower is None or target <= 0:
+    return confirm_text(text1)
+  return f"press {'-' if lower else '+'} to set {target}"
+
+
+def prompt_parts(text: str) -> tuple[str, str] | None:
+  """'press - to set 100' as ('press', 'to set 100'): the words either side of the key, for a card that draws the key
+  itself in its place; None when the text names no key."""
+  for key in (" - ", " + "):
+    if key in text:
+      before, after = text.split(key, 1)
+      return before, after
+  return None
 
 
 def confirm_lower(text1: str) -> bool | None:

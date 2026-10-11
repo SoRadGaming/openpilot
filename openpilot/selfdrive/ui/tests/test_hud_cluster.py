@@ -46,7 +46,7 @@ HUD_ALERTS = ROOT / "selfdrive/ui/sunnypilot/mici/onroad/hud_alerts.py"
 HUD_CLUSTER = ROOT / "selfdrive/ui/sunnypilot/mici/onroad/hud_cluster.py"
 KPH = 3.6
 
-DEFAULTS = dict.fromkeys(HS.ALL_PARAMS, True)
+DEFAULTS = {**dict.fromkeys(HS.ALL_PARAMS, True), HS.PARAM_LIMIT_STYLE: HS.STYLE_SPLIT}
 # round 5 (2026-10-09, option A) took these off the screen with what they switched: nothing may read them any more
 RETIRED = ("HudSpeedCluster", "HudCurrentSpeed", "HudLimitSign", "HudSchoolZoneCue", "HudVariableLimitSign",
            "HudNextLimit", "HudConfirmLimit")
@@ -134,14 +134,18 @@ class FakeParams:
 class TestHudParams(OpenpilotTestCase):
   def test_every_setting_is_registered_backed_up_and_on_by_default(self):
     keys = PARAMS_KEYS.read_text()
-    for key in HS.ALL_PARAMS:
+    for key in HS.KEYS:
       m = re.search(r'\{"' + key + r'",\s*\{([^}]*)\}\}', keys)
       assert m, f"{key} is not in params_keys.h; Params would raise UnknownKeyName"
       flags = m.group(1)
       assert "PERSISTENT" in flags and "BACKUP" in flags, f"{key}: a setting, kept and backed up"
-      assert "BOOL" in flags and '"1"' in flags, f"{key} defaults to on"
+      if key == HS.PARAM_LIMIT_STYLE:
+        assert "INT" in flags and '"0"' in flags, f"{key}: an INT, the split card by default"
+      else:
+        assert "BOOL" in flags and '"1"' in flags, f"{key} defaults to on"
     assert set(HS.FIELDS) == set(HS.ALL_PARAMS) and len(HS.ALL_PARAMS) == 8
-    assert {f.name for f in dataclasses.fields(HS.HudSettings)} == set(HS.FIELDS.values())
+    assert HS.KEYS == HS.ALL_PARAMS + (HS.PARAM_LIMIT_STYLE,)
+    assert {f.name for f in dataclasses.fields(HS.HudSettings)} == set(HS.FIELDS.values()) | {"limit_style"}
 
   def test_the_built_params_library_knows_them(self):
     params = Params()
@@ -176,6 +180,34 @@ class TestHudParams(OpenpilotTestCase):
     assert not r.get().approaching_limit and r.reads == 2
     params.v[HS.PARAM_APPROACHING_LIMIT] = True
     assert r.get(force=True).approaching_limit and r.reads == 3
+
+  def test_the_limit_style(self):
+    # 2026-10-12: one INT key, not a toggle - the split card (D3) unless set to stock-plus (D1)
+    assert HS.STYLES == (HS.STYLE_SPLIT, HS.STYLE_STOCK_PLUS) == (0, 1)
+    assert HS.ALL_ON.limit_style == HS.ALL_OFF.limit_style == HS.STYLE_SPLIT, "the default: the split card"
+    params = Params()
+    assert params.get(HS.PARAM_LIMIT_STYLE, return_default=True) == HS.STYLE_SPLIT
+    try:
+      params.put(HS.PARAM_LIMIT_STYLE, HS.STYLE_STOCK_PLUS, block=True)
+      assert HS.read_settings(params) == with_(limit_style=HS.STYLE_STOCK_PLUS), "the style changes the style only"
+      params.put(HS.PARAM_LIMIT_STYLE, 7, block=True)
+      assert HS.read_settings(params).limit_style == HS.STYLE_SPLIT, "a value this build does not know: the default"
+    finally:
+      params.put(HS.PARAM_LIMIT_STYLE, HS.STYLE_SPLIT, block=True)
+    for broken in (FakeParams(fail=True), FakeParams({HS.PARAM_LIMIT_STYLE: None}), FakeParams({HS.PARAM_LIMIT_STYLE: -1})):
+      assert HS.read_settings(broken).limit_style == HS.STYLE_SPLIT
+
+  def test_the_style_is_read_live(self):
+    # drawing only, so it may change while driving: read with the toggles, at most once a second
+    t = [0.0]
+    params = FakeParams()
+    r = HS.HudSettingsReader(params_fn=lambda: params, clock=lambda: t[0])
+    assert r.get().limit_style == HS.STYLE_SPLIT
+    params.v[HS.PARAM_LIMIT_STYLE] = HS.STYLE_STOCK_PLUS
+    t[0] = 0.5
+    assert r.get().limit_style == HS.STYLE_SPLIT and r.reads == 1
+    t[0] = 1.0
+    assert r.get().limit_style == HS.STYLE_STOCK_PLUS and r.reads == 2
 
   def test_the_reader_starts_with_everything_off(self):
     # before its first read (the first frame) nothing is drawn
@@ -479,14 +511,33 @@ class TestBoxOutline(OpenpilotTestCase):
     assert box_outline(-1.0) == (True, 0.0) and box_outline(0.0)[0], "lit from the first half-visible frame"
     assert not box_outline(HM.BOX_BLINK_ON_S + 0.01)[0]
 
-  def test_the_renderer_and_the_box_use_it(self):
+  def test_the_renderer_and_the_cards_use_it(self):
     src = HUD_RENDERER_SP.read_text(encoding="utf-8")
-    body = src[src.index("  def _draw_pending_max"):src.index("  def _approach_now")]
-    assert "box_outline(" in body and "lit=lit, phase=phase" in body and "alpha >= 0.5" in body
+    body = src[src.index("  def _draw_pending_max"):src.index("  def _done_due")]
+    assert "box_outline(t)" in body and "box_breath(t)" in body and "lit=lit, phase=phase" in body
+    assert "alpha >= 0.5" in body
     draw = (Path(HM.__file__).parent / "hud_draw.py").read_text(encoding="utf-8")
-    box = draw[draw.index("def pending_max("):draw.index("def _solid_rrect(")]
-    assert box.count("phase=phase") == 2, "both the underlay and the dashes march"
-    assert box.index("rl.draw_text_ex(") < box.index("if lit:"), "the digits are drawn the same, lit or not"
+    split = draw[draw.index("def split_card("):]
+    assert split.count("phase=c.phase") == 2, "both the underlay and the dashes march"
+    plus = draw[draw.index("def stock_plus_card("):draw.index("# ---- D3")]
+    assert "c.breath" in plus and "phase" not in plus, "the stock-plus card breathes, it does not march"
+    assert plus.index("rl.draw_text_ex(gui_app.font(FontWeight.DISPLAY)") > plus.index("if c.lit:"), \
+      "the digits are drawn over the outline, the same whether it is lit or not"
+
+  def test_the_stock_plus_outline_breathes(self):
+    flashes = HM.BOX_BLINKS * (HM.BOX_BLINK_ON_S + HM.BOX_BLINK_OFF_S)
+    assert all(HM.box_breath(i / 20) == 1.0 for i in range(int(flashes * 20))), "full through the two flashes"
+    b = [HM.box_breath(flashes + i / 20) for i in range(41)]
+    assert b[0] == 1.0 and abs(b[10] - 0.0) < 1e-9 and abs(b[20] - 1.0) < 1e-9 and abs(b[40] - 1.0) < 1e-9, \
+      f"then 1 -> 0 -> 1 once a second: {b}"
+    assert all(0.0 <= v <= 1.0 for v in b)
+
+  def test_the_cards_easing(self):
+    for f in (HM.ease_out, HM.ease_in_out):
+      assert f(-1.0) == 0.0 and f(0.0) == 0.0 and f(1.0) == 1.0 and f(2.0) == 1.0
+      v = [f(i / 20) for i in range(21)]
+      assert all(q >= p for p, q in zip(v, v[1:], strict=False)), f"never backwards: {v}"
+    assert HM.ease_in_out(0.5) == 0.5 and HM.ease_out(0.5) > 0.5
 
 
 # ------------------------------------------------------------------------------------------- the right rail's rules
@@ -1203,6 +1254,24 @@ class TestCompactAlerts(OpenpilotTestCase):
     assert HM.confirm_lower("Press + to confirm speed limit") is False
     assert HM.confirm_lower("Speed Limit Assist: set to 60 km/h to engage") is None
 
+  def test_the_prompt_says_the_key_and_the_speed(self):
+    # owner, 2026-10-12: 'press - to set 100', not 'press - to confirm' - the key the alert names (sunnypilot's text says
+    # the button the confirm accepts since batch 2), the set speed that press gives
+    assert HM.confirm_prompt("Press - to confirm speed limit", 100) == "press - to set 100"
+    assert HM.confirm_prompt("Press + to confirm speed limit", 55) == "press + to set 55"
+    assert HM.confirm_prompt("Press + to confirm speed limit", 0) == "press + to confirm", "no limit: no number"
+    pcm = "Speed Limit Assist: set to 60 km/h to engage"
+    assert HM.confirm_prompt(pcm, 60) == HM.confirm_text(pcm), "a text naming no key keeps its own words"
+    assert HM.prompt_parts("press - to set 100") == ("press", "to set 100")
+    assert HM.prompt_parts("press + to set 55") == ("press", "to set 55")
+    assert HM.prompt_parts("press + to confirm") == ("press", "to confirm")
+    assert HM.prompt_parts(HM.confirm_text(pcm)) is None
+    for src in (Path(HM.__file__).parent / n for n in ("hud_draw.py", "hud_renderer.py")):
+      assert "to confirm" not in src.read_text(encoding="utf-8"), f"{src.name}: the old wording"
+    alerts = (Path(HM.__file__).parent / "hud_alerts.py").read_text(encoding="utf-8")
+    confirm = alerts[alerts.index("def _draw_confirm("):alerts.index("def draw_compact_standstill(")]
+    assert "confirm_text(" not in confirm and confirm.count("confirm_prompt(alert.text1, ") == 2, "the card and the banner"
+
 
 # ------------------------------------------------------------------------------------------- sunnylink
 def hud_section():
@@ -1216,15 +1285,30 @@ class TestSunnylink(OpenpilotTestCase):
     panel, sec = hud_section()
     assert panel["label"] == "Visuals" and sec["title"] == "HUD"
     keys = [it["key"] for it in sec["items"]]
-    assert sorted(keys) == sorted(HS.ALL_PARAMS)
-    assert keys[:3] == [HS.PARAM_STOPPED_TIMER, HS.PARAM_STOPPED_BANNER, HS.PARAM_APPROACHING_LIMIT]
+    assert sorted(keys) == sorted(HS.KEYS)
+    assert keys[:4] == [HS.PARAM_STOPPED_TIMER, HS.PARAM_STOPPED_BANNER, HS.PARAM_APPROACHING_LIMIT,
+                        HS.PARAM_LIMIT_STYLE], "the style next to what it styles"
 
   def test_widgets_match_the_param_types(self):
     _, sec = hud_section()
     for it in sec["items"]:
-      assert it["widget"] == "toggle", it["key"]
+      assert it["widget"] == ("option" if it["key"] == HS.PARAM_LIMIT_STYLE else "toggle"), it["key"]
       assert it.get("title") and it.get("description"), it["key"]
-      assert "visibility" not in it, f"{it['key']}: every setting stands alone now"
+      assert "visibility" not in it and "enablement" not in it, f"{it['key']}: every setting stands alone, any time"
+
+  def test_the_limit_style_item(self):
+    # the json the app reads, in step with the yaml it is compiled from, and with the values the UI knows
+    import yaml
+    _, sec = hud_section()
+    item = next(it for it in sec["items"] if it["key"] == HS.PARAM_LIMIT_STYLE)
+    src = yaml.safe_load(VISUALS_YAML.read_text(encoding="utf-8"))
+    hud = next(s for s in src["sections"] if s["id"] == "hud_comma4")
+    assert item == next(it for it in hud["items"] if it["key"] == HS.PARAM_LIMIT_STYLE), "settings_ui.json is stale"
+    assert [o["value"] for o in item["options"]] == list(HS.STYLES)
+    assert [o["label"] for o in item["options"]] == ["Split Card", "Stock-plus"]
+    assert item["title"] == "Limit Change Style"
+    for words in ("Split Card", "Stock-plus", "press - to set 100", "while driving"):
+      assert words in item["description"], words
 
   def test_shown_for_a_comma_4_only(self):
     _, sec = hud_section()
@@ -1264,13 +1348,14 @@ class TestUpstreamHunks(OpenpilotTestCase):
                        "import hud_alerts", "hud_alerts.frees_top_icons("))
     marked(BALL, ("self.hud_floor_y = -math.inf", "max(dot_height, self.hud_floor_y)"), window=0)
     marked(ALERTS, ("import hud_alerts", "hud_alerts.draw_compact("))
-    marked(PARAMS_KEYS, [f'"{k}"' for k in HS.ALL_PARAMS], window=12)
+    marked(PARAMS_KEYS, [f'"{k}"' for k in HS.KEYS], window=12)
     marked(VISUALS_YAML, ("id: hud_comma4",))
     marked(MICI_SETTINGS, ("import cloudlog", "def gateway_icon():", "icons_mici/gateway.png", "gateway_icon())"), window=5)
     marked(REPO / ".gitattributes", ("icons_mici/gateway.png -filter",))
     marked(HUD_RENDERER_SP, ("import hud_alerts, hud_draw", "pending_max.drawer = True", "self._draw_pending_max(rect)",
                              "def drawing_top_icons", "def _draw_pending_max", "standstill_banner.observe(",
-                             "self._draw_approach(rect)", "def _draw_approach", "def _approach_blocker"))
+                             "self._draw_approach(rect)", "def _draw_approach", "def _approach_blocker",
+                             "def _draw_set_speed", "def _draw_card"))
 
   def test_the_hooks_fall_through_to_the_stock_drawing(self):
     src = ALERTS.read_text(encoding="utf-8")
