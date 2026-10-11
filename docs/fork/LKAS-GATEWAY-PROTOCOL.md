@@ -81,7 +81,7 @@ the hunk. Integration-test sections ("integration §N") refer to
 | repo | file | area-B hunk | commits | pinned by |
 |---|---|---|---|---|
 | odbc | `opendbc/car/honda/hondacan.py` | `create_steering_control(..., serial_gateway=False, ldw_left=False, ldw_right=False)`; `SP_HUD_PROTOCOL_VERSION`, `SP_OP_STATE_*`, `SP_HUD_MAX_TORQUE`, `create_sp_hud_status()`; `HONDA_ELESYS` added to the import. Since 2026-10-12 `OP_SATURATED` is `CC_SP.lateralControl.steerSaturated` (section 4.1). (`create_brake_command(..., is_metric, ...)` and `create_scm_buttons_no_cruise()` are area C) | `031743c4` `ad76c278` `02e7fd71` `1a133e47` | integration §7, §10, §11 |
-| odbc | `opendbc/car/honda/carcontroller.py` | `BRAKE_RELEASE_FRAMES`, `brake_release_scale()`, `self.brake_release_frames`, the brake ceiling on `limited_torque`, the `serial_gateway` call, the `0x500` block that replaces `create_lkas_hud` on ELESYS (`release_brake`, `release_driver`, `lat_ready`, `op_state`); the reported torque, `linbus_gateway_actuating()` and the `new_actuators.torque = 0.0` hunk (section 3.6); since 2026-10-12 `GW_BLINK_CEIL`, `linbus_gateway_blinker_capped()` and the clip to it in the same hunk (section 3.6, the blinker ceiling). Everything longitudinal in this file is area C | `031743c4` `ad76c278` `a091808d` `02e7fd71` `1a133e47` `43a98b9d` `bddc6395` | integration §7, §10, §11, §12; `test_elesys.py` `TestElesysReportedTorque*`; `test_latcontrol_reported_torque.py` |
+| odbc | `opendbc/car/honda/carcontroller.py` | `BRAKE_RELEASE_FRAMES`, `brake_release_scale()`, `self.brake_release_frames`, the brake ceiling on `limited_torque`, the `serial_gateway` call, the `0x500` block that replaces `create_lkas_hud` on ELESYS (`release_brake`, `release_driver`, `lat_ready`, `op_state`); the reported torque, `linbus_gateway_actuating()` and the `new_actuators.torque = 0.0` hunk (section 3.6); since 2026-10-12 the hunk's comment on why the blinker ceiling is not reported (section 3.6). Everything longitudinal in this file is area C | `031743c4` `ad76c278` `a091808d` `02e7fd71` `1a133e47` `43a98b9d` `bddc6395` | integration §7, §10, §11, §12; `test_elesys.py` `TestElesysReportedTorque*`; `test_latcontrol_reported_torque.py` |
 | odbc | `opendbc/car/honda/carstate.py` | `get_can_parsers()` registers `GW_ACTIVE`, `GW_STEER_GRANT`, `EPS_LIN_RAW`, `GW_VERSION`, `GW_BUILD` with `float("nan")`; `CarStateExt.update(self, ret, ret_sp, can_parsers)`. The ELESYS `carFaultedNonCritical` branch is area C but described in [section 10.1](#101-lkas_problem-read-back-carstatepy) | `ad76c278` `02e7fd71` `2cc16a02` `124465ca` | integration §8, §13 |
 | odbc | `opendbc/sunnypilot/car/honda/carstate_ext.py` | `_update_linbus_gateway`, `_update_linbus_grant`, `_update_linbus_firmware` (area A), `_update_driver_torque_validity`, `_eps_lin_driver_torque_valid`, the constants, the `ret_sp` parameter. `FUEL_LEVEL_FULL` and `fuelGauge` are area C | `ad76c278` `02e7fd71` `1a133e47` `23dce590` `2cc16a02` `124465ca` `2619b404` | integration §8, §13, §14, §14b |
 | odbc | `opendbc/car/structs.py` | `CarControlSP.LateralControl` (since 2026-10-12 with `steerSaturated`), `CarStateSP.driverTorqueStale`, `CarStateSP.LinbusGateway` (since 2026-10-12 with `blinkerCapped`) | `ad76c278` `02e7fd71` `23dce590` `124465ca` `2619b404` | `test_car_control_sp_seam.py` |
@@ -112,7 +112,7 @@ the hunk. Integration-test sections ("integration §N") refer to
 | sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | two tests: `test_a_stale_torque_still_confirms_nothing` and `test_driver_torque_stale_comes_after_the_road_edges` (the rest is area C) | `10e088a2d`, 2026-09 merge | itself |
 | sp | `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | the gateway pause and its resume, every brake mode, the brake and regen guard, the emergency takeover beside an override, no board no pause, `selfdrived`'s subscription, the enable-frame cases, (`TestFastWheelSetting`) the takeover's switch and threshold, and (`TestGatewayPauseNeedsAFreshFrame`, 2026-10-06) the fresh-frame resume and the 3 s fallback | `2cfcd3c6a`, 2026-09 merge, 2026-09-30, 2026-10-06 | itself |
 | sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` (added in the 2026-09 merge) | 300 frames on `HONDA_ACCORD_9G_AU` with Lateral Jerk on and the board present but not actuating: `pid.i` stays 0.0 in both torque controllers. Control case: with no gateway the same run winds `abs(i)` above 1e-3, as upstream does | 2026-09 merge | itself |
-| sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_reported_torque.py` (2026-10) | the zero reported torque keeps `_check_saturation` from firing while the board is not actuating, closed loop through the real Honda `CarController`, both torque controllers; a real saturation still alerts while actuating; since 2026-10-12 the same railed request does not saturate under the blinker ceiling; a source guard on controlsd's `steer_limited_by_safety` line | `7e9ffe547`, 2026-10-12 | itself |
+| sp | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_reported_torque.py` (2026-10) | the zero reported torque keeps `_check_saturation` from firing while the board is not actuating, closed loop through the real Honda `CarController`, both torque controllers; a real saturation still alerts while actuating; since 2026-10-12 it still does under the board's blinker ceiling, hands off it raises `steerSaturated` and `0x500 OP_SATURATED` carries it, and a raw saturation without the alert's conditions is not sent; a source guard on controlsd's `steer_limited_by_safety` line | `7e9ffe547`, 2026-10-12 | itself |
 
 `openpilot/selfdrive/car/card.py` has no area-B hunk. It already published `carStateSP` before the fork.
 Its fork additions (`stage_board_firmware`, `write_board_firmware`, `log_flash_trace`) are
@@ -155,8 +155,8 @@ ramp (`t * soft / GW_SOFTSTART_FRAMES`, 0 to 1 over 2 s after each engagement), 
 driver-torque fade, section 9) and `GW_BLINK_CEIL_PCT` = 50 % while an indicator is on
 (`gw_active.c` lines 1981–1995 at `d995bc9`). So openpilot's full scale of ±1.0 equals the
 board's authority in steady state, outside the soft start, the driver-torque fade and the
-blinker ceiling, all of which can only lower it. Since 2026-10-12 the blinker ceiling is reported back
-(section 3.6); the soft start and the driver-torque fade are not. In that steady state openpilot's saturation
+blinker ceiling, all of which can only lower it. None of the three is reported back to openpilot;
+for the blinker ceiling that is a decision (section 3.6). In that steady state openpilot's saturation
 flag means the same thing at every step of the authority ladder, with no change on this side.
 The history of how this came about (the reference boards took only the low byte and wrapped)
 is in `docs/SP_GATEWAY_FIRMWARE.md` §0.
@@ -292,52 +292,45 @@ Hondas unaffected) and `TestElesysReportedTorqueSeam` (`0x704` frames through th
 `CarInterface`: none, engaged, dry run, disengaged, stale); `test_latcontrol_reported_torque.py`
 and `test_torqued_elesys.py` on the sunnypilot side.
 
-**The blinker ceiling (2026-10-12).** While a turn signal is on, and for `GW_BLINKER_DWELL_MS`
-(500 ms) after, the board clips its command to `GW_BLINK_CEIL_PCT` = 50 % of its authority and
-says so in `0x704 INH_BLINKER` (byte 5 bit 5, the dwell included: `blink` clears only 500 ms after
-`0x294` does). `0x0E4`'s full scale maps onto the authority, so the ceiling is ±0.5 of openpilot's
-torque whatever the authority is; `CMD_APPLY_STEER` never exceeded 80 under `INH_BLINKER` on
-10f/115/120/121. Reported uncapped, openpilot could not see it: the report said 1.0 while the EPS
-got 0.5, `steer_limited_by_safety` stayed false and the 0.8 s saturation timer ran, and on 120 at
-486.24 s and 121 at 330.31 s `lac.saturated` set and reached the board as `OP_SATURATED`, which
-lit its "steer required" alarm (section 4.2 for the other half of that fix). So:
+**The blinker ceiling is NOT reported (decision, 2026-10-12).** While a turn signal is on, and
+for `GW_BLINKER_DWELL_MS` (500 ms) after, the board clips its command to `GW_BLINK_CEIL_PCT`
+(50 % at board `686e4603`) of its authority and says so in `0x704 INH_BLINKER` (byte 5 bit 5,
+the dwell included). openpilot cannot see that cap in the report: carOutput says 1.0 while the
+EPS gets 0.5, so on a lane change the output can pin and `lac.saturated` set after 0.8 s (120 at
+486.24 s, 121 at 330.31 s). That is left as it is, on purpose.
 
-```python
-GW_BLINK_CEIL = 0.5   # the board's GW_BLINK_CEIL_PCT 50
-def linbus_gateway_blinker_capped(CS) -> bool   # CS.out_sp.linbusGateway.blinkerCapped; False if missing or odd
-...
-if self.CP.carFingerprint in HONDA_ELESYS:
-  if not linbus_gateway_actuating(CS):
-    new_actuators.torque = 0.0
-  elif linbus_gateway_blinker_capped(CS):
-    new_actuators.torque = float(np.clip(self.last_torque, -GW_BLINK_CEIL, GW_BLINK_CEIL))
-```
+lcalert first clipped the report to ±0.5 under `INH_BLINKER`. Review rejected it, because the
+clip made the ceiling "limited by safety": `_check_saturation` counts down while
+`steer_limited_by_safety` is true, so `lac.saturated` could never set under the cap, and neither
+could `steerSaturated`, which is both openpilot's "Turn Exceeds Steering Limit" and, since the
+same branch, `0x500 OP_SATURATED`. Blinker left on, or waiting for a gap in `preLaneChange`, in
+a highway curve, hands off: the board delivers about half of what is asked, the car drifts out,
+and nothing warns. The clip was also not needed for the alarm: on 115/120/121 selfdrived's
+`steerSaturated` is 0 although `lac.saturated` ran for 64/53/79 frames, so section 4.2 alone
+removes those alarms. And it would have been a second copy of `GW_BLINK_CEIL_PCT` in opendbc,
+which the planned 75 % image would have silently contradicted.
 
-`blinkerCapped` is `valid and INH_BLINKER` (carstate_ext), so a stale or absent `0x704` clips
-nothing - though a stale one already reports 0 through `actuating`. The wire is still
-`last_torque`. `0x704` is 10 Hz, so the clip can start and end up to about 100 ms after the
-board's.
+What stays: `blinkerCapped = valid and INH_BLINKER` (carstate_ext) is decoded and logged in
+`carStateSP`, so a route shows when the cap was on. Nothing acts on it. The cost of not
+reporting the cap is what the car always had: the integrator can wind a little under the cap
+(the replay with the clip moved `0x0E4` by at most 19 counts of 2560), the comma 4 torque bar
+shows the request rather than what the EPS got, and torqued drops the railed points (a report
+over 0.5 is outside its buckets). If the honest bar or the integrator hold is wanted later, the way to get
+it without losing the alert is in latcontrol (hold the integrator above the ceiling while
+`blinkerCapped`, and let `_check_saturation` keep counting), not in the report.
 
-* **The ceiling, not the board's command.** `CMD_APPLY_STEER`/`CMD_TARGET` is the bullet above
-  ("Not the wire torque"): a 10 Hz frame a cycle late, `CMD_TARGET` quantised to 2 counts
-  (0.0125, over the 0.01 threshold), and shaped by the soft start and the driver fade. Reported
-  as carOutput it would have set `steer_limited_by_safety` on 11-27 % of the actuating,
-  non-blinker `0x704` frames of 10f/115/120/121. The driver fade starts at 20 counts, which is
-  where `steeringPressed` already freezes the integrator and stops the saturation timer.
-* **What it changes** (closed-loop replay, the real controlsd lateral loop and the real
-  `CarInterface`, 10f/115/120/121, old vs new): `lac.saturated` on the lane changes goes from 53
-  and 79 frames to 0 on 120 and 121; 115's saturation (925.57 s, not a lane change, wheel pressed)
-  is unchanged. `0x0E4` is identical up to the first capped window and differs afterwards by at
-  most 19 counts of 2560 inside a window and 18 outside one: on this car the integrator is
-  already held on most lane-change frames (rate limiter, nudges, the board not actuating), so the
-  railed output under the cap is feedforward and P, and the request after the cap lifts is the
-  same to within a few counts. torqued keeps 5 more points in 28 391 and its filtered
-  `latAccelFactor` moves by at most 0.0045.
+Test: `test_elesys.py` `TestElesysBlinkerCeilingNotReported` (report and wire under
+`blinkerCapped` are those of the uncapped run) and `TestElesysReportedTorqueSeam` (`INH_BLINKER`
+decodes through the real parser and the report stays the command);
+`test_latcontrol_reported_torque.py` `test_a_shortfall_under_the_blinker_ceiling_still_alerts`
+(closed loop, both torque controllers: a railed request under the ceiling saturates, raises
+`steerSaturated` hands off in a 0.45-of-18 m/s² curve, and `0x500 OP_SATURATED` carries it frame
+for frame).
 
 **Re-apply:** in the upstream `CarController.update()`, between
 `new_actuators.torque = self.last_torque` and `new_actuators.torqueOutputCan = apply_torque`. If
 upstream starts reporting something other than `last_torque` there, keep its value for the
-actuating case, and clip that to `GW_BLINK_CEIL` under the ceiling.
+actuating case.
 
 ---
 
@@ -433,10 +426,15 @@ The CarController cannot see `controlsState`, so the integrator travels on `carC
    sees this frame's `controlsState` on its next `carState`. **This is what `0x500 OP_SATURATED`
    carries.** The raw timer made the board alarm where openpilot never would: on 115/120/121 all
    195 saturated frames were within 2 s of a steering press and none was over 1.0 m/s² desired,
-   and 120 at 486.24 s and 121 at 330.31 s lit `RDM_HUD` with a held chime. openpilot's own
-   `steerSaturated` already reaches the board as `STEERING_REQUIRED` (`VisualAlert.steerRequired`),
-   so `OP_SATURATED` now says the same thing at the same moment. The bit, its position and the
-   board's decoder are unchanged.
+   and 120 at 486.24 s and 121 at 330.31 s lit `RDM_HUD` with a held chime. `OP_SATURATED` is
+   now the same decision as selfdrived's `steerSaturated` event, made one frame earlier. It is
+   not the same as `STEERING_REQUIRED`, which comes from the alert actually displayed
+   (`VisualAlert.steerRequired`): the event can be set while another alert of the same priority
+   outranks it, or while nothing is shown, so `OP_SATURATED` may be 1 when `STEERING_REQUIRED` is
+   0. The bit, its position and the board's decoder are unchanged; the board's own comments
+   (`sp_hud.h`, `eps-lkas-gw.dbc`) still call it `torqueState.saturated` until its next commit.
+   Under the board's blinker ceiling this still fires on a real shortfall, because the ceiling
+   is not reported (section 3.6).
 3. `cereal CarControlSP.lateralControl @5 :LateralControl { integrator @0 :Float32;
    saturated @1 :Bool; integratorFrozen @2 :Bool; steerSaturated @3 :Bool; }`
 4. `card` converts it with `helpers.convert_carControlSP()`. **Every nested struct has to be
@@ -585,7 +583,7 @@ comments in `structs.py` that say "names and order must stay in lockstep" overst
 | 18 | `latchedUntilKeyOff` | Bool | `RETRY_IN == 255` | `selfdrived` → `eps_latch_alert.py` (the "restart the car" alert, section 9) |
 | 19–26 | `fwValid` … `fwBuildValid` | | `0x707` / `0x70F` | area A (`card`, `board.py`) |
 | 27 | `grantSeq` | UInt32 | +1 per `0x70B` frame that arrived (wraps at 2^32; 0 before the first); unlike `grantValid` it does not move while the 500 ms window only holds the last frame (2026-10-06) | `mads` (ending the override pause) |
-| 28 | `blinkerCapped` | Bool | `0x704 INH_BLINKER` from a fresh frame: the board's 50 % lane-change ceiling is in force (2026-10-12) | the Honda `CarController` (the reported torque, section 3.6) |
+| 28 | `blinkerCapped` | Bool | `0x704 INH_BLINKER` from a fresh frame: the board's lane-change ceiling is in force (2026-10-12) | none: logged only (section 3.6 says why the reported torque does not use it) |
 
 Fields with no reader appear only in the route log (`carStateSP` is logged), and the only
 driver-facing surface for them is the `carlog.warning` above. Since 2026-10-01
@@ -1095,9 +1093,9 @@ Run them in the openpilot venv, from the repo root (WSL `~/sp-merge` for the syn
 | `openpilot/sunnypilot/mads/tests/test_mads_gateway_pause.py` | the gateway pause and resume (section 9), 41 tests, 23 of them the fast-wheel settings | runner |
 | `openpilot/selfdrive/ui/tests/test_mads_fast_wheel_settings.py` | the fast-wheel settings agree across `params_keys.h`, `mads.py`, the mici page and `settings_ui.json`; what sunnylink writes reads back the way `mads.py` reads it; the FORK markers, 15 tests | runner |
 | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` | the integrator freeze through the torque-controller extension, 4 tests | runner |
-| `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_reported_torque.py` | the zero reported torque blocks the saturation alert while the board is not actuating, and a real saturation still alerts (section 3.6); the blinker ceiling blocks it too (2026-10-12), 9 tests | runner |
+| `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_reported_torque.py` | the zero reported torque blocks the saturation alert while the board is not actuating, and a real saturation still alerts (section 3.6), also under the blinker ceiling, through `steerSaturated` to `OP_SATURATED` (2026-10-12), 11 tests | runner |
 | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_steer_saturated.py` (2026-10-12) | `steer_saturated.py` against a verbatim copy of upstream's selfdrived block (each condition, the 2 s window, a 20 000-frame fuzz), selfdrived calling it, and `controlsd_ext` filling `steerSaturated` (121 at 330.6 s does not set it), 9 tests | runner |
-| `opendbc_repo/opendbc/car/honda/tests/test_elesys.py` `TestElesysReportedTorque`, `TestElesysReportedTorqueSeam`, `TestElesysBlinkerCeilingReport`, `TestElesysTorqueScale` | section 3.6 (since 2026-10-12 with the blinker ceiling: clipped with its sign, wire bit-identical, nothing below the ceiling moves, `INH_BLINKER` through the real parser), and the 2560 scale with byte 2 bit 2 clear | `python -m unittest opendbc.car.honda.tests.test_elesys` from `opendbc_repo` |
+| `opendbc_repo/opendbc/car/honda/tests/test_elesys.py` `TestElesysReportedTorque`, `TestElesysReportedTorqueSeam`, `TestElesysBlinkerCeilingNotReported`, `TestElesysTorqueScale` | section 3.6 (since 2026-10-12: the blinker ceiling changes neither the report nor the wire, `INH_BLINKER` through the real parser), and the 2560 scale with byte 2 bit 2 clear | `python -m unittest opendbc.car.honda.tests.test_elesys` from `opendbc_repo` |
 
 After the merge all of these pass: the fork's sunnypilot targets together with upstream's
 MADS, lateral and sunnylink tests gave 309 passed and 1 skipped (a sunnylink test that needs
