@@ -42,6 +42,14 @@ NUDGE_FIRM = {
   "HONDA_ACCORD_9G_AU": 1500.,
 }
 NUDGE_HOLD_FRAMES = 4
+# FORK(HUD): a refused nudge re-arms once the wheel has been let go for this many model frames (0.2 s, as a light push
+# must be held): route 120 t 487.7-488.4 is one push into a road edge with a single 50 ms dip under steeringPressed
+NUDGE_RELEASE_FRAMES = 4
+# FORK(HUD): and nudge_refused rises (the chime and the tile's flash) at most once in this many model frames (2 s): a hand
+# that wobbles or pulses on the wheel must not chime on every wobble - route d8 t 452.0-457.3 chimed five times in
+# 5.3 s, two of them 0.4 s apart. A nudge inside it is refused as ever, silently, and must be let go before the next
+# one counts
+NUDGE_REFUSED_GAP_FRAMES = int(2.0 / DT_MDL)
 
 TURN_DESIRES = {
   TurnDirection.none: log.Desire.none,
@@ -55,6 +63,12 @@ class DesireHelper:
     # direction confirms at once. See NUDGE_FIRM.
     self.nudge_firm = NUDGE_FIRM.get(car_fingerprint)
     self.nudge_frames = 0
+    # FORK(HUD): a nudge refused by a block, for the comma 4's lane-block tile and its chime (see update())
+    self.nudge_refused = False
+    self.refusal_armed = True
+    self.release_frames = NUDGE_RELEASE_FRAMES
+    self.refusal_announced = False                   # the nudge being refused raised nudge_refused (outside the gap)
+    self.refusal_gap = NUDGE_REFUSED_GAP_FRAMES      # model frames since nudge_refused last rose
     self.lane_change_state = LaneChangeState.off
     self.lane_change_direction = LaneChangeDirection.none
     self.lane_change_timer = 0.0
@@ -81,6 +95,8 @@ class DesireHelper:
     self.lane_turn_controller.update_lane_turn(blindspot_left=carstate.leftBlindspot, blindspot_right=carstate.rightBlindspot,
                                                left_blinker=carstate.leftBlinker, right_blinker=carstate.rightBlinker, v_ego=v_ego)
     self.lane_turn_direction = self.lane_turn_controller.get_turn_direction()
+    self.nudge_refused = False  # FORK(HUD): only ever set in preLaneChange, below
+    self.refusal_gap = min(self.refusal_gap + 1, NUDGE_REFUSED_GAP_FRAMES)  # FORK(HUD): every frame, whatever the state
 
     if not lateral_active or self.lane_change_timer > LANE_CHANGE_TIME_MAX or self.alc.lane_change_set_timer == AutoLaneChangeMode.OFF:
       self.lane_change_state = LaneChangeState.off
@@ -91,6 +107,7 @@ class DesireHelper:
         self.lane_change_state = LaneChangeState.preLaneChange
         self.lane_change_timer = 0.0
         self.nudge_frames = 0  # FORK(HONDA_ACCORD_9G_AU): NUDGE_FIRM hold count starts afresh
+        self.refusal_armed, self.release_frames = True, NUDGE_RELEASE_FRAMES  # FORK(HUD): a new blinker, a new request
         # Initialize lane change direction to prevent UI alert flicker
         self.lane_change_direction = self.get_lane_change_direction(carstate)
 
@@ -117,6 +134,24 @@ class DesireHelper:
         blindspot_detected = (((carstate.leftBlindspot or left_edge_detected) and self.lane_change_direction == LaneChangeDirection.left) or
                               ((carstate.rightBlindspot or right_edge_detected) and self.lane_change_direction == LaneChangeDirection.right))
 
+        # FORK(HUD): NUDGE REFUSED - a nudge that would have started the change (torque_applied, after the stale guard
+        # and NUDGE_FIRM) but for the block. It holds from that frame until the wheel has been let go (nudge_frames: the
+        # raw, non-stale torque toward the blinker) for NUDGE_RELEASE_FRAMES, so one nudge is one refusal however its
+        # torque wavers round the thresholds or the block flickers. A stale torque is no release: the frames are not
+        # counted, so a push the board fell silent under is still that push when it comes back. A refusal inside
+        # NUDGE_REFUSED_GAP_FRAMES of the last one that rose is not announced. Read by modeld into modelDataV2SP.
+        if self.nudge_frames > 0:
+          self.release_frames = 0
+        elif not driver_torque_stale:
+          self.release_frames += 1
+        if self.release_frames >= NUDGE_RELEASE_FRAMES:
+          self.refusal_armed = True
+        elif torque_applied and blindspot_detected and self.refusal_armed:
+          self.refusal_armed = False
+          self.refusal_announced = self.refusal_gap >= NUDGE_REFUSED_GAP_FRAMES
+          if self.refusal_announced:
+            self.refusal_gap = 0
+
         self.alc.update_lane_change(blindspot_detected, carstate.brakePressed)
 
         if not one_blinker or below_lane_change_speed:
@@ -126,6 +161,11 @@ class DesireHelper:
         elif (torque_applied or self.alc.auto_lane_change_allowed) and not blindspot_detected:
           self.lane_change_state = LaneChangeState.laneChangeStarting
           self.lane_change_timer = 0.0
+
+        # FORK(HUD): only while the change is still waiting; a change that starts or ends ends the refusal with it
+        if self.lane_change_state != LaneChangeState.preLaneChange:
+          self.refusal_armed, self.release_frames = True, NUDGE_RELEASE_FRAMES
+        self.nudge_refused = not self.refusal_armed and self.refusal_announced
 
       elif self.lane_change_state == LaneChangeState.laneChangeStarting:
         self.lane_change_timer += DT_MDL

@@ -143,7 +143,7 @@ class TestHudParams(OpenpilotTestCase):
         assert "INT" in flags and '"0"' in flags, f"{key}: an INT, the split card by default"
       else:
         assert "BOOL" in flags and '"1"' in flags, f"{key} defaults to on"
-    assert set(HS.FIELDS) == set(HS.ALL_PARAMS) and len(HS.ALL_PARAMS) == 8
+    assert set(HS.FIELDS) == set(HS.ALL_PARAMS) and len(HS.ALL_PARAMS) == 9
     assert HS.KEYS == HS.ALL_PARAMS + (HS.PARAM_LIMIT_STYLE,)
     assert {f.name for f in dataclasses.fields(HS.HudSettings)} == set(HS.FIELDS.values()) | {"limit_style"}
 
@@ -1347,7 +1347,7 @@ class TestUpstreamHunks(OpenpilotTestCase):
                        "hud_rail import HudRail", "self._hud_rail = HudRail(", "self._hud_rail.render(",
                        "import hud_alerts", "hud_alerts.frees_top_icons("))
     marked(BALL, ("self.hud_floor_y = -math.inf", "max(dot_height, self.hud_floor_y)"), window=0)
-    marked(ALERTS, ("import hud_alerts", "hud_alerts.draw_compact("))
+    marked(ALERTS, ("import hud_alerts", "hud_alerts.draw_compact(", "meta.laneChangeDirection"))
     marked(PARAMS_KEYS, [f'"{k}"' for k in HS.KEYS], window=12)
     marked(VISUALS_YAML, ("id: hud_comma4",))
     marked(MICI_SETTINGS, ("import cloudlog", "def gateway_icon():", "icons_mici/gateway.png", "gateway_icon())"), window=5)

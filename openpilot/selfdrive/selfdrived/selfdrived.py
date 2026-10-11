@@ -36,6 +36,7 @@ from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.selfdrive.selfdrived.eps_latch_alert import EpsLatchAlert  # FORK(LKAS-GATEWAY)
 from openpilot.sunnypilot.selfdrive.selfdrived.vsa_fault_alert import VsaFaultAlert  # FORK(HONDA_ACCORD_9G_AU)
 from openpilot.sunnypilot.selfdrive.controls.lib.steer_saturated import SteerSaturatedAlert  # FORK(LKAS-GATEWAY)
+from openpilot.sunnypilot.selfdrive.selfdrived.lane_block_alert import LaneBlockAlert  # FORK(HUD)
 
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
@@ -188,6 +189,7 @@ class SelfdriveD(CruiseHelper):
     self.car_events_sp = CarSpecificEventsSP(self.CP, self.CP_SP)
     self.eps_latch_alert = EpsLatchAlert()  # FORK(LKAS-GATEWAY): "restart the car" when the EPS latches until key-off
     self.vsa_fault_alert = VsaFaultAlert()  # FORK(HONDA_ACCORD_9G_AU): name the VSA's own fault; no engagement while it holds one
+    self.lane_block_alert = LaneBlockAlert()  # FORK(HUD): the comma 4's lane-block tile: no block alerts, a refused nudge chimes
 
     CruiseHelper.__init__(self, self.CP)
     self.button_state_tracker = ButtonStateTracker()
@@ -393,6 +395,8 @@ class SelfdriveD(CruiseHelper):
     elif self.sm['modelV2'].meta.laneChangeState in (LaneChangeState.laneChangeStarting,
                                                     LaneChangeState.laneChangeFinishing):
       self.events.add(EventName.laneChange)
+    for e in self.lane_block_alert.update(self.sm['modelV2'].meta.laneChangeState, self.sm['modelDataV2SP']):  # FORK(HUD)
+      self.events_sp.add(e)
 
     # Handle lane turn
     lane_turn_direction = self.sm['modelDataV2SP'].laneTurnDirection
@@ -604,6 +608,7 @@ class SelfdriveD(CruiseHelper):
     alerts_sp = self.events_sp.create_alerts(self.state_machine.current_alert_types, callback_args)
     # FORK(HONDA_ACCORD_9G_AU): the VSA's text, not "restart the car" - also when vsaFault arrives a frame after accFaulted
     alerts, alerts_sp = self.vsa_fault_alert.adjust_alerts(alerts, alerts_sp, self.AM, self.sm.frame, callback_args)
+    alerts, alerts_sp = self.lane_block_alert.drop_block_alerts(alerts, alerts_sp)  # FORK(HUD): the tile shows the block
 
     self.AM.add_many(self.sm.frame, alerts + alerts_sp)
     self.AM.process_alerts(self.sm.frame, clear_event_types)
@@ -688,6 +693,7 @@ class SelfdriveD(CruiseHelper):
       self.personality = self.params.get("LongitudinalPersonality", return_default=True)
 
       self.mads.read_params()
+      self.lane_block_alert.read_params(self.params)  # FORK(HUD)
       time.sleep(0.1)
 
   def run(self):

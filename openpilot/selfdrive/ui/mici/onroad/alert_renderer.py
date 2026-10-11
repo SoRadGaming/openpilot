@@ -181,8 +181,12 @@ class AlertRenderer(Widget, SpeedLimitAlertRenderer):
       icon_margin_y = 5
 
     elif event_name == 'laneChange':
-      icon_side = self._last_icon_side
-      txt_icon = self._txt_turn_signal_left if self._last_icon_side == 'left' else self._txt_turn_signal_right
+      # FORK(HUD): the side from the model, which knows it: after a block (no 'steer left / right' before the change)
+      # the last icon's side is none, or another change's
+      direction = ui_state.sm['modelV2'].meta.laneChangeDirection
+      icon_side = IconSide.left if direction == log.LaneChangeDirection.left else \
+                  IconSide.right if direction == log.LaneChangeDirection.right else self._last_icon_side
+      txt_icon = self._txt_turn_signal_left if icon_side == 'left' else self._txt_turn_signal_right  # FORK(HUD)
       icon_margin_x = 2
       icon_margin_y = 5
 

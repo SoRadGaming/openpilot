@@ -208,6 +208,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"HudCompactLimitPrompts", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCompactTurn", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCurve", {PERSISTENT | BACKUP, BOOL, "1"}},
+    // FORK(HUD): HudLaneBlock (2026-10-12) - a refused lane change as a tile on the blinker side; also read by selfdrived
+    {"HudLaneBlock", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudLimitStyle", {PERSISTENT | BACKUP, INT, "0"}},
     {"HudPlannedStop", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudStoppedBanner", {PERSISTENT | BACKUP, BOOL, "1"}},

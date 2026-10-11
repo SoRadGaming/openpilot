@@ -18,6 +18,7 @@ from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (ApproachSta
                                                                      CARD_PENDING, CARD_DONE, CARD_DONE_S, CONFIRM_EVENT,
                                                                      NOW_HALO_S)
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import hud_settings, STYLE_SPLIT, STYLE_STOCK_PLUS  # FORK(HUD)
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_lane_block import BlockTurnIntent, LaneBlockTile  # FORK(HUD)
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 
@@ -57,6 +58,10 @@ class HudRendererSP(HudRenderer):
     self._done_t0: float | None = None      # the press done: the card turning into the stock MAX (CARD_DONE_S) ...
     self._done_from = ""                    # ... with the MAX it replaces beside it ...
     self._done_alpha0 = 1.0                 # ... from the strength the card (or the stock MAX) had: no jump
+    # FORK(HUD): a refused lane change as a tile on the blinker side (hud_lane_block.py); the wheel's turn-intent arrow
+    # stays up under it
+    self._lane_block = LaneBlockTile()
+    self._turn_intent = BlockTurnIntent(self._lane_block)
 
   def _update_state(self) -> None:
     super()._update_state()
@@ -65,11 +70,13 @@ class HudRendererSP(HudRenderer):
     # the alert renderer stops asking once there is no alert (hud_model.StandstillBanner)
     if self.alert_renderer is not None:
       hud_alerts.standstill_banner.observe(self._frame_alert()[0])
+    self._lane_block_now()  # FORK(HUD): before the wheel's turn-intent arrow asks
 
   def _render(self, rect: rl.Rectangle) -> None:
     super()._render(rect)
     self._draw_pending_max(rect)  # FORK(HUD)
     self._draw_approach(rect)  # FORK(HUD)
+    self._lane_block.render(rect)  # FORK(HUD): over the top-left items, which make way for it
     self.blind_spot_indicators.render(rect)
     hud_alerts.frame_alert.clear()  # FORK(HUD): the last to ask this frame
 
@@ -77,10 +84,11 @@ class HudRendererSP(HudRenderer):
 
     return self.blind_spot_indicators.detected
 
-  # FORK(HUD): the confirm's card, the coming limit and the confirm's end count as top icons, as the stock MAX number
-  # does: the driver-monitoring face makes way for them
+  # FORK(HUD): the confirm's card, the coming limit, the confirm's end and a left lane-block tile count as top icons, as
+  # the stock MAX number does: the driver-monitoring face makes way for them
   def drawing_top_icons(self) -> bool:
-    return super().drawing_top_icons() or self._box_top_icon() or self._approach_top_icon() or self._done_t0 is not None
+    return (super().drawing_top_icons() or self._box_top_icon() or self._approach_top_icon() or self._lane_block_left()
+            or self._done_t0 is not None)
 
   # FORK(HUD): the confirm's end (_done) draws the new MAX itself until the card has become it, then hands over
   def _draw_set_speed(self, rect: rl.Rectangle) -> None:
@@ -106,6 +114,21 @@ class HudRendererSP(HudRenderer):
       hud_draw.stock_plus_card(card, rect.x, rect.y)
     else:
       hud_draw.split_card(card, rect.x, rect.y)
+
+  # FORK(HUD): the lane-block tile (hud_lane_block.py)
+  def _lane_block_now(self) -> LaneBlockTile:
+    """This frame's tile, decided once a frame - by whoever asks first: the face, the MAX number's gate or the render."""
+    alert, out = self._frame_alert() if self.alert_renderer is not None else (None, False)
+    self._lane_block.update(ui_state.sm, hud_settings.get().lane_block, alert, rl.get_time(), ui_state.started_frame, out)
+    return self._lane_block
+
+  def _lane_block_left(self) -> bool:  # FORK(HUD)
+    """A left tile has the top left: the face, the stock MAX number, the coming limit's card and the confirm's card -
+    either style, its turn into MAX (_done) included - make way."""
+    return self._lane_block_now().covers_left()
+
+  def set_can_draw_top_icons(self, can_draw_top_icons: bool):  # FORK(HUD)
+    super().set_can_draw_top_icons(can_draw_top_icons and not self._lane_block_left())
 
   def _frame_alert(self) -> tuple:  # FORK(HUD)
     """This frame's (alert, animating_out), looked up once a frame (hud_alerts.FrameAlert)."""
@@ -171,6 +194,8 @@ class HudRendererSP(HudRenderer):
     alpha = self._pending_alpha.x * (1.0 - self._set_speed_alpha_filter.x)
     if item is not None and self._grow_t0 is not None and now - self._grow_t0 < CARD_GROW_S:
       alpha = max(alpha, self._grow_alpha * (1.0 - self._set_speed_alpha_filter.x))   # no dip at the hand-over
+    if self._lane_block_left():  # FORK(HUD): the lane-block tile has the top left; the box comes back after it
+      alpha = 0.0
     self._card_alpha = alpha if self._pending is not None and alpha >= 1e-2 else 0.0
     if self._pending is None or alpha < 1e-2:
       if self._pending_alpha.x < 1e-2:
@@ -205,6 +230,8 @@ class HudRendererSP(HudRenderer):
     if item is not None and not out:
       return False
     confirm_fading = out and event_name(self._frame_alert()[0]) == CONFIRM_EVENT
+    if self._lane_block_left():  # FORK(HUD): the lane-block tile has the top left
+      return False
     return (confirm_fading or self._can_draw_top_icons) and self._done_due()
 
   def _done(self, rect: rl.Rectangle, now: float, item, out: bool) -> bool:  # FORK(HUD)
@@ -220,7 +247,8 @@ class HudRendererSP(HudRenderer):
     if self._done_t0 is None:
       self._done_t0, self._done_from = now, self._card_current
       self._done_alpha0 = min(1.0, max(self._card_alpha, self._set_speed_alpha_filter.x))
-    elif not (self._can_draw_top_icons or confirm_fading) or self._stale() or (item is not None and not out):
+    elif (not (self._can_draw_top_icons or confirm_fading) or self._stale() or (item is not None and not out) or
+          self._lane_block_left()):   # (the lane-block tile taking the top left cuts it as another alert does)
       self._done_t0 = None
       self._pending, self._pending_t0, self._grow_t0 = None, None, None
       self._pending_alpha.x = 0.0
@@ -253,6 +281,8 @@ class HudRendererSP(HudRenderer):
     one - including one fading out) or the confirm's box: the coming limit goes on the frame, never drawn over it."""
     alert = self._frame_alert()[0]
     if alert is not None and not hud_alerts.frees_top_icons(alert):
+      return APPROACH_CUT
+    if self._lane_block_left():  # FORK(HUD): the lane-block tile has the top left
       return APPROACH_CUT
     # nothing up, or an alert that draws nothing: what the MAX place has - the box (fading), then the stock MAX number
     # for as long as it shows (SET_SPEED_PERSISTENCE, 2.5 s, not the ~5 s the 'set speed changed' alert stays up: the
