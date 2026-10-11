@@ -22,27 +22,36 @@ The owner's two decisions of 2026-10-12, both "yes, next push": (F) no wind allo
 from `lcalert`). Not pushed, not flashed; no board change.
 
 **(F) Full brake reaches the ceiling at any speed** (opendbc `carcontroller.py`, `ELESYS_FULL_BRAKE`,
-`elesys_wind_credit()`; car doc 7.11). The brake block sends `brake_last - wind_brake`: upstream takes the drag the
-car gets for free off the brake. At full brake that only lowered the ceiling - 245 counts at 30 km/h, 236 at 60
-(measured 235-236 on 121), 223 at 100, against 253 standing still. Once `brake_last` sits at its ceiling the credit is
-now skipped, on `HONDA_ELESYS` only. The ceiling is 0.99, not the 1.0 the study named: `actuator_hysteresis()` holds a
-rising request 0.01 under itself, so a request of 1.0 leaves `brake_last` at exactly 0.99 and `brake_last >= 1.0` is
-never true. Full brake is therefore `int(0.99 x gain x 256)`: **253 counts** at a brake gain of 1.0 (not the 254 the
-study expected), 255 (the code's `NIDEC_BRAKE_MAX - 1` and panda's `max_brake`) from a learned gain of 1.0062. About
-+0.07 to +0.14 m/s² in emergencies (inferred, the study's figure).
+`elesys_wind_credit_scale()`; car doc 7.11). The brake block sends `brake_last - wind_brake`: upstream takes the drag
+the car gets for free off the brake. At full brake that only lowered the ceiling - 245 counts at 30 km/h, 236 at 60
+(measured 235-236 on 121), 223 at 100, 215 at 126, against 253 standing still. Once `brake_last` sits at its ceiling
+the credit is now ramped out, on `HONDA_ELESYS` only. The ceiling is 0.99, not the 1.0 the study named:
+`actuator_hysteresis()` holds a rising request 0.01 under itself, so a request of 1.0 leaves `brake_last` at exactly
+0.99 and `brake_last >= 1.0` is never true. Full brake is therefore `int(0.99 x gain x 256)`: **253 counts** at a
+brake gain of 1.0 (not the 254 the study expected), 255 (the code's `NIDEC_BRAKE_MAX - 1` and panda's `max_brake`)
+from a learned gain of 1.0062. What full braking gains is the credit, 2.6 x `wind_brake` m/s²: **about 0.08 at
+30 km/h, 0.17 at 60, 0.30 at 100 and 0.39 at 126** (the curve stops growing at 35 m/s).
 
-* Every frame below full brake is bit-identical. The release limiter (32 counts/frame) is unchanged and smooths the
-  credit coming back as the request leaves full brake (up to 38 counts at 35 m/s). Both pump rules already run the
-  pump continuously above 200 counts while moving, so the pump bit does not change. The soft stop's ceiling still
-  applies after it. Stock AEB is untouched: panda forwards the CMBS `0x1FA` while its brake is >= openpilot's, and a
-  real CMBS brake is 320-1022 counts.
+* **A ramp, not a step** (review follow-up). The first cut dropped the whole credit in the send where `brake_last`
+  reached the ceiling: a step of up to 38 counts (0.3-0.4 m/s² at highway speed) that bypassed `brake_last`'s own
+  rise limit (0.01 per frame, about 5 counts a send), and a request hovering at the ceiling switched it in and out
+  whole. Now the credit is multiplied by a scale that walks toward 0 by 0.1 per 100 Hz frame while `brake_last` is at
+  the ceiling and back toward 1 at the same rate below it (`ELESYS_CREDIT_RAMP`): out in 10 frames (100 ms, 5 sends),
+  back in 10, at most 7.6 counts a send. It is 1.0 whenever longitudinal is not active, so every engagement starts with
+  the whole credit. No extra exit hysteresis (tested, below).
+* Every frame of an application that never reaches the ceiling is bit-identical (the scale stays exactly 1.0); after
+  one, the credit comes back over at most 10 frames and the release limiter starts from the higher command (up to
+  the credit, <= 38 counts, for <= ~8 sends). Both pump rules already run the pump continuously above 200 counts
+  while moving, so the pump bit does not change. The soft stop's ceiling still applies after it. Stock AEB is
+  untouched: panda forwards the CMBS `0x1FA` while its brake is >= openpilot's, and a real CMBS brake is 320-1022
+  counts.
 * **One interaction, kept:** the brake learner weights its error by the commanded fraction, which at full brake is now
   0.99 instead of 0.99 - wind. It is gated on 150 frames of a steady plan, so it rarely runs during an emergency; on
   the replays below no frame after a full-brake episode changed.
 
-Replayed open loop: this tree's `CarInterface` driven by each route's CAN, `CarController.apply()` on the LOGGED
-`carControl` with the route's own stored brake gain and CarParamsSP flags; old = `lcalert`. Old reproduces the logged
-`COMPUTER_BRAKE` exactly on 98.4-99.6% of frames.
+Replayed open loop (this table is the first cut, the step; the ramp's replay follows it): this tree's `CarInterface`
+driven by each route's CAN, `CarController.apply()` on the LOGGED `carControl` with the route's own stored brake gain
+and CarParamsSP flags; old = `lcalert`. Old reproduces the logged `COMPUTER_BRAKE` exactly on 98.4-99.6% of frames.
 
 | route | full-brake `0x1FA` frames | where | logged / old → new | other `0x1FA` frames |
 |---|---|---|---|---|
@@ -55,6 +64,33 @@ Replayed open loop: this tree's `CarInterface` driven by each route's CAN, `CarC
 counts) and is unchanged. The pump bit and `0x0E4` are identical on every frame of all five routes. Closed loop (the
 lateral harness below, which also runs longcontrol) gives the same picture with a gain of 1.0: 120 21 frames 237-238
 → 253, 121 242 frames 235-249 → 253, 130 62 frames 245-248 → 253, nothing else in `0x1FA`.
+
+**The ramp, replayed** (the same harnesses; step = push6's first cut, opendbc `c973ec83`; ramp = this tree). `0x1FA`
+is identical to the step build on every send outside the full-brake episodes, and so are the pump bit and `0x0E4` on
+every frame; inside them only the entry and exit windows differ (sends 20 ms apart):
+
+| route | episode | step: entry / exit | ramp: entry / exit | largest step in the episode, step → ramp |
+|---|---|---|---|---|
+| 120 | t 114.8-115.3, 57→53 km/h, 18 sends at full | 232, 253 / 253, 234 | 232, 238, 242, 245, 248, 251, 253 / 253, 248, 245, 242, 233, 229 | +21 → +6 in, -19 → -9 out (then the request's own drop, 229 → 214; 228 → 214 in the other two builds) |
+| 121 | t 239.9-244.7, 61→20 km/h, 244 sends | 234, 252 / 252, 0 | 234, 238, 242, 245, 249, 252 / 252, 0 | +18 → +4 in; out is the disengagement, 252 → 0 in both |
+| 130 | t 47.5-48.9, 33→23 km/h, 62 sends | 248, 255 / 255, 244 | 248, 250, 252, 254, 255 / 255, 249, 244, 242, 241, 239 | +7 → +2 in, -11 → -6 out |
+
+Full brake still reaches 253 / 252 / 255 (each route's stored gain). Sends differing from the step build: 10 / 4 / 8,
+all in those windows; 115 and 12d never reach full brake and are identical in all three builds. Against `lcalert` the
+ramp differs on 23 / 244 / 67 sends: the full-brake ones and the 5 ramp-back sends on 120 and 130, nothing after
+them. Closed loop (gain 1.0): 8 / 5 / 9 sends differ from the step build, all in the entry and exit windows (largest
+step 18 → 5 and 22 → 16 on 120, 18 → 4 on 121, 9 → 3 and 13 → 8 on 130); `0x0E4` and `0x500` are identical to the
+step build.
+
+The reviewer's boundary tests, through the real controller; sends stepping 10 counts or more, lcalert / step / ramp:
+a request hovering at the boundary with Gaussian noise (60 and 110 km/h, 0.02-0.10 m/s², tuner on and off, 12 cases)
+200 / 1020 / 267, largest step 27 / 52 / 27; the routes' own hard-braking request jitter re-centred on the boundary
+(19 windows x 4 offsets, 56 128 sends) 35 / 163 / 43 at 60 km/h and 34 / 168 / 57 at 110, largest 21 / 32-38 / 21-23;
+a ramped request into full brake, largest rise 6 / 39 / 8 at 126 km/h; a crude closed loop (I-only longcontrol, a
+lagged car with the real aero) ramped onto the boundary at 60-126 km/h, 0 / 1-3 / 0 such sends, largest 1 / 14-35 /
+3-7, with the same decel as the step. An exit band (credit kept off down to `brake_last` 0.97 / 0.95 / 0.93) on 15
+hover cases with the tuner on: 332 / 332 / 231 sends against the ramp's 359, but at 0.10 m/s² of noise up to 132
+against 64, and there 5-35 counts more brake on average than the request. Not taken.
 
 **(A) `steeringPressed` is debounced** (opendbc `carstate_ext.py`, `STEERING_PRESSED_MIN_COUNT = 5`; car doc 10.2,
 LKAS-GATEWAY-PROTOCOL 8.2). `_update_driver_torque_validity()` now decides `steeringPressed` once per frame from the
@@ -102,19 +138,31 @@ most of the engaged time. 120: 80.2% of `0x0E4` frames differ, median 1.8, max 5
 median 1.5, max 6.4; 130: 48.8%, median 0.2, max 1.25. 94.5/92.6/79.7% of the differing frames are within 10 s of a
 frame where the flag differs. Lateral error is unchanged to 4 decimals (mean |desired - actual| 0.0533 / 0.0764 /
 0.0736 m/s² old and new); selfdrived `steerSaturated` 0 old and new; `lac.saturated` 53 → 72 (120), 77 → 83 (121),
-0 → 0 (130). `0x500` differs only in `INTEGRATOR` and `OP_STATE`/`RELEASE_DRIVER`, which follow the flag; the board
-parses those two and reads neither, and `OP_SATURATED` does not change.
+0 → 0 (130). `0x500` differs only in `INTEGRATOR` and `OP_STATE`/`RELEASE_DRIVER`, which follow the flag, and
+`OP_SATURATED` does not change. The board parses `OP_STATE`/`RELEASE_DRIVER` and reads neither. It **does** read
+`INTEGRATOR`: the bundled board (`686e4603`, `gw_active.c` ~1975 and ~2744) refuses the first engagement of a drive
+while |i x 100| > 15 (`GW_INTEG_MAX`, `0x70B` REASON 11). On the closed-loop replays the debounce moved `INTEGRATOR`
+by at most 3 / 4 / 1 units (120 / 121 / 130), and only after the board's first engagement (36.6 / 25.7 / 278.9 s):
+before it, 0 of 365 / 256 / 2777 frames differ, so that inhibit decides exactly as before. The ramp (above) changes
+nothing in `0x500`.
 
-**Tests.** opendbc `test_elesys.py` 106 → 125: `TestElesysFullBrakeNoWindCredit` (10: 253 at 30/60/100 km/h where
-the old rule gave 245/236/223; with the tuner on, 0.99 x the learned gain; the 0.99 threshold against
-`actuator_hysteresis()`; every frame below full brake bit-identical to the old rule on a light/firm/full/release
-trace at 15-110 km/h; with the tuner on only the release limiter or the learner carry a difference past full brake;
-the release limiter still bounds every drop at 32; NaN speed still sends; the pump at full brake; the rule; the
-CR-V keeps upstream's credit) and `TestElesysSteeringPressedDebounce` (9: threshold still 600; 1-5 frame blips both
+**Tests.** opendbc `test_elesys.py` 106 → 130: `TestElesysFullBrakeNoWindCredit` (15: 253 at 30/60/100/126 km/h
+where the old rule gave 245/236/223/215, reached within 5 sends and climbing only; with the tuner on, 0.99 x the
+learned gain, 252-255; the 0.99 threshold against `actuator_hysteresis()`; a ramped request into full brake rises at
+most 10 counts a send where the step rule rose 31-39 at 100-126 km/h; leaving full brake for just below it at
+126 km/h drops at most 10 a send where the step dropped 32+, and is the old rule's again 10 frames later; a request
+hovering at the ceiling (60-126 km/h, noise 0.02-0.05 m/s²) never steps more than 20 counts or the old rule's own
+largest step + 8, and steps 10+ counts under half as often as the step rule; an application that never reaches the
+ceiling bit-identical to the old rule, tuner on and off, at 15-126 km/h; every send with the scale at 1.0
+bit-identical on a light/firm/full/release trace; with the tuner on only the ramp, the release limiter or the
+learner carry a difference past full brake; the release limiter still bounds every drop at 32; a disengagement
+resets the scale; NaN speed still sends; the pump at full brake; the scale function; the CR-V keeps upstream's
+credit) and `TestElesysSteeringPressedDebounce` (9: threshold still 600; 1-5 frame blips both
 signs; the 6th frame presses; release after a long and a short press; chatter inside a hold; the `0x700` path the
 same; one counter across the 0x18F → mirror switch and back; latched with no board is False; other Hondas
-undebounced). 13 of the 19 fail on `lcalert`. opendbc Honda 154, sunnypilot Honda 132, `test_car_interfaces` 270,
-safety Honda 1091, the integration script: all pass.
+undebounced). The 15 full-brake tests error on `lcalert` and 14 of them on the step build, neither of which has the
+scale; the first cut's 13 of 19 failing on `lcalert` stands for the rest. opendbc Honda 159, sunnypilot Honda 132,
+`test_car_interfaces` 270, safety Honda 1091, the integration script: all pass.
 
 ---
 
