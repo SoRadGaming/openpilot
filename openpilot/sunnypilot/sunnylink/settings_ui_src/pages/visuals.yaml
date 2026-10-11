@@ -90,20 +90,34 @@ sections:
     widget: toggle
     title: Approaching Limit
     description: A coming speed limit change - lower or higher - top left, where MAX shows the set speed, once it is
-      within 15 seconds or 500 m - the new limit in a dashed box, an arrow down or up, and 'in 300 m' in a bar that
-      empties as you get there ('now' close in). It stays until the new limit is in force, then the confirm prompt or
-      MAX takes the same place. It waits while MAX or any alert is showing, and the driver-monitoring face makes way
-      for it, as it does for MAX. Never while stopped, never for a car-sourced limit, and never in a tunnel, where the
-      map only guesses the position. Needs Speed Limit not Off.
+      within 15 seconds or 500 m - the new limit, an arrow down or up, 'in 300 m' and a bar that tracks the distance
+      ('now' close in), drawn in the Limit Change Style below. It stays until the new limit is in force, then the
+      confirm prompt or MAX takes the same place. It waits while MAX or any alert is showing, and the driver-monitoring
+      face makes way for it, as it does for MAX. Never while stopped, never for a car-sourced limit, and never in a
+      tunnel, where the map only guesses the position. Needs Speed Limit not Off.
+  - key: HudLimitStyle
+    widget: option
+    title: Limit Change Style
+    description: How the coming limit and the confirm prompt look, top left. Split Card - one black card, the MAX you
+      are set to small on the left and the new limit big on the right, a red bar along its top filling as you get
+      there; 'press - to set 100' under it, and once you press, the new number slides into MAX's place. Stock-plus - the
+      new limit always where MAX is, on a see-through card with a draining bar while it is coming and a solid card as
+      big as MAX with 'press - to set 100' when you need to press; once you press, the card dissolves into the usual
+      MAX. Only the look changes, so it is fine to switch while driving.
+    options:
+    - value: 0
+      label: Split Card
+    - value: 1
+      label: Stock-plus
   - key: HudCompactLimitPrompts
     widget: toggle
     title: Compact Speed Limit Prompts
     description: '''Auto adjusting to speed limit'' and ''set speed changed'' no longer cover the road: the new set speed
       shows as MAX top left, as after any change. ''Press + (or -) to confirm'' shows the speed the confirm would set
-      (the limit plus any offset) top left, where and as big as MAX, in a dashed box - not set yet - with ''press + to
-      confirm'' and the green key under it, and ''limit 50 +5'' when there is an offset. The box flashes twice when it
-      appears, then its dashes run round it until you confirm; once confirmed it is the usual MAX. With no limit to
-      show it is a one-line banner. The sounds are unchanged.'
+      (the limit plus any offset) top left, where MAX is, with ''press - to set 100'' and the green key, and ''limit 50
+      +5'' when there is an offset, in the Limit Change Style. Its outline flashes twice when it appears, then keeps
+      moving until you press; once you press it turns into the usual MAX. With no limit to show it is a one-line
+      banner. The sounds are unchanged.'
   - key: HudCompactDisengage
     widget: toggle
     title: Compact Disengage Notices

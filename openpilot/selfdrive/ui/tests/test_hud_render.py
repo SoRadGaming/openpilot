@@ -18,13 +18,21 @@ FORK(HUD): the comma 4 onroad view, drawn for real in a headless raylib window, 
   * compact alerts: 'set speed changed' pixel-identical to no alert (and the MAX number free to show), the disengage
     and turn banners top left, nothing below them, a critical alert exactly stock, each group's setting off exactly
     stock;
-  * the compact confirm (design A): its target in the stock MAX number's place, the same digits pixel for pixel, dashed,
-    the pill under it and no banner, a top icon; the limit named in the pill with an offset; today's banner with no
-    limit; the solid stock MAX number after the confirm; a critical alert on its first frame exactly stock - also in the
-    middle of a flash; the outline flashing twice and then marching, the digits identical to a still box on every frame;
-  * the coming limit (option C): in the MAX number's place, lower or higher, 'now' close in, a top icon; never in a
-    tunnel, out of its window, while MAX or an alert shows, or with its setting off; held past the look-ahead and handed
-    over to the confirm's box, or to the stock MAX number, in the same place.
+  * the compact confirm, as the card of the style HudLimitStyle picks (the split card by default; stock-plus in its own
+    section): its target in the MAX number's place - for stock-plus the stock MAX digits pixel for pixel - with
+    'press - to set 50' and no banner, a top icon; the limit named with an offset; today's banner with no limit; once
+    the press has set the speed the card turns into the stock MAX number (the split card's slide, the stock-plus
+    dissolve) and the frames are then exactly the drive's with no prompt; a critical alert on its first frame exactly
+    stock - also in the middle of a flash; the outline flashing twice and then marching (split card) or breathing
+    (stock-plus), the digits identical to a still card on every frame;
+  * the coming limit: in the MAX number's place, lower or higher, 'now' close in, a top icon; never in a tunnel, out of
+    its window, while MAX or an alert shows, or with its setting off; held past the look-ahead and handed over to the
+    confirm's card - the same card, no fade between - or to the stock MAX number, in the same place;
+  * the style: every state neither card draws is the same pixels in both styles, and switching it while a card is up
+    (coming, waiting, turning into MAX) draws the other style from the next read on;
+  * the review fixes: not engaged, the card names no MAX ('–'); the widest confirm stops 40 px short of the road's edge,
+    or 14 px short of the stop timer, which it leaves untouched; a card turning into MAX from a fading prompt starts at
+    the strength it was drawn at.
 
 The real AugmentedRoadView, fed synthetic messages (no camera: the placeholder is black, which keeps the color
 sampling honest). It runs in a child process: a raylib that cannot open a headless window must not take the test
@@ -57,6 +65,7 @@ from openpilot.selfdrive.ui.mici.onroad.augmented_road_view import AugmentedRoad
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_alerts
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_renderer as hud_renderer_sp
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_settings as HS
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_model as HM
 
 KPH = 3.6
 W, H = 536, 240
@@ -64,43 +73,57 @@ OUT = os.environ.get("HUD_RENDER_OUT")
 clock = {"t": 100.0}
 rl.get_time = lambda: clock["t"]
 
-ON = dict.fromkeys(HS.ALL_PARAMS, True)
-OFF = dict.fromkeys(HS.ALL_PARAMS, False)
+ON = {**dict.fromkeys(HS.ALL_PARAMS, True), HS.PARAM_LIMIT_STYLE: HS.STYLE_SPLIT}   # the default: the split card (D3)
+OFF = {**dict.fromkeys(HS.ALL_PARAMS, False), HS.PARAM_LIMIT_STYLE: HS.STYLE_SPLIT}
+D1 = {**ON, HS.PARAM_LIMIT_STYLE: HS.STYLE_STOCK_PLUS}                               # stock-plus
 RAIL_OFF = {**ON, HS.PARAM_PLANNED_STOP: False, HS.PARAM_CURVE: False}
 FULL_LIMIT = {**ON, HS.PARAM_COMPACT_LIMIT: False}   # the speed-limit prompts full screen, as before the compact ones
 NO_APPROACH = {**ON, HS.PARAM_APPROACHING_LIMIT: False}
 
-# what was drawn on a frame: the confirm's banner (hud_draw.confirm_banner), its target in the MAX number's place
-# (hud_draw.pending_max) and the coming limit (hud_draw.approach_max), counted through the module attributes the callers use
+# what was drawn on a frame: the confirm's banner (hud_draw.confirm_banner) and the card in the MAX number's place, by
+# kind - the coming limit ('approach'), the confirm waiting ('box') and the confirm done ('done') - and by the style's
+# drawer that drew it, counted through the module attributes the callers use
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_draw
 calls = {}
-_banner, _box, _approach = hud_draw.confirm_banner, hud_draw.pending_max, hud_draw.approach_max
+_banner, _split, _plus = hud_draw.confirm_banner, hud_draw.split_card, hud_draw.stock_plus_card
 
 
 def reset_calls():
-  calls.update(banner=0, box=0, box_rect=None, lit=None, phase=None, approach=0, approach_rect=None, approach_args=None)
+  calls.update(banner=0, banner_text=None, box=0, box_rect=None, box_text=None, box_note=None, box_alpha=None, lit=None,
+               phase=None, breath=None, grow=None, approach=0, approach_rect=None, approach_args=None, approach_lit=None,
+               enter=None, done=0, done_args=None, style=None, card=None, approach_current=None, box_current=None,
+               done_alpha=None, max_right=None)
 
 
 def counted_banner(*a, **k):
   calls["banner"] += 1
+  calls["banner_text"] = a[2]
   return _banner(*a, **k)
 
 
-def counted_box(*a, **k):
-  calls["box"] += 1
-  calls["box_rect"] = [round(v, 1) for v in _box(*a, **k)]
-  calls["lit"], calls["phase"] = bool(k.get("lit")), k.get("phase")
-  return calls["box_rect"]
+def counted(real, style):
+  def draw(c, x0, y0):
+    r = [round(v, 1) for v in real(c, x0, y0)]
+    calls["style"], calls["card"] = style, c
+    calls["max_right"] = c.max_right if c.max_right != float("inf") else None
+    if c.kind == HM.CARD_PENDING:
+      calls["box"] += 1
+      calls.update(box_rect=r, box_text=c.text, box_note=c.note, box_alpha=round(c.alpha, 3), lit=bool(c.lit),
+                   phase=c.phase, breath=round(c.breath, 3), grow=round(c.grow, 3), box_current=c.current)
+    elif c.kind == HM.CARD_APPROACH:
+      calls["approach"] += 1
+      calls.update(approach_rect=r, approach_args=[c.value, c.lower, c.text, round(c.frac, 3)], approach_lit=bool(c.lit),
+                   enter=round(c.enter, 3), approach_current=c.current)
+    else:
+      calls["done"] += 1
+      calls["done_args"] = [c.value, c.current, round(c.done, 3)]
+      calls["done_alpha"] = round(c.alpha, 3)
+    return r
+  return draw
 
 
-def counted_approach(pos, value, lower, text, frac, **k):
-  calls["approach"] += 1
-  calls["approach_args"] = [value, lower, text, round(frac, 3)]
-  calls["approach_rect"] = [round(v, 1) for v in _approach(pos, value, lower, text, frac, **k)]
-  return calls["approach_rect"]
-
-
-hud_draw.confirm_banner, hud_draw.pending_max, hud_draw.approach_max = counted_banner, counted_box, counted_approach
+hud_draw.confirm_banner = counted_banner
+hud_draw.split_card, hud_draw.stock_plus_card = counted(_split, "split"), counted(_plus, "plus")
 reset_calls()
 last = {}  # the last rendered frame's calls, and whether the HUD renderer counted a top icon
 
@@ -149,9 +172,10 @@ def put(svc, fill, frame=5):
 
 def scene(v=110 / KPH, limit=110, ahead=0, ahead_dist=0.0, ahead_valid=True, nsw_state=2, source="map",
           standstill=False, alert=None, assist="active", set_kph=110, lead=None, lp=True, cs=True, offset=0, rail=None,
-          map_frame=5):
+          map_frame=5, enabled=True):
   """rail = dict(stop_m, solid, curve_kph, confident): the right rail's messages (modelV2's plan, carControl,
-  longitudinalPlan, smart cruise control) - none of them otherwise. No limit ahead unless ahead > 0."""
+  longitudinalPlan, smart cruise control) - none of them otherwise. No limit ahead unless ahead > 0. enabled=False:
+  openpilot not engaged (selfdriveState), the set speed kept as this non-PCM car keeps it."""
   for svc in SERVICES + RAIL_SERVICES:
     sm.seen[svc] = sm.alive[svc] = sm.updated[svc] = False
     sm.recv_frame[svc] = 0
@@ -177,8 +201,8 @@ def scene(v=110 / KPH, limit=110, ahead=0, ahead_dist=0.0, ahead_valid=True, nsw
     put("carState", car)
 
   def ss(s):
-    s.enabled = True
-    s.state = "enabled"
+    s.enabled = enabled
+    s.state = "enabled" if enabled else "disabled"
     if alert is not None:
       kind, t1, t2, size, status = alert[:5]
       s.alertType, s.alertText1, s.alertText2, s.alertSize, s.alertStatus = kind, t1, t2, size, status
@@ -286,7 +310,7 @@ def render(name, params, stock=False, frames=100, t0=100.0, jump_at=None, jump=0
     if saved:
       unstock(saved)
   last.clear()
-  last.update(calls, top_icons=bool(view._hud_renderer.drawing_top_icons()))
+  last.update({k: v for k, v in calls.items() if k != "card"}, top_icons=bool(view._hud_renderer.drawing_top_icons()))
   arr = grab()
   save(arr, name)
   view.close()
@@ -319,13 +343,17 @@ def run(params, steps, stock=False, t0=100.0, setup=None):
     for kw, frames, name in steps:
       kw = dict(kw)
       t += kw.pop("_gap", 0.0)   # the road view not drawn for this long before the phase (swiped away)
+      if "_params" in kw:        # the settings changed from this phase on (read at once, as the next second's read would)
+        ui_state.params.v = dict(kw.pop("_params"))
+        HS.hud_settings.get(force=True)
       scene(**kw)
       for _ in range(frames):
         clock["t"] = t
         t += 0.05
         frame_once(view)
       grabs.append(grab())
-      phase_calls.append(dict(calls, top_icons=bool(view._hud_renderer.drawing_top_icons()),
+      phase_calls.append(dict({k: v for k, v in calls.items() if k != "card"},
+                              top_icons=bool(view._hud_renderer.drawing_top_icons()),
                               timer=view._hud_cluster.frame.timer_s is not None))
       save(grabs[-1], name.replace("_on", "_stock") if stock else name)
   finally:
@@ -361,6 +389,12 @@ def count(arr, b, kind):
 
 def same(a, b):
   return int((np.abs(a - b).max(axis=2) > 0).sum())
+
+
+def over1(a, b):
+  """Pixels more than one level apart: the stock MAX number's fade, which the card hands over at full, is still a level
+  short of it a second and a half into an ordinary drive."""
+  return int((np.abs(a - b).max(axis=2) > 1).sum())
 
 
 def diff_box(a, b):
@@ -523,9 +557,9 @@ out["changed_max"] = {k: {"max_white": count(v, MAX_BOX, "white"), "mid_white": 
 scene(**{k: v for k, v in states["changed"].items() if k != "alert"})
 out["changed_max"]["noalert_vs_on"] = same(render("changed_max_noalert_on", ON, frames=20), early["on"])
 
-# the confirm's target is the stock MAX number: the same digits, drawn in the same place at the same size - '80' of the
-# compact confirm (limit 80) against '80' of the stock MAX number after "changed" (45 frames: faded fully in, not yet out),
-# inside the digits' ink box (the dashed outline is outside it, 7 px round the ink)
+# stock-plus: the confirm's target is the stock MAX number - the same digits, drawn in the same place at the same size:
+# '80' of the compact confirm (limit 80) against '80' of the stock MAX number after "changed" (45 frames: faded fully
+# in, not yet out), inside the digits' ink box (the card's outline is outside it)
 from openpilot.system.ui.lib.application import FontWeight
 from openpilot.selfdrive.ui.mici.onroad.hud_renderer import FONT_SIZES
 
@@ -536,38 +570,57 @@ def white_h(arr, b):
   return int(rows.max() - rows.min() + 1) if len(rows) else 0
 
 
+scene(**states["confirm_compact_80"])
+plus80 = render("confirm_compact_80_d1", D1)
+plus80_calls = dict(last)
 scene(**states["changed"])
 max80 = render("changed_max_45_on", ON, frames=45)
 iw, ih, ix0, iy0 = hud_draw.ink("80", FONT_SIZES.set_speed, 1.0, FontWeight.DISPLAY)
 ib = (int(17 + ix0) + 1, int(-4 + iy0) + 1, int(17 + ix0 + iw) - 1, int(-4 + iy0 + ih) - 1)
 around = (ib[0], max(0, ib[1] - 4), ib[2], ib[3] + 4)
 out["digits"] = {"ink_box": ib, "ink_h": round(ih, 1),
-                 "diff": same(box(images["confirm_compact_80"], *ib), box(max80, *ib)),
-                 "box_h": white_h(images["confirm_compact_80"], around), "max_h": white_h(max80, around),
-                 "calls": out["confirm_compact_80"]["calls"]}
+                 "diff": same(box(plus80, *ib), box(max80, *ib)),
+                 "box_h": white_h(plus80, around), "max_h": white_h(max80, around), "calls": plus80_calls}
 
-# the confirm's outline, frame by frame from its first (V3): two flashes, then the march - against the same frames with
-# the outline held still (box_outline patched to 'not lit, no phase'): only the outline differs, never the digits
+# the confirm's outline, frame by frame from its first: two flashes, then the split card's march / the stock-plus card's
+# breathing - against the same frames with the outline held still (box_outline patched to 'not lit, no phase',
+# box_breath to full): only the outline differs, never the digits (the target's ink box, inset a pixel)
 CONF = dict(limit=50, v=27 / KPH, alert=CONFIRM_PLUS, assist="preActive", set_kph=40)
 CONF_NONE = {k: v for k, v in CONF.items() if k != "alert"}
 N_ANIM = 40
-anim = run(ON, [(CONF_NONE, 100, "anim_00_before_on")] + [(CONF, 1, f"anim_{i + 1:02d}_on") for i in range(N_ANIM)])
-anim_calls = list(phase_calls)
-real_outline = hud_renderer_sp.box_outline
-hud_renderer_sp.box_outline = lambda t: (False, None)
-try:
-  still = run(ON, [(CONF_NONE, 100, "anim_00_before_still")] + [(CONF, 1, f"anim_{i + 1:02d}_still") for i in range(N_ANIM)])
-finally:
-  hud_renderer_sp.box_outline = real_outline
-digits_box = (int(17 + ix0) + 1, int(-4 + iy0) + 1, int(17 + ix0 + iw) - 1, int(-4 + iy0 + ih) - 1)
-out["anim"] = {
-  "lit": [c["lit"] for c in anim_calls[1:]], "phase": [c["phase"] for c in anim_calls[1:]],
-  "box": [c["box"] for c in anim_calls[1:]],
-  "digits_vs_still": [same(box(a, *digits_box), box(s, *digits_box)) for a, s in zip(anim[1:], still[1:], strict=True)],
-  "outline_vs_still": [same(box(a, 0, 0, 200, 110), box(s, 0, 0, 200, 110)) for a, s in zip(anim[1:], still[1:], strict=True)],
-  "outline_white": [count(a, (0, 0, 200, 110), "white") for a in anim[1:]],
-  "frame_to_frame": [same(box(a, 0, 0, 200, 110), box(b, 0, 0, 200, 110)) for a, b in zip(anim[1:], anim[2:], strict=False)],
-}
+
+
+def outline_anim(params, tag):
+  a = run(params, [(CONF_NONE, 100, f"{tag}_00_before_on")] + [(CONF, 1, f"{tag}_{i + 1:02d}_on") for i in range(N_ANIM)])
+  a_calls = list(phase_calls)
+  card = calls["card"]
+  real = hud_renderer_sp.box_outline, hud_renderer_sp.box_breath
+  hud_renderer_sp.box_outline, hud_renderer_sp.box_breath = (lambda t: (False, None)), (lambda t: 1.0)
+  try:
+    b = run(params, [(CONF_NONE, 100, f"{tag}_00_before_still")] +
+            [(CONF, 1, f"{tag}_{i + 1:02d}_still") for i in range(N_ANIM)])
+  finally:
+    hud_renderer_sp.box_outline, hud_renderer_sp.box_breath = real
+  if params[HS.PARAM_LIMIT_STYLE] == HS.STYLE_SPLIT:
+    tx, ty, tw, th = hud_draw.split_layout(card, 0, 0).target
+  else:
+    tw, th, tx, ty = hud_draw.ink(str(card.value), FONT_SIZES.set_speed, 1.0, FontWeight.DISPLAY)
+    tx, ty = 17 + tx, -4 + ty
+  db = (int(tx) + 1, int(ty) + 1, int(tx + tw) - 1, int(ty + th) - 1)
+  return {
+    "lit": [c["lit"] for c in a_calls[1:]], "phase": [c["phase"] for c in a_calls[1:]],
+    "breath": [c["breath"] for c in a_calls[1:]], "box": [c["box"] for c in a_calls[1:]],
+    "text": a_calls[-1]["box_text"], "style": a_calls[-1]["style"], "digits_box": db,
+    "digits_vs_still": [same(box(x, *db), box(y, *db)) for x, y in zip(a[1:], b[1:], strict=True)],
+    "outline_vs_still": [same(box(x, 0, 0, 300, 170), box(y, 0, 0, 300, 170)) for x, y in zip(a[1:], b[1:], strict=True)],
+    "outline_lit": [int((box(x, 0, 0, 300, 170).max(axis=2) > 60).sum()) for x in a[1:]],
+    "frame_to_frame": [same(box(x, 0, 0, 300, 170), box(y, 0, 0, 300, 170)) for x, y in zip(a[1:], a[2:], strict=False)],
+  }
+
+
+out["anim"] = outline_anim(ON, "anim")
+out["anim_d1"] = outline_anim(D1, "anim_d1")
+anim_calls = [None] + [{"lit": x} for x in out["anim"]["lit"]]
 
 # a second prompt while the first box is still fading out, and the target changing under one (fix round 1): each its
 # own two flashes - the box never left the screen, so only its outline says the request is new
@@ -697,6 +750,101 @@ steps = [(dict(M4, ahead=100, ahead_dist=400.0), 100, "c_gap_1_on"), (dict(M4, m
 gap = run(ON, steps)
 seq["gap"] = {"calls": list(phase_calls)}
 out["seq"] = seq
+
+# ----------------------------------------------------------------------------------------- the style (HudLimitStyle)
+# stock-plus (D1) through the same states and drives; and every state neither card draws: the same pixels in both
+styles = {}
+for name in ("approach_lower", "approach_higher", "approach_near", "confirm_compact", "confirm_compact_plus",
+             "confirm_compact_offset", "confirm_compact_no_limit"):
+  scene(**states[name])
+  render(f"{name}_d1", D1)
+  styles[name] = dict(last)
+UNTOUCHED = ("cruise", "cruise_slow", "approach_far", "approach_tunnel", "approach_car", "approach_standstill", "confirm",
+             "stopped", "stopped_no_alert", "missing_plan", "missing_carstate", "rail_stop", "rail_curve", "changed",
+             "disengage", "disengage_approach", "turn", "critical", "critical_approach", "confirm_compact_empty")
+untouched = {}
+for name in UNTOUCHED:
+  kw = states[name]
+  scene(**kw)
+  jump = dict(jump_at=10, jump=JUMP_S.get(name, 30.0)) if kw.get("standstill", False) else {}
+  untouched[name] = same(render(f"{name}_d1", {**PARAMS.get(name, ON), HS.PARAM_LIMIT_STYLE: HS.STYLE_STOCK_PLUS},
+                                **jump), images[name])
+styles["untouched"] = untouched
+# the M4 hand-over and the confirm, stock-plus: the coming limit's card grows into the confirm's (no fade between)
+M4D = dict(limit=110, v=110 / KPH, set_kph=110)
+m4_steps = [(dict(M4D, ahead=100, ahead_dist=150.0), 100, "s_m4_1_coming"), (dict(M4D, map_frame=6), 10, "s_m4_2_held"),
+            (dict(M4D, limit=100, alert=CONFIRM, assist="preActive", map_frame=7), 1, "s_m4_3_first"),
+            (dict(M4D, limit=100, alert=CONFIRM, assist="preActive", map_frame=7), 3, "s_m4_4_growing"),
+            (dict(M4D, limit=100, alert=CONFIRM, assist="preActive", map_frame=7), 30, "s_m4_5_waiting"),
+            (dict(M4D, limit=100, set_kph=100, alert=CHANGED, assist="active", map_frame=7), 1, "s_m4_6_pressed"),
+            (dict(M4D, limit=100, set_kph=100, alert=CHANGED, assist="active", map_frame=7), 3, "s_m4_7_done"),
+            (dict(M4D, limit=100, set_kph=100, alert=CHANGED, assist="active", map_frame=7), 30, "s_m4_8_max")]
+ref_steps = m4_steps[:5] + [(dict(M4D, limit=100, set_kph=100, alert=CHANGED, assist="active", map_frame=7, _gap=5.0), 1,
+                             "s_m4_ref_6")] + m4_steps[6:]
+for tag, prm in (("d3", ON), ("d1", D1)):
+  g = run(prm, [(kw, n, f"{nm}_{tag}") for kw, n, nm in m4_steps])
+  g_calls = list(phase_calls)
+  # the reference: the same drive with no card left to turn into MAX (the road view away for 5 s before the press)
+  rf = run(prm, [(kw, n, f"{nm}_{tag}") for kw, n, nm in ref_steps])
+  styles[f"m4_{tag}"] = {"calls": g_calls, "max_white": count(g[7], MAX_BOX, "white"), "end_vs_ref": over1(g[7], rf[7]),
+                         "done_frames": None}
+  # every frame of the press, one at a time
+  steps = m4_steps[:5] + [(dict(M4D, limit=100, set_kph=100, alert=CHANGED, assist="active", map_frame=7), 1,
+                           f"s_m4_press_{i:02d}_{tag}") for i in range(10)]
+  run(prm, [(kw, n, f"{nm}_{tag}") if i < 5 else (kw, n, nm) for i, (kw, n, nm) in enumerate(steps)])
+  styles[f"m4_{tag}"]["press"] = [dict(done=c["done"], box=c["box"], done_args=c["done_args"], top_icons=c["top_icons"])
+                                  for c in phase_calls[5:]]
+# the style switched while a card is up - coming, waiting, turning into MAX: the next frames in the other style, no gap
+switch = {}
+for when, at in (("coming", 1), ("waiting", 4), ("done", 5)):
+  steps = [((dict(kw, _params=D1) if i == at else kw), n, f"s_switch_{when}_{i}") for i, (kw, n, nm) in enumerate(m4_steps)]
+  run(ON, steps)
+  switch[when] = [dict(style=c["style"], approach=c["approach"], box=c["box"], done=c["done"], top_icons=c["top_icons"])
+                  for c in phase_calls]
+styles["switch"] = switch
+out["styles"] = styles
+
+# not engaged (review M1): the coming limit still comes (it needs no engagement), but the stock MAX is never drawn then
+# and the set speed is only the one this non-PCM car kept - the split card's MAX half shows the stock disabled char
+not_engaged = {}
+for tag, prm in (("d3", ON), ("d1", D1)):
+  scene(**states["approach_lower"], enabled=False)
+  img = render(f"approach_lower_not_engaged_{tag}", prm)
+  not_engaged[tag] = dict(last, max_white=count(img, MAX_BOX, "white"))
+styles["not_engaged"] = not_engaged
+
+# the widest confirm (review M2): a three-digit target and the offset note, 'press - to set 110' + 'limit 100 +10'.
+# Moving, the card stops 40 px short of the road's edge; stopped, short of the stop timer (its widest, past an hour
+# too), which is then untouched - the same pixels as with no confirm, from its left edge on
+WIDE = dict(limit=100, offset=10, v=27 / KPH, alert=CONFIRM, assist="preActive", set_kph=130)
+wide = {}
+for tag, prm in (("d3", ON), ("d1", D1)):
+  for where, kw, jump in (("moving", WIDE, None), ("stopped", dict(WIDE, v=0.0, standstill=True), 30.0),
+                          ("stopped_1h", dict(WIDE, v=0.0, standstill=True), 3725.0)):
+    j = dict(jump_at=10, jump=jump) if jump else {}
+    scene(**kw)
+    img = render(f"confirm_wide_{where}_{tag}", prm, **j)
+    c = dict(last)
+    edge = hud_alerts.cluster_edge.timer_left
+    w = {"calls": c, "timer_left": None if edge == float("inf") else round(edge, 1)}
+    if w["timer_left"] is not None:
+      scene(**{k: v for k, v in kw.items() if k != "alert"})
+      ref = render(f"confirm_wide_{where}_noalert_{tag}", prm, **j)
+      x = int(edge) - 1
+      w["timer_vs_noalert"] = same(box(img, x, 0, STRIP, 80), box(ref, x, 0, STRIP, 80))
+      w["timer_white"] = count(img, (x, 0, STRIP, 80), "white")
+    wide[f"{where}_{tag}"] = w
+styles["wide"] = wide
+
+# the card turning into MAX while the prompt was already fading out (review n1): from the strength it was drawn at
+fade_done = {}
+for k in (1, 2, 3, 4):
+  confirmed = dict(CONF_NONE, alert=CHANGED, set_kph=50, assist="active")
+  run(ON, [(CONF, 60, f"fade_done_{k}_0"), (CONF_TIMEOUT, k, f"fade_done_{k}_1")] +
+      [(confirmed, 1, f"fade_done_{k}_{i + 2}") for i in range(9)])
+  fade_done[k] = [dict(box=c["box"], box_alpha=c["box_alpha"], done=c["done"], done_alpha=c["done_alpha"],
+                       done_u=c["done_args"][2] if c["done_args"] else None) for c in phase_calls[1:]]
+out["fade_done"] = fade_done
 
 # the rail's own settings: each off alone, and both off = the stock strip
 toggles = {}
@@ -838,11 +986,12 @@ class TestHudRender(OpenpilotTestCase):
     assert c["approach"] == 1 and c["approach_args"][:3] == [100, True, "in 300 m"], c
     assert 0.5 < c["approach_args"][3] < 0.7, f"300 m (run down by a second of travel) of a 458 m window: {c}"
     assert c["top_icons"], "a top icon, as the stock MAX number: the face makes way"
+    assert c["style"] == "split", "the default style: the split card"
     x0, y0, x1, y1 = r["on_diff_box"]
-    assert x0 >= 0 and y0 >= 0 and x1 < 200 and y1 < 130, f"top left only, above the road: {r['on_diff_box']}"
+    assert x0 >= 0 and y0 >= 0 and x1 < 300 and y1 < 160, f"top left only, above the road: {r['on_diff_box']}"
     ax0, ay0, ax1, ay1 = c["approach_rect"]
-    assert ax0 >= 8 and ay0 >= 6 and ax1 < 200 and ay1 < 110, c
-    assert r["topleft_white"] > 300 and r["topright_white"] == 0, r
+    assert ax0 >= 8 and ay0 >= 6 and ax1 < 300 and ay1 < 130, c
+    assert r["topleft_white"] > 300 and r["timer_white"] == 0, r
 
   def test_a_higher_limit_too_and_near_is_now(self):
     h = self.r["approach_higher"]["calls"]
@@ -874,7 +1023,8 @@ class TestHudRender(OpenpilotTestCase):
     assert held["approach"] == 1 and held["approach_args"][:3] == [100, True, "now"] and held["top_icons"], \
       f"the look-ahead gone at the change, the limit not yet in force: held - no gap with nothing on screen {held}"
     assert first["approach"] == 0 and first["box"] == 1, f"the confirm's box in the same place on its first frame {first}"
-    assert confirm["approach"] == 0 and confirm["box"] == 1, confirm
+    assert first["grow"] < 0.1 and first["box_alpha"] > 0.9, f"the coming limit's card turns into it, no fade between {first}"
+    assert confirm["approach"] == 0 and confirm["box"] == 1 and confirm["grow"] == 1.0, confirm
     q = self.r["seq"]["quiet"]
     assert q["calls"][4]["top_icons"] and q["calls"][5]["approach"] == 0, f"taken: it fades out, nothing held {q}"
     assert q["end_vs_off"] == 0, f"then the screen as with the setting off {q}"
@@ -901,6 +1051,79 @@ class TestHudRender(OpenpilotTestCase):
     assert back["approach_args"][:3] == [100, True, "in 300 m"], back
     assert gone["approach"] == 0 and not gone["top_icons"], "lost far out for longer than APPROACH_GAP_S: gone"
 
+  # ----------------------------------------------------------------------------------------- the style
+  def test_stock_plus_draws_the_same_states(self):
+    st = self.r["styles"]
+    a = st["approach_lower"]
+    assert a["style"] == "plus" and a["approach"] == 1 and a["approach_args"][:3] == [100, True, "in 300 m"], a
+    x0, y0, x1, y1 = a["approach_rect"]
+    assert x0 >= 8 and y0 >= 6 and x1 < 300 and y1 < 160, a
+    assert st["approach_higher"]["approach_args"][:3] == [70, False, "in 80 m"]
+    assert st["approach_near"]["approach_args"][2] == "now"
+    for name in ("confirm_compact", "confirm_compact_plus"):
+      c = st[name]
+      assert c["style"] == "plus" and c["box"] == 1 and c["banner"] == 0 and c["top_icons"], c
+      assert c["box_rect"][3] <= 160, c
+    assert st["confirm_compact"]["box_text"] == "press - to set 50"
+
+  def test_every_state_neither_card_draws_is_the_same_in_both_styles(self):
+    u = self.r["styles"]["untouched"]
+    assert len(u) >= 20
+    for name, px in u.items():
+      assert px == 0, f"{name}: {px} pixels differ between the styles"
+
+  def test_switching_the_style_while_a_card_is_up(self):
+    sw = self.r["styles"]["switch"]
+    for when, phases in sw.items():
+      at = {"coming": 1, "waiting": 4, "done": 5}[when]
+      for i, p in enumerate(phases):
+        drew = p["approach"] or p["box"] or p["done"]
+        if drew:
+          assert p["style"] == ("plus" if i >= at else "split"), f"{when}: phase {i} {phases}"
+      assert all(p["top_icons"] for p in phases), f"{when}: nothing ever drops out: {phases}"
+      assert phases[at]["approach"] or phases[at]["box"] or phases[at]["done"], f"{when}: drawn on the frame it switched"
+
+  def test_not_engaged_the_card_names_no_max(self):
+    # review M1: the stock MAX is only drawn while openpilot is engaged; the coming limit needs no engagement, and the
+    # set speed this non-PCM car keeps while disengaged is held by nothing - so no 'MAX 110' beside it
+    engaged = self.r["approach_lower"]["calls"]
+    assert engaged["approach"] == 1 and engaged["approach_current"] == "110", engaged
+    for tag, c in self.r["styles"]["not_engaged"].items():
+      assert c["approach"] == 1 and c["approach_args"][:3] == [100, True, "in 300 m"], f"{tag}: it still comes {c}"
+      assert c["approach_current"] == "–", f"{tag}: the stock disabled char, not the kept set speed: {c}"
+      assert c["top_icons"], c
+
+  def test_the_widest_confirm_keeps_clear_of_the_timer(self):
+    # review M2: 'press - to set 110' and 'limit 100 +10' - stock-plus's row alone is ~355 px
+    for name, w in self.r["styles"]["wide"].items():
+      c = w["calls"]
+      assert c["box"] == 1 and c["box_text"] == "press - to set 110" and c["box_note"] == "limit 100 +10", f"{name}: {w}"
+      x1 = c["box_rect"][2]
+      if name.startswith("moving"):
+        assert w["timer_left"] is None and c["max_right"] == 476 - 40 and x1 <= c["max_right"] + 0.5, f"{name}: {w}"
+      else:
+        assert w["timer_left"] is not None and abs(c["max_right"] - (w["timer_left"] - 14)) < 0.1, f"{name}: {w}"
+        assert x1 <= c["max_right"] + 0.5, f"{name}: the card stops 14 px short of the timer: {w}"
+        assert w["timer_vs_noalert"] == 0 and w["timer_white"] > 1000, f"{name}: the timer untouched: {w}"
+    assert self.r["styles"]["wide"]["moving_d1"]["calls"]["box_rect"][2] > 380, "moving, stock-plus's row is not squeezed"
+    assert self.r["styles"]["wide"]["stopped_d1"]["calls"]["box_rect"][2] < 320, "stopped, it is"
+
+  def test_turning_into_max_from_a_fading_prompt_does_not_jump(self):
+    # review n1: the prompt timed out and its card was fading when the press set the speed: the card turns into MAX
+    # from the strength it was drawn at, up to full - never a jump to full on the first frame
+    seen = 0
+    for k, frames in self.r["fade_done"].items():
+      if not frames[1]["done"]:
+        assert all(f["box"] for f in frames) and not any(f["done"] for f in frames), \
+          f"{k}: faded under half - it fades out, as before {frames}"
+        continue
+      seen += 1
+      last = frames[0]["box_alpha"]
+      done = [f["done_alpha"] for f in frames if f["done"]]
+      assert last < 0.9 and abs(done[0] - last) < 0.02, f"{k}: from the strength it was drawn at: {frames}"
+      assert done == sorted(done) and done[-1] == 1.0, f"{k}: up to full: {frames}"
+    assert seen >= 2, self.r["fade_done"]
+
   # ----------------------------------------------------------------------------------------- compact alerts
   def assert_banner(self, c, bottom):
     x0, y0, x1, y1 = c["banner"]
@@ -910,21 +1133,22 @@ class TestHudRender(OpenpilotTestCase):
     assert by1 <= max(bottom, 66), f"nothing drawn below the banner and the cluster's top row: the road stays clear {c}"
 
   def assert_box(self, c):
-    """The compact confirm as design A: the target in the MAX number's place, its pill under it - and no banner."""
-    assert c["calls"]["box"] == 1 and c["calls"]["banner"] == 0, f"the box, not the banner: {c}"
+    """The compact confirm as the card in the MAX number's place - and no banner."""
+    assert c["calls"]["box"] == 1 and c["calls"]["banner"] == 0, f"the card, not the banner: {c}"
     assert c["calls"]["top_icons"], f"a top icon, as the stock MAX number is: {c}"
     x0, y0, x1, y1 = c["calls"]["box_rect"]
-    assert x0 >= 8 and y0 >= 6 and y1 <= 150, f"top left, the pill clear of the wheel (y 176): {c}"
+    assert x0 >= 8 and y0 >= 6 and y1 <= 160, f"top left, clear of the wheel (y 176): {c}"
     bx0, by0, bx1, by1 = c["box"]
-    assert by1 <= 150, f"nothing drawn below the pill: the road stays clear {c}"
+    assert by1 <= 160, f"nothing drawn below the card: the road stays clear {c}"
     assert c["cluster_px"] == 0, f"nothing top right: {c}"
 
   def test_the_compact_confirm_puts_its_target_in_the_max_place(self):
     minus, plus = self.r["compact"]["confirm_compact"], self.r["compact"]["confirm_compact_plus"]
     for c in (minus, plus):
       self.assert_box(c)
-      assert c["banner_green"] > 100 and c["banner_white"] > 3000, f"the big digits, 'press - to confirm', the key: {c}"
-      assert c["banner_red"] == 0, "no sign: the target is the number"
+      assert c["banner_green"] > 100 and c["banner_white"] > 3000, f"the big digits, 'press - to set 50', the key: {c}"
+    assert minus["calls"]["box_text"] == "press - to set 50" and plus["calls"]["box_text"] == "press + to set 50", \
+      "the key the alert names and the speed the press gives (owner, 2026-10-12)"
     assert plus["banner_green"] > minus["banner_green"] + 50, "'+' has the key's upright too"
     assert self.r["confirm_compact"]["strip_vs_stock"] == 0
 
@@ -932,17 +1156,21 @@ class TestHudRender(OpenpilotTestCase):
     # deletion trap 3: with no sign anywhere, 'limit 50 +5' always shows beside a target that is not the limit
     minus, off = self.r["compact"]["confirm_compact"], self.r["compact"]["confirm_compact_offset"]
     self.assert_box(off)
-    assert off["calls"]["box_rect"][2] > minus["calls"]["box_rect"][2] + 80, f"the pill is longer by the note: {off}"
-    assert off["calls"]["box_rect"][2] < 476 - 20, "and stays on the road"
+    assert off["calls"]["box_note"] == "limit 50 +5" and off["calls"]["box_text"] == "press - to set 55", off
+    assert off["calls"]["box_rect"][2] > minus["calls"]["box_rect"][2] + 10, f"the card is wider by the note: {off}"
+    assert off["calls"]["box_rect"][2] < 300, "and stays in the top left"
+    plus_minus, plus_off = self.r["styles"]["confirm_compact"], self.r["styles"]["confirm_compact_offset"]
+    assert plus_off["box_note"] == "limit 50 +5" and plus_off["box_rect"][2] > plus_minus["box_rect"][2] + 80, plus_off
+    assert plus_off["box_rect"][2] < 476 - 20, "stock-plus: the row is longer by the note, and stays on the road"
 
   def test_the_target_is_the_stock_max_number(self):
+    # stock-plus: the confirm's number IS the stock MAX number (the split card's lands there: test_the_card_turns_into_max)
     d = self.r["digits"]
-    assert d["calls"]["box"] == 1
+    assert d["calls"]["box"] == 1 and d["calls"]["style"] == "plus"
     assert d["diff"] == 0, f"pixel for pixel the stock MAX digits inside their ink box: {d}"
     assert d["box_h"] == d["max_h"] and 78 <= d["box_h"] <= 82, f"~81 px, the stock size: {d}"
 
-  def test_the_outline_flashes_twice_then_marches(self):
-    a = self.r["anim"]
+  def assert_two_flashes(self, a, steady=0.0):
     assert all(a["box"]), a
     lit = a["lit"]
     starts = [i for i in range(len(lit)) if lit[i] and (i == 0 or not lit[i - 1])]
@@ -953,15 +1181,31 @@ class TestHudRender(OpenpilotTestCase):
     assert starts[1] - starts[0] >= 7, f"under 3 Hz: {lit}"
     end = max(i for i, x in enumerate(lit) if x)
     assert not any(lit[end + 1:]) and end < 20, lit
+    assert max(a["outline_lit"][s + k] for s in starts for k in range(3)) > max(a["outline_lit"][end + 3:]) + 100, \
+      f"a flash lights the outline, its halo round it: {a['outline_lit']}"
+    assert all(d == 0 for d in a["digits_vs_still"]), f"the digits never blink: {a['digits_vs_still']}"
+    # the march moves every frame; the breath stands still for a frame or two at its crest (steady: that share)
+    moving = [d > 0 for d in a["outline_vs_still"][end + 3:]]
+    assert sum(moving) >= (1.0 - steady) * len(moving), f"the outline moves, frame after frame: {a['outline_vs_still']}"
+    moving = [d > 0 for d in a["frame_to_frame"][end + 3:]]
+    assert sum(moving) >= (1.0 - steady) * len(moving), f"it moves while the prompt waits: {a['frame_to_frame']}"
+    return end
+
+  def test_the_outline_flashes_twice_then_marches(self):
+    a = self.r["anim"]
+    assert a["style"] == "split" and a["text"] == "press + to set 50", a
+    end = self.assert_two_flashes(a)
     march = [k for k, p in enumerate(a["phase"]) if p]
-    assert march and march[0] <= end + 6 and march == list(range(march[0], len(lit))), f"then the dashes march: {a}"
+    assert march and march[0] <= end + 6 and march == list(range(march[0], len(a["lit"]))), f"then the dashes march: {a}"
     phases = [a["phase"][k] for k in march]
     assert all(q > p for p, q in zip(phases, phases[1:], strict=False)), f"clockwise, on and on: {a['phase']}"
-    assert max(a["outline_white"][s] for s in starts) > max(a["outline_white"][end + 3:]) + 100, \
-      f"a flash lights the outline: {a['outline_white']}"
-    assert all(d == 0 for d in a["digits_vs_still"]), f"the digits never blink: {a['digits_vs_still']}"
-    assert all(d > 0 for d in a["outline_vs_still"][end + 3:]), "the march is drawn, frame after frame"
-    assert all(d > 0 for d in a["frame_to_frame"][end + 3:]), "it moves while the prompt waits"
+
+  def test_the_stock_plus_outline_flashes_twice_then_breathes(self):
+    a = self.r["anim_d1"]
+    assert a["style"] == "plus" and a["text"] == "press + to set 50", a
+    end = self.assert_two_flashes(a, steady=0.25)
+    b = a["breath"][end + 1:]
+    assert b[0] > 0.9 and min(b) < 0.1 and max(b[10:]) > 0.9, f"then breathes, full to faint and back, 1 Hz: {b}"
 
   def test_a_new_prompt_or_target_flashes_again(self):
     for name in ("again", "retarget"):
@@ -975,6 +1219,8 @@ class TestHudRender(OpenpilotTestCase):
   def test_with_no_limit_the_confirm_is_todays_banner(self):
     c = self.r["compact"]["confirm_compact_no_limit"]
     assert c["calls"]["banner"] == 1 and c["calls"]["box"] == 0 and not c["calls"]["top_icons"], c
+    assert c["calls"]["banner_text"] == "press + to confirm", "no limit: no speed to name"
+    assert self.r["styles"]["confirm_compact_no_limit"]["banner"] == 1, "whatever the style"
     self.assert_banner(c, 6 + 40)
     assert c["banner_green"] > 100 and c["banner_red"] == 0, f"'press + to confirm' and the key, no sign: {c}"
 
@@ -988,15 +1234,30 @@ class TestHudRender(OpenpilotTestCase):
   def test_after_the_confirm_the_solid_stock_max_number_takes_its_place(self):
     s = self.r["seq"]["changed"]
     confirm, first, after = s["calls"]
-    assert confirm["box"] == 1 and first["box"] == 1, f"it fades out (with the stock MAX fading in), not cut: {s}"
-    assert after["box"] == 0 and after["top_icons"], s
+    assert confirm["box"] == 1 and first["box"] == 0 and first["done"] == 1 and first["top_icons"], \
+      f"the press set the speed: the card turns into MAX, not cut: {s}"
+    assert after["box"] == 0 and after["done"] == 0 and after["top_icons"], s
     assert s["end_vs_ref"] == 0 and s["max_white"] > 2000, f"then exactly the stock 'set speed changed' frame: {s}"
+
+  def test_the_card_turns_into_max(self):
+    for tag in ("d3", "d1"):
+      m = self.r["styles"][f"m4_{tag}"]
+      press = m["press"]
+      done = [p["done_args"][2] for p in press if p["done"]]
+      assert press[0]["done"] == 1 and len(done) in (6, 7), f"{tag}: CARD_DONE_S, 0.3 s at 20 fps: {press}"
+      assert done == sorted(done) and done[0] < 0.1 and done[-1] == 1.0, f"{tag}: on to the end: {done}"
+      assert all(p["top_icons"] for p in press), f"{tag}: the face never shows in between: {press}"
+      assert all(p["done_args"][1] == "110" for p in press if p["done"]), f"{tag}: beside it, the MAX it replaces"
+      assert not press[-1]["done"] and not press[-1]["box"], press
+      assert m["end_vs_ref"] == 0 and m["max_white"] > 2000, f"{tag}: then the stock MAX number, as with no card: {m}"
+      # (within one level: the card hands the stock MAX over at full; the drive's own fade is a level short of full)
 
   def test_a_critical_alert_during_the_confirm_takes_the_screen_at_once(self):
     for name in ("critical", "critical_lit"):
       s = self.r["seq"][name]
       confirm, first, after = s["calls"]
       assert confirm["box"] == 1 and first["box"] == 0 and after["box"] == 0, s
+      assert first["done"] == 0 and after["done"] == 0, s
       assert not first["top_icons"], f"not a top icon from its first frame: {s}"
       assert s["first_vs_stock_top_left"] == 0, f"its first frame top left is the stock one: no box over the alert {s}"
       assert s["end_vs_stock"] == 0, f"then exactly the stock full-screen alert: {s}"
@@ -1026,12 +1287,12 @@ class TestHudRender(OpenpilotTestCase):
       assert not timeout["top_icons"], f"{name}: {g}"
       if name == "r121_changed":
         # past the prompt's fade: the box is gone, and the confirm is the drive's screen with no prompt from its first frame
-        assert timeout["box"] == 0 and first["box"] == 0, f"{name}: {g}"
+        assert timeout["box"] == 0 and first["box"] == 0 and first["done"] == 0, f"{name}: {g}"
         assert g["px"] == [0, 0, 0], f"{name}: {g}"
       else:
-        # inside the fade: the box fades out under the stock MAX number fading in, as a confirm inside the prompt does
-        assert timeout["box"] == 1 and first["box"] == 1 and first["top_icons"], f"{name}: {g}"
-      assert after["box"] == 0 and after["top_icons"], f"{name}: {g}"
+        # inside the fade: the card, still up, turns into MAX - or, faded under half, fades out under it
+        assert timeout["box"] == 1 and first["box"] + first["done"] == 1 and first["top_icons"], f"{name}: {g}"
+      assert after["box"] == 0 and after["done"] == 0 and after["top_icons"], f"{name}: {g}"
       assert g["px"][2] == 0 and g["max_white"] > 2000, f"{name}: then exactly the stock solid MAX number {g}"
 
   def test_the_confirms_first_frame_is_a_top_icon(self):

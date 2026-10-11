@@ -199,15 +199,16 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // from the first stock-mode start until they are put back (sunnypilot/selfdrive/car/honda_stock_acc.py).
     {"HondaElesysStockAcc", {PERSISTENT, BOOL, "0"}},
     {"HondaElesysStockAccSaved", {PERSISTENT, JSON}},
-    // FORK(HUD): the comma 4 HUD, one setting per piece (sunnylink Visuals > HUD). All default on; all off is the stock
-    // screen. Read by the UI at most once a second. HudPlannedStop and HudCurve are the right strip's two items
-    // (hud_rail.py); HudCompact* draw named normal alerts small (hud_model.COMPACT_TYPES); HudApproachingLimit announces
-    // the coming limit in the MAX number's place (round 5, 2026-10-09, which removed the speed, sign and next-limit keys).
+    // FORK(HUD): the comma 4 HUD, one setting per piece (sunnylink Visuals > HUD). Every toggle defaults on; all off is
+    // the stock screen. Read by the UI at most once a second. HudPlannedStop / HudCurve: the right strip (hud_rail.py);
+    // HudCompact*: named normal alerts small (hud_model.COMPACT_TYPES); HudApproachingLimit: the coming limit in MAX's
+    // place (round 5). HudLimitStyle (INT, not a toggle): how that and the confirm are drawn, 0 split card, 1 stock-plus.
     {"HudApproachingLimit", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCompactDisengage", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCompactLimitPrompts", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCompactTurn", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCurve", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"HudLimitStyle", {PERSISTENT | BACKUP, INT, "0"}},
     {"HudPlannedStop", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudStoppedBanner", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudStoppedTimer", {PERSISTENT | BACKUP, BOOL, "1"}},

@@ -20,19 +20,21 @@ augmented_road_view.py, and with the settings off those lines fall through to th
    'lane centering off' and 'turning left / right' are banners in the alert's color. Every banner stops short of the
    stop timer when it is drawn (ClusterEdge). Sounds are untouched: soundd plays them from selfdriveState.
 
-3. THE COMPACT CONFIRM IN THE MAX NUMBER'S PLACE (HudCompactLimitPrompts; the owner's design A, 2026-10-06). 'Press + (or
-   -) to confirm speed limit' draws, top left where the stock MAX number goes and at its size, the set speed the confirm
-   would set (limit + offset, hud_model.target_speed) - with a dashed outline instead of 'MAX' (not set yet) and under
-   it a pill: 'press + to confirm' and the blinking green key. The outline flashes twice when it appears, then its dashes
-   march round the box while the prompt waits (round 5, V3: hud_model.box_outline). This file only publishes it
-   (PendingMax); the HUD renderer (sunnypilot/mici/onroad/hud_renderer.py), drawn after the alerts, draws it, and counts
-   it as a top icon, as it does the stock MAX number. With an offset the pill also names the limit: 'limit 50 +5' -
-   there is no speed-limit sign on screen since round 5. After the confirm the stock MAX number shows the new set speed,
-   solid, in the same place. With no limit, a text naming no key (the PCM one) or no HUD renderer to draw it, the
-   confirm is the one-line banner instead: 'press + to confirm', the key and the pending limit as a dashed sign. A
-   confirm with no words (the set speed already equal to the limit, a frame or two) draws nothing. With the setting off
-   the confirm is sunnypilot's own full-screen alert, exactly as stock (the old drawing of the limit in the arrow's box
-   was removed in round 5).
+3. THE COMPACT CONFIRM IN THE MAX NUMBER'S PLACE (HudCompactLimitPrompts; 2026-10-06, restyled 2026-10-12). 'Press +
+   (or -) to confirm speed limit' draws, top left where the stock MAX number goes, the set speed the confirm would set
+   (limit + offset, hud_model.target_speed) as a card in the style HudLimitStyle picks (the split card: the MAX held now
+   small beside it, the target dashed, a footer; stock-plus: the target in the stock MAX digits on a solid card), with
+   'press - to set 100' and the blinking green key (hud_model.confirm_prompt: the key the alert names, the speed the press
+   gives). Its outline flashes twice when it appears, then marches (split card) or breathes (stock-plus) while the
+   prompt waits. This file only publishes it (PendingMax); the HUD renderer (sunnypilot/mici/onroad/hud_renderer.py),
+   drawn after the alerts, draws it, and counts it as a top icon, as it does the stock MAX number. With an offset the
+   card also names the limit: 'limit 50 +5' - there is no speed-limit sign on screen since round 5. After the confirm
+   the stock MAX number shows the new set speed in the same place (the split card's target slides there first). With no
+   limit, a text naming no key (the PCM one) or no HUD renderer to draw it, the confirm is the one-line banner instead:
+   'press + to set 55' ('press + to confirm' with no limit), the key and the pending limit as a dashed sign. A confirm
+   with no words (the set speed already equal to the limit, a frame or two) draws nothing. With the setting off the
+   confirm is sunnypilot's own full-screen alert, exactly as stock (the old drawing of the limit in the arrow's box was
+   removed in round 5).
 """
 import math
 from dataclasses import dataclass
@@ -42,8 +44,8 @@ import pyray as rl
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_draw as hd
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (StandstillBanner, pending_limit, target_speed,
                                                                      short_line2, compact_kind, compact_text, confirm_text,
-                                                                     confirm_lower, event_name, COMPACT_NONE,
-                                                                     COMPACT_QUIET, CONFIRM_EVENT)
+                                                                     confirm_lower, confirm_prompt, event_name,
+                                                                     COMPACT_NONE, COMPACT_QUIET, CONFIRM_EVENT)
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import frees_top_icons as _frees_top_icons
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import hud_settings
 from openpilot.selfdrive.ui.ui_state import ui_state
@@ -101,11 +103,11 @@ frame_alert = FrameAlert()
 
 @dataclass(frozen=True)
 class PendingTarget:
-  """What the compact confirm puts in the MAX number's place this frame (hud_draw.pending_max)."""
+  """What the compact confirm puts in the MAX number's place this frame (HudRendererSP: a hud_model.MaxCard)."""
   value: int                 # the set speed the confirm would set, display units
-  text: str                  # 'press + to confirm'
+  text: str                  # 'press + to set 55'
   lower: bool | None         # the key: True '-', False '+', None none
-  color: rl.Color            # the alert's color, for the pill
+  color: rl.Color            # the alert's color, for the card
   alpha: float               # the alert's fade
   key_alpha: float           # the arrow's blink, 0..1
   note: str = ""             # 'limit 50 +5', or nothing
@@ -170,6 +172,11 @@ def confirm_target(alert) -> int:
   limit, a text naming no key (the PCM one asks for another set speed than the target) or no HUD renderer to draw it."""
   if not pending_max.drawer or confirm_lower(alert.text1) is None:
     return 0
+  return _target()
+
+
+def _target() -> int:
+  """The set speed the confirm would set (hud_model.target_speed), as this car stores it; 0 with no limit."""
   cp_sp = getattr(ui_state, "CP_SP", None)
   return target_speed(ui_state.sm, ui_state.is_metric, cp_sp.pcmCruiseSpeed if cp_sp is not None else True)
 
@@ -190,7 +197,7 @@ def _draw_confirm(ar, alert, s, x: float, y: float, color: rl.Color, alpha: floa
   lower = confirm_lower(alert.text1)
   if lower is None:
     lower = True if icon.id == ar.arrow_down.id else False if icon.id == ar.arrow_up.id else None
-  # the owner's design A: the target in the MAX number's place, drawn by the HUD renderer after the alerts
+  # the target in the MAX number's place, drawn by the HUD renderer after the alerts
   target = confirm_target(alert)
   if target > 0:
     # the limit is on screen nowhere else: name it when the target is not the limit itself
@@ -199,11 +206,13 @@ def _draw_confirm(ar, alert, s, x: float, y: float, color: rl.Color, alpha: floa
     d = target - limit          # what the number adds to the limit, so the note always adds up to it (a % offset
     if limit > 0 and d:         # rounds apart from the target; the cruise range can clamp it)
       note = f"limit {limit} {'+' if d > 0 else '-'}{abs(d)}"
-    pending_max.publish(PendingTarget(target, confirm_text(alert.text1), lower, color, alpha, icon_alpha / 255.0, note))
+    pending_max.publish(PendingTarget(target, confirm_prompt(alert.text1, target), lower, color, alpha, icon_alpha / 255.0,
+                                      note))
     return
   value, offset = pending_limit(ui_state.sm, ui_state.is_metric)   # no limit on screen otherwise (owner decision 7)
   h = hd.CONFIRM_H if value > 0 else hd.BANNER_LINE_H
-  hd.confirm_banner(x, y, confirm_text(alert.text1), lower, color, alpha=alpha, key_alpha=(icon_alpha / 255.0) * alpha,
+  hd.confirm_banner(x, y, confirm_prompt(alert.text1, _target()), lower, color, alpha=alpha,
+                    key_alpha=(icon_alpha / 255.0) * alpha,
                     value=value, offset=offset, max_w=banner_max_w(ar._rect, h))
 
 
