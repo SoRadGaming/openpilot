@@ -57,7 +57,7 @@ class FakeParams:
 
 
 class FakeProcess:
-  """Looks enough like Popen. Stays alive until it is signalled."""
+  """Looks enough like Popen. Stays alive until it is signaled."""
 
   def __init__(self):
     self.signals: list[int] = []

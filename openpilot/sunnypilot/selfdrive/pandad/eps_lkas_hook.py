@@ -92,7 +92,7 @@ def watch_for_request(process, skip_reset, params: Params | None = None) -> thre
 
   ONLY OFFROAD. Taking CAN away from a moving car is not something a param
   write should be able to do, whatever the UI thinks it is gating on - the
-  request simply is not honoured until the car is off the road. The board and
+  request simply is not honored until the car is off the road. The board and
   the flasher each refuse on vehicle speed as well, but those checks run after
   ./pandad has already been stopped, which is far too late to be the only one.
 
@@ -158,7 +158,7 @@ def flash_if_requested(panda_serial: str, bus: int = 0, transport_factory=None) 
   # ITS OWN ONROAD CHECK, not just the watcher's. This runs on EVERY re-entry
   # of pandad's loop - including ones the watcher did not cause, such as a
   # ./pandad crash mid-drive. Without this, a request left over from a press
-  # made while parked would be honoured at road speed by an exit nothing here
+  # made while parked would be honored at road speed by an exit nothing here
   # asked for.
   try:
     if not params.get_bool("IsOffroad"):

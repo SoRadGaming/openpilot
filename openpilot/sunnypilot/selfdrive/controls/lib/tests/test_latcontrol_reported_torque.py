@@ -11,6 +11,8 @@ The board's lane-change ceiling (0x704 INH_BLINKER, carStateSP.linbusGateway.bli
 reported: clipped to it, the report was "limited by safety" under the ceiling, so a real shortfall there could never
 saturate, and steerSaturated - openpilot's alert, and 0x500 OP_SATURATED since lcalert - was lost for as long as the
 blinker was on. A railed request under the ceiling must still saturate, and a hands-off curve must still alert.
+Board b5f08583 (nocap, 2026-10-12) has no ceiling: INH_BLINKER now only marks the indicator window. These tests
+keep the decision for any image that puts a ceiling back.
 """
 from pathlib import Path
 

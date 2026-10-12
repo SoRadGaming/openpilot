@@ -15,13 +15,13 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
-## 2026-10-12 — the board's lane-change cap is off (board `b5f08583`, nocap)
+## 2026-10-12 — push8: the board's lane-change cap is off (board `b5f08583`, nocap)
 
 The owner, on hearing the board halves its torque on every indicated lane change: "On lane change remove steer
 caps". He was told why it was there (S10-4 took it off, route da latched the EPS, S14-1 put it back), and chose: no
 cap; the board's driver-torque fade only while he pushes against openpilot's command; hard pushes either way
 still hand back. **Board only. Nothing openpilot computes or sends changes.** This entry is the bundled image
-and the wording that assumed the cap.
+and the wording that assumed the cap. push8 is push7 (`1982fe6a1`) plus this; opendbc stays `dc7f1e7d`.
 
 * **The image.** `eps_lkas_appslot.bin` is board `b5f08583` (branch `nocap`, on `686e4603`), 49,660 bytes,
   SHA-256 `d5b4b9d34af8d1f41a26fd33a2982637546c21f31819cff619be1f2c4fb7446c`, `APL1` at `0x08004000`, flags
@@ -39,8 +39,14 @@ and the wording that assumed the cap.
   * frames held below the request 21 % -> 7 %;
   * about +0.45 m/s^2 at the median peak;
   * no frame over 100 counts against a push of more than 50.
-  * Route da's latch frames: the board at 0 when the driver reached 92 counts, and handed back at 113 (logged:
-    102, 62, then 42 into the 141).
+  * Route da's latch (the event that put the cap back) happened under a LEFT indicator, so `686e4603` would have
+    held 80 there. On the yank's frames `686e4603` gives 80, 80, 80, 80, 80, 76, 36, 8, 0 and `b5f08583` gives
+    160, 160, 152, 131, 108, 76, 36, 8, 0: for the first ~40 ms nocap pushes against the driver with up to twice
+    the torque of the image it replaces, and it enters the yank at da's own logged 158-160. The two agree from
+    about 55 counts of driver torque up; both are at 0 by 92 and hand back at 113 (logged on da: 102, 62, then 42
+    into the 141). What da did not have is the S12/S13 fade, hand-back and 40-per-frame down-step, not the cap.
+  * **A light hand against the board under the indicator** (20-55 counts) now meets up to 160 counts, twice
+    `686e4603`'s 80. Push harder and it fades as before.
 * **openpilot.** It never saw the cap: the reported torque was always the request (section 3.6), so under the
   indicator report and wire now agree. That removes the cause of 120/121's `lac.saturated`, which `OP_SATURATED`
   no longer carries anyway (lcalert).
@@ -51,6 +57,9 @@ and the wording that assumed the cap.
   * opendbc's comments that still describe a ceiling are left for its next commit: `carstate_ext.py`
     `_update_linbus_gateway`, `structs.py` `blinkerCapped`, `carcontroller.py` above the reported torque, and
     `FORK.md`. This branch does not move the submodule.
+* **Also in push8:** three British spellings in comments that CI's codespell flagged (`signaled`, `honored` x2),
+  and the docstring of `test_latcontrol_reported_torque.py`. No code changes; `sendcan` replayed on 120 and 130 is
+  identical to push7.
 * **What to watch on the first drive** (board `HANDOFF.md` 0o):
   * `0x704 CMD_APPLY_STEER` above 80 under `INH_BLINKER`;
   * no EPS error state, B0.4 latch or `0x70B` REASON 8/9 in or after a lane change;
