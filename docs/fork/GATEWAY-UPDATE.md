@@ -66,7 +66,7 @@ sitting in its bootloader with stock LKAS working (`docs/CAN-UPDATE.md` in the f
 |---|---|---|
 | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_flasher.py` | added, all A | The bootloader protocol, the transports, the image checks and the flash trace. It has no openpilot imports. |
 | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_hook.py` | added, all A | Glue between pandad and the flasher. Contains the params handling, the watcher thread, and the version write-back. |
-| `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_appslot.bin` | added, all A | The bundled board image. Currently `686e4603`, 49,664 bytes, SHA-256 `82fefd72…` (board branch `lc-alarm` `686e460`: `c8221c29` - `298727b3`'s `0x70B` fix plus `GW_WAIT_FOR_COMMA` - plus the lane-change alarm fix, the board's case (ii) ceiling alarm silent under its blinker cap and for 2 s after a hand; bundled with sunnypilot `lcalert`, whose openpilot half it goes with). |
+| `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_appslot.bin` | added, all A | The bundled board image. Currently `b5f08583`, 49,660 bytes, SHA-256 `d5b4b9d3…` (board branch `nocap` `b5f0858`, on `686e4603` - `c8221c29`, which is `298727b3`'s `0x70B` fix plus `GW_WAIT_FOR_COMMA`, plus the lane-change alarm fix. It adds the owner's 2026-10-12 decision: no 50 % blinker ceiling, and the driver-torque fade only while the driver pushes against the board; board `HANDOFF.md` 0o). |
 | `openpilot/selfdrive/pandad/pandad.py` | modified, all A | Imports the hook, adds the `skip_panda_reset` guard, and calls `flash_if_requested()` and `watch_for_request()`. |
 | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/board.py` | added, all A | The Settings > gateway page: the firmware card and the update button. |
 | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py` | modified, **mixed** | A: the `board_btn` row. C: the `vehicle_btn` row. |
@@ -671,7 +671,8 @@ app-slot build configures `INCAR_TEST=ON`. It is not the dirty bit.
 | `1f20b7b68` | `d995bc95` | 46,540 |
 | `a32984eb2` | `298727b3` (`0x70B` through the ring, `gw_active.c` only; never shipped alone) | 46,532 |
 | 2026-10-06 integration | `c8221c29` (`298727b3` plus `GW_WAIT_FOR_COMMA`: K2 on stock wiring and the camera owning `0x33D` until the comma is heard, then the usual entry at a safe moment) | 49,584 |
-| `lcalert` (2026-10-12) | **`686e4603`** (current; `c8221c29` plus the lane-change alarm fix: `hud_gw()`'s ceiling test `hard` does not count under the blinker cap or within 2 s of driver torque over 20, and a gated tick restarts its 300 ms debounce; the command path is unchanged, `GW_BLINK_CEIL_PCT` still 50) | 49,664 |
+| `lcalert` (2026-10-12) | `686e4603` (`c8221c29` plus the lane-change alarm fix: `hud_gw()`'s ceiling test `hard` does not count under the blinker cap or within 2 s of driver torque over 20, and a gated tick restarts its 300 ms debounce; the command path is unchanged, `GW_BLINK_CEIL_PCT` still 50; SHA-256 `82fefd72…`, the rollback for the next row) | 49,664 |
+| `nocap` (2026-10-12) | **`b5f08583`** (current; `686e4603` with the lane-change cap off: `GW_BLINK_CEIL_PCT` 100, and the driver fade applied only when the driver is not nudging the way the board is - openpilot's request over 10 counts his way, the wire not the other way, the push under 90 counts. Against the driver, and for any push of 90 or more, it is 686e4603's fade; the hand-back, authority 160 and every other limit are unchanged. Board `HANDOFF.md` 0o, SHA-256 `d5b4b9d3…`) | 49,660 |
 
 In git the `.bin` is not in LFS; `text=auto` detects it as binary. It ships in release builds,
 because `tools/release/release_files.py` does not exclude it.

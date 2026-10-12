@@ -15,6 +15,49 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-12 — the board's lane-change cap is off (board `b5f08583`, nocap)
+
+The owner, on hearing the board halves its torque on every indicated lane change: "On lane change remove steer
+caps". He was told why it was there (S10-4 took it off, route da latched the EPS, S14-1 put it back), and chose: no
+cap; the board's driver-torque fade only while he pushes against openpilot's command; hard pushes either way
+still hand back. **Board only. Nothing openpilot computes or sends changes.** This entry is the bundled image
+and the wording that assumed the cap.
+
+* **The image.** `eps_lkas_appslot.bin` is board `b5f08583` (branch `nocap`, on `686e4603`), 49,660 bytes,
+  SHA-256 `d5b4b9d34af8d1f41a26fd33a2982637546c21f31819cff619be1f2c4fb7446c`, `APL1` at `0x08004000`, flags
+  `0x04`, built with `tools/flash-incar-stage10-appslot.bat`'s flag set including `GW_WAIT_FOR_COMMA`.
+  * `GW_BLINK_CEIL_PCT` goes 50 -> 100.
+  * The driver fade (100 % at 20 counts to nothing at 90) is skipped while the driver nudges the way the board is
+    going: openpilot's request over 10 counts his way, the wire not against him, the push under 90.
+  * Against the driver, and for any push of 90 or more, the fade is 686e4603's.
+  * The hand-back (110 at once, 90 for 80 ms outside the indicator), authority 160, the step limits, the floor,
+    the counter rules and the lc-alarm HUD gating are unchanged.
+  * Rollback: `686e4603`, SHA-256 `82fefd72…` (push7).
+* **Replayed** open loop from the raw CAN over every board-engaged lane change on d9, da and 10f-130 (board
+  `HANDOFF.md` 0o). On the 33 of 10f-130:
+  * mean command 44.6 -> 52.6 counts against a request of 55.9;
+  * frames held below the request 21 % -> 7 %;
+  * about +0.45 m/s^2 at the median peak;
+  * no frame over 100 counts against a push of more than 50.
+  * Route da's latch frames: the board at 0 when the driver reached 92 counts, and handed back at 113 (logged:
+    102, 62, then 42 into the 141).
+* **openpilot.** It never saw the cap: the reported torque was always the request (section 3.6), so under the
+  indicator report and wire now agree. That removes the cause of 120/121's `lac.saturated`, which `OP_SATURATED`
+  no longer carries anyway (lcalert).
+  * `carStateSP.linbusGateway.blinkerCapped` still decodes `0x704 INH_BLINKER`. The board still sets that bit
+    under the indicator (it suspends its 80 ms hand-back and its own ceiling alarm there), so from this image
+    the field reads True with nothing capped. The name is now historical; the capnp comment says so, and nothing
+    acts on it.
+  * opendbc's comments that still describe a ceiling are left for its next commit: `carstate_ext.py`
+    `_update_linbus_gateway`, `structs.py` `blinkerCapped`, `carcontroller.py` above the reported torque, and
+    `FORK.md`. This branch does not move the submodule.
+* **What to watch on the first drive** (board `HANDOFF.md` 0o):
+  * `0x704 CMD_APPLY_STEER` above 80 under `INH_BLINKER`;
+  * no EPS error state, B0.4 latch or `0x70B` REASON 8/9 in or after a lane change;
+  * no `RDM_HUD` + `BEEP` 1 rising during a lane change.
+
+---
+
 ## 2026-10-12 — push7: the MAX card and the lane-block tile together (integration)
 
 push6 (`c8f8be771`: the lane-change alarm fix with board `686e4603`, full brake without the aero credit, the

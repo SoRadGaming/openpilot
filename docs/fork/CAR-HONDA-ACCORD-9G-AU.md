@@ -275,7 +275,7 @@ Two consequences come up throughout this document. `LKAS_PROBLEM` is read from b
 | `steerAtStandstill` | False | True | 5.1 |
 | torqued prior | substitute or fleet value | own `[1.25, 1.25, 0.18]` in `override.toml` (1.1 until 2026-10-03) | 2.4 |
 | `latAccelOffset` start | 0.0 | -0.43 (CarParams; torqued starts from it) | 2.4 |
-| reported torque (`carOutput.actuatorsOutput.torque`) | `last_torque` | 0.0 while the gateway board is not actuating; deliberately NOT clipped to the board's blinker ceiling (`0x704 INH_BLINKER`): clipped, the ceiling counted as limited by safety and `steerSaturated` could not fire while the blinker was on (2026-10-12) (area B, LKAS-GATEWAY-PROTOCOL.md 3.6) | B |
+| reported torque (`carOutput.actuatorsOutput.torque`) | `last_torque` | 0.0 while the gateway board is not actuating; deliberately NOT clipped to the board's blinker ceiling (`0x704 INH_BLINKER`): clipped, the ceiling counted as limited by safety and `steerSaturated` could not fire while the blinker was on (2026-10-12); from board `b5f08583` there is no blinker ceiling at all (area B, LKAS-GATEWAY-PROTOCOL.md 3.6) | B |
 | `0x500 OP_SATURATED` | n/a | selfdrived's `steerSaturated` conditions, not the raw `lac.saturated` (2026-10-12; LKAS-GATEWAY-PROTOCOL.md 4.2) | B |
 | `minEnableSpeed` | 25.51 mph, or -1 with a gas interceptor (upstream `4455464a`) | 19 mph, pedal or not | 5.1 |
 | stopping speed | `should_stop()`: 0.3 m/s on the measured speed | 0.8 m/s (`stopping_tune.py`) | 10.1 |

@@ -582,8 +582,10 @@ struct CarStateSP @0xb86e6369214c01c8 {
     # different value means at least one new frame, and the grant fields are its contents.
     grantSeq @27 :UInt32;
 
-    # GW_ACTIVE (0x704) INH_BLINKER, from a fresh frame only: the board is holding its command under its
-    # lane-change ceiling - GW_BLINK_CEIL_PCT of its authority while a turn signal is on and 500 ms after.
+    # GW_ACTIVE (0x704) INH_BLINKER, from a fresh frame only: a turn signal is on at the board, or was within
+    # 500 ms. Up to board 686e4603 the board then held its command under its lane-change ceiling
+    # (GW_BLINK_CEIL_PCT, 50 % of its authority); from b5f08583 (nocap) the ceiling is 100 %, i.e. none, and
+    # the name is historical.
     # Logged only. The reported torque is deliberately not clipped to it: that would make the ceiling
     # steer_limited_by_safety and stop steerSaturated for as long as the blinker is on (carcontroller.py).
     blinkerCapped @28 :Bool;

@@ -10,7 +10,7 @@ these changes across an upstream merge without losing any of them.
 | **Platform** | `HONDA_ACCORD_9G_AU`, the only member of `HONDA_ELESYS` (`HondaFlags.ELESYS = 1024`) |
 | **sunnypilot fork** | `SoRadGaming/sunnypilot` `master`, after the 2026-09-27 upstream sync: branch `merge/upstream-2026-09-27` (`d1a14edcb` plus the post-merge review fixes). Fork point `a5f44653d` (previously `31dc4d8e5`). Every sunnypilot path is under `openpilot/` since the sync |
 | **opendbc fork** | `SoRadGaming/opendbc` `sp-master`, after the sync: `8bd6e314` plus the review fixes. Fork point `f95f996f` (previously `b9712d20`) |
-| **Board firmware** | `S:/Software/EPS-LKAS`. Last firmware commit `298727b` (2026-10-06, `gw_active.c` only: every diagnostic but `0x704` goes through the camera->car ring, so `0x70B` reaches the bus at 10 Hz; `862540c` before it taught `bundle_appslot.py` the new layout). Branch `stock-until-comma` (`c8221c2`) adds `GW_WAIT_FOR_COMMA` on top: the board leaves K2 on stock wiring and the camera owning `0x33D` until it hears the comma (`0x70B` STATE 8, reasons 16-21). Branch `lc-alarm` (`686e460`, on `c8221c2`) silences the board's case (ii) ceiling alarm (`hard`) under its blinker cap and for 2 s after a hand on the wheel (board `HANDOFF.md` 0n; sections 3.6 and 4.2 here are the openpilot half). The bundled app-slot image is `686e4603`, 49,664 bytes, with `c8221c29` before it; `d995bc95` (sp-live `1f20b7b68`) is the image routes `10f`-`121` were driven on. Line numbers cited below "at `d995bc9`" are at that commit |
+| **Board firmware** | `S:/Software/EPS-LKAS`. Last firmware commit `298727b` (2026-10-06, `gw_active.c` only: every diagnostic but `0x704` goes through the camera->car ring, so `0x70B` reaches the bus at 10 Hz; `862540c` before it taught `bundle_appslot.py` the new layout). Branch `stock-until-comma` (`c8221c2`) adds `GW_WAIT_FOR_COMMA` on top: the board leaves K2 on stock wiring and the camera owning `0x33D` until it hears the comma (`0x70B` STATE 8, reasons 16-21). Branch `lc-alarm` (`686e460`, on `c8221c2`) silences the board's case (ii) ceiling alarm (`hard`) under its blinker cap and for 2 s after a hand on the wheel (board `HANDOFF.md` 0n; sections 3.6 and 4.2 here are the openpilot half). Branch `nocap` (`b5f0858`, on `686e460`) takes the board's 50 % lane-change ceiling off and fades its command only while the driver pushes against it, at the owner's call (board `HANDOFF.md` 0o; section 3.6). The bundled app-slot image is `b5f08583`, 49,660 bytes, with `686e4603` and `c8221c29` before it; `d995bc95` (sp-live `1f20b7b68`) is the image routes `10f`-`121` were driven on. Line numbers cited below "at `d995bc9`" are at that commit |
 | **Written** | 2026-09-27, from the diffs, not from the commit messages alone. Revised after review the same day, and again for the upstream sync (section 14) |
 
 Sibling documents in `docs/fork/` cover the other two areas. Area A, updating the board's
@@ -152,8 +152,10 @@ The board converts. With byte 2 bit 2 clear it computes
 `t = op_torque * GW_LIN_AUTHORITY / GW_OP_FULL_SCALE` (2560), then multiplies by the soft-start
 ramp (`t * soft / GW_SOFTSTART_FRAMES`, 0 to 1 over 2 s after each engagement), clamps to
 `±GW_LIN_AUTHORITY`, and finally clips by the lower of two ceilings: `ceil_pct` (the
-driver-torque fade, section 9) and `GW_BLINK_CEIL_PCT` = 50 % while an indicator is on
-(`gw_active.c` lines 1981–1995 at `d995bc9`). So openpilot's full scale of ±1.0 equals the
+driver-torque fade, section 9) and `GW_BLINK_CEIL_PCT` while an indicator is on
+(`gw_active.c` lines 1981–1995 at `d995bc9`). The blinker ceiling is 50 % up to board `686e4603`
+and 100 %, i.e. none, from `b5f08583`, where the fade also stops acting on a driver who pushes the
+same way as the board. So openpilot's full scale of ±1.0 equals the
 board's authority in steady state, outside the soft start, the driver-torque fade and the
 blinker ceiling, all of which can only lower it. None of the three is reported back to openpilot;
 for the blinker ceiling that is a decision (section 3.6). In that steady state openpilot's saturation
@@ -291,6 +293,17 @@ Tests: `test_elesys.py` `TestElesysReportedTorque` (zero while not actuating wit
 Hondas unaffected) and `TestElesysReportedTorqueSeam` (`0x704` frames through the real
 `CarInterface`: none, engaged, dry run, disengaged, stale); `test_latcontrol_reported_torque.py`
 and `test_torqued_elesys.py` on the sunnypilot side.
+
+**From board `b5f08583` (nocap, 2026-10-12) there is no blinker ceiling.** `GW_BLINK_CEIL_PCT` is
+100: under the indicator the board sends openpilot's full request. The driver fade, which used to
+cut the very nudge that arms a lane change, now applies only while the driver pushes AGAINST the
+board's command (and to any push of 90 counts or more). Nothing in openpilot changes: the report
+below was never clipped, so report and wire now simply agree under the indicator, which removes
+the reason `lac.saturated` built on 120/121. `0x704 INH_BLINKER` still carries the indicator plus
+its 500 ms dwell - the board still suspends its 80 ms hand-back and silences its own ceiling alarm
+under it - so `blinkerCapped` keeps decoding it, and from this image on the name is historical: it
+reads True with nothing capped. What follows is the decision as it stood for images up to
+`686e4603`, and it still holds for any image that puts a ceiling back.
 
 **The blinker ceiling is NOT reported (decision, 2026-10-12).** While a turn signal is on, and
 for `GW_BLINKER_DWELL_MS` (500 ms) after, the board clips its command to `GW_BLINK_CEIL_PCT`
@@ -434,7 +447,7 @@ The CarController cannot see `controlsState`, so the integrator travels on `carC
    0. The bit, its position and the board's decoder are unchanged; the board's own comments
    (`sp_hud.h`, `eps-lkas-gw.dbc`) still call it `torqueState.saturated` until its next commit.
    Under the board's blinker ceiling this still fires on a real shortfall, because the ceiling
-   is not reported (section 3.6).
+   is not reported (section 3.6). From board `b5f08583` there is no such ceiling.
 3. `cereal CarControlSP.lateralControl @5 :LateralControl { integrator @0 :Float32;
    saturated @1 :Bool; integratorFrozen @2 :Bool; steerSaturated @3 :Bool; }`
 4. `card` converts it with `helpers.convert_carControlSP()`. **Every nested struct has to be
@@ -583,7 +596,7 @@ comments in `structs.py` that say "names and order must stay in lockstep" overst
 | 18 | `latchedUntilKeyOff` | Bool | `RETRY_IN == 255` | `selfdrived` → `eps_latch_alert.py` (the "restart the car" alert, section 9) |
 | 19–26 | `fwValid` … `fwBuildValid` | | `0x707` / `0x70F` | area A (`card`, `board.py`) |
 | 27 | `grantSeq` | UInt32 | +1 per `0x70B` frame that arrived (wraps at 2^32; 0 before the first); unlike `grantValid` it does not move while the 500 ms window only holds the last frame (2026-10-06) | `mads` (ending the override pause) |
-| 28 | `blinkerCapped` | Bool | `0x704 INH_BLINKER` from a fresh frame: the board's lane-change ceiling is in force (2026-10-12) | none: logged only (section 3.6 says why the reported torque does not use it) |
+| 28 | `blinkerCapped` | Bool | `0x704 INH_BLINKER` from a fresh frame: an indicator (or its 500 ms dwell) is on at the board. Up to board `686e4603` that meant its 50 % lane-change ceiling was in force; from `b5f08583` (nocap) there is no ceiling and the name is historical (2026-10-12) | none: logged only (section 3.6 says why the reported torque does not use it) |
 
 Fields with no reader appear only in the route log (`carStateSP` is logged), and the only
 driver-facing surface for them is the `carlog.warning` above. Since 2026-10-01
