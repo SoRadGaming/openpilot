@@ -100,7 +100,15 @@ ENGINE_DATA_ID = 0x158
 # mirroring the moment it enters its bootloader, and which is blind below
 # about 20 km/h anyway. So this is the best available witness, not a
 # second-best one.
-TRACE_IDS = (0x156, 0x18F, 0x17C, 0x1A6)
+#
+# 0x70B GW_STEER_GRANT (push9) is the board's own state, 10 Hz on the car bus
+# while its firmware runs: STATE/REASON say whether K2 was split or waiting
+# for the comma at the knock, and again in `post` after the new image starts
+# (the one window where the wheel was ever seen to move, route f6). The
+# bootloader sends nothing, so it appears in `pre` and `post` only - about
+# 120 frames, nowhere near TRACE_MAX.
+GRANT_ID = 0x70B
+TRACE_IDS = (0x156, 0x18F, 0x17C, 0x1A6, GRANT_ID)
 TRACE_MAX = 24000          # ~2 min of both at 100 Hz; ~1 MB of raw bytes
 TRACE_DIR = "/data/eps-lkas-trace"
 TRACE_HZ = 10              # the summary series; the raw file keeps all 100 Hz
@@ -130,11 +138,37 @@ ENGINE_RPM_ID = 0x17C
 LOAD_ID = 0x1A6
 
 # The phases. Each gap exists to separate two events in time so that whatever
-# the vibration follows is unambiguous. They cost ~19 s per update; the car is
+# the vibration follows is unambiguous. They cost ~16 s per update; the car is
 # parked in bypass throughout, which is stock wiring.
+#
+# THE HOLD IS THE OWNER'S COUNTDOWN (push9, 2026-10-13). "Relays to stock,
+# wait, then update" already ran - the knock drops K1 and K2, then the session
+# sat 8 s with no data - but the page showed 0% for all of it (route 134's
+# trace: relays at stock 9.6 s before the first data frame). It is now 5 s,
+# shown on screen as a countdown with a Cancel button (ABORT: the old image
+# stays). 5 s still leaves the census its >= 1 s and the o3 fit its >= 50
+# samples, and the pings at 2 s and 4 s stay inside the bootloader's 10 s.
 PRE_CAPTURE_S = 4.0        # baseline, before the knock, on top of moving()'s 1 s
-HOLD_BEFORE_DATA_S = 8.0   # bootloader session open, relays in bypass, no data
+HOLD_BEFORE_DATA_S = 5.0   # bootloader session open, relays in bypass, no data
 HOLD_PING_S = 2.0          # keep-alive; the bootloader resets after 10 s silent
+
+# THE ENGINE IS OFF FOR AN UPDATE (owner, 2026-10-13: "ign on no engine on").
+# Every update with the engine idling has left the V6's firing vibration
+# stepped up in the column (f5/f6, and route 134's trace: from the erase on,
+# 2.5x, with the relays already at stock for 8 s). With the engine off there
+# is no firing vibration to step up, and no EPS assist either. The ignition
+# stays on: the comma and the board are powered from it.
+#
+# 0x17C ENGINE_RPM, the median over the moving() second: 0 with the engine off
+# (the first 0.1 s of routes 135/136/137, before the crank), 32-188 cranking,
+# 637-1400 running (warm idle ~695 on 134, 816-859 on 132). No 0x17C at all is
+# allowed and noted: that is the bench, or a car bus with nothing on it, and
+# the HELLO wait then says so in its own words.
+ENGINE_OFF_MAX_RPM = 400
+ENGINE_RUNNING = "Turn the engine off - leave the ignition on - then update"
+IGNITION_OFF = "the ignition is off - turn it on, leave the engine off, then update"
+CANCELLED = "cancelled"
+CANCEL_POLL_S = 0.2        # the Cancel param is a file: read it at most this often
 POST_CAPTURE_S = 6.0       # after the post-reboot HELLO: app start and K2 re-split
 EPS_PERIOD_S = 0.010       # 0x18F cadence - the grid the firing-order fit uses
 
@@ -146,7 +180,11 @@ EPS_PERIOD_S = 0.010       # 0x18F cadence - the grid the firing-order fit uses
 # frames they depend on - would take out both. Error counters say whether the
 # bus saw errors; this says which messages actually went missing, and whether
 # anything started answering our frames.
-CENSUS_OWN = range(0x700, 0x720)   # the board's telemetry and the bootloader protocol
+# The board's telemetry (0x700-0x70F) and its bootloader's replies (0x711) -
+# NOT 0x712-0x71F: a module answering the update's own 0x710/0x712 would reply
+# on request + 8 (0x718/0x71A), and that is exactly what `new` is for. Our own
+# 0x710/0x712 never count: echoes are not RX.
+CENSUS_OWN = frozenset(range(0x700, 0x710)) | {0x711}
 CENSUS_MIN_HZ = 5.0                # ignore IDs too slow to rate over a few seconds
 CENSUS_LOST = 0.8                  # report an ID below 80% of its pre-knock rate
 CENSUS_MIN_PHASE_S = 1.0           # phases shorter than this rate too noisily
@@ -201,6 +239,16 @@ def decode_load_bit(d: bytes) -> int | None:
   if len(d) < 3:
     return None
   return (d[2] >> 6) & 1
+
+
+def decode_grant(d: bytes) -> tuple[int, int, int, int] | None:
+  """0x70B GW_STEER_GRANT (opendbc honda_accord_au_2015 / the board's dbc):
+  (STATE byte 0, REASON byte 1, EPS_ERROR_STATE byte 3 bits 5:2,
+  CAM_LKAS_ON byte 3 bit 7). STATE 8 REASON 16 is the stock wait (K2 at
+  stock until the comma is heard); STATE 0 is split."""
+  if len(d) < 4:
+    return None
+  return d[0], d[1], (d[3] >> 2) & 0xF, (d[3] >> 7) & 1
 
 
 def eps_grid(tq: list) -> list[tuple[float, float]]:
@@ -415,6 +463,15 @@ class PandaTransport:
   def describe(self) -> str:
     return f"panda {self.p.get_serial()[0]} bus {self.bus}, elm327"
 
+  def ignition(self) -> bool | None:
+    """The panda's own ignition reading (line or CAN), as pandaStates carries it
+    to the page's gate. None if it cannot be read: the gate is then the page's."""
+    try:
+      h = self.p.health()
+      return bool(h.get("ignition_line") or h.get("ignition_can"))
+    except Exception:
+      return None
+
   def send(self, can_id: int, data: bytes) -> None:
     self.p.can_send(can_id, bytes(data).ljust(8, b"\x00"), self.bus)
 
@@ -518,10 +575,20 @@ class Flasher:
   """The protocol. Transport-agnostic on purpose - see the module docstring."""
 
   def __init__(self, transport, log: Callable[[str], None] = print,
-               progress: Callable[[int], None] | None = None):
+               progress: Callable[[int], None] | None = None,
+               phase: Callable[[dict], None] | None = None,
+               should_cancel: Callable[[], bool] | None = None):
     self.t = transport
     self.log = log
     self.progress = progress
+    # What the screen shows (push9): {"p": phase, "cancel": the Cancel button is
+    # live, "left": countdown seconds, "pct": write progress}. should_cancel is
+    # the page's Cancel, polled at most every CANCEL_POLL_S. Both best effort:
+    # a callback that throws costs the screen, never the flash.
+    self.phase_cb = phase
+    self.should_cancel = should_cancel
+    self._cancel_next = 0.0
+    self._cancel_seen = False
     # BOUNDED, AND FILTERED. On the bench this saw a handful of frames a
     # second; on the car's bus 0 it is about 1830. Appending all of them made
     # _rx grow without limit for the whole session and turned _recv's linear
@@ -722,25 +789,75 @@ class Flasher:
         h = None
     self._health.append((now, h or {}))
 
-  def listen(self, seconds: float) -> None:
-    """Keep receiving - and so keep tracing - without sending anything."""
+  def report(self, p: str, cancel: bool = False, **kw) -> None:
+    """Tell the screen which phase this is. Never raises."""
+    if self.phase_cb is None:
+      return
+    try:
+      self.phase_cb({"p": p, "cancel": cancel, **kw})
+    except Exception:
+      pass
+
+  def cancelled(self) -> bool:
+    """The page's Cancel, read at most every CANCEL_POLL_S. Latched: once seen it
+    stays seen for this run. Never raises - a param that cannot be read is no
+    Cancel."""
+    if self._cancel_seen or self.should_cancel is None:
+      return self._cancel_seen
+    now = time.monotonic()
+    if now >= self._cancel_next:
+      self._cancel_next = now + CANCEL_POLL_S
+      try:
+        self._cancel_seen = bool(self.should_cancel())
+      except Exception:
+        self._cancel_seen = False
+    return self._cancel_seen
+
+  def engine_rpm(self, since: float) -> int | None:
+    """Median 0x17C ENGINE_RPM traced since `since` (monotonic), or None if none
+    was seen. Read from the trace: 0x17C never reaches _rx."""
+    v = sorted(r for t, a, d in self._trace
+               if a == ENGINE_RPM_ID and t >= since and (r := decode_engine_rpm(d)) is not None)
+    return v[len(v) // 2] if v else None
+
+  def listen(self, seconds: float, cancellable: bool = False) -> bool:
+    """Keep receiving - and so keep tracing - without sending anything. True if
+    the page's Cancel came (only when cancellable)."""
     end = time.monotonic() + seconds
     while time.monotonic() < end:
       self._pump(0.05)
+      if cancellable and self.cancelled():
+        return True
+    return False
 
   def hold(self, seconds: float) -> str | None:
-    """Keep the bootloader session open with no data flowing.
+    """Keep the bootloader session open with no data flowing - the countdown.
 
     The knock and the data stream used to be 1.7 s apart, and the vibration
     started with the data stream - close enough that one cannot be told from
     the other. This puts seconds between them. The board sits in bypass the
     whole time, which is stock wiring. INFO is the keep-alive: any command
     refreshes the bootloader's 10 s session timer (boot_main.c).
+
+    The screen shows it as "relays in stock - updating in 5..1", with Cancel.
+    Cancel is ABORT: the bootloader closes the session and, its listen window
+    long past, jumps straight back to the firmware it has. BEGIN has not been
+    sent, so bank 2 is untouched and nothing has changed - the existing
+    --dry-run path. Returns CANCELLED then.
     """
-    end = time.monotonic() + seconds
-    next_ping = time.monotonic() + HOLD_PING_S
+    start = time.monotonic()
+    end = start + seconds
+    next_ping = start + HOLD_PING_S
+    shown = None
     while time.monotonic() < end:
+      left = max(1, int(-(-(end - time.monotonic()) // 1)))   # 5, 4, 3, 2, 1
+      if left != shown:
+        shown = left
+        self.report("stock", cancel=True, left=left)
       self._pump(0.05)
+      if self.cancelled():
+        self.abort()
+        return CANCELLED
       if time.monotonic() >= next_ping:
         next_ping += HOLD_PING_S
         if self.info() is None:
@@ -751,12 +868,14 @@ class Flasher:
     n = len(image)
     chunks = (n + CHUNK_BYTES - 1) // CHUNK_BYTES
 
+    self.report("erase")
     self._drain()
     if (e := self._send(ID_HOST, bytes([CMD_BEGIN]) + struct.pack("<I", n))):
       return e
     if (e := self._expect_ack(CMD_BEGIN, timeout=20.0)):     # erases all of bank 2
       return e
     self.mark("data")
+    self.report("write", pct=0)
 
     last_pct = -1
     for idx in range(chunks):
@@ -789,8 +908,10 @@ class Flasher:
         last_pct = pct
         if self.progress:
           self.progress(pct)
+        self.report("write", pct=pct)
 
     self.mark("finish")
+    self.report("install")
     crc = zlib.crc32(image) & 0xFFFFFFFF
     self._drain()
     if (e := self._send(ID_HOST, bytes([CMD_FINISH]) + struct.pack("<I", crc))):
@@ -821,8 +942,12 @@ class Flasher:
     tq: list[tuple[float, int, bytes]] = []
     rpm: list[tuple[float, int]] = []
     load: list[tuple[float, int]] = []
+    grant: list[tuple[float, tuple[int, int, int, int]]] = []
     for t, addr, data in self._trace:
-      if addr == 0x156:
+      if addr == GRANT_ID:
+        if (g := decode_grant(data)) is not None:
+          grant.append((t, g))
+      elif addr == 0x156:
         if (v := decode_steering_sensors(data)) is not None:
           ang.append((t, v[0], v[1]))
       elif addr == 0x18F:
@@ -878,7 +1003,7 @@ class Flasher:
       "rate_max": round(max(rates), 1) if rates else None,
       "torque_absmax": peak_tq,
       "verdict": verdict,
-      "phases": self._phase_table(eps_grid(tq), rpm, load, ang),
+      "phases": self._phase_table(eps_grid(tq), rpm, load, ang, grant),
       "series": series,
     }
 
@@ -908,7 +1033,11 @@ class Flasher:
     if new:
       row["new"] = new[:8]
 
-  def _phase_table(self, grid, rpm, load, ang) -> list[dict]:
+  def _phase_table(self, grid, rpm, load, ang, grant=()) -> list[dict]:
+    """One row per phase. With the board's 0x70B in the phase (its firmware is
+    running: `pre`, `post`): `st` its last STATE/REASON ("8/16" = K2 at stock
+    waiting for the comma, "0/7" = split, standstill), `eer` the highest
+    EPS_ERROR_STATE and `cam` whether the camera's LKAS_ON was ever set."""
     marks = sorted(self._marks)
     if len(marks) < 2:
       return []
@@ -935,6 +1064,11 @@ class Flasher:
         row["sd"] = round((sum((y - mu) ** 2 for y in ys) / len(ys)) ** 0.5, 2)
       if an:
         row["ang"] = round(max(an) - min(an), 1)
+      gr = [g for t, g in grant if a <= t < b]
+      if gr:
+        row["st"] = f"{gr[-1][0]}/{gr[-1][1]}"
+        row["eer"] = max(g[2] for g in gr)
+        row["cam"] = int(any(g[3] for g in gr))
       self._census_row(row, a, b - a, marks[0][0])
       ha, hb = health.get(a) or {}, health.get(b) or {}
       for bus in (0, 1, 2):
@@ -982,8 +1116,21 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
               progress: Callable[[int], None] | None = None,
               dry_run: bool = False, knock: bool = True,
               hello_timeout: float = 25.0,
-              trace_out: Callable[[dict], None] | None = None) -> tuple[bool, str]:
-  """Do the whole thing. Returns (ok, message). NEVER RAISES."""
+              trace_out: Callable[[dict], None] | None = None,
+              phase: Callable[[dict], None] | None = None,
+              should_cancel: Callable[[], bool] | None = None) -> tuple[bool, str]:
+  """Do the whole thing. Returns (ok, message). NEVER RAISES.
+
+  phase / should_cancel (push9) drive the screen: the phases in order are
+  check, baseline, click, stock (the countdown), erase, write, install,
+  restart. Cancel is taken in check, baseline (nothing has been sent) and
+  stock (ABORT before BEGIN: the old image stays); from the erase on there is
+  no cancel. A cancelled run returns (False, CANCELLED).
+
+  NOTHING NEW REACHES THE BOARD. The gate, the countdown and the cancel are all
+  on this side; the frames on the wire are the ones every board since the
+  first bootloader understands, so an old board updates exactly as before.
+  """
   f = None
   try:
     if (why := check_app_slot_image(image)):
@@ -996,16 +1143,38 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
     if ident["dirty"]:
       log("  WARNING: built from an edited tree - 0x707 will report a commit it is not")
 
-    f = Flasher(transport, log=log, progress=progress)
+    f = Flasher(transport, log=log, progress=progress, phase=phase, should_cancel=should_cancel)
     log(f"  {transport.describe()}")
     f.mark("start")
+    f.report("check", cancel=True)
 
+    # THE GATE, before a single frame is sent: ignition on, parked, engine off.
+    ignition = getattr(transport, "ignition", None)
+    if ignition is not None and ignition() is False:
+      return False, IGNITION_OFF
+
+    t_check = time.monotonic()
     if f.moving():
       return False, "the car is moving - stop first"
+    if f.cancelled():
+      return False, CANCELLED
+    rpm = f.engine_rpm(t_check)
+    if rpm is None:
+      log("  no 0x17C on the bus - engine state unknown (bench?); allowed")
+    elif rpm > ENGINE_OFF_MAX_RPM:
+      log(f"  engine running: {rpm} rpm")
+      return False, ENGINE_RUNNING
 
     if knock:
-      f.listen(PRE_CAPTURE_S)
+      f.report("baseline", cancel=True)
+      if f.listen(PRE_CAPTURE_S, cancellable=True):
+        return False, CANCELLED
+      # and still off at the end of the baseline - the last second of it
+      if (rpm := f.engine_rpm(time.monotonic() - 1.0)) is not None and rpm > ENGINE_OFF_MAX_RPM:
+        log(f"  engine started during the baseline: {rpm} rpm")
+        return False, ENGINE_RUNNING
       log("  knocking: asking the application to reboot into its bootloader")
+      f.report("click")
       f.mark("knock")
       f.knock()
 
@@ -1027,8 +1196,13 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
       return False, "no INFO reply"
     log(f"  app slot {slot[0]} KB, current contents CRC32 {slot[1]:#010x}")
 
+    # The countdown starts on the INFO reply: HELLO already proved the board
+    # reset with its relays de-energised (the bootloader drives PA0/PA1 low at
+    # its first instruction and says HELLO only after the 15 ms settle).
     f.mark("hold")
     if (e := f.hold(HOLD_BEFORE_DATA_S)):
+      if e == CANCELLED:
+        log("  cancelled in the countdown: ABORT sent, the installed image stays")
       return False, e
     f.mark("begin")
 
@@ -1048,6 +1222,7 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
     # instead of at the end of the next drive.
     after = f.wait_hello(25.0)
     f.mark("hello_after")
+    f.report("restart")
     # The app starts ~1 s after this HELLO and re-splits K1/K2. Nothing else
     # records that moment, and on route f6 the column shifted 1.4 deg somewhere
     # in exactly that unrecorded window.

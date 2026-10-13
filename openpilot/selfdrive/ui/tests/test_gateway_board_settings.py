@@ -49,7 +49,8 @@ PARAMS = ["EpsLkasBoardVersion", "EpsLkasBoardBuild", "EpsLkasBoardSeenAt"]
 FW_FIELDS = ["fwValid", "fwGitHash", "fwDirty", "fwAppSlot", "fwBootloader", "fwReadOnly",
              "boardUid", "fwBuildValid"]
 
-FLASH_PARAMS = ["EpsLkasFlashRequested", "EpsLkasFlashProgress", "EpsLkasFlashState"]
+FLASH_PARAMS = ["EpsLkasFlashRequested", "EpsLkasFlashProgress", "EpsLkasFlashState", "EpsLkasFlashPhase",
+                "EpsLkasFlashCancel"]
 
 
 class TestGatewayBoardSettings(unittest.TestCase):
@@ -230,6 +231,10 @@ class TestGatewayBoardSettings(unittest.TestCase):
     # A request that survived a restart would be a request nobody made.
     entry = re.search(r'\{"EpsLkasFlashRequested",\s*\{([^}]*)\}', PARAMS_KEYS.read_text())
     assert entry and "CLEAR_ON_MANAGER_START" in entry.group(1)
+    # push9: nor a Cancel, nor a phase from a run before the restart
+    for key, kind in (("EpsLkasFlashCancel", "BOOL"), ("EpsLkasFlashPhase", "JSON")):
+      entry = re.search(r'\{"' + key + r'",\s*\{([^}]*)\}', PARAMS_KEYS.read_text())
+      assert entry and "CLEAR_ON_MANAGER_START" in entry.group(1) and kind in entry.group(1), key
 
   def test_button_exists_and_is_on_the_page(self):
     panel = BOARD_PANEL.read_text()

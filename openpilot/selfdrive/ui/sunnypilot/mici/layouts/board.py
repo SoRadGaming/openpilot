@@ -29,25 +29,33 @@ import time
 import pyray as rl
 
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton
-from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog, BigDialog
+from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog, BigDialog, BigDialogBase
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.sunnypilot.selfdrive.pandad.eps_lkas_flasher import (
   APP_ID_MAGIC,
   APP_ID_OFFSET,
+  CANCELLED,
+  ENGINE_RUNNING,
   EPS_LKAS_APPSLOT_BIN,
+  IGNITION_OFF,
 )
 from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.multilang import tr
+from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.system.ui.widgets.scroller import NavScroller
 
 # params are files: read them on a tick, not every frame
 REFRESH_S = 1.0
+# ... except the update screen's, which shows a countdown: four reads a second
+PHASE_REFRESH_S = 0.25
 
 REQUEST_PARAM = "EpsLkasFlashRequested"
 PROGRESS_PARAM = "EpsLkasFlashProgress"
 STATE_PARAM = "EpsLkasFlashState"
+PHASE_PARAM = "EpsLkasFlashPhase"
+CANCEL_PARAM = "EpsLkasFlashCancel"
 
 ICON_SIZE = 110
 ICON = "../../sunnypilot/selfdrive/assets/offroad/icon_software.png"
@@ -170,6 +178,198 @@ class BoardFirmwareInfo(Widget):
     self.id_text.render()
 
 
+def flash_view(state: str, phase: dict | None, requested: bool, cancel_sent: bool) -> tuple[str, str, int | None, bool]:
+  """(title, line, write %, Cancel shown) of the update screen, from the params. Pure.
+
+  The phases are the flasher's (run_flash): check, baseline, click, stock (the
+  countdown, its seconds in "left"), erase, write ("pct"), install, restart; the
+  hook writes the terminal state - "ok <hash>", "failed: why", "cancelled" - to
+  EpsLkasFlashState. Cancel is offered only where the flasher takes it ("cancel"
+  in the phase: before the knock, and in the countdown - ABORT before anything is
+  erased), and never again once pressed."""
+  if state.startswith("ok"):
+    return tr("done"), tr("turn the car off, then on, before driving"), None, False
+  if state == CANCELLED:
+    return tr("cancelled"), tr("the board keeps its firmware"), None, False
+  if state.startswith("failed"):
+    why = state.split(":", 1)[1].strip() if ":" in state else ""
+    if why == ENGINE_RUNNING:
+      return tr("engine on"), tr("turn the engine off - leave the ignition on - then update"), None, False
+    if why == IGNITION_OFF:
+      return tr("ignition off"), tr("turn the ignition on, engine off, then update"), None, False
+    return tr("failed"), why, None, False
+  if state != "running":
+    if requested:
+      return tr("starting"), tr("stopping the car link"), None, not cancel_sent
+    return "", "", None, False
+  ph = phase if isinstance(phase, dict) else {}
+  p = ph.get("p", "check")
+  can = bool(ph.get("cancel")) and not cancel_sent
+  if p == "check":
+    view = (tr("checking"), tr("parked, engine off"))
+  elif p == "baseline":
+    view = (tr("checking"), tr("listening to the car"))
+  elif p == "click":
+    view = (tr("relays to stock"), tr("the car is on stock wiring"))
+  elif p == "stock":
+    view = (tr("relays in stock"), tr("updating in {}").format(int(ph.get("left") or 1)))
+  elif p == "erase":
+    view = (tr("erasing"), tr("making room for the new image"))
+  elif p == "write":
+    pct = int(ph.get("pct") or 0)
+    return tr("writing {}%").format(pct), tr("keep the car parked"), pct, False
+  elif p == "install":
+    view = (tr("installing"), tr("keep the ignition on"))
+  elif p == "restart":
+    view = (tr("restarting the board"), tr("watching it start"))
+  else:
+    view = (tr("updating"), "")
+  if cancel_sent:
+    return view[0], tr("canceling"), None, False
+  return view[0], view[1], None, can
+
+
+def flash_countdown(state: str, phase: dict | None, cancel_sent: bool) -> int | None:
+  """The countdown's seconds while it runs (the 'stock' phase), for the screen to draw large; None otherwise."""
+  if state != "running" or cancel_sent or not isinstance(phase, dict) or phase.get("p") != "stock":
+    return None
+  return int(phase.get("left") or 1)
+
+
+def _fit_size(text: str, weight: FontWeight, size: int, max_w: float, min_size: int) -> int:
+  """The largest size from `size` down to `min_size` at which text fits max_w on one line."""
+  while size > min_size and measure_text_cached(gui_app.font(weight), text, size).x > max_w:
+    size -= 2
+  return size
+
+
+def _wrap(text: str, weight: FontWeight, size: int, max_w: float, max_lines: int, rest_w: float | None = None) -> list[str]:
+  """Word-wrapped to max_w (rest_w for the lines after the first), at most max_lines (the last one cut with '...')."""
+  lines: list[str] = []
+  cur = ""
+  for word in text.split():
+    t = f"{cur} {word}".strip()
+    room = max_w if not lines or rest_w is None else rest_w
+    if cur and measure_text_cached(gui_app.font(weight), t, size).x > room:
+      lines.append(cur)
+      cur = word
+    else:
+      cur = t
+  if cur:
+    lines.append(cur)
+  if len(lines) > max_lines:
+    lines = lines[:max_lines]
+    last = lines[-1]
+    room = max_w if len(lines) == 1 or rest_w is None else rest_w
+    while last and measure_text_cached(gui_app.font(weight), last + "...", size).x > room:
+      last = last[:-1]
+    lines[-1] = last.rstrip() + "..."
+  return lines
+
+
+class FlashCancelButton(Widget):
+  """The update screen's Cancel: a pill, bottom right."""
+  W, H = 156, 64
+
+  def __init__(self, on_click):
+    super().__init__()
+    self.set_rect(rl.Rectangle(0, 0, self.W, self.H))
+    self.set_click_callback(on_click)
+
+  def _render(self, rect: rl.Rectangle):
+    pressed = self.is_pressed
+    rl.draw_rectangle_rounded(rect, 1.0, 16, rl.Color(255, 255, 255, int(255 * (0.35 if pressed else 0.2))))
+    font = gui_app.font(FontWeight.BOLD)
+    txt = tr("cancel")
+    sz = measure_text_cached(font, txt, 36)
+    rl.draw_text_ex(font, txt, rl.Vector2(rect.x + (rect.width - sz.x) / 2, rect.y + (rect.height - sz.y) / 2), 36, 0,
+                    rl.Color(255, 255, 255, int(255 * 0.9)))
+
+
+class GatewayFlashDialog(BigDialogBase):
+  """The update, on screen (push9, owner 2026-10-13: "countdown add that").
+
+  Full screen, opened by the confirm. Everything here is read from params on a
+  PHASE_REFRESH_S tick - the flasher runs in pandad's process, and params are the
+  only thing both sides share. It never drives the update: swiping it away leaves
+  the update running, and the button's sub-label goes on telling it.
+
+  The order the owner sees: checking (parked, engine off) -> relays to stock (the
+  click) -> relays in stock, updating in 5..1 (Cancel = ABORT, the board keeps
+  its firmware) -> erasing -> writing x% -> installing -> restarting the board ->
+  done, with "turn the car off, then on, before driving"."""
+  PAD = 30
+  TITLE_SIZE = 64
+  LINE_SIZE = 36
+  COUNT_SIZE = 96   # the countdown's seconds, beside "updating in"
+
+  def __init__(self):
+    super().__init__()
+    self._cancel = self._child(FlashCancelButton(self._on_cancel))
+    self._cancel_sent = False
+    self._next = 0.0
+    self._view: tuple[str, str, int | None, bool] = ("", "", None, False)
+    self._count: int | None = None
+    self.refresh()
+
+  def _on_cancel(self) -> None:
+    if not self._view[3] or self._cancel_sent:
+      return
+    ui_state.params.put_bool(CANCEL_PARAM, True)
+    self._cancel_sent = True
+    self.refresh()
+
+  def refresh(self) -> None:
+    self._next = time.monotonic() + PHASE_REFRESH_S
+    params = ui_state.params
+    phase = params.get(PHASE_PARAM)
+    if isinstance(phase, str):
+      try:
+        phase = json.loads(phase)
+      except ValueError:
+        phase = None
+    state = params.get(STATE_PARAM) or ""
+    self._view = flash_view(state, phase, params.get_bool(REQUEST_PARAM), self._cancel_sent)
+    self._count = flash_countdown(state, phase, self._cancel_sent)
+
+  def _update_state(self):
+    super()._update_state()
+    if time.monotonic() >= self._next:
+      self.refresh()
+
+  def _render(self, rect: rl.Rectangle):
+    title, line, pct, can = self._view
+    x, w = rect.x + self.PAD, rect.width - 2 * self.PAD
+    white = rl.Color(255, 255, 255, int(255 * 0.9))
+    grey = rl.Color(255, 255, 255, int(255 * 0.6))
+    tfont = gui_app.font(FontWeight.DISPLAY)
+    tsize = _fit_size(title, FontWeight.DISPLAY, self.TITLE_SIZE, w, 40)
+    rl.draw_text_ex(tfont, title, rl.Vector2(x, rect.y + 28), tsize, 0, white)
+    lfont = gui_app.font(FontWeight.ROMAN)
+    y = rect.y + 28 + tsize + 14
+    if self._count is not None:
+      # the countdown, large, under "updating in" - Cancel beside it, bottom right
+      rl.draw_text_ex(lfont, tr("updating in"), rl.Vector2(x, y), self.LINE_SIZE, 0, grey)
+      rl.draw_text_ex(gui_app.font(FontWeight.DISPLAY), str(self._count), rl.Vector2(x - 4, y + self.LINE_SIZE - 8),
+                      self.COUNT_SIZE, 0, white)
+    else:
+      # the second line keeps clear of Cancel, bottom right; the first runs the whole width
+      rest_w = w - (FlashCancelButton.W + 16 if can else 0)
+      for ln in _wrap(line, FontWeight.ROMAN, self.LINE_SIZE, w, 2, rest_w):
+        rl.draw_text_ex(lfont, ln, rl.Vector2(x, y), self.LINE_SIZE, 0, grey)
+        y += self.LINE_SIZE + 4
+    if pct is not None:
+      bar = rl.Rectangle(x, rect.y + rect.height - 52, w, 16)
+      rl.draw_rectangle_rounded(bar, 1.0, 8, rl.Color(255, 255, 255, int(255 * 0.15)))
+      if pct > 0:
+        rl.draw_rectangle_rounded(rl.Rectangle(bar.x, bar.y, max(bar.height, w * min(pct, 100) / 100), bar.height),
+                                  1.0, 8, rl.Color(255, 255, 255, int(255 * 0.9)))
+    if can:
+      self._cancel.render(rl.Rectangle(rect.x + rect.width - self.PAD - FlashCancelButton.W,
+                                       rect.y + rect.height - 18 - FlashCancelButton.H,
+                                       FlashCancelButton.W, FlashCancelButton.H))
+
+
 class UpdateBoardButton(BigButton):
   """Reflash the gateway board over CAN, from here.
 
@@ -260,12 +460,21 @@ class UpdateBoardButton(BigButton):
       # a stale "updated" while this one is pending.
       ui_state.params.put(STATE_PARAM, "")
       ui_state.params.put(PROGRESS_PARAM, "0")
+      # a Cancel left over from an earlier run must not cancel this one, and the
+      # screen must not open on the last run's phase
+      ui_state.params.put_bool(CANCEL_PARAM, False)
+      ui_state.params.put(PHASE_PARAM, {"p": "requested", "cancel": True})
       ui_state.params.put_bool(REQUEST_PARAM, True)
       self._asked = True
       self.set_value(tr("requested"))
+      # the update on screen: phases, the countdown, Cancel (push9)
+      gui_app.push_widget(GatewayFlashDialog())
 
+    # ENGINE OFF, IGNITION ON (owner, 2026-10-13). Said here, before the slide,
+    # because offroad the page has no CAN to check it with: the flasher checks
+    # 0x17C before it sends a frame, and the screen then says why it stopped.
     gui_app.push_widget(BigConfirmationDialog(
-      tr("slide to\nupdate the gateway"), gui_app.texture(ICON, ICON_SIZE, ICON_SIZE),
+      tr("engine off\nslide to update"), gui_app.texture(ICON, ICON_SIZE, ICON_SIZE),
       confirm, exit_on_confirm=True, red=True))
 
   # -- what the sub-label says ----------------------------------------------
@@ -292,13 +501,19 @@ class UpdateBoardButton(BigButton):
 
     if state == "running":
       self._asked = False
-      self.set_value(tr("{}%").format(params.get(PROGRESS_PARAM) or "0"))
+      phase = params.get(PHASE_PARAM)
+      if isinstance(phase, dict) and phase.get("p") == "stock":
+        self.set_value(tr("in {}").format(int(phase.get("left") or 1)))   # the countdown, with the screen swiped away
+      else:
+        self.set_value(tr("{}%").format(params.get(PROGRESS_PARAM) or "0"))
     elif requested:
       # pandad only looks once a second, and only acts when the ./pandad binary
       # next exits. Saying nothing here reads as a button that did nothing.
       self.set_value(tr("requested"))
     elif state.startswith("ok "):
       self.set_value(tr("updated"))
+    elif state == CANCELLED:
+      self.set_value(tr("cancelled"))
     elif state.startswith("failed"):
       # The whole reason is in the log and in the state param; one short line
       # cannot carry it.

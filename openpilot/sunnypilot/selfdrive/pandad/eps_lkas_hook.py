@@ -49,6 +49,7 @@ import time
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.selfdrive.pandad.eps_lkas_flasher import (
+  CANCELLED,
   PandaTransport,
   image_identity,
   load_bundled_image,
@@ -58,6 +59,10 @@ from openpilot.sunnypilot.selfdrive.pandad.eps_lkas_flasher import (
 REQUEST_PARAM = "EpsLkasFlashRequested"
 PROGRESS_PARAM = "EpsLkasFlashProgress"
 STATE_PARAM = "EpsLkasFlashState"
+# push9: what the update screen shows (the flasher's phase, as JSON) and its
+# Cancel button. Both CLEAR_ON_MANAGER_START.
+PHASE_PARAM = "EpsLkasFlashPhase"
+CANCEL_PARAM = "EpsLkasFlashCancel"
 VERSION_PARAM = "EpsLkasBoardVersion"
 BUILD_PARAM = "EpsLkasBoardBuild"
 SEEN_PARAM = "EpsLkasBoardSeenAt"
@@ -71,6 +76,15 @@ WATCH_PERIOD_S = 1.0
 
 def _clear_request(params: Params) -> None:
   params.put_bool(REQUEST_PARAM, False)
+
+
+def _finish(params: Params, state: str) -> None:
+  """The terminal state, on both params the page reads, and the Cancel spent:
+  a Cancel pressed after the last cancellable phase must not cancel the next
+  run."""
+  params.put(STATE_PARAM, state)
+  params.put(PHASE_PARAM, {"p": state.split(":", 1)[0].split(" ", 1)[0], "cancel": False})
+  params.put_bool(CANCEL_PARAM, False)
 
 
 def _existing_build(params: Params) -> dict:
@@ -121,6 +135,12 @@ def watch_for_request(process, skip_reset, params: Params | None = None) -> thre
               cloudlog.warning("eps-lkas: flash requested while onroad, dropping it")
               _clear_request(params)
               params.put(STATE_PARAM, "failed: not while driving")
+          elif params.get_bool(CANCEL_PARAM):
+            # Cancelled on the screen before pandad was asked to stop: drop the
+            # request here, and the car link never goes down at all.
+            cloudlog.info("eps-lkas: flash cancelled before it started")
+            _clear_request(params)
+            _finish(params, CANCELLED)
           else:
             cloudlog.info("eps-lkas: flash requested, asking pandad to exit")
             skip_reset()
@@ -175,13 +195,20 @@ def flash_if_requested(panda_serial: str, bus: int = 0, transport_factory=None) 
 
   transport = None
   try:
+    # READ, THEN CLEAR. A Cancel pressed while ./pandad was stopping is the
+    # owner's answer; clearing first would lose it.
+    if params.get_bool(CANCEL_PARAM):
+      cloudlog.info("eps-lkas: flash cancelled before it started")
+      _finish(params, CANCELLED)
+      return
     params.put(STATE_PARAM, "running")
     params.put(PROGRESS_PARAM, "0")
+    params.put(PHASE_PARAM, {"p": "check", "cancel": True})
     cloudlog.info("eps-lkas: starting board flash")
 
     image, err = load_bundled_image()
     if image is None:
-      params.put(STATE_PARAM, f"failed: {err}")
+      _finish(params, f"failed: {err}")
       cloudlog.error(f"eps-lkas: {err}")
       return
 
@@ -192,10 +219,15 @@ def flash_if_requested(panda_serial: str, bus: int = 0, transport_factory=None) 
       log=lambda s: cloudlog.info(f"eps-lkas:{s}"),
       progress=lambda p: params.put(PROGRESS_PARAM, str(p)),
       trace_out=lambda d: params.put(TRACE_PARAM, d) if d else None,
+      phase=lambda d: params.put(PHASE_PARAM, d),
+      should_cancel=lambda: params.get_bool(CANCEL_PARAM),
     )
 
-    if ok:
-      params.put(STATE_PARAM, f"ok {msg}")
+    if not ok and msg == CANCELLED:
+      _finish(params, CANCELLED)
+      cloudlog.info("eps-lkas: flash cancelled, the board keeps its image")
+    elif ok:
+      _finish(params, f"ok {msg}")
       # The settings page reads all three. Writing them here rather than
       # waiting for card to see a 0x707 on the next drive is what makes the
       # page show the new firmware at the moment it is asked to.
@@ -213,11 +245,11 @@ def flash_if_requested(panda_serial: str, bus: int = 0, transport_factory=None) 
       params.put(SEEN_PARAM, str(int(time.time())))  # noqa: TID251 - wall clock, kept across boots (board.py reads it)
       cloudlog.event("eps-lkas.flashed", version=msg)
     else:
-      params.put(STATE_PARAM, f"failed: {msg}")
+      _finish(params, f"failed: {msg}")
       cloudlog.error(f"eps-lkas: flash failed: {msg}")
   except Exception as e:
     try:
-      params.put(STATE_PARAM, f"failed: {type(e).__name__}: {e}")
+      _finish(params, f"failed: {type(e).__name__}: {e}")
     except Exception:
       pass
     cloudlog.exception("eps-lkas: flash_if_requested")

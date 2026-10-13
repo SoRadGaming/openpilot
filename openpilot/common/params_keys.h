@@ -232,6 +232,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"EpsLkasFlashRequested", {CLEAR_ON_MANAGER_START, BOOL}},
     {"EpsLkasFlashProgress", {CLEAR_ON_MANAGER_START, STRING}},
     {"EpsLkasFlashState", {CLEAR_ON_MANAGER_START, STRING}},
+    // The update screen (push9): the flasher's phase as JSON ({"p", "cancel", "left",
+    // "pct"}) and the screen's Cancel. Cancel is read, then cleared, by the hook.
+    {"EpsLkasFlashPhase", {CLEAR_ON_MANAGER_START, JSON}},
+    {"EpsLkasFlashCancel", {CLEAR_ON_MANAGER_START, BOOL}},
     // PERSISTENT, unlike the three above, and deliberately: the flash happens
     // offroad with loggerd stopped, so the steering trace has to survive until
     // the next drive for card to emit it into a route. CLEAR_ON_MANAGER_START

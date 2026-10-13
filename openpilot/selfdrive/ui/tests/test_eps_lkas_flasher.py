@@ -279,8 +279,9 @@ class TestEpsLkasFlasher(unittest.TestCase):
     bus and _pump discarded it. These two IDs are the witness."""
     mod = _module()
     # angle, column torque, and - since the second update showed the "hum" is
-    # engine firing vibration - engine rpm and the accessory-load bit
-    assert mod.TRACE_IDS == (0x156, 0x18F, 0x17C, 0x1A6)
+    # engine firing vibration - engine rpm and the accessory-load bit; and
+    # (push9) the board's own 0x70B, which says whether K2 was split
+    assert mod.TRACE_IDS == (0x156, 0x18F, 0x17C, 0x1A6, 0x70B)
 
     f = _tracing_flasher(mod, [
       (0x156, bytes([0x12, 0x34, 0, 0, 0, 0, 0, 0]), mod.RX),   # STEERING_SENSORS
@@ -493,7 +494,9 @@ class TestEpsLkasFlasher(unittest.TestCase):
     separates nothing."""
     mod = _module()
     assert mod.HOLD_PING_S * 2 < 10.0
-    assert 3.0 <= mod.HOLD_BEFORE_DATA_S <= 9.0
+    # push9: the owner's countdown is five seconds, and the pings keep the
+    # session well inside the bootloader's 10 s timer
+    assert mod.HOLD_BEFORE_DATA_S == 5.0
     src = FLASHER.read_text()
     body = src[src.index("def run_flash"):]
     assert body.index("f.info()") < body.index("f.hold(") < body.index("f.program(image)")
@@ -557,3 +560,227 @@ class TestEpsLkasFlasher(unittest.TestCase):
     assert "711" not in str(row), "the board's own IDs must not be reported"
     assert "3ff" not in str(row), "too slow to rate"
     assert f._census_phase[0.0][0x17C] == 500, "echoes are not traffic"
+
+
+# ---------------------------------------------------------------------------
+# push9: the update screen's phases, the countdown, Cancel and the engine gate,
+# end to end against a simulated board on a fake clock.
+
+class FakeTime:
+  """The flasher's clock. Only the simulated board's poll() moves it."""
+  def __init__(self):
+    self.now = 1000.0
+
+  def monotonic(self):
+    return self.now
+
+  def time(self):
+    return 1.7e9 + self.now
+
+  def sleep(self, s):
+    self.now += s
+
+
+class SimBoard:
+  """A board's firmware and its bootloader, as the flasher sees them on the wire.
+
+  Car traffic: 0x158 (speed) every 20 ms, 0x17C (engine rpm, or none) every
+  10 ms, and the firmware's 0x70B every 100 ms while it runs. The firmware
+  resets on the knock; the bootloader says HELLO 50 ms later, keeps an 800 ms
+  window for ENTER, answers INFO/BEGIN/CEND/FINISH, goes back to the firmware
+  on ABORT, and comes back on REBOOT with the new image's commit. Every frame
+  sent is echoed (flow control) and logged with its time."""
+  def __init__(self, mod, clock, image_git: int, rpm: int | None = 0, speed_cph: int = 0):
+    self.mod, self.clock = mod, clock
+    self.git_new = image_git
+    self.rpm, self.speed = rpm, speed_cph
+    self.state = "app"
+    self.sent: list[tuple[float, int, bytes]] = []
+    self.queue: list[tuple[float, int, bytes, str]] = []
+    self.window_until = 0.0
+    self.session = False
+    self.info_at: list[float] = []
+    self.grant = bytes([8, 16, 0, 0x40, 0, 0, 0, 0])
+    self.next = {0x158: clock.now, 0x17C: clock.now, 0x70B: clock.now}
+    self.period = {0x158: 0.02, 0x17C: 0.01, 0x70B: 0.1}
+
+  def describe(self):
+    return "sim"
+
+  def close(self):
+    pass
+
+  def _reply(self, dt, data):
+    self.queue.append((self.clock.now + dt, self.mod.ID_BOARD, bytes(data).ljust(8, b"\x00"), self.mod.RX))
+
+  def send(self, can_id, data):
+    m = self.mod
+    data = bytes(data)
+    self.sent.append((self.clock.now, can_id, data))
+    self.queue.append((self.clock.now, can_id, data.ljust(8, b"\x00"), m.ECHO))
+    if can_id != m.ID_HOST:
+      return
+    cmd = data[0]
+    if self.state == "app":
+      if cmd == m.CMD_ENTER and data[1:8] == m.MAGIC:      # the knock
+        self.state = "boot"
+        self._reply(0.05, bytes([m.RSP_HELLO, 1, 0x03]) + (0x5BB1216).to_bytes(4, "little"))
+        self.window_until = self.clock.now + 0.05 + 0.8
+      return
+    if cmd == m.CMD_ENTER and (self.session or self.clock.now <= self.window_until):
+      self.session = True
+      self._reply(0.002, [m.RSP_ACK, m.CMD_ENTER, m.PROTO_VERSION])
+    elif not self.session:
+      return
+    elif cmd == m.CMD_INFO:
+      self.info_at.append(self.clock.now)
+      self._reply(0.002, [m.RSP_INFO, 0, 112, 0, 1, 2, 3, 4])
+    elif cmd == m.CMD_ABORT:
+      self.session = False
+      self.state = "app"
+    elif cmd == m.CMD_BEGIN:
+      self._reply(1.5, [m.RSP_ACK, m.CMD_BEGIN])
+    elif cmd == m.CMD_CEND:
+      self._reply(0.003, [m.RSP_ACK, m.CMD_CEND])
+    elif cmd == m.CMD_FINISH:
+      self._reply(0.05, [m.RSP_ACK, m.CMD_FINISH])
+    elif cmd == m.CMD_REBOOT:
+      self.session = False
+      self.state = "app"
+      self._reply(2.0, bytes([m.RSP_HELLO, 1, 0x03]) + self.git_new.to_bytes(4, "little"))
+
+  def _car(self, until):
+    m = self.mod
+    for addr in (0x158, 0x17C, 0x70B):
+      while self.next[addr] <= until:
+        t = self.next[addr]
+        self.next[addr] += self.period[addr]
+        if addr == 0x158:
+          self.queue.append((t, addr, bytes([self.speed >> 8, self.speed & 0xFF, 0, 0, 0, 0, 0, 0]), m.RX))
+        elif addr == 0x17C and self.rpm is not None:
+          self.queue.append((t, addr, _f17c(self.rpm), m.RX))
+        elif addr == 0x70B and self.state == "app":
+          self.queue.append((t, addr, self.grant, m.RX))
+
+  def poll(self, timeout=0.0):
+    self._car(self.clock.now)
+    due = [q for q in self.queue if q[0] <= self.clock.now]
+    if not due:
+      nxt = min([q[0] for q in self.queue] + list(self.next.values()))
+      self.clock.now = max(self.clock.now + 1e-4, min(self.clock.now + max(timeout, 1e-4), nxt))
+      self._car(self.clock.now)
+      due = [q for q in self.queue if q[0] <= self.clock.now]
+    self.queue = [q for q in self.queue if q[0] > self.clock.now]
+    return [(a, d, k) for _, a, d, k in sorted(due, key=lambda q: q[0])]
+
+
+def _sim_run(rpm=0, cancel_in=None, ignition=None, speed=0, trace_out=None):
+  """run_flash against a SimBoard on a fake clock: (ok, msg, board, phases, mod)."""
+  mod = _module()
+  clock = FakeTime()
+  mod.time = clock
+  mod.Flasher.save_trace = lambda self, directory=None: None   # never /data from a test
+  image = IMAGE.read_bytes()
+  board = SimBoard(mod, clock, int(mod.image_identity(image)["git"], 16), rpm=rpm, speed_cph=speed)
+  if ignition is not None:
+    board.ignition = lambda: ignition
+  phases: list[dict] = []
+  ok, msg = mod.run_flash(board, image, log=lambda s: None, phase=phases.append, trace_out=trace_out,
+                          should_cancel=lambda: bool(cancel_in) and bool(phases) and phases[-1]["p"] == cancel_in)
+  return ok, msg, board, phases, mod
+
+
+class TestFlashScreen(unittest.TestCase):
+  """push9 (owner, 2026-10-13): 'relays to stock' -> a visible 5 s countdown with Cancel -> erasing -> writing x% ->
+  installing -> restarting, and the update only with the ignition on and the engine off."""
+
+  def test_the_phases_in_order_and_the_countdown_is_five_seconds_of_stock_wiring(self):
+    ok, msg, board, phases, mod = _sim_run()
+    assert ok, msg
+    names = []
+    for ph in phases:
+      if not names or names[-1] != ph["p"]:
+        names.append(ph["p"])
+    assert names == ["check", "baseline", "click", "stock", "erase", "write", "install", "restart"], names
+    assert [ph["left"] for ph in phases if ph["p"] == "stock"] == [5, 4, 3, 2, 1]
+    # Cancel is offered before the knock and in the countdown, and nowhere else
+    assert {ph["p"] for ph in phases if ph["cancel"]} == {"check", "baseline", "stock"}
+    pcts = [ph["pct"] for ph in phases if ph["p"] == "write"]
+    assert pcts[0] == 0 and pcts[-1] == 100 and pcts == sorted(pcts)
+    # the relays have been at stock (HELLO, then the INFO reply) for the whole countdown before the first data frame,
+    # and the keep-alive kept the bootloader's 10 s session timer from running out
+    first_data = min(t for t, a, _ in board.sent if a == mod.ID_DATA)
+    assert first_data - board.info_at[0] >= mod.HOLD_BEFORE_DATA_S, first_data - board.info_at[0]
+    gaps = [b - a for a, b in zip(board.info_at, board.info_at[1:], strict=False)]
+    assert gaps and max(gaps) < 10.0
+
+  def test_cancel_before_the_knock_sends_nothing(self):
+    for where in ("check", "baseline"):
+      ok, msg, board, phases, mod = _sim_run(cancel_in=where)
+      assert not ok and msg == mod.CANCELLED, (where, msg)
+      assert board.sent == [], f"cancel in {where}: {board.sent[:3]}"
+      assert "click" not in [ph["p"] for ph in phases]
+
+  def test_cancel_in_the_countdown_is_abort_before_anything_is_erased(self):
+    ok, msg, board, phases, mod = _sim_run(cancel_in="stock")
+    assert not ok and msg == mod.CANCELLED, msg
+    cmds = [d[0] for _, a, d in board.sent if a == mod.ID_HOST]
+    assert mod.CMD_ABORT in cmds, "the session was left to time out"
+    assert mod.CMD_BEGIN not in cmds, "BEGIN was sent: bank 2 would have been erased"
+    assert not any(a == mod.ID_DATA for _, a, _ in board.sent)
+    assert board.state == "app", "the bootloader did not go back to the installed firmware"
+
+  def test_no_cancel_once_the_erase_has_begun(self):
+    ok, msg, board, phases, mod = _sim_run(cancel_in="write")
+    assert ok, f"a Cancel in the write phase must be ignored: {msg}"
+
+  def test_the_engine_running_is_refused_before_a_single_frame(self):
+    """0x17C at warm idle (695 rpm, route 134) refuses with the screen's words, and nothing reaches the board."""
+    ok, msg, board, phases, mod = _sim_run(rpm=695)
+    assert not ok and msg == mod.ENGINE_RUNNING, msg
+    assert board.sent == []
+    assert msg == "Turn the engine off - leave the ignition on - then update"
+    # routes 135/136/137: 0 with the engine off, 32-188 cranking, never under 637 running
+    assert 188 < mod.ENGINE_OFF_MAX_RPM < 637
+
+  def test_no_engine_frame_is_allowed_and_ignition_off_is_refused(self):
+    ok, msg, board, phases, mod = _sim_run(rpm=None)
+    assert ok, msg   # the bench: no car, no 0x17C
+    ok, msg, board, phases, mod = _sim_run(ignition=False)
+    assert not ok and msg == mod.IGNITION_OFF and board.sent == []
+    ok, msg, board, phases, mod = _sim_run(ignition=True)
+    assert ok, msg
+
+  def test_moving_is_still_refused_first(self):
+    ok, msg, board, phases, mod = _sim_run(speed=500)
+    assert not ok and "moving" in msg and board.sent == []
+
+  def test_nothing_new_reaches_the_board(self):
+    """Backward compatible by construction: every frame sent is one the bootloader protocol v1 already has, so an old
+    board updates exactly as before."""
+    ok, msg, board, phases, mod = _sim_run()
+    assert ok, msg
+    known = {mod.CMD_ENTER, mod.CMD_INFO, mod.CMD_BEGIN, mod.CMD_CHUNK, mod.CMD_CEND, mod.CMD_FINISH,
+             mod.CMD_REBOOT, mod.CMD_ABORT}
+    assert {d[0] for _, a, d in board.sent if a == mod.ID_HOST} <= known
+    assert {a for _, a, _ in board.sent} <= {mod.ID_HOST, mod.ID_DATA}
+
+  def test_the_trace_says_what_the_board_was_doing_at_the_knock(self):
+    """0x70B per phase: `st` - "0/7" split at a standstill, "8/16" waiting for the comma at stock - with the EPS error
+    state and the camera's LKAS_ON. It is the firmware's frame, so it shows in `pre` and `post` only."""
+    mod = _module()
+    assert mod.decode_grant(bytes([8, 16, 0, 0x40 | (4 << 2) | 0x80])) == (8, 16, 4, 1)
+    assert mod.decode_grant(b"\x00") is None
+    f = _replay(mod, [])
+    f._marks = [(0.0, "start"), (5.0, "knock"), (6.0, "hold"), (12.0, "hello_after"), (14.0, "end")]
+    grant = [(t / 10, (0 if t < 40 else 8, 7 if t < 40 else 16, 0, 0)) for t in range(50)] + \
+            [(12.0 + t / 10, (8, 16, 2, 1)) for t in range(20)]
+    rows = {r["p"]: r for r in f._phase_table([], [], [], [], grant)}
+    assert rows["pre"]["st"] == "8/16" and rows["pre"]["eer"] == 0 and rows["pre"]["cam"] == 0
+    assert "st" not in rows["hold"], "the bootloader sends no 0x70B"
+    assert rows["post"]["st"] == "8/16" and rows["post"]["eer"] == 2 and rows["post"]["cam"] == 1
+
+  def test_the_census_now_sees_a_module_answering_on_0x71a(self):
+    mod = _module()
+    assert 0x711 in mod.CENSUS_OWN and 0x70B in mod.CENSUS_OWN
+    assert 0x71A not in mod.CENSUS_OWN and 0x718 not in mod.CENSUS_OWN

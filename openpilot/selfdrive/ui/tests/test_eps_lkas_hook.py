@@ -319,7 +319,62 @@ class TestEpsLkasHook(unittest.TestCase):
     hook_keys = _param_keys_used(HOOK)
     board_keys = _param_keys_used(BOARD_PANEL)
     # the extraction must have found the keys we know are there, or this proves nothing
-    assert {"EpsLkasFlashRequested", "EpsLkasFlashState", "EpsLkasFlashProgress", "EpsLkasFlashTrace"} <= hook_keys, hook_keys
-    assert {"EpsLkasBoardVersion", "EpsLkasFlashRequested", "EpsLkasFlashState"} <= board_keys, board_keys
+    assert {"EpsLkasFlashRequested", "EpsLkasFlashState", "EpsLkasFlashProgress", "EpsLkasFlashTrace",
+            "EpsLkasFlashPhase", "EpsLkasFlashCancel"} <= hook_keys, hook_keys
+    assert {"EpsLkasBoardVersion", "EpsLkasFlashRequested", "EpsLkasFlashState", "EpsLkasFlashPhase",
+            "EpsLkasFlashCancel"} <= board_keys, board_keys
     missing = sorted((hook_keys | board_keys) - registered)
     assert not missing, f"{missing} are not in params_keys.h; Params would raise UnknownKeyName"
+
+
+class TestFlashScreenHook(unittest.TestCase):
+  """push9: the update screen's phase and its Cancel, through the hook."""
+
+  def test_a_cancel_pressed_while_pandad_was_stopping_is_read_before_it_is_cleared(self):
+    params = FakeParams(EpsLkasFlashRequested=True, IsOffroad=True, EpsLkasFlashCancel=True)
+    mod = _hook(self, params)
+    made = []
+    mod.flash_if_requested("deadbeef", transport_factory=lambda: made.append(1))
+    assert params.get("EpsLkasFlashState") == "cancelled", params.get("EpsLkasFlashState")
+    assert params.get_bool("EpsLkasFlashCancel") is False, "the Cancel must be spent"
+    assert params.get("EpsLkasFlashPhase") == {"p": "cancelled", "cancel": False}
+    assert ("EpsLkasFlashState", "running") not in params.writes and made == [], "the flash was started anyway"
+    assert params.writes[0] == ("EpsLkasFlashRequested", False), "the request is still cleared first"
+
+  def test_the_watcher_drops_a_cancelled_request_without_stopping_pandad(self):
+    params = FakeParams(EpsLkasFlashRequested=True, IsOffroad=True, EpsLkasFlashCancel=True)
+    mod = _hook(self, params)
+    mod.WATCH_PERIOD_S = 0.01
+    proc = FakeProcess()
+    t = mod.watch_for_request(proc, lambda: None, params=params)
+    self.addCleanup(_stop_watcher, proc, t)
+    t.join(timeout=0.3)
+    assert proc.signals == [], "the car link was taken down for a cancelled request"
+    assert params.get_bool("EpsLkasFlashRequested") is False
+    assert params.get("EpsLkasFlashState") == "cancelled"
+
+  def test_the_phase_and_the_cancel_are_wired_to_the_flasher(self):
+    params = FakeParams(EpsLkasFlashRequested=True, IsOffroad=True)
+    mod = _hook(self, params)
+    seen = {}
+
+    def fake_run(transport, image, **kw):
+      seen.update(kw)
+      kw["phase"]({"p": "stock", "cancel": True, "left": 3})
+      assert params.get("EpsLkasFlashPhase") == {"p": "stock", "cancel": True, "left": 3}
+      params.put_bool("EpsLkasFlashCancel", True)
+      assert kw["should_cancel"]() is True
+      return False, mod.CANCELLED
+
+    mod.run_flash = fake_run
+    mod.flash_if_requested("deadbeef", transport_factory=lambda: types.SimpleNamespace(close=lambda: None))
+    assert "phase" in seen and "should_cancel" in seen
+    assert params.get("EpsLkasFlashState") == "cancelled", "a cancel is not a failure"
+    assert params.get_bool("EpsLkasFlashCancel") is False
+
+    params = FakeParams(EpsLkasFlashRequested=True, IsOffroad=True, EpsLkasFlashCancel=False)
+    mod = _hook(self, params)
+    mod.run_flash = lambda transport, image, **kw: (True, "abcd1234")
+    mod.flash_if_requested("deadbeef", transport_factory=lambda: types.SimpleNamespace(close=lambda: None))
+    assert params.get("EpsLkasFlashState") == "ok abcd1234"
+    assert params.get("EpsLkasFlashPhase") == {"p": "ok", "cancel": False}
