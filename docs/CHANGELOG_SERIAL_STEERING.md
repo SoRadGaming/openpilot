@@ -15,6 +15,61 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-13 — push9: the update screen, a press at 'now' sets the limit, board `4d427d46`
+
+After the first drives on push8 (routes 132-137) the owner asked for four things and chose each in chat:
+
+* **The board update screen** ("countdown add that ... ign on no engine on? we can do that"). The 2026-10-12 update
+  hummed: the flasher's own trace (emitted into route 134 at 3.41 s) shows the relays went to stock wiring at the knock
+  and the session then held 8 s with no data - the engine's 3rd-order firing vibration in the column FELL in that hold
+  (0.95 against 1.35 before) - and rose about 2.5x from the erase on, through the copy, with no data on the bus and no
+  hand on the wheel. The EPS was never commanded and logged no fault. Same step as the 2026-09-23 updates. So:
+  * **A gate before anything is sent:** ignition on (panda), stationary (`0x158`, as before), engine off (`0x17C`
+    ENGINE_RPM median under 400 over the first second, and again at the end of the baseline). Engine running:
+    "Turn the engine off - leave the ignition on - then update". No `0x17C` at all (the bench) is logged and allowed.
+  * **The stages on screen** (`mici/layouts/board.py`, params `EpsLkasFlashPhase` / `EpsLkasFlashCancel`): check,
+    baseline, "relays to stock wiring" (the knock), a **5-second countdown "relays in stock - updating in 5..1"** (the
+    old 8 s hold, now 5 s; INFO keep-alive pings at 2 s and 4 s inside the bootloader's 10 s), erase, write %, install,
+    restart, done / failed.
+  * **Cancel** in check, baseline and the countdown. In the countdown it is ABORT: BEGIN was never sent, bank 2 is
+    untouched, the bootloader jumps back to the image it has. No Cancel from the erase on.
+  * The trace adds `0x70B` (STATE/REASON in `pre` and `post`) and the census no longer counts `0x712-0x71F` as ours.
+  * **Nothing new reaches the board**: the frames on the wire are the ones every bootloader since the first one
+    understands, so the board in the car updates exactly as before.
+* **A press during 'now' is the confirm** (see `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 11.3 and
+  `speed_limit/now_confirm.py`). 'now' meant the limit was under 50 m away, not in force; the prompt opened 4.0-4.4 s
+  later and a press in between was a 1 km/h step. Now a + or - release at 'now', the coming limit's way, engaged, SLA
+  active or inactive, arms exactly that limit; when it comes into force SLA goes straight to active and card sets it.
+  The card says "press - to set N" (or "+") instead of 'now' while a press would count. Replays (planner re-run on
+  the logged inputs, NEW against OLD):
+  * 137: 1 frame differs, 305.68 (the press at 305.16 armed 80: NEW goes straight to active where OLD showed
+    preActive for one frame before that press's 0.5 s hold happened to confirm it).
+  * 134: 69 frames differ, all after the 'now' presses at 313.60 (80), 446.50 (60) and 716.37/717.71 (80) - SLA goes
+    active with the new limit when it comes into force instead of waiting in preActive for a second press. The phantom
+    'now' windows (304.52-308.52 and 674.56-678.49) had no press and set nothing; 812.76 (a '-' while disengaged)
+    armed nothing.
+  * 136: 0 frames differ.
+* **Board `4d427d46`** (board `HANDOFF.md` 0p):
+  * **The cluster alarms when the board is pinned at its ceiling with no hand**: once per ceiling run, 1.5 s past the
+    300 ms debounce, even inside the 10 s quiet period. Route 137's second curve (645.9-649.6 at 160 counts, 52 km/h,
+    1.1 m drift, openpilot's own alert at 648.95) was silent because curve A's alarm had ended 6.3 s earlier. 24-route
+    replay: 33 alarms -> 34 (137 at 647.57; 12a's moves from 1414.11 to 1407.10); d1's 145.26 double chime does not
+    come back. `hud_test` section 14.
+  * **After a knock the board is stock until the comma is heard**: the knock clears the key cycle's "K2 taken" bit, so
+    the image the bootloader starts waits like a key-on instead of re-splitting K2 0.3 s after start (the window where
+    route f6's column moved 1.4 deg). The update TO this image is knocked by `b5f08583`, which keeps the bit - this
+    applies from the next update on (and to a cancelled or timed-out one on this image).
+  * 49,736 bytes, SHA-256 `d5396d726301ca9bf90af368d15e124318c8d2a67b912c8d5e6be49f59a88c1c`, `APL1` at `0x08004000`.
+    Rollback: `b5f08583` (push8).
+* **How to update now:** parked, **ignition on, engine off**; Settings -> Gateway; the screen counts down 5 s with the
+  relays already on stock wiring, then erase / write / install / restart.
+
+Not reviewed by an independent agent this round (the session hit its agent limit); the code was checked by the main
+session, all targeted suites pass (427 tests), ruff/codespell/compile-check clean, ty has the same 4 pre-existing
+diagnostics.
+
+---
+
 ## 2026-10-12 — push8: the board's lane-change cap is off (board `b5f08583`, nocap)
 
 The owner, on hearing the board halves its torque on every indicated lane change: "On lane change remove steer

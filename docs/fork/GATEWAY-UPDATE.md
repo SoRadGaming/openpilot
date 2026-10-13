@@ -66,7 +66,7 @@ sitting in its bootloader with stock LKAS working (`docs/CAN-UPDATE.md` in the f
 |---|---|---|
 | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_flasher.py` | added, all A | The bootloader protocol, the transports, the image checks and the flash trace. It has no openpilot imports. |
 | `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_hook.py` | added, all A | Glue between pandad and the flasher. Contains the params handling, the watcher thread, and the version write-back. |
-| `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_appslot.bin` | added, all A | The bundled board image. Currently `b5f08583`, 49,660 bytes, SHA-256 `d5b4b9d3…` (board branch `nocap` `b5f0858`, on `686e4603` - `c8221c29`, which is `298727b3`'s `0x70B` fix plus `GW_WAIT_FOR_COMMA`, plus the lane-change alarm fix. It adds the owner's 2026-10-12 decision: no 50 % blinker ceiling, and the driver-torque fade only while the driver pushes against the board; board `HANDOFF.md` 0o). |
+| `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_appslot.bin` | added, all A | The bundled board image. Currently `4d427d46`, 49,736 bytes, SHA-256 `d5396d72…` (board branch `push9` `4d427d4`, on `b5f08583` - `686e4603` with the lane-change cap off. It adds the owner's 2026-10-13 decisions: the cluster alarms when the board is pinned at its ceiling with no hand for 1.5 s past the debounce, even inside the 10 s quiet period; and a knock clears the key cycle's K2 takeover, so after an update the board is stock until the comma is heard; board `HANDOFF.md` 0p). |
 | `openpilot/selfdrive/pandad/pandad.py` | modified, all A | Imports the hook, adds the `skip_panda_reset` guard, and calls `flash_if_requested()` and `watch_for_request()`. |
 | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/board.py` | added, all A | The Settings > gateway page: the firmware card and the update button. |
 | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py` | modified, **mixed** | A: the `board_btn` row. C: the `vehicle_btn` row. |
@@ -232,17 +232,22 @@ Pressing the button does one of two things:
 * **Not allowed:** `BigDialog("", reason)`. A disabled widget receives no clicks, so in
   practice this dialog is only reachable in the up-to-1 s between a state change and the next
   `refresh()`.
-* **Allowed:** `BigConfirmationDialog("slide to\nupdate the gateway", icon, confirm,
+* **Allowed:** `BigConfirmationDialog("engine off\nslide to update", icon, confirm,
   exit_on_confirm=True, red=True)`. With `exit_on_confirm=False` the full-screen dialog
-  stayed up forever.
+  stayed up forever. The words were "slide to\nupdate the gateway" until push9; since then
+  they say the one thing the page cannot check itself (offroad there is no CAN): the engine
+  must be off (§3.6).
 
 The `confirm()` callback does the following:
 
 1. It **re-checks `_can_update()` and `_busy()`**, because the dialog can sit open across an
    ignition event and the dismiss animation adds most of a second.
-2. It writes `EpsLkasFlashState = ""`, `EpsLkasFlashProgress = "0"` and
-   `EpsLkasFlashRequested = True`.
-3. It sets `_asked = True` and shows `requested`.
+2. It writes `EpsLkasFlashState = ""`, `EpsLkasFlashProgress = "0"`,
+   `EpsLkasFlashCancel = False` (a Cancel left from an earlier run must not cancel this one),
+   `EpsLkasFlashPhase = {"p": "requested", "cancel": True}` and `EpsLkasFlashRequested = True`,
+   in that order.
+3. It sets `_asked = True`, shows `requested`, and (push9) opens the update screen,
+   `GatewayFlashDialog` (§3.6).
 
 ### 3.4 What the sub-label says while and after it runs
 
@@ -251,28 +256,96 @@ a first flash, `EpsLkasFlashState` keeps saying `ok <hash>` for the rest of the 
 
 | condition | sub-label | button |
 |---|---|---|
-| `EpsLkasFlashState == "running"` | `<EpsLkasFlashProgress>%` (clears `_asked`) | disabled |
+| `EpsLkasFlashState == "running"` | `in <n>` during the countdown (`EpsLkasFlashPhase` `stock`), otherwise `<EpsLkasFlashProgress>%` (clears `_asked`) | disabled |
 | `_asked` or `EpsLkasFlashRequested` | `requested` | disabled |
 | state starts `ok ` | `updated` | per `_can_update()`, normally `up to date` |
+| state is `cancelled` | `cancelled` | per `_can_update()` |
 | state starts `failed` | `failed`. The full reason is in the state param and in cloudlog. | per `_can_update()` |
 | otherwise | `to <hash>`, or the refusal reason | per `_can_update()` |
 
 `_busy()` is true when the state is `running`, when `_asked` is set, or when the request param
 is set.
 
+### 3.6 The update screen (push9, 2026-10-13)
+
+The owner, after the update on 2026-10-12 (the "hum", route 134's trace): relays to stock,
+a visible wait, then the update - "countdown add that" - and, for the hum, "mine is ign
+powered so ign on no engine on? we can do that". The sequence already ran (the knock drops
+K1 and K2; the session then sat 8 s with no data) but the page showed `0%` for at least
+14.6 s of it. Now it is on screen, with the ignition on and the engine off.
+
+`GatewayFlashDialog` (`board.py`), full screen, opened by `confirm()`. It reads
+`EpsLkasFlashState`, `EpsLkasFlashPhase` and `EpsLkasFlashRequested` every `PHASE_REFRESH_S`
+(0.25 s) and draws what the pure `flash_view()` makes of them: a title, a line, a progress
+bar while writing, a large countdown digit (`flash_countdown()`) and a **cancel** pill bottom
+right where the flasher takes it. It never drives the update: swiping it away leaves the
+update running, and the button's sub-label goes on (`in 3`, `37%`).
+
+| `EpsLkasFlashPhase.p` (written by) | title / line | Cancel | lasts |
+|---|---|---|---|
+| `requested` (page) | starting / stopping the car link | yes: the watcher drops the request without stopping `./pandad` | <= 1 s + `./pandad`'s exit |
+| `check` (hook, then flasher) | checking / parked, engine off | yes, nothing sent yet | 1 s |
+| `baseline` | checking / listening to the car | yes, nothing sent yet | 4 s |
+| `click` | relays to stock / the car is on stock wiring | no | knock, HELLO, ENTER, INFO: ~0.1-0.3 s |
+| `stock` | relays in stock / updating in **5 4 3 2 1** | yes: ABORT, the board keeps its firmware | 5 s (`HOLD_BEFORE_DATA_S`) |
+| `erase` | erasing / making room for the new image | no | 1.4-2.6 s |
+| `write` | writing x% / keep the car parked (bar) | no | ~9 s |
+| `install` | installing / keep the ignition on | no | FINISH, REBOOT, the copy: ~3-4 s |
+| `restart` | restarting the board / watching it start | no | the 6 s post listen |
+| `ok` (hook) | done / turn the car off, then on, before driving | - | |
+| `failed` (hook) | engine on / ignition off / failed, with the reason | - | |
+| `cancelled` (hook or watcher) | cancelled / the board keeps its firmware | - | |
+
+**The gate, before a single frame is sent** (`run_flash`, in this order): the panda's own
+ignition (`PandaTransport.ignition()`: `ignition_line` or `ignition_can` from `health()`;
+`False` refuses with `IGNITION_OFF`, unreadable is the page's gate), stationary (the existing
+1 s `moving()` on `0x158`), then the engine: the median `0x17C` `ENGINE_RPM` over that same
+second, and again over the last second of the 4 s baseline, against `ENGINE_OFF_MAX_RPM` =
+400. Measured on the car: 0 with the engine off (the first 0.1 s of routes 135, 136 and 137,
+before the crank), 32-188 cranking, never under 637 running (warm idle 687-706 on 134,
+816-859 on 132). Over it: `failed: Turn the engine off - leave the ignition on - then update`,
+which the screen shows as "engine on". No `0x17C` at all is allowed and logged: the bench, or
+a car bus with nothing on it, and the HELLO wait then says so in its own words.
+
+**Cancel** is taken in `check` and `baseline` (`run_flash` returns `CANCELLED` and nothing
+has been sent: the knock has not happened, the board never noticed) and in `stock`, where it is
+ABORT: the bootloader closes the session and, its 800 ms listen window long past, jumps back
+to the firmware it has. BEGIN has not been sent, so bank 2 is untouched - the `--dry-run` path.
+From the erase on there is no cancel (`cancel: false` in the phase, the pill not drawn). The
+flasher polls `should_cancel` at most every `CANCEL_POLL_S` (0.2 s). The hook reads
+`EpsLkasFlashCancel` **before** clearing it (a Cancel pressed while `./pandad` was stopping is
+the owner's answer), clears it at every ending (`_finish()`), and the watcher drops a request
+whose Cancel came before `./pandad` was asked to stop, so the car link never goes down for it.
+
+**Nothing new reaches the board.** The gate, the countdown and the cancel are all comma-side;
+every frame on the wire is one bootloader protocol v1 already has. An old board updates
+exactly as before, and the board image needs no change for any of it.
+`TestFlashScreen` (`test_eps_lkas_flasher.py`) runs the whole flasher against `SimBoard`, a
+simulated firmware + bootloader on a fake clock, and pins the phases, the 5-4-3-2-1, the
+5 s of stock wiring before the first data frame, every cancel point, the engine and ignition
+refusals with nothing sent, and that only v1 frames are sent.
+
+What the screen cannot know, and the trace now records (§9.2): what the board was doing at
+the knock (`0x70B` STATE/REASON: split, or waiting at stock for the comma) and after the new
+image started.
+
 The UI strings are passed through `tr()`, but the fork adds no translation entries (not
 verified per language).
 
 ### 3.5 Timeline of one update
 
-1. The owner slides to confirm. The page shows `requested`.
+1. The owner, ignition on and engine off, slides to confirm. The page shows `requested` and
+   opens the update screen (§3.6).
 2. Within 1 s (`WATCH_PERIOD_S`), pandad's watcher sees the request while offroad. It arms the
-   panda-reset skip, then sends SIGINT to `./pandad`.
-3. pandad's loop re-enters, skips the panda reset, finds the request, clears it, and writes
-   `running` / `0`.
-4. The flasher runs. It spends about 19 s in deliberate measurement phases. The screen sits at
-   0% for about 13 s (1 s motion check, 4 s baseline, knock, 8 s hold) and then climbs through
-   about 182 chunks. The trace of the first instrumented update spanned 30 s across all nine
+   panda-reset skip, then sends SIGINT to `./pandad` (or, if Cancel was pressed already, drops
+   the request and writes `cancelled`).
+3. pandad's loop re-enters, skips the panda reset, finds the request, clears it, reads and
+   clears the Cancel, and writes `running` / `0` / phase `check`.
+4. The flasher runs. It spends about 16 s in deliberate measurement phases (19 s before push9).
+   The screen shows them: checking (1 s motion and engine check, 4 s baseline), relays to
+   stock (the knock), relays in stock with a 5-4-3-2-1 countdown (the 5 s hold), erasing, then
+   writing x% through about 194 chunks, installing, restarting the board. Until push9 it sat
+   at 0% for at least 14.6 s of this. The trace of the first instrumented update spanned 30 s across all nine
    phases (`docs/CAN-UPDATE.md`); that span runs from `mark("start")` to `mark("end")` and
    does not include stopping and restarting `./pandad`.
 5. As `run_flash()` returns, it hands the trace summary to the hook's `trace_out`, which
@@ -289,7 +362,7 @@ verified per language).
 
 ## 4. Params
 
-All seven are in `openpilot/common/params_keys.h`, between `InteractivityTimeout` and
+All nine are in `openpilot/common/params_keys.h`, between `InteractivityTimeout` and
 `IsDevelopmentBranch`. **None carries `BACKUP`**, so none appears in a sunnylink backup.
 
 | key | flags | type | written by | read by | why this persistence |
@@ -300,6 +373,8 @@ All seven are in `openpilot/common/params_keys.h`, between `InteractivityTimeout
 | `EpsLkasFlashRequested` | `CLEAR_ON_MANAGER_START` | `BOOL` | UI `confirm()` sets it; the hook and the watcher clear it | watcher, hook, page | A request that survived a restart would be a request nobody made. The hook also clears it **before** attempting anything (§5.3). |
 | `EpsLkasFlashProgress` | `CLEAR_ON_MANAGER_START` | `STRING`, `"0"`-`"100"` | UI (`"0"`); the hook, once per percent | page | ephemeral |
 | `EpsLkasFlashState` | `CLEAR_ON_MANAGER_START` | `STRING` | UI (`""`); the hook; the watcher | page | ephemeral, but **not** cleared between updates within one boot |
+| `EpsLkasFlashPhase` (push9) | `CLEAR_ON_MANAGER_START` | `JSON`, a **dict**: `{p, cancel, left?, pct?}` | UI (`requested`); the hook (`check`, and the ending); the flasher through the hook's `phase` | the update screen, the button's sub-label | ephemeral: what the screen shows now (§3.6) |
+| `EpsLkasFlashCancel` (push9) | `CLEAR_ON_MANAGER_START` | `BOOL` | the screen's Cancel sets it; UI `confirm()` and the hook clear it | the watcher; the hook (read, then cleared); the flasher's `should_cancel` | a Cancel must never outlive the run it was pressed in |
 | `EpsLkasFlashTrace` | `PERSISTENT` | `JSON`, a **dict** | the hook via `trace_out` | card `log_flash_trace()`, which then removes it | The flash is offroad and the emit is onroad. Clearing on manager start would lose it in between. |
 
 **JSON-typed params take the object, never `json.dumps(...)`.** `Params.put` looks up
@@ -325,6 +400,7 @@ the board writes, for the rest of that card process.
 |---|---|
 | `""` | UI confirm |
 | `running` | hook |
+| `cancelled` | hook (a Cancel before the start, or `run_flash` returning `CANCELLED`); watcher (a Cancel before `./pandad` was stopped) |
 | `ok <8-hex>` | hook, from `run_flash` |
 | `failed: not while driving` | watcher or hook |
 | `failed: no bundled image at <path>` | hook |
@@ -672,7 +748,8 @@ app-slot build configures `INCAR_TEST=ON`. It is not the dirty bit.
 | `a32984eb2` | `298727b3` (`0x70B` through the ring, `gw_active.c` only; never shipped alone) | 46,532 |
 | 2026-10-06 integration | `c8221c29` (`298727b3` plus `GW_WAIT_FOR_COMMA`: K2 on stock wiring and the camera owning `0x33D` until the comma is heard, then the usual entry at a safe moment) | 49,584 |
 | `lcalert` (2026-10-12) | `686e4603` (`c8221c29` plus the lane-change alarm fix: `hud_gw()`'s ceiling test `hard` does not count under the blinker cap or within 2 s of driver torque over 20, and a gated tick restarts its 300 ms debounce; the command path is unchanged, `GW_BLINK_CEIL_PCT` still 50; SHA-256 `82fefd72…`, the rollback for the next row) | 49,664 |
-| `nocap` (2026-10-12) | **`b5f08583`** (current; `686e4603` with the lane-change cap off: `GW_BLINK_CEIL_PCT` 100, and the driver fade applied only when the driver is not nudging the way the board is - openpilot's request over 10 counts his way, the wire not the other way, the push under 90 counts. Against the driver, and for any push of 90 or more, it is 686e4603's fade; the hand-back, authority 160 and every other limit are unchanged. Board `HANDOFF.md` 0o, SHA-256 `d5b4b9d3…`) | 49,660 |
+| `nocap` (2026-10-12) | `b5f08583` (`686e4603` with the lane-change cap off: `GW_BLINK_CEIL_PCT` 100, and the driver fade applied only when the driver is not nudging the way the board is - openpilot's request over 10 counts his way, the wire not the other way, the push under 90 counts. Against the driver, and for any push of 90 or more, it is 686e4603's fade; the hand-back, authority 160 and every other limit are unchanged. Board `HANDOFF.md` 0o, SHA-256 `d5b4b9d3…`, the rollback for the next row) | 49,660 |
+| `push9` (2026-10-13) | **`4d427d46`** (current; `b5f08583` plus two things, the command path unchanged: `hud_gw()` alarms once per ceiling run when the board has been pinned with no hand and no indicator for 1.5 s past the 300 ms debounce, even inside the 10 s quiet period (route 137's silent second curve); and the knock clears the key cycle's K2 takeover, so the image the bootloader starts - new after an update, or the old one after a cancel or time-out - waits for the comma like a key-on. Board `HANDOFF.md` 0p, SHA-256 `d5396d72…`) | 49,736 |
 
 In git the `.bin` is not in LFS; `text=auto` detects it as binary. It ships in release builds,
 because `tools/release/release_files.py` does not exclude it.
@@ -680,7 +757,8 @@ because `tools/release/release_files.py` does not exclude it.
 ### 6.5 What `run_flash()` can return
 
 `run_flash(transport, image, log, progress, dry_run=False, knock=True, hello_timeout=25.0,
-trace_out=None) -> (ok, msg)`.
+trace_out=None, phase=None, should_cancel=None) -> (ok, msg)`. `phase` and `should_cancel`
+(push9) drive the update screen (§3.6).
 
 **Every ok path returns the bare 8-hex hash.** The hook writes that value into
 `EpsLkasBoardVersion`, and an English sentence there would be rendered on the page as a
@@ -692,7 +770,10 @@ dry-runs.
 | ok, witnessed | `<hash>` from the post-reset HELLO: `appOk` is set and the hash equals the image's |
 | ok, not witnessed | `<hash>` from the image; no confirming HELLO within 25 s. This is logged. |
 | refused image | `refusing this image: <reason>` |
+| ignition off (push9) | `the ignition is off - turn it on, leave the engine off, then update` (`IGNITION_OFF`) |
 | moving | `the car is moving - stop first` |
+| engine running (push9) | `Turn the engine off - leave the ignition on - then update` (`ENGINE_RUNNING`) |
+| cancelled (push9) | `cancelled` (`CANCELLED`): before the knock nothing was sent; in the countdown ABORT was sent |
 | no board | `no HELLO. Either the board has no bootloader (it needs one SWD visit), or it never reset.` |
 | board NAK | `refused: <nak>`. This covers the knock, ENTER and the post-reset HELLO; for example `the car is not stationary`. |
 | protocol mismatch | `board speaks protocol v<n>, this speaks v1` |
@@ -868,7 +949,7 @@ firmware repo; `docs/CHANGELOG_SERIAL_STEERING.md` 2026-09-23 and 2026-09-24).
 ### 9.2 What is captured
 
 `_pump()` stores `(monotonic time, id, raw bytes)` into `_trace` (a `deque(maxlen=TRACE_MAX
-= 24000)`) for the IDs in `TRACE_IDS = (0x156, 0x18F, 0x17C, 0x1A6)`. There is no decoding
+= 24000)`) for the IDs in `TRACE_IDS = (0x156, 0x18F, 0x17C, 0x1A6, 0x70B)`. There is no decoding
 in the receive path. Traced frames stay out of `_rx`.
 
 | id | decoded as | why |
@@ -877,6 +958,7 @@ in the receive path. Traced frames stay out of `_rx`.
 | `0x18F` STEER_STATUS | `STEER_TORQUE_SENSOR` (bytes 0-1 BE, x -1), 2-bit counter in byte 6 bits 5:4 | Column torque. This is the vibration witness. |
 | `0x17C` POWERTRAIN_DATA | `ENGINE_RPM`, bytes 2-3 BE | **Not** `0x158`'s ENGINE_RPM, which reads about 8% low in Park (it is the torque converter). |
 | `0x1A6` | byte 2 bit 6 | An accessory load that cycles about every 7 s. Amplitudes are comparable only at the same load. |
+| `0x70B` GW_STEER_GRANT (push9) | `decode_grant()`: STATE byte 0, REASON byte 1, EPS_ERROR_STATE byte 3 bits 5:2, CAM_LKAS_ON byte 3 bit 7 | The board's own state, 10 Hz while its firmware runs, so in `pre` and `post` only. Per phase the summary gains `st` (the last "STATE/REASON": "8/16" = K2 at stock waiting for the comma, "0/7" = split at a standstill), `eer` (highest EPS error state) and `cam` (camera LKAS_ON seen). Before push9 nothing said whether K2 was split at the knock, or what the new image did in `post` - the one window where the wheel was ever seen to move (f6). |
 
 There is no better instrument available. `0x1AB` does not exist on this car, and the EPS's
 motor torque is reported only over the LKAS serial line, which the board stops mirroring when
@@ -890,7 +972,7 @@ starts a new per-ID RX count, the census.
 | `start` | `pre` | baseline, board normal |
 | `knock` | `reset` | relays drop, reset into the bootloader |
 | `hello` | `enter` | ENTER, INFO |
-| `hold` | `hold` | session open, pings only (8 s) |
+| `hold` | `hold` | session open, pings only: the on-screen countdown (5 s since push9; 8 s before) |
 | `begin` | `erase` | BEGIN, bank 2 erase |
 | `data` | `data` | the chunk stream, about 770 frames/s |
 | `finish` | `finish` | CRC check |
@@ -898,8 +980,15 @@ starts a new per-ID RX count, the census.
 | `hello_after` | `post` | app start, K1/K2 re-split (6 s) |
 | `end` | | closes `post` |
 
-The hold and the pre/post listens cost about 19 s per update. They exist to separate the
-knock from the data stream in time; the two were 1.7 s apart and could not be told apart.
+The hold and the pre/post listens cost about 16 s per update (19 s before push9). They exist
+to separate the knock from the data stream in time; the two were 1.7 s apart and could not be
+told apart.
+
+**The census (push9).** `CENSUS_OWN`, the IDs never counted as lost or new, is now the board's
+telemetry `0x700`-`0x70F` and the bootloader's `0x711` only. It was `0x700`-`0x71F`, which also
+hid any module answering the update's own `0x710`/`0x712` on the usual request + 8
+(`0x718`/`0x71A`) - exactly what `new` exists to catch. Our own frames never count: echoes are
+not RX.
 
 ### 9.3 The summary (`summarise_trace()`)
 
@@ -1142,7 +1231,8 @@ This is the only test that exercises the dataclass-to-capnp splat card uses.
 
 * `PandaTransport` against a real panda. It has been used in the car for every update since
   2026-09-23; the evidence is the traces in routes f6 and `00000103`.
-* The page's rendering on the device.
+* The page's rendering on the device. The update screen's states are rendered headless by
+  `flash_view()`'s caller in the push9 render harness, not by a test.
 * The order of skip and SIGINT in the watcher (§5.4).
 * The flasher's protocol constants against `boot_proto.h` (§6.2).
 * The behaviours in §11.2.
