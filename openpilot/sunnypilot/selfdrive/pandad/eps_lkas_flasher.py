@@ -180,6 +180,15 @@ CANCEL_POLL_S = 0.2        # the Cancel param is a file: read it at most this of
 # flasher could miss (push9 review: one at +4.95 s used to be ignored).
 CANCEL_LAST_S = 0.5
 ENGINE_WINDOW_S = 0.5      # the countdown watches the engine over this much 0x17C
+# THE COUNTDOWN KEEPS THE GATE'S PROOF (push9 re-review). 0x17C seen at the gate
+# and then gone for this long in the countdown is a gate gone blind - the
+# ignition switched off, or to accessory, under the update - and is ABORT and
+# NO_ENGINE_DATA, before BEGIN: the old image stays. 100 frames at 100 Hz, so
+# never a USB batch. The panda's ignition reading off (read at most every
+# CANCEL_POLL_S, and once more right before BEGIN) is ABORT and IGNITION_OFF.
+# The bench - no 0x17C from the start, allowed at the gate - is not watched for
+# it: there is nothing there to lose.
+ENGINE_LOST_S = 1.0
 POST_CAPTURE_S = 6.0       # after the post-reboot HELLO: app start and K2 re-split
 EPS_PERIOD_S = 0.010       # 0x18F cadence - the grid the firing-order fit uses
 
@@ -600,6 +609,12 @@ class Flasher:
     self.should_cancel = should_cancel
     self._cancel_next = 0.0
     self._cancel_seen = False
+    # The gate saw 0x17C (run_flash sets it): from then on, up to BEGIN, its
+    # disappearance is a stop (ENGINE_LOST_S). False on the bench, where there
+    # was none from the start. And the panda's ignition, read like the Cancel.
+    self.engine_seen = False
+    self._ign_next = 0.0
+    self._ign_off = False
     # BOUNDED, AND FILTERED. On the bench this saw a handful of frames a
     # second; on the car's bus 0 it is about 1830. Appending all of them made
     # _rx grow without limit for the whole session and turned _recv's linear
@@ -879,7 +894,9 @@ class Flasher:
     The engine stays off (owner, 2026-10-13): 0x17C over the last
     ENGINE_WINDOW_S, every loop and once more at the end. An engine started
     during the click, the HELLO wait or the countdown is ABORT and
-    ENGINE_RUNNING - still before BEGIN, so nothing has changed.
+    ENGINE_RUNNING - still before BEGIN, so nothing has changed. So is the
+    gate going blind (push9 re-review): 0x17C seen at the gate and gone for
+    ENGINE_LOST_S is NO_ENGINE_DATA, the panda's ignition off is IGNITION_OFF.
     """
     start = time.monotonic()
     end = start + seconds
@@ -902,17 +919,45 @@ class Flasher:
     return self._hold_stop(last=True)
 
   def _hold_stop(self, last: bool = False) -> str | None:
-    """In the countdown: the page's Cancel, or the engine started. Either is
-    ABORT (the installed image stays) and the reason; None to go on."""
+    """In the countdown: the page's Cancel, the engine started, the ignition
+    off, or the 0x17C the gate saw gone. Each is ABORT (the installed image
+    stays) and the reason; None to go on. `last`: the look right before BEGIN,
+    nothing throttled."""
     if self.cancelled(now_or_never=last):
       self.abort()
       return CANCELLED
-    rpm = self.engine_rpm(time.monotonic() - ENGINE_WINDOW_S)
+    now = time.monotonic()
+    rpm = self.engine_rpm(now - ENGINE_WINDOW_S)
     if rpm is not None and rpm > ENGINE_OFF_MAX_RPM:
       self.log(f"  engine started before the erase: {rpm} rpm - ABORT, the installed image stays")
       self.abort()
       return ENGINE_RUNNING
+    if self.ignition_off(now_or_never=last):
+      self.log("  the ignition went off before the erase - ABORT, the installed image stays")
+      self.abort()
+      return IGNITION_OFF
+    if self.engine_seen and self.engine_rpm(now - ENGINE_LOST_S) is None:
+      self.log(f"  0x17C gone for {ENGINE_LOST_S:.1f} s before the erase, the engine-off gate is blind - ABORT")
+      self.abort()
+      return NO_ENGINE_DATA
     return None
+
+  def ignition_off(self, now_or_never: bool = False) -> bool:
+    """The transport's ignition reading (the panda's) says OFF - read at most
+    every CANCEL_POLL_S (always, with now_or_never). False when the transport
+    has none (the bench adapter) or it cannot be read (None), as at the gate.
+    Never raises."""
+    read = getattr(self.t, "ignition", None)
+    if read is None:
+      return False
+    now = time.monotonic()
+    if now_or_never or now >= self._ign_next:
+      self._ign_next = now + CANCEL_POLL_S
+      try:
+        self._ign_off = read() is False
+      except Exception:
+        self._ign_off = False
+    return self._ign_off
 
   def program(self, image: bytes) -> str | None:
     n = len(image)
@@ -1182,7 +1227,10 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
   end of the baseline and through the countdown (ENGINE_RUNNING, with ABORT
   once the bootloader has the session). require_engine_data: no 0x17C at all
   is refused (NO_ENGINE_DATA) - by default whenever the transport reads the
-  ignition (the panda, in the car); the bench adapter has no car to see.
+  ignition (the panda, in the car); the bench adapter has no car to see. The
+  countdown also stops (ABORT) on the ignition reading off (IGNITION_OFF) and
+  on 0x17C, seen at the gate, gone for ENGINE_LOST_S (NO_ENGINE_DATA); with
+  none from the start (the bench) it goes on as before.
 
   NOTHING NEW REACHES THE BOARD. The gate, the countdown and the cancel are all
   on this side; the frames on the wire are the ones every board since the
@@ -1224,10 +1272,14 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
       log("  no 0x17C on the car bus - the engine-off gate is blind; refused")
       return False, NO_ENGINE_DATA
     if rpm is None:
+      # the bench: nothing to watch through the countdown either (engine_seen
+      # stays False) - its absence there is not news
       log("  no 0x17C on the bus - engine state unknown (bench); allowed")
     elif rpm > ENGINE_OFF_MAX_RPM:
       log(f"  engine running: {rpm} rpm")
       return False, ENGINE_RUNNING
+    # seen at the gate: the countdown stops if it goes (ENGINE_LOST_S)
+    f.engine_seen = rpm is not None
 
     if knock:
       f.report("baseline", cancel=True)

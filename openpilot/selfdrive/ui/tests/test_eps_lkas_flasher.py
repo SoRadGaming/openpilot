@@ -784,6 +784,65 @@ class TestFlashScreen(unittest.TestCase):
     ok, msg, board, phases, mod = _sim_run(on_phase=lambda d, b, c: setattr(b, "rpm", 150) if d["p"] == "click" else None)
     assert ok, msg
 
+  def test_the_gate_going_blind_in_the_countdown_is_abort(self):
+    """push9 re-review (N2): the countdown watched only for the engine STARTING. 0x17C gone during it - the ignition
+    switched off or to accessory under the update - read as 'no engine data, so not running' and the erase went ahead.
+    0x17C seen at the gate and gone for ENGINE_LOST_S is now ABORT and NO_ENGINE_DATA, the panda's ignition reading off
+    is ABORT and IGNITION_OFF: before BEGIN, the old image stays."""
+    def at_3(change):
+      return lambda d, b, c: change(b) if d["p"] == "stock" and d["left"] == 3 else None
+
+    def stopped(msg, board, mod, why):
+      cmds = [d[0] for _, a, d in board.sent if a == mod.ID_HOST]
+      assert msg == why, msg
+      assert mod.CMD_ABORT in cmds and mod.CMD_BEGIN not in cmds, cmds
+      assert not any(a == mod.ID_DATA for _, a, _ in board.sent)
+      assert board.state == "app", "the bootloader did not go back to the installed firmware"
+
+    # 0x17C gone, in the car (the panda reads the ignition) and on any transport whose gate saw it
+    for ignition in (True, None):
+      ok, msg, board, phases, mod = _sim_run(ignition=ignition, on_phase=at_3(lambda b: setattr(b, "rpm", None)))
+      assert not ok
+      stopped(msg, board, mod, mod.NO_ENGINE_DATA)
+    # the ignition reading off - before the 0x17C it takes with it has been gone ENGINE_LOST_S
+    def ign_off(b):
+      b.ignition = lambda: False
+      b.rpm = None
+    ok, msg, board, phases, mod = _sim_run(ignition=True, on_phase=at_3(ign_off))
+    assert not ok
+    stopped(msg, board, mod, mod.IGNITION_OFF)
+    # an ignition that cannot be read is not off (as at the gate): the countdown goes on
+    ok, msg, board, phases, mod = _sim_run(ignition=True, on_phase=at_3(lambda b: setattr(b, "ignition", lambda: None)))
+    assert ok, msg
+
+    def raises():
+      raise OSError("usb")
+    ok, msg, board, phases, mod = _sim_run(ignition=True, on_phase=at_3(lambda b: setattr(b, "ignition", raises)))
+    assert ok, msg
+
+  def test_the_bench_and_a_short_gap_go_on(self):
+    """The bench stays as it was: no 0x17C from the start is allowed at the gate and is not watched in the countdown -
+    there is nothing there to lose. In the car a gap shorter than ENGINE_LOST_S (100 frames) is not a lost gate."""
+    ok, msg, board, phases, mod = _sim_run(rpm=None)
+    assert ok, msg
+    assert mod.CMD_BEGIN in [d[0] for _, a, d in board.sent if a == mod.ID_HOST]
+    assert mod.ENGINE_LOST_S > 0.8 and mod.ENGINE_LOST_S < mod.HOLD_BEFORE_DATA_S
+    gap: dict = {}
+
+    def drop(d, b, c):
+      if d["p"] == "stock" and d["left"] == 3 and "t" not in gap:
+        b.rpm = None
+        gap["b"], gap["t"] = b, c.now
+
+    def back(phases, clock):            # polled every CANCEL_POLL_S: the 0x17C returns 0.6-0.8 s later
+      if "t" in gap and clock.now >= gap["t"] + 0.6:
+        gap["b"].rpm = 0
+      return False
+
+    ok, msg, board, phases, mod = _sim_run(ignition=True, on_phase=drop, should_cancel=back)
+    assert ok, msg
+    assert "t" in gap and gap["b"].rpm == 0
+
   def test_abort_waits_for_its_echo_and_its_ack(self):
     """push9 review: ABORT was fire-and-forget, and the hook's close() clears the panda's queues right after. It is now
     sent with its echo awaited, then the bootloader's ACK - so it is on the wire before close()."""
