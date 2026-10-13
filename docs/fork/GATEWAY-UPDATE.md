@@ -264,7 +264,9 @@ a first flash, `EpsLkasFlashState` keeps saying `ok <hash>` for the rest of the 
 | otherwise | `to <hash>`, or the refusal reason | per `_can_update()` |
 
 `_busy()` is true when the state is `running`, when `_asked` is set, or when the request param
-is set.
+is set. Since BLR-v1 (branch `blr`, §13.3) it is true when that holds for **either** board, so only
+one update can be in flight, and `_asked` is also cleared when the run has ended without `running`
+ever being seen.
 
 ### 3.6 The update screen (push9, 2026-10-13)
 
@@ -456,7 +458,9 @@ There are five:
    the gateway" must not silently reflash the panda first. `count` is left alone so the
    normal alternation is undisturbed.
 4. After `flash_panda(panda_serials[0])`, which guarantees the panda is out of bootstub, and
-   before `Popen`: `flash_if_requested(panda_serials[0])`.
+   before `Popen`: `flash_if_requested(panda_serials[0])`. Since BLR-v1 (branch `blr`, §13.2):
+   `if not flash_if_requested(panda_serials[0]): flash_if_requested(panda_serials[0], target=BLR)`,
+   one update session per window, with `BLR` imported from the flasher.
 5. After `Popen` and before `process.wait()`: `watch_for_request(process,
    request_skip_panda_reset)`, under a `FORK(GATEWAY-UPDATE)` comment.
 
@@ -1280,7 +1284,8 @@ This is the only test that exercises the dataclass-to-capnp splat card uses.
     (§3.3), or a `PandaTransport` constructor error.
 
   In any of these the button would show `requested` and stay disabled until the UI process
-  restarts. A fix would clear `_asked` on any change of state after `confirm()`.
+  restarts. A fix would clear `_asked` on any change of state after `confirm()`. **Fixed on
+  branch `blr`** (§13.3): with two boards a stuck `_asked` would have held both buttons.
 * **The watcher drops only the first onroad request.** Its `refused` flag means a second
   request written while onroad is neither dropped nor answered. That request stays set and
   is honoured once the car is offroad. The UI cannot write a request onroad; a hand-written
@@ -1390,3 +1395,128 @@ These are where the next merge can collide with area A.
       * the card shows the board's hash and a recent "last seen";
       * with a newer bundle the button reads `to <hash>`;
       * an update completes, and the next route carries `eps-lkas flash trace` lines.
+
+---
+
+## 13. The second board: BLR-v1, the brake-lamp board (branch `blr`)
+
+The BLR-v1 board lights the brake lamps from openpilot's `0x1FA BRAKE_LIGHTS` bit; its data side (DBC, decoder,
+cereal, card, the `Blr*` params) is [BRAKE-LAMP-RELAY.md](BRAKE-LAMP-RELAY.md). It is updated from the comma exactly
+as the EPS-LKAS board is, through the same flasher, hook, pandad window and page, and **separately**: its own
+button, its own params, its own target in the flasher. Markers `FORK(BRAKE-LAMP-RELAY)`. Board side: the EPS-LKAS
+repo, branch `blr-v1`, folder `blr/` (`docs/DESIGN.md` section E, `docs/BLR-CAN.md`).
+
+**Not bundled yet.** `blr_appslot.bin` is added only after the board's bench tests and a shadow drive. Until then
+the lamp board's button says `no image` and offers nothing; its card is shown as soon as the board has spoken.
+
+### 13.1 The flasher
+
+`eps_lkas_flasher.py` has a `Target` per board (`EPS`, `BLR`, `TARGETS`): IDs, magic, marker, slot, the HELLO
+board class, the allowed variants, the dirty rule, the bundled image, the census and trace IDs, DATA pacing, the NAK
+texts and the screen words. `run_flash(..., target=)`, `check_app_slot_image(image, target)`,
+`image_identity(image, target)` and `load_bundled_image(target)` default to `EPS`, whose wire behavior is frozen
+by `test_eps_wire_transcript_is_frozen`. The BLR target is pinned by `test_blr_flasher.py`. The module docstrings
+and that test file are the reference until this section grows a full account of it.
+
+### 13.2 The hook and pandad
+
+`eps_lkas_hook.py` keeps one table of params per board, `KEYS = {EPS: EPS_KEYS, BLR: BLR_KEYS}` (`FlashKeys`, a
+`NamedTuple`: the tests load the hook without registering it in `sys.modules`, where a dataclass cannot resolve its
+annotations). The EPS's are the module constants of §4, unchanged.
+
+| | EPS | BLR |
+|---|---|---|
+| request, progress, state, phase, cancel | `EpsLkasFlash*` | `BlrFlashRequested`, `BlrFlashProgress`, `BlrFlashState`, `BlrFlashPhase`, `BlrFlashCancel` |
+| version, build, seen | `EpsLkasBoard*` | `BlrBoardVersion`, `BlrBoardBuild`, `BlrBoardSeenAt` |
+| trace | `EpsLkasFlashTrace` | `BlrFlashTrace` (card emits both, `log_flash_trace`) |
+| log prefix | `eps-lkas` | `blr` |
+
+* **`flash_if_requested(panda_serial, bus=0, transport_factory=None, target=EPS) -> bool`.** Everything in §5.3,
+  per board, on that board's params only: the onroad drop, clear-first, the Cancel read before it is cleared, never
+  raising. It returns **True when it ran a session** (the request taken and not cancelled, whatever the outcome)
+  and False otherwise (no request, dropped onroad, cancelled before the start). Two failure paths that used to
+  escape into pandad's loop no longer do: a request that cannot be cleared (it returns False), and a transport
+  whose `close()` raises (logged).
+* **pandad.py**, in the window: `if not flash_if_requested(panda_serials[0]):
+  flash_if_requested(panda_serials[0], target=BLR)`. **One session per window**: the lamp board is asked only if
+  the EPS ran none. A second pending request waits for the next window, which the watcher opens once `./pandad` is
+  back. The page never lets two be pending (§13.3), so this is the backstop.
+* **`watch_for_request(process, skip_reset, params=None, targets=(EPS, BLR))`** checks each board in turn, each
+  refused onroad (once per board) or cancelled by its own params; the first request that stands arms the skip and
+  sends the one SIGINT. Still one thread, `eps_lkas_watch`.
+* **On a lamp board success** it writes `BlrFlashState = ok <hash>`, `BlrBoardVersion`, `BlrBoardSeenAt` and
+  `BlrBoardBuild`: card's dict, updated with the image's `dirty` and `variant` (the number, as card writes it from
+  `0x627`: 2 shadow, 3 live), `bootloader: true` (it answered) and `dualBank: true` (its bootloader NAKs BEGIN with
+  9 on single-bank flash, so an install proves it). `bootGit`, `uid` and `borEn` are the board's and stay as card
+  read them. `BlrLastDrive` is the drive's record and is not touched. Event `blr.flashed` with the version and the
+  variant.
+
+### 13.3 The page
+
+`BoardLayoutMici` is `[BoardFirmwareInfo, UpdateBoardButton(), LampBoardInfo, UpdateBoardButton(BLR)]`. The EPS
+pair is the class and the code it was. The lamp board's pair is visible only while `BlrBoardVersion` is set
+(`lamp_board_seen()`, cached on the `REFRESH_S` tick like `board_page_visible()`), and the gateway row now shows when
+**either** board has spoken.
+
+**The lamp board's card** (`LampBoardInfo`, 520 x 180: wider than the EPS's 360 so the usual lines do not scroll;
+`lamp_board_lines()` is the pure part):
+
+```
+lamp board
+1a2b3c4d • shadow • 12 min ago              (dirty) if built from an edited tree
+board id a5c3e1 • boot b28113               • no bootloader / • not dual-bank when 0x62F said so
+last drive: ok                              or the fault names, or LATCHED <reason> (a latch first)
+```
+
+What `0x62F` has not said yet is left out (`board id unknown`), never read as "no". The last drive is
+`BlrLastDrive` (`last_drive_text()`; `unknown` for a missing or malformed record).
+
+**Its button** is titled `lamp board` (251 px of the 252 the title gets beside the icon; measured by a test). Its
+`_can_update()` order:
+
+| # | test | reason |
+|---|---|---|
+| 1 | `BlrBoardBuild` has no `bootloader` key: `0x62F` not heard yet | `drive once` |
+| 2 | `bootloader` false (or no build) | `needs SWD once` |
+| 3 | `dualBank` false | `not dual-bank` (BEGIN would be NAK 9; the option byte is an SWD job) |
+| 4 | no bundled image, or one the comma would never install (bench, `VARIANT` 0, dirty, not `BLR1`) | `no image` |
+| 5 | bundled hash **and variant** == the board's (a shadow and a live image of one commit share a hash) | `up to date` |
+| 6, 7 | ignition, offroad, as the EPS | `ignition off`, `use always offroad` |
+| - | all pass | `to <hash>` and, on a second line, `(shadow)` or `(live)` (one line would be 366 px against 322) |
+
+`bundled_offer(target)` reads the 0x110-byte head through the target (`target.image_path`, `target.marker_magic`,
+`image_identity`, `marker_variant`), cached per image path on its mtime; `bundled_firmware(target)` is its hash.
+
+**One update at a time.** Each button's `_busy()` is true while **either** board's state is `running` or its
+request is set, or either button has asked (`set_peers()`). The other board's button is then disabled and says
+`busy`. The confirm re-checks it, and writes only its own board's params, in the EPS's order, then opens
+`GatewayFlashDialog(target)`.
+
+**`_asked` no longer sticks** (§11.2, first item). A non-empty state other than `running` with the request cleared
+means the run is over, so `_asked` is cleared even when `running` was never seen. With two boards a stuck `_asked`
+would have held both buttons busy until the UI restarted.
+
+**The screen** is the same `GatewayFlashDialog`, from the board's own params, in its own words (`target.words`):
+
+| phase | EPS | BLR |
+|---|---|---|
+| `click` | relays to stock / the car is on stock wiring | lamp output off / brake lamps are pedal-only |
+| `stock` | relays in stock, updating in 5..1 | lamp output off, updating in 5..1 |
+| `ok` | done / turn the car off, then on, before driving | done |
+
+Everything else (checking, erasing, writing, the gate's refusals, Cancel) is both boards'.
+
+### 13.4 Tests
+
+| file | what it pins for the lamp board |
+|---|---|
+| `test_eps_lkas_hook.py` (`TestTwoBoards`, 12) | **one session per window**, run from `pandad.py`'s own statement; a cancelled EPS request leaves the window free; each board clears only its own request; the watcher on the lamp board's params (offroad, onroad, cancelled, both pending: one SIGINT); the Cancel read before it is cleared; the identity written after an install (with and without `0x62F`); no image is a clean failure; never raising; the page's and the hook's tables name the same params; the `Blr*` params have their `EpsLkas*` twins' lifetimes |
+| `test_gateway_lamp_board.py` (18) | `flash_view()` in the lamp board's words and never "relay" or "turn the car off"; the card; the last drive; `bundled_offer()` by the target's rules; and the page driven in a headless raylib window (child process): the pair hidden until the board has spoken, the EPS pair unchanged with the lamp board present, titles that fit, the gate, `_busy()` across both, the confirm writing only its own params, the screen's Cancel, a run over inside one tick, `no image` |
+| adjusted | `test_every_param_the_hook_and_the_page_use_is_registered` resolves the key tables and requires the `Blr*` keys; `test_the_button_title_leaves_room_for_its_sub_label` checks every target's title; `test_no_glyphs_the_baked_font_does_not_have` also checks the targets' screen words; `test_the_ui_shares_the_marker_constants_with_the_flasher` reads them through the targets; `test_the_confirm_opens_the_screen_and_clears_a_stale_cancel` follows the confirm to `keys.*` and `GatewayFlashDialog(self._target)` |
+
+### 13.5 Never
+
+Nothing the lamp board sends or the page stores feeds `brakePressed`, `brakeLights`, a controls decision or panda
+safety (board design E.7; tests in BRAKE-LAMP-RELAY.md). The update gate is the EPS's, unchanged: ignition on,
+stationary on `0x158`, engine off on `0x17C`, the countdown, Cancel, ABORT. A failed lamp board update leaves the
+car's own pedal-driven lamps.

@@ -15,6 +15,28 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-14 — BLR-v1 brake-lamp board: updated from Settings > gateway, separately (branch `blr`, not pushed)
+
+The owner's second board, BLR-v1, lights the brake lamps from openpilot's `0x1FA BRAKE_LIGHTS` bit, and asked for
+it to be updated "similar to how we did eps, with bootloader etc ... separately". Its data side (DBC, decoder,
+`carStateSP.brakeLampRelay`, the `Blr*` params card writes) and the flasher's `BLR` target are in their own commits
+on this branch. This entry is the hook, pandad and the page (`docs/fork/GATEWAY-UPDATE.md` §13):
+
+* **Its own button and card** on Settings > gateway, after the EPS pair, shown once the board has spoken
+  (`BlrBoardVersion`): `lamp board`, with `<hash> • shadow|live • <age>`, `board id <uid> • boot <git>` and
+  `last drive: ok | <fault names> | LATCHED <reason>`. The gateway row now appears when either board has spoken.
+* **Separate in every way but one**: its own params (`BlrFlash*`), its own screen words (lamp output off - brake
+  lamps pedal-only; no relays, no "turn the car off, then on"), its own gate reasons (`drive once` before `0x62F`,
+  `not dual-bank`), and "up to date" on the hash **and** the variant. The one link: only one update can ever be in
+  flight, so each button is `busy` while the other board's update is pending or running.
+* **One session per pandad window**: `flash_if_requested(..., target=)` returns whether it ran one, and pandad asks
+  the lamp board only if the EPS ran none. The watcher watches both requests; each board clears only its own.
+* **No image is bundled yet** (after the bench tests and a shadow drive): the button says `no image` and offers
+  nothing.
+* **The EPS's update is unchanged on the wire** (`test_eps_wire_transcript_is_frozen`) and on the page. Two fixes
+  it shares: the button no longer sticks at `requested` when a run ends inside one refresh tick (GATEWAY-UPDATE
+  §11.2), and the hook no longer lets a failing request clear or transport `close()` escape into pandad's loop.
+
 ## 2026-10-13 — push9: the update screen, a press at 'now' sets the limit, board `883a3cd1`
 
 After the first drives on push8 (routes 132-137) the owner asked for four things and chose each in chat:
