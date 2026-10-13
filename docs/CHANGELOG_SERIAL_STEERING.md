@@ -85,7 +85,7 @@ diagnostics.
   with MAX at 110 asks for nothing; at 105 it is '+'.
 - **Only with the card on.** With `HudApproachingLimit` off nothing arms. A press while the card
   is hidden (MAX, an alert, the lane-block tile) still counts - plannerd cannot see the screen.
-- **Update screen.** A Cancel in the countdown's last instant is honoured (Cancel leaves the
+- **Update screen.** A Cancel in the countdown's last instant is honored (Cancel leaves the
   screen 0.5 s before the end and is read once more right before BEGIN); "too late to cancel"
   replaces "canceling" once the erase has begun; "canceling" while starting. The engine is
   watched through the countdown (started then: ABORT, "engine on"). No `0x17C` through the
