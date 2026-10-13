@@ -304,20 +304,29 @@ class TestGatewayBoardSettings(unittest.TestCase):
   def test_the_ui_shares_the_marker_constants_with_the_flasher(self):
     """The screen and the bootloader must never disagree about where the marker
     is. Importing them is the only way to make that true by construction -- a
-    second copy of 0x100 in this file is a copy that can drift."""
+    second copy of 0x100 in this file is a copy that can drift.
+
+    Since the second board (BLR-v1) the magic and the image path are the
+    flasher's Target's (EPS.marker_magic / EPS.image_path, BLR's likewise): the
+    page imports the targets, and reads both through them."""
     panel = BOARD_PANEL.read_text()
     tree = ast.parse(panel)
     imported = set()
     for node in ast.walk(tree):
       if isinstance(node, ast.ImportFrom) and node.module and "eps_lkas_flasher" in node.module:
         imported |= {a.name for a in node.names}
-    for name in ("APP_ID_MAGIC", "APP_ID_OFFSET", "EPS_LKAS_APPSLOT_BIN"):
+    for name in ("APP_ID_OFFSET", "EPS", "BLR", "image_identity", "marker_variant"):
       assert name in imported, f"{name} is not imported from the flasher"
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "bundled_offer")
+    seg = ast.get_source_segment(panel, fn) or ""
+    assert "target.marker_magic" in seg and "target.image_path" in seg, "the offer is not read through the target"
 
     # and it must not define its own
     code = "\n".join(line.split("#", 1)[0] for line in panel.splitlines())
     assert not re.search(r"^APP_ID_OFFSET\s*=", code, re.M), "a second copy of the offset"
     assert not re.search(r"^APP_ID_MAGIC\s*=", code, re.M), "a second copy of the magic"
+    assert not re.search(r"^BLR_APP_ID_MAGIC\s*=", code, re.M), "a second copy of the lamp board's magic"
+    assert not re.search(r"0x314C5041|0x31524C42", code), "a marker magic typed in again"
 
   def test_bundled_hash_read_agrees_with_the_full_parse(self):
     """The UI reads only the first 0x110 bytes. That shortcut has to give the
@@ -392,7 +401,11 @@ class TestGatewayBoardSettings(unittest.TestCase):
     dash (U+2014) and a middle dot (U+00B7) are in none of those, and raylib
     silently substitutes a wrong glyph - so the card read "no _ needs SWD once"
     on the device. The bullet (U+2022) and en dash (U+2013) ARE in
-    EXTRA_FONT_CHARS and are safe."""
+    EXTRA_FONT_CHARS and are safe.
+
+    The update screen's board words come from the flasher's targets (BLR-v1),
+    so those are checked too, with the BLR variant names the card shows."""
+    import importlib.util
     extra = re.search(r'EXTRA_FONT_CHARS\s*=\s*"([^"]*)"',
                       APPLICATION.read_text(encoding="utf-8")).group(1)
     allowed = set(map(chr, range(32, 127))) | set(extra)
@@ -401,16 +414,38 @@ class TestGatewayBoardSettings(unittest.TestCase):
         for m in re.finditer(r'tr\("([^"]*)"\)', line):
           bad = sorted({c for c in m.group(1) if c not in allowed})
           assert not bad, f"{path.name}:{i}: {[hex(ord(c)) for c in bad]} is not in the baked font; raylib will substitute a wrong glyph"
+    spec = importlib.util.spec_from_file_location(
+      "eps_lkas_flasher", ROOT / "sunnypilot/selfdrive/pandad/eps_lkas_flasher.py")
+    assert spec is not None and spec.loader is not None
+    fl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fl)
+    shown = [t.words[k] for t in fl.TARGETS.values() for k in ("title", "click", "click_line", "stock", "done_line")]
+    for text in shown + list(fl.BLR_VARIANT_NAMES.values()):
+      bad = sorted({c for c in text if c not in allowed})
+      assert not bad, f"{text!r}: {[hex(ord(c)) for c in bad]} is not in the baked font"
 
   def test_the_button_title_leaves_room_for_its_sub_label(self):
     """BigButton gives the sub-label whatever the title does not use. "update
     firmware" is 370 px at 48 pt against a 322 px content width, so it wrapped to
     two lines and left ~33 px for a 42 px sub-label line - which was then force
-    elided. The title has to fit one line."""
+    elided. The title has to fit one line.
+
+    EVERY title (BLR-v1): one button per board, each titled by its target's
+    words - "update" for the EPS, "lamp board" for the lamp board. The pixels are
+    measured too, in test_gateway_lamp_board.py ("lamp board" is 251 of 252)."""
+    import importlib.util
     panel = BOARD_PANEL.read_text()
-    m = re.search(r'super\(\)\.__init__\(tr\("([^"]*)"\)', panel)
+    m = re.search(r'super\(\)\.__init__\(tr\(target\.words\["title"\]\)', panel)
     assert m, "could not find the button title"
-    assert len(m.group(1)) <= 10,     f'button title "{m.group(1)}" is long enough to wrap and squeeze out the sub-label'
+    spec = importlib.util.spec_from_file_location(
+      "eps_lkas_flasher", ROOT / "sunnypilot/selfdrive/pandad/eps_lkas_flasher.py")
+    assert spec is not None and spec.loader is not None
+    fl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fl)
+    titles = {t.name: t.words["title"] for t in fl.TARGETS.values()}
+    assert titles == {"eps": "update", "blr": "lamp board"}, titles
+    for name, title in titles.items():
+      assert len(title) <= 10, f'{name} button title "{title}" is long enough to wrap and squeeze out the sub-label'
 
   def test_up_to_date_disables_the_button(self):
     """A live button under a success message is an invitation to reflash the
