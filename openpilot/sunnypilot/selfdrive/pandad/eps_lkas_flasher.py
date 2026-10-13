@@ -411,6 +411,16 @@ BLR_VARIANT_MASK = 0x30
 BLR_VARIANT_BENCH, BLR_VARIANT_SHADOW, BLR_VARIANT_LIVE = 1, 2, 3
 BLR_VARIANT_NAMES = {0: "invalid", BLR_VARIANT_BENCH: "bench", BLR_VARIANT_SHADOW: "shadow", BLR_VARIANT_LIVE: "live"}
 BLR_ERR_WRONG_IMAGE, BLR_ERR_NOT_DUAL_BANK, BLR_ERR_OUTPUT_ON = 8, 9, 10
+# HELLO status bit 6: this boot erased a flash page that read back with an ECC error (an erase or a write a power cut
+# interrupted) before anything else read flash - and a staged image was cancelled with it (review round 1, BOOT-2).
+BLR_HELLO_ECC_FIXED = 0x40
+# The post-build trailer, the last 12 bytes of every BLR app .bin (review round 1, BOOT-6): {"BLRT", the length of the
+# whole file including these 12 bytes, CRC-32 of every byte before them}, 0xFF-padded in front to a double word. The
+# marker and the vectors do not say how long an image is, so without it any prefix of a real image that still holds
+# its reset handler passed every check. The bootloader checks it at FINISH and again before the copy; the comma checks
+# it before a frame is sent (check_app_slot_image) and before an image is offered (board.py bundled_offer).
+BLR_TRAILER_MAGIC = 0x54524C42     # "BLRT" little-endian
+BLR_TRAILER_BYTES = 12
 BLR_ERRS = {**ERRS, BLR_ERR_WRONG_IMAGE: "image is not for this board",
             BLR_ERR_NOT_DUAL_BANK: "board flash is not dual-bank",
             BLR_ERR_OUTPUT_ON: "lamp output is on"}
@@ -457,7 +467,7 @@ class Target:
   allowed_variants: frozenset[int] | None  # marker VARIANTs the comma installs; None = no VARIANT field
   refuse_dirty: bool                       # refuse an image built from an edited tree
   strict_image: bool                       # the bootloader's full image rules here too: odd PC inside the image,
-                                           # reserved flag bits zero
+                                           # reserved flag bits zero, the image's own length/CRC-32 trailer (BLRT)
   image_path: str                          # the bundled image
   census_own: frozenset[int]               # IDs the census never reports as lost or new
   trace_ids: tuple[int, ...]               # traced raw - and kept out of _rx, so never the board's reply ID
@@ -586,7 +596,9 @@ def check_app_slot_image(image: bytes, target: Target = EPS) -> str | None:
   on the BLR is the brake lamps on. For the BLR this applies its bootloader's
   full rules (check_blr_image.py --for-car): an odd reset vector inside the
   image's own bytes, reserved flag bits zero, a shadow or live VARIANT - never
-  bench - and a clean tree.
+  bench - and a clean tree; and the image's own trailer, the post-build {BLRT,
+  length, CRC-32} in its last 12 bytes, so a truncated or partial file is refused
+  here and not at FINISH (blr_trailer_problem()).
   """
   t = target
   if len(image) < APP_ID_OFFSET + 16:
@@ -622,7 +634,27 @@ def check_app_slot_image(image: bytes, target: Target = EPS) -> str | None:
       return f"the marker's VARIANT is {v} ({BLR_VARIANT_NAMES.get(v, '?')}): only shadow or live is installed"
   if t.refuse_dirty and flags & APP_ID_DIRTY:
     return f"built from a dirty tree: the board would report {git:08x}, a commit this image was not built from"
+  if t.strict_image and (why := blr_trailer_problem(image)):
+    return why
   return None
+
+
+def blr_trailer_problem(image: bytes) -> str:
+  """Empty if `image` ends with its own valid BLRT trailer, else why not - in the
+  BLR bootloader's order (img_trailer_ok(): the length, the magic, the length
+  field, the CRC-32), and in blr_hostlib.trailer_problem()'s sense. Never raises."""
+  n = len(image)
+  if n < APP_ID_OFFSET + 16 + BLR_TRAILER_BYTES:
+    return f"{n} bytes cannot hold the marker and the {BLR_TRAILER_BYTES}-byte trailer"
+  magic, length, crc = struct.unpack_from("<III", image, n - BLR_TRAILER_BYTES)
+  if magic != BLR_TRAILER_MAGIC:
+    return (f"no image trailer (BLRT) in its last {BLR_TRAILER_BYTES} bytes: a truncated or partial copy of an " +
+            "image, or a .bin the BLR post-build did not make")
+  if length != n:
+    return f"the trailer says the image is {length} bytes, but it is {n}: a truncated, padded or concatenated file"
+  if zlib.crc32(image[:n - BLR_TRAILER_BYTES]) & 0xFFFFFFFF != crc:
+    return "the image does not match its own trailer's CRC-32: the file was changed after the build"
+  return ""
 
 
 def image_identity(image: bytes, target: Target = EPS) -> dict:
@@ -1514,7 +1546,9 @@ class Flasher:
 
 def describe_hello(d: bytes, target: Target = EPS) -> dict:
   """HELLO is the only frame a board with an empty slot ever sends. A BLR's also
-  says which VARIANT is installed (status bits 5:4) and its board class (byte 7)."""
+  says which VARIANT is installed (status bits 5:4), its board class (byte 7),
+  and whether this boot repaired a flash page that failed ECC (bit 6), which
+  cancels a staged image."""
   h = {"proto": d[1], "appOk": bool(d[2] & HELLO_APP_OK),
        "appId": bool(d[2] & HELLO_APP_ID), "dirty": bool(d[2] & HELLO_APP_DIRTY),
        "staged": bool(d[2] & HELLO_STAGED),
@@ -1522,6 +1556,7 @@ def describe_hello(d: bytes, target: Target = EPS) -> dict:
   if target.hello_class is not None:
     h["variant"] = BLR_VARIANT_NAMES.get(marker_variant(d[2]), "invalid")
     h["cls"] = d[7] if len(d) > 7 else None
+    h["eccFixed"] = bool(d[2] & BLR_HELLO_ECC_FIXED)
   return h
 
 
@@ -1634,7 +1669,8 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
       return False, e
     h = describe_hello(hello, target)
     log(f"  HELLO v{h['proto']}: installed {h['git']}, appOk={h['appOk']}"
-        + (f", {h['variant']}" if "variant" in h else ""))
+        + (f", {h['variant']}" if "variant" in h else "")
+        + (", ECC page repaired this boot" if h.get("eccFixed") else ""))
 
     if (e := f.enter()):
       return False, e
@@ -1686,13 +1722,15 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
     if (e := f.wrong_board(after, "HELLO")):
       return False, e
     a = describe_hello(after, target)
+    # a BLR bootloader that repaired an ECC page on this boot cancelled the staged image with it (BOOT-2)
+    ecc = " - its bootloader repaired a flash page this boot, which cancels a staged image" if a.get("eccFixed") else ""
     if not a["appOk"]:
       return False, ("installed, but the board refuses to run it " +
-                     f"(HELLO appOk=0, appId={a['appId']})")
+                     f"(HELLO appOk=0, appId={a['appId']})" + ecc)
     if a["git"] != ident["git"]:
-      return False, f"board reports {a['git']} after installing {ident['git']}"
+      return False, f"board reports {a['git']} after installing {ident['git']}" + ecc
     if "variant" in ident and a.get("variant") != ident["variant"]:
-      return False, f"board reports a {a.get('variant')} image after installing {ident['variant']}"
+      return False, f"board reports a {a.get('variant')} image after installing {ident['variant']}" + ecc
     return True, a["git"]
   except Exception as e:
     # NEVER let this reach pandad. An exception escaping here would take the

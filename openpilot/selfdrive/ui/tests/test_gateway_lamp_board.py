@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).parents[3]      # openpilot/
@@ -42,11 +43,18 @@ def _board():
   return board
 
 
-def _image(magic=BLR1, git=0x9F8E7D6C, variant=2, dirty=0, size=0x400) -> bytes:
+def _seal(body: bytes) -> bytes:
+  """As the BLR post-build seals every app .bin (review round 1, BOOT-6): 0xFF to a double word, then {BLRT, the
+  whole length, CRC-32 of the rest} (test_blr_flasher.py sealed())."""
+  body = bytes(body) + b"\xff" * ((-(len(body) + 12)) % 8)
+  return body + struct.pack("<III", 0x54524C42, len(body) + 12, zlib.crc32(body) & 0xFFFFFFFF)
+
+
+def _image(magic=BLR1, git=0x9F8E7D6C, variant=2, dirty=0, size=0x400, trailer=True) -> bytes:
   d = bytearray(size)
   struct.pack_into("<II", d, 0, 0x20024000, 0x08004201)
   struct.pack_into("<4I", d, 0x100, magic, 0x08004000, git, (dirty & 1) | (variant << 4))
-  return bytes(d)
+  return _seal(bytes(d)) if trailer else bytes(d)
 
 
 class TestLampBoardScreen(unittest.TestCase):
@@ -121,7 +129,8 @@ class TestLampBoardCard(unittest.TestCase):
 
 
 class TestBundledOffer(unittest.TestCase):
-  """What the lamp board's button offers is read from the image's marker, by the target's own rules."""
+  """What the lamp board's button offers is the flasher's own verdict on the whole image: what it would refuse is never
+  offered. The EPS's is read from the marker, as it always was."""
 
   def _offer(self, data: bytes | None, target=None):
     b = _board()
@@ -143,6 +152,20 @@ class TestBundledOffer(unittest.TestCase):
     assert self._offer(_image(dirty=1)) == ("", ""), "a dirty tree"
     assert self._offer(_image(magic=APL1)) == ("", ""), "the EPS's image"
     assert self._offer(b"\x00" * 0x80) == ("", ""), "too short to hold a marker"
+    # the whole file, not its head: a copy cut short keeps its marker and vectors, and only its trailer says so
+    good = _image(variant=2, size=0x800)
+    assert self._offer(good) == ("9f8e7d6c", "shadow")
+    assert self._offer(good[:-12]) == ("", ""), "the trailer cut off"
+    assert self._offer(good[:0x600]) == ("", ""), "a truncated copy"
+    assert self._offer(_image(variant=2, trailer=False)) == ("", ""), "a bare objcopy .bin, never sealed"
+    bad = bytearray(good)
+    bad[0x500] ^= 0x01
+    assert self._offer(bytes(bad)) == ("", ""), "changed after the build"
+    even = bytearray(_image(variant=2, size=0x800, trailer=False))
+    struct.pack_into("<I", even, 4, 0x08004200)
+    assert self._offer(_seal(bytes(even))) == ("", ""), "an even reset vector, sealed: the bootloader's own rules too"
+    # and the EPS's offer still reads the marker alone: no trailer, no full parse
+    assert self._offer(_image(magic=APL1, variant=0, trailer=False), target=_board().EPS) == ("9f8e7d6c", "")
     # and the EPS refuses the lamp board's image the same way
     assert self._offer(_image(magic=BLR1), target=_board().EPS) == ("", "")
     assert self._offer(_image(magic=APL1, variant=0), target=_board().EPS) == ("9f8e7d6c", "")

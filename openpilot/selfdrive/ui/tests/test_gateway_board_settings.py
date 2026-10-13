@@ -308,18 +308,20 @@ class TestGatewayBoardSettings(unittest.TestCase):
 
     Since the second board (BLR-v1) the magic and the image path are the
     flasher's Target's (EPS.marker_magic / EPS.image_path, BLR's likewise): the
-    page imports the targets, and reads both through them."""
+    page imports the targets, and reads both through them - and the lamp
+    board's whole image through the flasher's own check_app_slot_image()."""
     panel = BOARD_PANEL.read_text()
     tree = ast.parse(panel)
     imported = set()
     for node in ast.walk(tree):
       if isinstance(node, ast.ImportFrom) and node.module and "eps_lkas_flasher" in node.module:
         imported |= {a.name for a in node.names}
-    for name in ("APP_ID_OFFSET", "EPS", "BLR", "image_identity", "marker_variant"):
+    for name in ("APP_ID_OFFSET", "EPS", "BLR", "image_identity", "check_app_slot_image"):
       assert name in imported, f"{name} is not imported from the flasher"
     fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "bundled_offer")
     seg = ast.get_source_segment(panel, fn) or ""
     assert "target.marker_magic" in seg and "target.image_path" in seg, "the offer is not read through the target"
+    assert "check_app_slot_image(head, target)" in seg, "the lamp board's offer is not the flasher's own verdict"
 
     # and it must not define its own
     code = "\n".join(line.split("#", 1)[0] for line in panel.splitlines())

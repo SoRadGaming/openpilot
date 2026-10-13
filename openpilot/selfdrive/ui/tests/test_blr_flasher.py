@@ -10,11 +10,13 @@ run_flash serves both - and an update of one must never reach the other. This fi
 
   constants   the design's literals always; the firmware headers too, whenever the firmware tree is reachable
   images      APL1 and BLR1 refused on each other's board, the BLR bootloader record, bench, dirty, VARIANT 0, the
-              bootloader's own vector rules; and the bundled blr_appslot.bin, skipped while none is bundled
+              bootloader's own vector rules, the image's own length/CRC-32 trailer (review round 1, BOOT-6); and the
+              bundled blr_appslot.bin, skipped while none is bundled
   the wire    run_flash against BlrSim - the BLR bootloader as blr_boot_main.c implements it and the app's knock as
               BLR-CAN.md section 4 states it, with the car and the EPS board around it, on a fake clock: a full
               update, every cancel point, the engine gate, the class check, pacing, NAK 5/8/9/10, lost frames, a
-              resident bootloader, the VARIANT read back after the install, and the trace
+              resident bootloader, the VARIANT read back after the install, a truncated image refused at FINISH, a
+              boot that repaired an ECC page (BOOT-2), and the trace
 
 The EPS side is pinned elsewhere, unchanged: test_eps_lkas_flasher.py, including test_eps_wire_transcript_is_frozen.
 """
@@ -45,6 +47,7 @@ FIRMWARE_BLR = [Path(p) for p in (os.environ.get("BLR_FIRMWARE_DIR", ""),
 APP_ORIGIN = 0x08004000
 SLOT = 112 * 1024
 BLR1, APL1, BLB1 = 0x31524C42, 0x314C5041, 0x31424C42
+BLRT = 0x54524C42                     # the app image's trailer (blr_boot_proto.h BLR_TRAILER_MAGIC)
 KNOCK = bytes([0x01]) + b"BLRBOOT"
 
 
@@ -60,19 +63,28 @@ def _module():
 
 
 def make_image(magic=BLR1, variant=2, git=0x1234ABCD, dirty=0, size=4 * 1024 + 4, origin=APP_ORIGIN,
-               sp=0x20024000, pc=None, flags=None, seed=1) -> bytes:
-  """An app-slot image: vectors, the 16-byte marker at 0x100, random bytes. Not a multiple of 8 by default, as the
-  real images are not: the last chunk is short and so is its last DATA frame."""
+               sp=0x20024000, pc=None, flags=None, seed=1, trailer=True) -> bytes:
+  """An app-slot image: vectors, the 16-byte marker at 0x100, random bytes - `size` of them, which is not a multiple
+  of 8 by default, as an objcopy .bin is not - and then, as the BLR post-build seals every app .bin (review round 1,
+  BOOT-6), sealed(): 0xFF to a double word and the 12-byte trailer. The last chunk is still short. trailer=False is
+  the bare objcopy output, and every EPS image."""
   rnd = random.Random(seed)
   d = bytearray(rnd.randrange(256) for _ in range(size))
   struct.pack_into("<II", d, 0, sp, APP_ORIGIN + 0x201 if pc is None else pc)
   f = (dirty & 1) | (variant << 4) if flags is None else flags
   struct.pack_into("<4I", d, 0x100, magic, origin, git, f)
-  return bytes(d)
+  return sealed(bytes(d)) if trailer else bytes(d)
+
+
+def sealed(body: bytes) -> bytes:
+  """blr_hostlib.add_trailer(), typed in again: 0xFF to a double word, then {BLRT, the length INCLUDING these 12
+  bytes, CRC-32 of every byte before them} (blr_boot_proto.h, the image trailer)."""
+  body = bytes(body) + b"\xff" * ((-(len(body) + 12)) % 8)
+  return body + struct.pack("<III", BLRT, len(body) + 12, zlib.crc32(body) & 0xFFFFFFFF)
 
 
 def eps_image(git=0x0EB50001, flags=0, size=4 * 1024 + 4, seed=7) -> bytes:
-  return make_image(magic=APL1, git=git, flags=flags, size=size, seed=seed)
+  return make_image(magic=APL1, git=git, flags=flags, size=size, seed=seed, trailer=False)
 
 
 class FakeTime:
@@ -109,11 +121,13 @@ class BlrSim:
   out of session every command but ENTER/REBOOT/ABORT is NAK 1; any BEGIN ends the previous transfer, NAK 9 not
   dual-bank, NAK 8 (and the session and window closed) below 0x110 bytes, NAK 2 above the slot, else ACK after the
   bank-2 erase; CEND checks sequence, the image end, SHORT, the CRC-16, then the vectors at chunk 0 and the BLR1
-  marker at chunk 1 (NAK 8, session closed), a chunk already in flash is ACKed again; FINISH checks the CRC-32 and the
-  whole image read back from staging; REBOOT ACKs and resets; ABORT ACKs and ends the window; a session dies 10 s after
-  its last frame. The reset copies a staged image only if it still passes every check, then HELLO
-  `83 01 <status> <git LE> <class>` once, then 800 ms for ENTER, then the app - or, with nothing valid in the slot,
-  resident for good.
+  marker at chunk 1 (NAK 8, session closed), a chunk already in flash is ACKed again; FINISH checks the CRC-32, the
+  whole image read back from staging and its own trailer (NAK 8, session closed); REBOOT ACKs and resets; ABORT ACKs
+  and ends the window; a session dies 10 s after its last frame. The reset first repairs a flash page that failed ECC
+  on the boots in `ecc_boots` - the staging header erased first, so a staged image is cancelled - then copies a
+  staged image only if it still passes every check, the trailer among them, then HELLO
+  `83 01 <status> <git LE> <class>` once (status bit 6 if it repaired a page), then 800 ms for ENTER, then the app -
+  or, with nothing valid in the slot, resident for good.
 
   THE APP takes exactly `01 42 4C 52 42 4F 4F 54` on 0x628 as the knock: ignored in INIT, NAK 5 not stationary, NAK 10
   with the lamp output on, otherwise a 0x620 STATE 7 and a reset. It sends 0x620 at 10 Hz and 0x627 at 1 Hz.
@@ -127,8 +141,9 @@ class BlrSim:
 
   def __init__(self, mod, clock, app: bytes | None = None, rpm: int | None = 0, speed: int = 0,
                ignition: bool | None = True, board_moving=False, output_on=False, dual_bank=True,
-               cls=2, ack_cls=2, resident=False, lbt_s=0.1, app_init_s=0.3):
+               cls=2, ack_cls=2, resident=False, lbt_s=0.1, app_init_s=0.3, ecc_boots=()):
     self.mod, self.clock = mod, clock
+    self.ecc_boots = frozenset(ecc_boots)
     self.rpm, self.speed = rpm, speed
     if ignition is not None:
       self.ignition = lambda: ignition
@@ -208,6 +223,15 @@ class BlrSim:
   def img_ok(self, p, n) -> bool:
     return 0x110 <= n <= SLOT and self.vectors_ok(p) and self.marker_ok(p[0x100:0x110]) and self.pc_inside(p, n)
 
+  @staticmethod
+  def trailer_ok(img) -> bool:
+    """img_trailer_ok(): {BLRT, the length, CRC-32 of the rest} in the image's last 12 bytes."""
+    n = len(img)
+    if n < 0x110 + 12 or n > SLOT:
+      return False
+    magic, length, crc = struct.unpack_from("<III", img, n - 12)
+    return magic == BLRT and length == n and zlib.crc32(img[:n - 12]) & 0xFFFFFFFF == crc
+
   def app_present(self) -> bool:
     return self.vectors_ok(self.slot) and self.marker_ok(self.slot[0x100:0x110])
 
@@ -218,10 +242,13 @@ class BlrSim:
   def reset(self, quiet=False):
     now = self.clock.now
     self.boots += 1
+    ecc = self.boots in self.ecc_boots
+    if ecc:
+      self.hdr = None                                  # ecc_recover(): the staging header page erased first
     h = self.hdr
     if h is not None and h["state"] == "pending" and not self.fail_copy:
       img = bytes(self.stage[:h["length"]])
-      if zlib.crc32(img) == h["crc"] and self.img_ok(img, len(img)):
+      if zlib.crc32(img) == h["crc"] and self.img_ok(img, len(img)) and self.trailer_ok(img):
         self.slot[:] = b"\xff" * SLOT
         self.slot[:len(img)] = img
         h["state"] = "done"
@@ -241,6 +268,8 @@ class BlrSim:
       st |= 0x02 | (0x04 if flags & 1 else 0) | (flags & 0x30)
     if self.hdr is not None and self.hdr["state"] == "pending":
       st |= 0x08
+    if ecc:
+      st |= 0x40                                       # BLR_BOOT_HELLO_ECC_FIXED
     g = git if st & 0x01 else 0
     self.queue.append((self.tx_ok_at, 0x629, bytes([0x83, 1, st]) + g.to_bytes(4, "little") + bytes([self.cls]),
                        self.mod.RX))
@@ -373,7 +402,7 @@ class BlrSim:
       img = bytes(self.stage[:s["length"]])
       if zlib.crc32(img) != want:
         return self._nak(cmd, 3)
-      if not self.img_ok(img, len(img)):
+      if not self.img_ok(img, len(img)) or not self.trailer_ok(img):
         self._close(now)
         return self._nak(cmd, 8)
       self.hdr = {"length": s["length"], "crc": want, "state": "pending"}
@@ -505,6 +534,10 @@ class TestBlrTarget(unittest.TestCase):
     assert mod.BLR_BOOT_ID_MAGIC == BLB1 and mod.BLR_APP_ID_RESERVED == 0x0E
     assert (mod.BLR_VARIANT_BENCH, mod.BLR_VARIANT_SHADOW, mod.BLR_VARIANT_LIVE) == (1, 2, 3)
     assert abs(1.0 / b.data_fps_max + mod.DATA_PACE_MARGIN_S - 0.00251) < 1e-12, "blr_can_update.py DATA_SPACING_S"
+    # review round 1: the image trailer (BOOT-6) and HELLO's ECC_FIXED (BOOT-2)
+    assert (mod.BLR_TRAILER_MAGIC, mod.BLR_TRAILER_BYTES, mod.BLR_HELLO_ECC_FIXED) == (BLRT, 12, 0x40)
+    assert struct.pack("<I", mod.BLR_TRAILER_MAGIC) == b"BLRT"
+    assert mod.BLR_HELLO_ECC_FIXED & (mod.BLR_VARIANT_MASK | 0x0F) == 0, "a bit of its own in HELLO's status"
     # nothing of the BLR's identity is the EPS board's
     e = mod.EPS
     assert not {b.id_host, b.id_board, b.id_data} & {e.id_host, e.id_board, e.id_data}
@@ -561,6 +594,8 @@ class TestBlrTarget(unittest.TestCase):
       assert d[f"BLR_BOOT_HELLO_{name}"] == getattr(mod, f"HELLO_{name}"), name
     assert (d["BLR_BOOT_HELLO_VARIANT_SHIFT"], d["BLR_BOOT_HELLO_VARIANT_MASK"]) == \
            (mod.BLR_VARIANT_SHIFT, mod.BLR_VARIANT_MASK)
+    assert d["BLR_BOOT_HELLO_ECC_FIXED"] == mod.BLR_HELLO_ECC_FIXED
+    assert (d["BLR_TRAILER_MAGIC"], d["BLR_TRAILER_BYTES"]) == (mod.BLR_TRAILER_MAGIC, mod.BLR_TRAILER_BYTES)
     assert (d["BLR_BOOT_ERR_WRONG_IMAGE"], d["BLR_BOOT_ERR_NOT_DUAL_BANK"], d["BLR_BOOT_ERR_OUTPUT_ON"]) == \
            (mod.BLR_ERR_WRONG_IMAGE, mod.BLR_ERR_NOT_DUAL_BANK, mod.BLR_ERR_OUTPUT_ON)
     assert {d[f"BLR_BOOT_ERR_{n}"] for n in ("SEQUENCE", "CRC", "SHORT")} == b.retry_naks
@@ -596,6 +631,28 @@ class TestBlrTarget(unittest.TestCase):
     if tool.is_file():
       spacing = float(re.search(r"^DATA_SPACING_S = ([0-9.]+)", tool.read_text(), re.M).group(1))
       assert abs(spacing - (1.0 / b.data_fps_max + mod.DATA_PACE_MARGIN_S)) < 1e-12
+
+  def test_the_trailer_is_the_firmware_post_builds(self):
+    """The trailer as the firmware's own host library seals and checks it (blr_hostlib.add_trailer / trailer_problem,
+    which the BLR post-build, check_blr_image.py and blr_can_update.py use) - when the firmware tree is reachable.
+    Same bytes from the same body, and the same verdict on every image here."""
+    fw = _firmware_dir()
+    if fw is None or not (fw / "tools/blr_hostlib.py").is_file():
+      self.skipTest("the EPS-LKAS blr/ tree is not reachable (set BLR_FIRMWARE_DIR)")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("blr_hostlib_for_test", fw / "tools/blr_hostlib.py")
+    assert spec is not None and spec.loader is not None
+    hl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hl)
+    assert hasattr(hl, "add_trailer") and hasattr(hl, "trailer_problem"), "the firmware tree has no image trailer"
+    mod = _module()
+    for size in (0x110, 0x400, 4 * 1024 + 4, 6 * 1024 + 1, 20 * 1024):
+      body = make_image(size=size, pc=APP_ORIGIN + 0x101, seed=size, trailer=False)
+      assert hl.add_trailer(body) == sealed(body), size
+    good = make_image(size=6 * 1024 + 4, seed=12)
+    for img in (good, good[:-12], good[:-40], good + b"\xff" * 8, good + good[-12:], good[:0x300] + good[0x301:],
+                make_image(size=0x118, pc=APP_ORIGIN + 0x101, trailer=False), sealed(good)):
+      assert (hl.trailer_problem(img) == "") == (mod.blr_trailer_problem(img) == ""), len(img)
 
   def test_the_blr_marker_constants_are_exported_for_the_ui(self):
     """The screen reads the bundled image's marker at the flasher's offset with the flasher's magic, never its own
@@ -664,6 +721,39 @@ class TestBlrImages(unittest.TestCase):
     assert mod.check_app_slot_image(eps_image(flags=0x01), mod.EPS) is None
     assert mod.check_app_slot_image(eps_image(flags=0x03), mod.EPS) is None
     assert set(mod.image_identity(eps_image(flags=0x01))) == {"git", "dirty", "readOnly", "test"}
+
+  def test_the_image_trailer(self):
+    """Review round 1 (BOOT-6): nothing in the vectors or the marker says how long an image is, so a truncated file
+    that still holds its reset handler passed every other check - and the host's CRC over what it sent agreed with
+    it. The BLR bootloader refuses at FINISH an image that does not end with its own {BLRT, length, CRC-32}; the
+    comma refuses it before a frame is sent, in the bootloader's order. The EPS has no trailer and is not checked."""
+    mod = _module()
+    b = mod.BLR
+    good = make_image(size=6 * 1024 + 4, seed=11)
+    assert mod.check_app_slot_image(good, b) is None and mod.blr_trailer_problem(good) == ""
+    assert good[-12:-8] == b"BLRT" and len(good) % 8 == 0, "sealed to a double word, the trailer last"
+    assert "no image trailer (BLRT)" in mod.check_app_slot_image(make_image(size=6 * 1024 + 4, seed=11, trailer=False), b)
+    for cut in (12, 40, 2048, len(good) - 0x300):     # truncated copies: vectors, marker and reset handler all kept
+      why = mod.check_app_slot_image(good[:-cut], b)
+      assert why and "trailer" in why, (cut, why)
+    assert "no image trailer" in mod.check_app_slot_image(good + b"\xff" * 8, b), "padded after it: not last"
+    assert "trailer says the image is" in mod.check_app_slot_image(good[:0x300] + good[0x301:], b), "a byte lost"
+    assert "trailer says the image is" in mod.check_app_slot_image(good + good[-12:], b), "concatenated"
+    changed = bytearray(good)
+    changed[0x300] ^= 0x01
+    assert "trailer's CRC-32" in mod.check_app_slot_image(bytes(changed), b)
+    assert "cannot hold the marker" in mod.check_app_slot_image(make_image(size=0x118, pc=APP_ORIGIN + 0x101,
+                                                                           trailer=False), b)
+    # the specific refusals still come first: an EPS image, a bench image, a dirty tree say what they are
+    assert "this is an EPS-LKAS image" in mod.check_app_slot_image(eps_image(), b)
+    assert mod.check_app_slot_image(make_image(variant=1, trailer=False), b) == \
+      "bench image - never installed from the comma"
+    assert "dirty tree" in mod.check_app_slot_image(make_image(dirty=1, trailer=False), b)
+    # the EPS's check is what it was: no trailer asked for, and one (were it ever there) ignored
+    assert mod.check_app_slot_image(eps_image(), mod.EPS) is None
+    assert mod.check_app_slot_image(sealed(eps_image()), mod.EPS) is None
+    for blob in (b"", b"\x00" * 0x11B, good[:0x11C]):
+      assert isinstance(mod.blr_trailer_problem(blob), str)
 
   def test_the_check_never_raises(self):
     mod = _module()
@@ -768,12 +858,12 @@ class TestBlrUpdate(unittest.TestCase):
 
   def test_pacing_is_at_most_400_data_frames_a_second(self):
     """DESIGN B.1/R5: a BLR update shares bus 0 with the EPS board, which forwards it. 2.51 ms apart at least, and
-    never more than 400 in any second - here over 20 KB, 2560 DATA frames."""
+    never more than 400 in any second - here over 20 KB and its trailer, 2562 DATA frames."""
     mod, clock, sim = _setup(make_image(git=0x1))
     ok, msg, *_ = _run(mod, sim, make_image(variant=2, git=0x2, size=20 * 1024, seed=9))
     assert ok, msg
     t = _data(sim, mod)
-    assert len(t) == 20 * 1024 // 8
+    assert len(t) == -(-(20 * 1024 + 4 + 12) // 8), "20 KB, 0xFF to a double word and the trailer: 2562 frames"
     assert min(b - a for a, b in zip(t, t[1:], strict=False)) >= 1.0 / 400
     j = worst = 0
     for i in range(len(t)):                         # frames in any (t - 1 s, t]
@@ -874,6 +964,36 @@ class TestBlrUpdate(unittest.TestCase):
     cmds = [h[0] for h in _host(sim, mod)]
     assert mod.CMD_FINISH not in cmds and mod.CMD_REBOOT not in cmds
     assert bytes(sim.slot[:len(old)]) == old and sim.hdr is None and sim.installs == 0
+
+  def test_the_bootloader_refusing_a_truncated_image_at_finish(self):
+    """Were the comma's own check ever bypassed: a truncated image keeps its vectors and marker, so every chunk is
+    ACKed and the CRC-32 the host sends is over exactly what it sent - and FINISH reads it back out of bank 2 with no
+    trailer at its end and refuses it, NAK 8, the session closed. No header is written: nothing staged, nothing to
+    install on the next boot, the old app kept."""
+    old = make_image(git=0x44444444, seed=8)
+    mod, clock, sim = _setup(old)
+    mod.check_app_slot_image = lambda image, target=None: None
+    cut = make_image(git=0x55555555, size=6 * 1024, seed=9)[:-40]
+    ok, msg, *_ = _run(mod, sim, cut)
+    assert not ok and msg == "board refused FINISH: image is not for this board", msg
+    assert sim.naks == [(mod.CMD_FINISH, 8)]
+    cmds = [h[0] for h in _host(sim, mod)]
+    assert mod.CMD_REBOOT not in cmds and sim.hdr is None and sim.installs == 0
+    assert bytes(sim.slot[:len(old)]) == old
+
+  def test_a_boot_that_repaired_an_ecc_page(self):
+    """Review round 1 (BOOT-2): a page a power cut left half-written reads back with an ECC error; the bootloader
+    erases it on the next boot - the staging header first, which cancels a staged image - and says so in HELLO (bit
+    6). The flasher logs it, and when it is why the new image is not there after the REBOOT, it says so."""
+    mod, clock, sim = _setup(make_image(git=0x1), ecc_boots={1})
+    ok, msg, phases, logs, traces = _run(mod, sim, make_image(git=0x2))
+    assert ok and msg == "00000002", msg
+    assert any("HELLO" in x and "ECC page repaired this boot" in x for x in logs), logs
+    mod, clock, sim = _setup(make_image(git=0x1), ecc_boots={2})
+    ok, msg, *_ = _run(mod, sim, make_image(git=0x2))
+    assert not ok and msg == ("board reports 00000001 after installing 00000002 - its bootloader repaired a flash " +
+                              "page this boot, which cancels a staged image"), msg
+    assert sim.installs == 0
 
   def test_not_dual_bank(self):
     mod, clock, sim = _setup(make_image(git=0x1), dual_bank=False)
@@ -993,8 +1113,11 @@ class TestBlrUpdate(unittest.TestCase):
     assert mod.describe_nak(nak10) == "10", "the EPS has no code 10"
     hello = bytes([0x83, 1, 0x03 | 0x30]) + (0x1234).to_bytes(4, "little") + bytes([2])
     h = mod.describe_hello(hello, mod.BLR)
-    assert (h["git"], h["appOk"], h["variant"], h["cls"]) == ("00001234", True, "live", 2)
+    assert (h["git"], h["appOk"], h["variant"], h["cls"], h["eccFixed"]) == ("00001234", True, "live", 2, False)
+    ecc = hello[:2] + bytes([hello[2] | 0x40]) + hello[3:]
+    assert mod.describe_hello(ecc, mod.BLR)["eccFixed"] is True and mod.describe_hello(ecc, mod.BLR)["variant"] == "live"
     assert "variant" not in mod.describe_hello(hello), "the EPS HELLO is read as it always was"
+    assert set(mod.describe_hello(ecc)) == {"proto", "appOk", "appId", "dirty", "staged", "git"}
 
 
 if __name__ == "__main__":

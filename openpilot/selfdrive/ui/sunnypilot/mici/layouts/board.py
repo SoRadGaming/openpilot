@@ -49,8 +49,8 @@ from openpilot.sunnypilot.selfdrive.pandad.eps_lkas_flasher import (
   IGNITION_OFF,
   NO_ENGINE_DATA,
   Target,
+  check_app_slot_image,
   image_identity,
-  marker_variant,
 )
 from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.multilang import tr
@@ -798,17 +798,21 @@ def bundled_offer(target: Target = EPS) -> tuple[str, str]:
 
   READ FROM THE IMAGE ITSELF, at the same offset and with the same magic the
   bootloader checks, so the screen and the board can never disagree about what
-  is on offer. Only the first 0x110 bytes are touched -- there is no reason to
-  pull 46 KB off disk to answer a question about sixteen of them.
+  is on offer. For the EPS only the first 0x110 bytes are touched -- there is no
+  reason to pull 46 KB off disk to answer a question about sixteen of them.
 
   The image ships inside sunnypilot: there is no download, and no separate
   firmware channel. Updating the board's firmware IS updating sunnypilot.
 
   The lamp board's (target.image_path, blr_appslot.bin) is not bundled until its
-  bench tests pass: no file is no offer, and the button says "no image". A marker
-  the comma would never install - a bench VARIANT, a dirty tree - is no offer
-  either, rather than a press that fails; its variant is "shadow" or "live". The
-  EPS marker has no variant ("").
+  bench tests pass: no file is no offer, and the button says "no image". An
+  image the comma would never install is no offer either, rather than a press
+  that fails, and for the lamp board that is a question about the WHOLE file: it
+  goes through the flasher's own check_app_slot_image() - a bench VARIANT, a
+  dirty tree, the bootloader's vector rules, and the image's own length/CRC-32
+  trailer, which a truncated copy does not have (BLR review round 1, BOOT-6). At
+  most its 112 KB slot, read once per mtime. Its variant is "shadow" or "live".
+  The EPS marker has no variant ("").
   """
   try:
     mtime = os.path.getmtime(target.image_path)
@@ -820,14 +824,16 @@ def bundled_offer(target: Target = EPS) -> tuple[str, str]:
   offer = ("", "")
   try:
     with open(target.image_path, "rb") as fh:
-      head = fh.read(APP_ID_OFFSET + 16)
+      # the EPS: the marker's 16 bytes; a target with a VARIANT (the lamp board): the whole file, one byte past its
+      # slot so the check can say it would not fit
+      head = fh.read(APP_ID_OFFSET + 16 if target.allowed_variants is None else target.slot_bytes + 1)
     if len(head) >= APP_ID_OFFSET + 16:
-      magic, _origin, _git, flags = struct.unpack("<4I", head[APP_ID_OFFSET:APP_ID_OFFSET + 16])
+      magic, _origin, _git, _flags = struct.unpack("<4I", head[APP_ID_OFFSET:APP_ID_OFFSET + 16])
       if magic == target.marker_magic:
         ident = image_identity(head, target)
         if target.allowed_variants is None:
           offer = (ident["git"], "")
-        elif marker_variant(flags) in target.allowed_variants and not (target.refuse_dirty and ident["dirty"]):
+        elif check_app_slot_image(head, target) is None:
           offer = (ident["git"], ident["variant"])
   except OSError:
     pass
