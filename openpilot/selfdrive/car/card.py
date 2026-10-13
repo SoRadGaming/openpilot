@@ -25,6 +25,7 @@ from openpilot.selfdrive.car.helpers import convert_carControlSP, convert_to_cap
 from openpilot.sunnypilot.mads.helpers import set_alternative_experience, set_car_specific_params
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
 from openpilot.sunnypilot.selfdrive.car.honda_stock_acc import LongSettingsRestore  # FORK(HONDA_ACCORD_9G_AU)
+from openpilot.sunnypilot.selfdrive.car.blr_board import BlrBoardParams  # FORK(BRAKE-LAMP-RELAY)
 
 REPLAY = "REPLAY" in os.environ
 
@@ -90,6 +91,8 @@ class Car:
     self.last_actuators_output = structs.CarControl.Actuators()
 
     self.params = Params()
+    # FORK(BRAKE-LAMP-RELAY): the BLR board's Blr* params - the EpsLkasBoard* pair below, for the second board
+    self.blr_board = BlrBoardParams(self.params)
 
     self.can_callbacks = can_comm_callbacks(self.can_sock, self.pm.sock['sendcan'])
 
@@ -286,6 +289,7 @@ class Car:
 
     # FORK(HONDA_ACCORD_9G_AU): carStateSP is sent above, before carState
     self.stage_board_firmware(CS_SP)
+    self.blr_board.stage(CS_SP)  # FORK(BRAKE-LAMP-RELAY): notes only; written from params_thread
 
   def stage_board_firmware(self, CS_SP: custom.CarStateSP) -> None:
     """Note the board's firmware identity for params_thread to write.
@@ -360,19 +364,21 @@ class Car:
     if self._flash_trace_done:
       return
     self._flash_trace_done = True
-    try:
-      d = self.params.get("EpsLkasFlashTrace")
-      if not d:
-        return
-      series = d.pop("series", [])
-      cloudlog.warning(f"eps-lkas flash trace {d}")
-      for i in range(0, len(series), 40):
-        cloudlog.warning(f"eps-lkas flash trace series[{i}] {series[i:i + 40]}")
-      self.params.remove("EpsLkasFlashTrace")
-    except Exception:
-      # Diagnostics must never take card down. It died once already on this
-      # path, from a str handed to a JSON-typed param.
-      pass
+    # FORK(BRAKE-LAMP-RELAY): the BLR board's update leaves its trace in BlrFlashTrace, and it goes out the same way
+    for key, tag in (("EpsLkasFlashTrace", "eps-lkas"), ("BlrFlashTrace", "blr")):
+      try:
+        d = self.params.get(key)
+        if not d:
+          continue
+        series = d.pop("series", [])
+        cloudlog.warning(f"{tag} flash trace {d}")
+        for i in range(0, len(series), 40):
+          cloudlog.warning(f"{tag} flash trace series[{i}] {series[i:i + 40]}")
+        self.params.remove(key)
+      except Exception:
+        # Diagnostics must never take card down. It died once already on this
+        # path, from a str handed to a JSON-typed param.
+        pass
 
   def controls_update(self, CS: car.CarState, CC: car.CarControl, CC_SP: custom.CarControlSP):
     """control update loop, driven by carControl"""
@@ -415,6 +421,7 @@ class Car:
       self.dynamic_experimental_control = self.params.get_bool("DynamicExperimentalControl")
       self.v_cruise_helper.read_custom_set_speed_params()
       self.write_board_firmware()
+      self.blr_board.write()  # FORK(BRAKE-LAMP-RELAY)
       self.log_flash_trace()
       self.long_settings_restore.update()  # FORK(HONDA_ACCORD_9G_AU)
 
