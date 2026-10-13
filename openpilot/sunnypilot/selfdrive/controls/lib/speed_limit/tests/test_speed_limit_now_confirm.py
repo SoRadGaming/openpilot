@@ -246,6 +246,37 @@ class TestNowConfirm(NowConfirmBase):
     rig.at(rig.t_force + 0.3)
     assert rig.sla.state == AssistState.preActive
 
+  def test_pressed_past_the_target_disarms(self, mocker):
+    """push9 re-review: armed 50 with '-', then '-' on down to 50 and once more to 49. The press past the target leaves
+    nothing to confirm - the 50 coming into force must not RAISE the set speed back to 50: the ordinary prompt."""
+    rig = self.rig(mocker)                       # 60 now, 50 coming
+    rig.tap(MINUS, rig.sign_t - 50. / V)
+    assert rig.sla.now_confirm.armed == 50 and rig.set_speeds[-1] == 59.
+    for _ in range(9):                           # 58 .. 50: on the target it stays armed
+      rig.tap(MINUS, 0.)
+    assert rig.set_speeds[-1] == 50. and rig.sla.now_confirm.armed == 50
+    rig.tap(MINUS, 0.)                           # 49: past it
+    assert rig.set_speeds[-1] == 49. and rig.sla.now_confirm.armed == 0
+    assert rig.frame * DT_CTRL < rig.t_force, "the presses ran past the change: the test proves nothing"
+    n = len(rig.set_speeds)
+    rig.at(rig.t_force + 0.3)
+    assert rig.limit_kph == 50.
+    assert max(rig.set_speeds[n:]) == 49., "the limit coming into force raised the set speed back"
+    assert rig.sla.state == AssistState.preActive and not rig.sla.now_confirmed, "the ordinary prompt, as before"
+
+  def test_pressed_onto_the_target_still_confirms(self, mocker):
+    """On the target exactly the arm stays: the confirm writes the number the set speed already is and goes straight to
+    active - no prompt flashed for a frame, nothing moves."""
+    rig = self.rig(mocker)
+    rig.tap(MINUS, rig.sign_t - 50. / V)
+    for _ in range(9):
+      rig.tap(MINUS, 0.)
+    assert rig.set_speeds[-1] == 50. and rig.sla.now_confirm.armed == 50
+    n = len(rig.states)
+    rig.at(rig.t_force + 0.3)
+    assert rig.set_speeds[-1] == 50. and AssistState.preActive not in rig.states[n:]
+    assert rig.sla.state == AssistState.active
+
   def test_further_out_than_now_is_an_ordinary_step(self, mocker):
     rig = self.rig(mocker)
     rig.tap(MINUS, rig.sign_t - 120. / V)        # 'in 120 m'
@@ -324,6 +355,47 @@ class TestNowPressWithOffset(GraceTestBase):
         for plus in (True, False):
           armed = self._armed(set_kph, plus, offset_type, offset_value)
           assert bool(armed) == (lower is not None and lower != plus), (set_kph, offset_type, plus, words, armed)
+
+  @staticmethod
+  def _now(ahead: int, limit: int) -> NowConfirm:
+    n = NowConfirm()
+    n.update(0., map_ok=True, map_frame=1, ahead_valid=True, ahead_ms=ahead * CV.KPH_TO_MS, ahead_dist=30., nsw_state=2,
+             car_ok=True, v_ego=V, standstill=False, limit=limit, is_metric=True)
+    return n
+
+  def test_past_the_armed_target_disarms(self):
+    """push9 re-review (N1): armed 100, at 101 a second '-' to 99 - the 100 must not raise it back. track() sees where
+    the presses ended; press() only where each began. A long press past it in one go too; the mirror image for '+'."""
+    n = self._now(100, 110)
+    n.press(0.0, False, 102)
+    n.track(101)
+    assert n.armed == 100, "still above the target: armed"
+    n.press(0.2, False, 101)
+    n.track(99)
+    assert n.armed == 0 and not n.take(100)
+    # on the target it stays armed (nothing to move), and goes past it from there
+    n = self._now(100, 110)
+    n.press(0.0, False, 101)
+    n.track(100)
+    assert n.armed == 100
+    n.press(0.2, False, 100)
+    assert n.armed == 100, "a '-' at the target re-arms nothing and disarms nothing by itself"
+    n.track(99)
+    assert n.armed == 0
+    n = self._now(100, 110)
+    n.press(0.0, False, 110)
+    n.track(95)                                  # a long '-' straight past it
+    assert n.armed == 0
+    n = self._now(80, 60)                        # '+': past it the other way would LOWER the set speed
+    n.press(0.0, True, 60)
+    n.track(80)
+    assert n.armed == 80
+    n.track(81)
+    assert n.armed == 0 and not n.take(80)
+    n = self._now(100, 110)
+    n.press(0.0, False, 102)
+    n.track(0)                                   # no set speed (cruise off): not a press past it
+    assert n.armed == 100 and n.take(100)
 
   def test_already_at_the_target_arms_nothing(self):
     # 100 + 10% = 110, the set speed already: the card asks for nothing, and neither key arms

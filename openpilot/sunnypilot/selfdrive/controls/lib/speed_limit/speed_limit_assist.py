@@ -397,13 +397,14 @@ class SpeedLimitAssist:
     (now_confirm.py). Only while long control was engaged on the frame before (a '-' that engages is not a confirm),
     non-PCM, and in active or inactive: a press in preActive is the prompt's own, and in disabled is the engagement's
     guard. The set speed is the frame before's, so the press's own 1 km/h step cannot flip its direction. Which way is
-    right is decided on the set speed the limit gives with the offset (NowConfirm.press), as the card's key is."""
+    right is decided on the set speed the limit gives with the offset (NowConfirm.press), as the card's key is. Then
+    the set speed this frame (NowConfirm.track): presses that took it past the armed target disarm."""
     presses, self._now_presses = self._now_presses, []
-    if self.pcm_op_long or not (self.long_enabled and self.long_enabled_prev and self.enabled) or \
-       self.state not in (SpeedLimitAssistState.active, SpeedLimitAssistState.inactive):
-      return
-    for plus in presses:
-      self.now_confirm.press(time.monotonic(), plus, self.prev_v_cruise_cluster_conv)
+    if not self.pcm_op_long and self.long_enabled and self.long_enabled_prev and self.enabled and \
+       self.state in (SpeedLimitAssistState.active, SpeedLimitAssistState.inactive):
+      for plus in presses:
+        self.now_confirm.press(time.monotonic(), plus, self.prev_v_cruise_cluster_conv)
+    self.now_confirm.track(self.v_cruise_cluster_conv)
 
   def _now_confirm_take(self) -> bool:
     """FORK(SPEED-LIMIT): push9 - a new limit has come into force: confirmed by a 'now' press for exactly it?"""

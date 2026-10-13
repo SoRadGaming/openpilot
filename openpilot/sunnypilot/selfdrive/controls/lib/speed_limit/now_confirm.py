@@ -32,7 +32,8 @@ THE GUARDS. Only a press:
   - while long control is engaged, non-PCM cruise (the prompt's own flow), in SLA active or inactive - never a press
     the prompt itself is taking (preActive).
   - with the card switched on (HudApproachingLimit): with it off nothing says 'now', so nothing arms.
-A press the other way disarms. The arm lapses ARM_KEEP_S after the 'now' window closes (kept while change_hold is still
+A press the other way disarms, and so do presses that take the set speed past the armed target (NowConfirm.track: armed
+100, '-' to 101 and again to 99 - the 100 must not raise it back). The arm lapses ARM_KEEP_S after the 'now' window closes (kept while change_hold is still
 holding a new limit back): a phantom 'now' (a limit mapd announced that never came - route 134 at 304.52 and 674.56)
 sets nothing. Nothing changes before the limit is in force: until then the press is the ordinary 1 km/h step it always
 was.
@@ -216,7 +217,7 @@ class ComingLimit:
 
 class NowConfirm:
   """The 'now' window and the press armed in it. update() once a plannerd frame, before Speed Limit Assist; press() for
-  each '+'/'-' release SLA sees while it may arm; take() at a limit change."""
+  each '+'/'-' release SLA sees while it may arm, then track() with the set speed; take() at a limit change."""
   def __init__(self):
     self.coming = ComingLimit()
     self.reset()
@@ -226,6 +227,7 @@ class NowConfirm:
     self.now_limit = 0             # the coming limit (display units) while the card says 'now'; 0 otherwise
     self.armed = 0                 # the limit a press armed (display units); 0: none
     self.armed_target = 0          # ... and the set speed its confirm gives (confirm_target)
+    self._armed_plus = False       # ... and the key that armed it: '+' (the target above the set speed) or '-'
     self.armed_at = 0.0
     self._closed_t: float | None = None  # when 'now' last closed with a press armed
     self._is_metric = True
@@ -279,10 +281,26 @@ class NowConfirm:
     target = self.target(lim)
     if target > 0 and target != set_speed and plus == (target > set_speed):
       self.armed, self.armed_target, self.armed_at, self._closed_t = lim, target, now, None
+      self._armed_plus = plus
+
+  def track(self, set_speed: int) -> None:
+    """The set speed now (display units), once a frame after that frame's presses. Presses that have taken it PAST the
+    armed target, the other side of it, leave nothing to confirm: disarmed, so the limit coming into force cannot turn
+    the set speed back (push9 re-review: armed 100 from 102, '-' to 101, a second '-' to 99 - and the 100 coming into
+    force raised it back to 100; the mirror image, '+' past an armed 80, would have lowered it). press() cannot see
+    this: it has the set speed the press began at, not the one it ended at (a long press steps 5 or 10).
+
+    ON the target it stays armed: the confirm then writes the number the set speed already is - nothing moves - and
+    takes SLA straight to active, where a disarm would flash the prompt for a frame (preActive, then confirmed by
+    target_set_speed_confirmed). A press away from it from there is press()'s 'the other way' or this rule."""
+    if self.armed and set_speed > 0 and \
+       (set_speed > self.armed_target if self._armed_plus else set_speed < self.armed_target):
+      self.disarm()
 
   def disarm(self) -> None:
     self.armed = 0
     self.armed_target = 0
+    self._armed_plus = False
     self._closed_t = None
 
   def take(self, new_limit: int) -> bool:
