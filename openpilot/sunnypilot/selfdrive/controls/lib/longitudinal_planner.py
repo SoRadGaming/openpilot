@@ -87,7 +87,9 @@ class LongitudinalPlannerSP:
   def update_now_window(self, sm: messaging.SubMaster) -> None:
     """FORK(SPEED-LIMIT): push9 (speed_limit/now_confirm.py). The same inputs the HUD's ApproachState reads: mapd's
     look-ahead (liveMapDataSP, run down by vEgo between its 1 Hz messages), the limit in force when it is a map limit
-    (the held limit this planner publishes), carState. Missing or stale: no window."""
+    (the held limit this planner publishes), carState. Missing or stale: no window. The card switched off
+    (HudApproachingLimit, SpeedLimitAssist.now_card): no window either. The resolver's offset and the car's
+    pcmCruiseSpeed give the set speed a press would confirm, the number - and the key - the card shows."""
     if not all(hasattr(sm, a) for a in ('seen', 'alive', 'recv_frame')):
       # the longitudinal-maneuver plant and the DEC gate tests pass a plain mapping: no map look-ahead, so no window
       self.sla.now_confirm.reset()
@@ -103,7 +105,8 @@ class LongitudinalPlannerSP:
       ahead_ms=float(lmd.speedLimitAhead), ahead_dist=float(lmd.speedLimitAheadDistance),
       nsw_state=int(lmd.nswZone.state), car_ok=bool(sm.seen['carState'] and sm.alive['carState']),
       v_ego=float(cs.vEgo), standstill=bool(cs.standstill), limit=max(0, in_force), is_metric=self.sla.is_metric,
-      holding=limit.holding)
+      holding=limit.holding, enabled=self.sla.now_card, offset_type=int(self.resolver.offset_type or 0),
+      offset_value=float(self.resolver.offset_value or 0.0), pcm_cruise_speed=bool(getattr(self.sla.CP_SP, 'pcmCruiseSpeed', True)))
 
   def update(self, sm: messaging.SubMaster) -> None:
     self.events_sp.clear()

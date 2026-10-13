@@ -124,6 +124,7 @@ class SpeedLimitAssist:
     self.now_confirm = NowConfirm()
     self._now_presses: list[bool] = []   # '+' (True) / '-' (False) releases since the last update()
     self.now_confirmed = False           # this frame's change was confirmed by a 'now' press (for logs and tests)
+    self.now_card = self._read_now_card()  # the card is switched on: with it off nothing says 'now', nothing arms
 
     # TODO-SP: SLA's own output_a_target for planner
     # Solution functions mapped to respective states
@@ -181,6 +182,15 @@ class SpeedLimitAssist:
       set_speed_limit_assist_availability(self.CP, self.CP_SP, self.params)
       self.enabled = self.params.get("SpeedLimitMode", return_default=True) == Mode.assist
       self.map_strict = self.params.get_bool("SpeedLimitMapStrict")  # FORK(SPEED-LIMIT)
+      self.now_card = self._read_now_card()  # FORK(SPEED-LIMIT): push9
+
+  def _read_now_card(self) -> bool:
+    """FORK(SPEED-LIMIT): push9 - the comma 4's coming-limit card (HudApproachingLimit, default on). A press during
+    'now' is the confirm only where the card can say 'now' (now_confirm.py)."""
+    try:
+      return bool(self.params.get("HudApproachingLimit", return_default=True))
+    except Exception:
+      return True
 
   def update_buttons(self, release_toggle: int, pressed: int = 0) -> None:
     # FORK(SPEED-LIMIT): `pressed` (selfdriveStateSP.buttonsPressed) dates each press by when it went down, which is
@@ -386,7 +396,8 @@ class SpeedLimitAssist:
     """FORK(SPEED-LIMIT): push9 - the '+'/'-' releases since the last frame, offered to the 'now' window
     (now_confirm.py). Only while long control was engaged on the frame before (a '-' that engages is not a confirm),
     non-PCM, and in active or inactive: a press in preActive is the prompt's own, and in disabled is the engagement's
-    guard. The set speed is the frame before's, so the press's own 1 km/h step cannot flip its direction."""
+    guard. The set speed is the frame before's, so the press's own 1 km/h step cannot flip its direction. Which way is
+    right is decided on the set speed the limit gives with the offset (NowConfirm.press), as the card's key is."""
     presses, self._now_presses = self._now_presses, []
     if self.pcm_op_long or not (self.long_enabled and self.long_enabled_prev and self.enabled) or \
        self.state not in (SpeedLimitAssistState.active, SpeedLimitAssistState.inactive):
@@ -523,6 +534,7 @@ class SpeedLimitAssist:
 
     self._state_prev = self.state
     if self.pcm_op_long:
+      self._now_presses.clear()  # FORK(SPEED-LIMIT): push9 - only the non-PCM flow takes a 'now' press
       self.is_enabled, self.is_active = self.update_state_machine_pcm_op_long()
     else:
       self.is_enabled, self.is_active = self.update_state_machine_non_pcm_long()

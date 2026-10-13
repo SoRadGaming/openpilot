@@ -79,10 +79,13 @@ from opendbc.car.structs import car
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import HudSettings
 from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import real_lead
-# FORK(SPEED-LIMIT): push9 - the 'now' geometry is shared with the planner, which takes a press during 'now' as the
-# confirm (speed_limit/now_confirm.py): one definition, so the card and the planner cannot disagree about 'now'
+# FORK(SPEED-LIMIT): push9 - the coming limit's state machine is shared with the planner, which takes a press during
+# 'now' as the confirm (speed_limit/now_confirm.py): ApproachState below is its ComingLimit fed from the UI's SubMaster,
+# so the card and the planner cannot disagree about 'now'. The geometry and the confirm's target live there too.
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.now_confirm import (  # noqa: F401 - re-exported
-  APPROACH_HOLD_S, APPROACH_NEAR_S, MAP_EXTRAPOLATE_MAX_S, NEAR_FT, NEAR_M, NSW_NO_LOOKAHEAD, reached)
+  APPROACH_GAP_S, APPROACH_HOLD_S, APPROACH_JUMP_M, APPROACH_NEAR_S, CRUISE_MAX_KPH, CRUISE_MIN_KPH, KM_TO_MILE,
+  MAP_EXTRAPOLATE_MAX_S, NEAR_FT, NEAR_M, NEXT_MAX_M, NEXT_MAX_S, NSW_NO_LOOKAHEAD, OFFSET_FIXED, OFFSET_PERCENT,
+  Approach, ComingLimit, confirm_target, cruise_min_kph, look_ahead, next_window_m, reached)
 
 SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
 PlanSource = log.LongitudinalPlan.LongitudinalPlanSource
@@ -92,18 +95,17 @@ MapState = custom.LongitudinalPlanSP.SmartCruiseControl.MapState
 AlertStatus = log.SelfdriveState.AlertStatus
 VisualAlert = car.CarControl.HUDControl.VisualAlert
 
-NEXT_MAX_M = 500.0      # the coming limit shows from the earlier of 500 m ...
-NEXT_MAX_S = 15.0       # ... or 15 s of travel at the current speed
 TIMER_DELAY_S = 1.0     # a standstill this long before the stopwatch shows
-# MAP_EXTRAPOLATE_MAX_S (1 s: liveMapDataSP is 1 Hz, the distance is run down for at most one period, then held),
-# APPROACH_HOLD_S (3 s: once the look-ahead ends at the change, the coming limit is held as 'now' this long at most for
-# the resolver to take it - mapd's last look-ahead to the limit in force took 1.05 s on route 10f, and plannerd's 1 s
-# stability hold, speed_limit/change_hold.py, comes on top), APPROACH_NEAR_S (2 s: the change is REACHED once the
-# distance left is within this much travel ...), NEAR_M / NEAR_FT (... or under sunnypilot's 'Near',
-# SpeedLimitRenderer._format_dist: 50 m / 100 ft, which the pill draws 'now'), NSW_NO_LOOKAHEAD and reached(): imported
-# above from speed_limit/now_confirm.py (push9), which the planner shares.
-APPROACH_GAP_S = 2.0    # the look-ahead lost further out: the distance runs down by vEgo this long at most, then it goes
-APPROACH_JUMP_M = 10.0  # mapd's figure coming back up by one period's run-down + this is noise (held); more is news
+# The coming limit's constants are imported above from speed_limit/now_confirm.py (push9), which the planner shares:
+# NEXT_MAX_M / NEXT_MAX_S (500 m, 15 s: the window it shows from, next_window_m), MAP_EXTRAPOLATE_MAX_S (1 s:
+# liveMapDataSP is 1 Hz, the distance is run down for at most one period, then held), APPROACH_HOLD_S (3 s: once the
+# look-ahead ends at the change, the coming limit is held as 'now' this long at most for the resolver to take it -
+# mapd's last look-ahead to the limit in force took 1.05 s on route 10f, and plannerd's 1 s stability hold,
+# speed_limit/change_hold.py, comes on top), APPROACH_NEAR_S (2 s: the change is REACHED once the distance left is
+# within this much travel ...), NEAR_M / NEAR_FT (... or under sunnypilot's 'Near', SpeedLimitRenderer._format_dist:
+# 50 m / 100 ft, which the pill draws 'now'), APPROACH_GAP_S (2 s: the look-ahead lost further out, the distance runs
+# down by vEgo this long at most, then it goes), APPROACH_JUMP_M (10 m: mapd's figure coming back up by one period's
+# run-down + this is noise, held; more is news), NSW_NO_LOOKAHEAD and reached().
 
 STANDSTILL_EVENT = 'manualRestart'
 LEAD_DEPART_MS = 1.0    # m/s: the car ahead is moving off ...
@@ -161,11 +163,6 @@ class HudFrame:
   timer_s: float | None = None    # seconds stopped, when the stopwatch shows; None: nothing top right
 
 
-def next_window_m(v_ego: float) -> float:
-  """How far ahead a coming limit is shown: the earlier of 15 s of travel and 500 m."""
-  return min(NEXT_MAX_M, max(v_ego, 1.0) * NEXT_MAX_S)
-
-
 def received(sm, service: str, started_frame: int) -> bool:
   """Received at least once since this drive started."""
   return bool(sm.seen[service]) and sm.recv_frame[service] >= started_frame
@@ -187,15 +184,7 @@ def build_frame(sm, s: HudSettings, *, started_frame: int, stopped_s: float | No
 
 
 # ------------------------------------------------------------------------------------------- the coming limit
-@dataclass(frozen=True)
-class Approach:
-  limit: int          # the coming limit, display units
-  lower: bool         # lower than the one in force (a down chevron), else higher
-  dist: float         # m to it; 0 while held
-  frac: float         # what is left of the 15 s / 500 m window, 0..1; 0 while held
-  held: bool = False  # the look-ahead has ended and the resolver has not taken it yet: drawn 'now'
-
-
+# Approach (limit, lower, dist, frac, held) and ComingLimit, the state machine, are now_confirm.py's (imported above).
 def approach_text(dist_text: str, held: bool) -> str:
   """The pill's words: 'in 300 m' from sunnypilot's own rounding (SpeedLimitRenderer._format_dist), which says 'Near'
   close in - that, and a held limit, is 'now'."""
@@ -214,119 +203,61 @@ def resolver_map_limit(sm, started_frame: int, conv: float) -> int:
 
 def approach_now(sm, *, started_frame: int, is_metric: bool, limit: int, map_age_s: float) -> Approach | None:
   """What mapd's look-ahead says this frame, before any hold: a limit other than `limit` (the resolver's map limit, display
-  units) within the window, or None. Pure."""
-  if limit <= 0 or not (fresh(sm, 'liveMapDataSP', started_frame) and fresh(sm, 'carState', started_frame)):
-    return None
+  units) within the window, or None (now_confirm.look_ahead, on this SubMaster). Pure."""
   cs, lmd = sm['carState'], sm['liveMapDataSP']
-  if cs.standstill or not lmd.speedLimitAheadValid or int(lmd.nswZone.state) in NSW_NO_LOOKAHEAD:
-    return None
-  conv = CV.MS_TO_KPH if is_metric else CV.MS_TO_MPH
-  ahead = int(round(lmd.speedLimitAhead * conv))
-  v_ego = max(0.0, float(cs.vEgo))
-  dist = float(lmd.speedLimitAheadDistance) - v_ego * min(max(map_age_s, 0.0), MAP_EXTRAPOLATE_MAX_S)
-  window = next_window_m(v_ego)
-  if ahead <= 0 or ahead == limit or not 0 < dist <= window:
-    return None
-  return Approach(limit=ahead, lower=ahead < limit, dist=dist, frac=dist / window)
+  return look_ahead(limit=limit, map_ok=fresh(sm, 'liveMapDataSP', started_frame), car_ok=fresh(sm, 'carState', started_frame),
+                    standstill=bool(cs.standstill), ahead_valid=bool(lmd.speedLimitAheadValid),
+                    ahead_ms=float(lmd.speedLimitAhead), ahead_dist=float(lmd.speedLimitAheadDistance),
+                    nsw_state=int(lmd.nswZone.state), v_ego=float(cs.vEgo), map_age_s=map_age_s, is_metric=is_metric)
 
 
 SLA_MODE_ASSIST = 3     # SpeedLimitMode: assist (speed_limit/common.py Mode.assist) - the mode with the confirm
-OFFSET_FIXED, OFFSET_PERCENT = 1, 2   # SpeedLimitOffsetType (speed_limit/common.py OffsetType)
 
 
 def now_prompt(limit: int, set_speed: int, *, is_metric: bool, offset_type: int = 0, offset_value: float = 0.0,
                pcm_cruise_speed: bool = True) -> str:
   """FORK(SPEED-LIMIT): push9. The card's words at 'now' while the press would be the confirm (now_confirm.py):
-  'press - to set 100' for a limit under the set speed, 'press + to set 100' over it; '' when neither (the set speed is
-  already the limit). The number is the set speed that press gives once the limit is in force - the limit with the
-  user's offset as the resolver adds it (speed_limit_resolver._get_speed_limit_offset), clamped and rounded as the
-  confirm stores it (target_speed). The caller decides WHETHER: engaged, non-PCM, Speed Limit Assist on. Pure."""
-  if limit <= 0 or set_speed <= 0 or limit == set_speed:
+  'press - to set 100' when the set speed that limit gives is under the set speed, 'press + to set 100' over it; ''
+  when neither (the set speed is already it). The number - and so the key - is the set speed the press gives once the
+  limit is in force: the limit with the user's offset as the resolver adds it, clamped and rounded as the confirm
+  stores it (now_confirm.confirm_target, which the planner's NowConfirm.press arms by). The caller decides WHETHER:
+  engaged, non-PCM, Speed Limit Assist on. Pure."""
+  if limit <= 0 or set_speed <= 0:
     return ""
-  unit = CV.KPH_TO_MS if is_metric else CV.MPH_TO_MS
-  lim_ms = limit * unit
-  off_ms = offset_value * unit if offset_type == OFFSET_FIXED else \
-    offset_value * 0.01 * lim_ms if offset_type == OFFSET_PERCENT else 0.0
-  kph = min(max(round((lim_ms + off_ms) * CV.MS_TO_KPH, 1), cruise_min_kph(is_metric, pcm_cruise_speed)), CRUISE_MAX_KPH)
-  target = max(0, int(round(kph * (1.0 if is_metric else KM_TO_MILE))))
-  return f"press {'-' if limit < set_speed else '+'} to set {target}"
+  target = confirm_target(limit, is_metric=is_metric, offset_type=offset_type, offset_value=offset_value,
+                          pcm_cruise_speed=pcm_cruise_speed)
+  if target <= 0 or target == set_speed:
+    return ""
+  return f"press {'-' if target < set_speed else '+'} to set {target}"
 
 
 class ApproachState:
-  """The coming limit, frame by frame, with its run-down and hold. One per HUD renderer; update() is idempotent within a
-  frame (the same now), as the face asks before the HUD draws."""
+  """The coming limit, frame by frame, with its run-down and hold: now_confirm.ComingLimit - the planner's 'now' is the
+  same machine - fed from the UI's SubMaster, behind the card's settings. One per HUD renderer; update() is idempotent
+  within a frame (the same now), as the face asks before the HUD draws."""
   def __init__(self):
-    self.reset()
+    self.core = ComingLimit()
 
-  def reset(self):
-    self.frame: Approach | None = None
-    self._t: float | None = None
-    self._shown: Approach | None = None   # the last approach the look-ahead gave
-    self._from = 0                        # ... and the limit in force then
-    self._dist = 0.0                      # the distance last drawn (run down by vEgo while the look-ahead is lost)
-    self._lost_t: float | None = None     # when the look-ahead stopped giving it
-    self._held = False                    # ... and the change was reached: drawn 'now'
-    self._map_frame = -1
-    self._map_t = 0.0
+  def reset(self) -> None:
+    self.core.reset()
 
-  def _drop(self) -> None:
-    self.frame = self._shown = self._lost_t = None
-    self._held = False
+  @property
+  def frame(self) -> Approach | None:
+    return self.core.frame
 
   def update(self, sm, s: HudSettings, *, started_frame: int, now: float, is_metric: bool,
              speed_limit_mode_on: bool) -> Approach | None:
-    if self._t == now:
-      return self.frame
-    dt = 0.0 if self._t is None else max(0.0, now - self._t)
-    self._t = now
     if not (s.approaching_limit and speed_limit_mode_on):
-      self.reset()
-      self._t = now
+      self.core.reset()
       return None
-    map_frame = sm.recv_frame['liveMapDataSP']
-    if map_frame != self._map_frame:
-      self._map_frame, self._map_t = map_frame, now
     conv = CV.MS_TO_KPH if is_metric else CV.MS_TO_MPH
-    limit = resolver_map_limit(sm, started_frame, conv)
-    moving = fresh(sm, 'carState', started_frame) and not sm['carState'].standstill
-    v_ego = max(0.0, float(sm['carState'].vEgo)) if moving else 0.0
-    raw = approach_now(sm, started_frame=started_frame, is_metric=is_metric, limit=limit, map_age_s=now - self._map_t)
-    if raw is not None:
-      prev = self._shown
-      if prev is not None and prev.limit == raw.limit and self._from == limit and \
-         self._dist < raw.dist <= self._dist + v_ego * MAP_EXTRAPOLATE_MAX_S + APPROACH_JUMP_M:
-        # the same change coming: its distance only counts down. mapd's 1 Hz figure jumps back up a little when the
-        # run-down between messages was ahead of it (route 10f t 194.2-194.8: 'now', 'in 50 m', 'now'); by more than
-        # a period's run-down + APPROACH_JUMP_M it is news and is taken (route 10f t 199.7: 65 m, after 'now')
-        d = max(self._dist, 0.0)
-        raw = Approach(limit=raw.limit, lower=raw.lower, dist=d, frac=min(1.0, d / next_window_m(v_ego)))
-      self._shown, self._from, self._dist, self._lost_t, self._held = raw, limit, raw.dist, None, False
-      self.frame = raw
-      return raw
-    self.frame = None
-    if self._shown is None:
-      return None
-    if self._lost_t is None:
-      self._lost_t = now
-    # kept only while the limit in force is still the one the change was announced from, the car still moving, the map
-    # not dead reckoning; anything else (the resolver took it - the hand-over - or another limit came) ends it
-    tunnel = fresh(sm, 'liveMapDataSP', started_frame) and int(sm['liveMapDataSP'].nswZone.state) in NSW_NO_LOOKAHEAD
-    if limit != self._from or not moving or tunnel:
-      self._drop()
-      return None
-    self._dist -= v_ego * dt
-    lost_s = now - self._lost_t
-    self._held = self._held or reached(self._dist, v_ego, is_metric)
-    if lost_s > (APPROACH_HOLD_S if self._held else APPROACH_GAP_S):
-      self._drop()
-      return None
-    if self._held:
-      self.frame = Approach(limit=self._shown.limit, lower=self._shown.lower, dist=0.0, frac=0.0, held=True)
-    else:
-      # further out: still a distance, running down - never 'now' before it is reached
-      self.frame = Approach(limit=self._shown.limit, lower=self._shown.lower, dist=self._dist,
-                            frac=min(1.0, self._dist / next_window_m(v_ego)))
-    return self.frame
+    cs, lmd = sm['carState'], sm['liveMapDataSP']
+    return self.core.update(now, map_frame=sm.recv_frame['liveMapDataSP'], limit=resolver_map_limit(sm, started_frame, conv),
+                            map_ok=fresh(sm, 'liveMapDataSP', started_frame), car_ok=fresh(sm, 'carState', started_frame),
+                            standstill=bool(cs.standstill), v_ego=float(cs.vEgo),
+                            ahead_valid=bool(lmd.speedLimitAheadValid), ahead_ms=float(lmd.speedLimitAhead),
+                            ahead_dist=float(lmd.speedLimitAheadDistance), nsw_state=int(lmd.nswZone.state),
+                            is_metric=is_metric)
 
 
 def box_outline(t: float) -> tuple[bool, float]:
@@ -524,16 +455,8 @@ def pending_limit(sm, is_metric: bool) -> tuple[int, int]:
   return int(round(res.speedLimitLast * conv)), int(round(res.speedLimitOffset * conv))
 
 
-CRUISE_MIN_KPH = 8      # cruise_ext.V_CRUISE_MIN: the confirm's floor with pcmCruiseSpeed
-CRUISE_MAX_KPH = 145    # cruise_ext.V_CRUISE_MAX
-KM_TO_MILE = 0.621371   # mici/onroad/hud_renderer.KM_TO_MILE: how the MAX number converts
-
-
-def cruise_min_kph(is_metric: bool, pcm_cruise_speed: bool) -> float:
-  """The confirm's floor (cruise_ext.VCruiseHelperSP: V_CRUISE_MIN with pcmCruiseSpeed, else the button-managed
-  cars' minimum set speed, intelligent_cruise_button_management.helpers.get_minimum_set_speed - 30, or 20 imperial,
-  used as km/h there too)."""
-  return CRUISE_MIN_KPH if pcm_cruise_speed else (30 if is_metric else 20)
+# CRUISE_MIN_KPH, CRUISE_MAX_KPH, KM_TO_MILE and cruise_min_kph(): now_confirm.py's (imported above), which
+# confirm_target - the planner's too - uses.
 
 
 def target_speed(sm, is_metric: bool, pcm_cruise_speed: bool = True) -> int:
