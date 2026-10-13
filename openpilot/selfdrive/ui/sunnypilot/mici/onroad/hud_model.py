@@ -79,6 +79,10 @@ from opendbc.car.structs import car
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import HudSettings
 from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import real_lead
+# FORK(SPEED-LIMIT): push9 - the 'now' geometry is shared with the planner, which takes a press during 'now' as the
+# confirm (speed_limit/now_confirm.py): one definition, so the card and the planner cannot disagree about 'now'
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.now_confirm import (  # noqa: F401 - re-exported
+  APPROACH_HOLD_S, APPROACH_NEAR_S, MAP_EXTRAPOLATE_MAX_S, NEAR_FT, NEAR_M, NSW_NO_LOOKAHEAD, reached)
 
 SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
 PlanSource = log.LongitudinalPlan.LongitudinalPlanSource
@@ -91,16 +95,15 @@ VisualAlert = car.CarControl.HUDControl.VisualAlert
 NEXT_MAX_M = 500.0      # the coming limit shows from the earlier of 500 m ...
 NEXT_MAX_S = 15.0       # ... or 15 s of travel at the current speed
 TIMER_DELAY_S = 1.0     # a standstill this long before the stopwatch shows
-MAP_EXTRAPOLATE_MAX_S = 1.0  # liveMapDataSP is 1 Hz: the distance is run down for at most one period, then held
-APPROACH_HOLD_S = 3.0   # once the look-ahead ends at the change, the coming limit is held (as 'now') this long at most
-                        # for the resolver to take it: mapd's last look-ahead to the limit in force took 1.05 s on route
-                        # 10f, and plannerd's 1 s stability hold (speed_limit/change_hold.py) comes on top
-APPROACH_NEAR_S = 2.0   # the change is REACHED once the distance left is within this much travel ...
-NEAR_M = 50.0           # ... or under sunnypilot's 'Near' (SpeedLimitRenderer._format_dist: 50 m metric ...
-NEAR_FT = 100.0         # ... 100 ft imperial), which the pill already draws 'now'
+# MAP_EXTRAPOLATE_MAX_S (1 s: liveMapDataSP is 1 Hz, the distance is run down for at most one period, then held),
+# APPROACH_HOLD_S (3 s: once the look-ahead ends at the change, the coming limit is held as 'now' this long at most for
+# the resolver to take it - mapd's last look-ahead to the limit in force took 1.05 s on route 10f, and plannerd's 1 s
+# stability hold, speed_limit/change_hold.py, comes on top), APPROACH_NEAR_S (2 s: the change is REACHED once the
+# distance left is within this much travel ...), NEAR_M / NEAR_FT (... or under sunnypilot's 'Near',
+# SpeedLimitRenderer._format_dist: 50 m / 100 ft, which the pill draws 'now'), NSW_NO_LOOKAHEAD and reached(): imported
+# above from speed_limit/now_confirm.py (push9), which the planner shares.
 APPROACH_GAP_S = 2.0    # the look-ahead lost further out: the distance runs down by vEgo this long at most, then it goes
 APPROACH_JUMP_M = 10.0  # mapd's figure coming back up by one period's run-down + this is noise (held); more is news
-NSW_NO_LOOKAHEAD = (4, 7)  # nswZone.state: dead reckoning in a tunnel, and GPS still lost after it - never announced
 
 STANDSTILL_EVENT = 'manualRestart'
 LEAD_DEPART_MS = 1.0    # m/s: the car ahead is moving off ...
@@ -227,9 +230,26 @@ def approach_now(sm, *, started_frame: int, is_metric: bool, limit: int, map_age
   return Approach(limit=ahead, lower=ahead < limit, dist=dist, frac=dist / window)
 
 
-def reached(dist: float, v_ego: float, is_metric: bool) -> bool:
-  """The change is here: the distance left (m) is within APPROACH_NEAR_S of travel, or under sunnypilot's 'Near'."""
-  return dist <= max(NEAR_M if is_metric else NEAR_FT * 0.3048, max(v_ego, 0.0) * APPROACH_NEAR_S)
+SLA_MODE_ASSIST = 3     # SpeedLimitMode: assist (speed_limit/common.py Mode.assist) - the mode with the confirm
+OFFSET_FIXED, OFFSET_PERCENT = 1, 2   # SpeedLimitOffsetType (speed_limit/common.py OffsetType)
+
+
+def now_prompt(limit: int, set_speed: int, *, is_metric: bool, offset_type: int = 0, offset_value: float = 0.0,
+               pcm_cruise_speed: bool = True) -> str:
+  """FORK(SPEED-LIMIT): push9. The card's words at 'now' while the press would be the confirm (now_confirm.py):
+  'press - to set 100' for a limit under the set speed, 'press + to set 100' over it; '' when neither (the set speed is
+  already the limit). The number is the set speed that press gives once the limit is in force - the limit with the
+  user's offset as the resolver adds it (speed_limit_resolver._get_speed_limit_offset), clamped and rounded as the
+  confirm stores it (target_speed). The caller decides WHETHER: engaged, non-PCM, Speed Limit Assist on. Pure."""
+  if limit <= 0 or set_speed <= 0 or limit == set_speed:
+    return ""
+  unit = CV.KPH_TO_MS if is_metric else CV.MPH_TO_MS
+  lim_ms = limit * unit
+  off_ms = offset_value * unit if offset_type == OFFSET_FIXED else \
+    offset_value * 0.01 * lim_ms if offset_type == OFFSET_PERCENT else 0.0
+  kph = min(max(round((lim_ms + off_ms) * CV.MS_TO_KPH, 1), cruise_min_kph(is_metric, pcm_cruise_speed)), CRUISE_MAX_KPH)
+  target = max(0, int(round(kph * (1.0 if is_metric else KM_TO_MILE))))
+  return f"press {'-' if limit < set_speed else '+'} to set {target}"
 
 
 class ApproachState:

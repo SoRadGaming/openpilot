@@ -18,6 +18,7 @@ from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import PCM_LONG_REQUIRED_MAX_SET_SPEED, CONFIRM_SPEED_THRESHOLD
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.helpers import compare_cluster_target, set_speed_limit_assist_availability
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.now_confirm import NowConfirm  # FORK(SPEED-LIMIT): push9
 
 ButtonType = car.CarState.ButtonEvent.Type
 EventNameSP = custom.OnroadEventSP.EventName
@@ -118,6 +119,11 @@ class SpeedLimitAssist:
     self._minus_release_down = 0.
     self._grace_deadline = 0.
     self._grace_limit_conv = 0
+    # FORK(SPEED-LIMIT): push9 - a press while the card says 'now' is the confirm for that coming limit (now_confirm.py).
+    # The planner feeds the window (LongitudinalPlannerSP.update_targets); the releases are queued by update_buttons.
+    self.now_confirm = NowConfirm()
+    self._now_presses: list[bool] = []   # '+' (True) / '-' (False) releases since the last update()
+    self.now_confirmed = False           # this frame's change was confirmed by a 'now' press (for logs and tests)
 
     # TODO-SP: SLA's own output_a_target for planner
     # Solution functions mapped to respective states
@@ -188,10 +194,12 @@ class SpeedLimitAssist:
       self._plus_hold = max(self._plus_hold, now + CRUISE_BUTTON_CONFIRM_HOLD)
       self._plus_release_down = self._plus_down if self._plus_down is not None else now
       self._plus_down = None
+      self._now_presses.append(True)   # FORK(SPEED-LIMIT): push9
     if any((released >> b) & 1 for b in CRUISE_BUTTONS_MINUS):
       self._minus_hold = max(self._minus_hold, now + CRUISE_BUTTON_CONFIRM_HOLD)
       self._minus_release_down = self._minus_down if self._minus_down is not None else now
       self._minus_down = None
+      self._now_presses.append(False)  # FORK(SPEED-LIMIT): push9
     if plus_held and self._plus_down is None:
       self._plus_down = now
     elif not plus_held:
@@ -374,9 +382,32 @@ class SpeedLimitAssist:
 
     return enabled, active
 
+  def _now_confirm_presses(self) -> None:
+    """FORK(SPEED-LIMIT): push9 - the '+'/'-' releases since the last frame, offered to the 'now' window
+    (now_confirm.py). Only while long control was engaged on the frame before (a '-' that engages is not a confirm),
+    non-PCM, and in active or inactive: a press in preActive is the prompt's own, and in disabled is the engagement's
+    guard. The set speed is the frame before's, so the press's own 1 km/h step cannot flip its direction."""
+    presses, self._now_presses = self._now_presses, []
+    if self.pcm_op_long or not (self.long_enabled and self.long_enabled_prev and self.enabled) or \
+       self.state not in (SpeedLimitAssistState.active, SpeedLimitAssistState.inactive):
+      return
+    for plus in presses:
+      self.now_confirm.press(time.monotonic(), plus, self.prev_v_cruise_cluster_conv)
+
+  def _now_confirm_take(self) -> bool:
+    """FORK(SPEED-LIMIT): push9 - a new limit has come into force: confirmed by a 'now' press for exactly it?"""
+    speed_conv = CV.MS_TO_KPH if self.is_metric else CV.MS_TO_MPH
+    self.now_confirmed = self.now_confirm.take(round(self._speed_limit * speed_conv))
+    return self.now_confirmed
+
   def update_state_machine_non_pcm_long(self):
     self.long_engaged_timer = max(0, self.long_engaged_timer - 1)
     self.pre_active_timer = max(0, self.pre_active_timer - 1)
+    # FORK(SPEED-LIMIT): push9 - a press during 'now' arms its limit; the limit coming into force takes it
+    self.now_confirmed = False
+    self._now_confirm_presses()
+    if not (self.long_enabled and self.enabled):
+      self.now_confirm.disarm()
 
     # ACTIVE, ADAPTING, PENDING, PRE_ACTIVE, INACTIVE
     if self.state != SpeedLimitAssistState.disabled:
@@ -390,8 +421,13 @@ class SpeedLimitAssist:
             self.state = SpeedLimitAssistState.inactive
 
           elif self.speed_limit_changed and self.apply_confirm_speed_threshold:
-            self.state = SpeedLimitAssistState.preActive
-            self.pre_active_timer = int(PRE_ACTIVE_GUARD_PERIOD[self.pcm_op_long] / DT_MDL)
+            # FORK(SPEED-LIMIT): push9 - confirmed by a press during 'now': stays active, and card writes the new limit
+            # (cruise_ext: the final limit changed while active). Otherwise the prompt, as before.
+            if not self._now_confirm_take():
+              self.state = SpeedLimitAssistState.preActive
+              self.pre_active_timer = int(PRE_ACTIVE_GUARD_PERIOD[self.pcm_op_long] / DT_MDL)
+          elif self.speed_limit_changed:
+            self.now_confirm.disarm()  # FORK(SPEED-LIMIT): push9 - a higher limit raises the set speed by itself anyway
 
         # PRE_ACTIVE
         elif self.state == SpeedLimitAssistState.preActive:
@@ -405,8 +441,13 @@ class SpeedLimitAssist:
         # INACTIVE
         elif self.state == SpeedLimitAssistState.inactive:
           if self.speed_limit_changed:
-            self.state = SpeedLimitAssistState.preActive
-            self.pre_active_timer = int(PRE_ACTIVE_GUARD_PERIOD[self.pcm_op_long] / DT_MDL)
+            # FORK(SPEED-LIMIT): push9 - confirmed by a press during 'now' (the usual way here: that press's own 1 km/h
+            # step took SLA active -> inactive): straight to active, and card writes the limit. Otherwise the prompt.
+            if self._now_confirm_take():
+              self.state = SpeedLimitAssistState.active
+            else:
+              self.state = SpeedLimitAssistState.preActive
+              self.pre_active_timer = int(PRE_ACTIVE_GUARD_PERIOD[self.pcm_op_long] / DT_MDL)
           elif self._update_non_pcm_long_confirmed_state():  # FORK(SPEED-LIMIT): incl. the confirm grace
             self.state = SpeedLimitAssistState.active
 

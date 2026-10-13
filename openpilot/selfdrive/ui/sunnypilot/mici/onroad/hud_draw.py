@@ -21,7 +21,7 @@ from typing import NamedTuple
 import pyray as rl
 
 from openpilot.selfdrive.ui.mici.onroad.hud_renderer import FONT_SIZES
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import CARD_APPROACH, CARD_PENDING, CARD_DONE, MaxCard, prompt_parts
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import CARD_APPROACH, CARD_PENDING, CARD_DONE, MaxCard, prompt_parts,   confirm_lower
 from openpilot.system.ui.lib.application import gui_app, FontWeight, FONT_SCALE
 from openpilot.system.ui.lib.multilang import tr
 
@@ -435,9 +435,20 @@ SP_BREATH_MIN = 170     # the confirm's outline breathes 170..255: still 'act' a
 SP_KEY_FLOOR = 0.5      # the green key blinks 0.5..1, so 'press [-] to set 100' never loses its key
 
 
+def approach_now(c: MaxCard) -> bool:
+  """A coming limit's card at 'now': the word, or (push9) the press it takes - 'press - to set 100' - in its place."""
+  return c.kind == CARD_APPROACH and (c.text == "now" or prompt_parts(c.text) is not None)
+
+
 def _sp_row(c: MaxCard) -> list[tuple]:
   """The row under the digits: ('text', words, weight, alpha) | ('chev', down) | ('key', lower, alpha) | ('gap', px)."""
   if c.kind == CARD_APPROACH:
+    parts, key_lower = prompt_parts(c.text), confirm_lower(c.text)
+    if parts is not None and key_lower is not None:
+      # push9: 'now' as the press it takes - the chevron (which way the limit goes), then 'press [-] to set 100'
+      key = SP_KEY_FLOOR + (1.0 - SP_KEY_FLOOR) * c.key_alpha
+      return [("chev", bool(c.lower)), ("gap", 8.0), ("text", parts[0], FontWeight.BOLD, 240), ("gap", 9.0),
+              ("key", key_lower, key), ("gap", 9.0), ("text", parts[1], FontWeight.BOLD, 240)]
     return [("chev", bool(c.lower)), ("gap", 8.0),
             ("text", c.text, FontWeight.BOLD if c.text == "now" else FontWeight.SEMI_BOLD, 240)]
   parts = prompt_parts(c.text)
@@ -537,7 +548,7 @@ def stock_plus_card(c: MaxCard, x0: float, y0: float) -> tuple[float, float, flo
   col = [int(v * g) for v in c.color[:3]]
   _rr(bx, by, bw, bh, SP_RADIUS, rl.Color(col[0], col[1], col[2], int(fill * ca)))
   if c.kind == CARD_APPROACH:
-    line, line_a = 2.0, (255.0 if c.text == "now" else 150.0)
+    line, line_a = 2.0, (255.0 if approach_now(c) else 150.0)
   else:
     line, line_a = 2.0 + g, SP_BREATH_MIN + (255.0 - SP_BREATH_MIN) * max(0.0, min(1.0, c.breath))
   if c.lit:
@@ -628,7 +639,8 @@ def split_layout(c: MaxCard, x0: float, y0: float) -> SplitLayout:
   ts, tsx = _sc_num(SC_TARGET_CAP)
   cs, csx = _sc_num(SC_CTX_CAP)
   if c.kind == CARD_APPROACH:
-    caption, chip = c.text, c.text == "now"
+    # push9: at 'now' with the press it takes, the chip still says 'now' and the footer says 'press - to set 100'
+    caption, chip = ("now", True) if approach_now(c) else (c.text, False)
   else:
     caption, chip = (c.note, False) if c.note else ("now", True)
   tw = ink(str(int(c.value)), ts, tsx, FontWeight.DISPLAY)[0]
@@ -649,7 +661,7 @@ def split_card(c: MaxCard, x0: float, y0: float) -> tuple[float, float, float, f
   u = max(0.0, min(1.0, c.done)) if c.kind == CARD_DONE else 0.0
   enter = max(0.0, min(1.0, c.enter)) if c.kind == CARD_APPROACH else 1.0
   if c.kind == CARD_APPROACH:
-    foot = 0.0
+    foot = SC_FOOT_H * enter if prompt_parts(c.text) is not None else 0.0   # push9: 'now' with its press
   elif c.kind == CARD_PENDING:
     foot = SC_FOOT_H * min(1.0, max(0.0, c.grow) / SC_FOOT_FRAC)
   else:
@@ -673,7 +685,7 @@ def split_card(c: MaxCard, x0: float, y0: float) -> tuple[float, float, float, f
     # growing as the change comes; full from 'now' on, glowing twice then)
     _right_rounded(rx, y, right - rx, ch, SC_RADIUS, foot < 0.5, rl.Color(255, 255, 255, int(24 * ca)))
     _top_band(rx, right, y, SC_RED_BAR, right, SC_RADIUS, _red(80 / 255 * ca))
-    f = max(0.0, min(1.0, 1.0 - c.frac)) if c.kind == CARD_APPROACH and c.text != "now" else 1.0
+    f = max(0.0, min(1.0, 1.0 - c.frac)) if c.kind == CARD_APPROACH and not approach_now(c) else 1.0
     _top_band(rx, rx + (right - rx) * f, y, SC_RED_BAR, right, SC_RADIUS, _red(ca))
     if c.lit and c.kind == CARD_APPROACH:
       for hv, al in ((12, 30), (8, 60), (6, 110)):
@@ -722,13 +734,14 @@ def split_card(c: MaxCard, x0: float, y0: float) -> tuple[float, float, float, f
     fy, fa = y + ch, a * foot / SC_FOOT_H
     rl.draw_rectangle_rec(rl.Rectangle(x + 10, fy, total - 20, 1.2), rl.Color(255, 255, 255, int(46 * fa)))
     if foot > 18:
-      kw = 10 + KEY_W if c.lower is not None else 0.0
+      key_lower = confirm_lower(c.text) if c.kind == CARD_APPROACH else c.lower   # push9: the press 'now' takes
+      kw = 10 + KEY_W if key_lower is not None else 0.0
       size, sx = _fit(c.text, SC_FOOT_TEXT, total - 20 - kw)
       tw = ink(c.text, size, sx)[0]
       gx, fcy = x + (total - (tw + kw)) / 2, fy + foot / 2 + 0.5
       text_ink(c.text, size, gx, fcy, rl.Color(255, 255, 255, int(255 * fa)), sx=sx, anchor="left")
-      if c.lower is not None:
-        key_glyph(gx + tw + 10, fcy, c.lower, c.key_alpha * fa)
+      if key_lower is not None:
+        key_glyph(gx + tw + 10, fcy, key_lower, c.key_alpha * fa)
   _solid_rrect(x, y, total, h, SC_RADIUS, 1.2, rl.Color(255, 255, 255, int(38 * ca)))
   return x, y, x + total, y + h
 

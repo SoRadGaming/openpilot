@@ -58,6 +58,9 @@ class UIStateSP:
     self.road_name_toggle: bool = False
     self.rocket_fuel: bool = False
     self.speed_limit_mode = None
+    # FORK(SPEED-LIMIT): push9 - the user's limit offset, for the 'press - to set N' card at 'now' (hud_model.now_prompt)
+    self.speed_limit_offset_type: int = 0
+    self.speed_limit_offset_value: float = 0.
     self.standstill_timer: bool = False
     self.sunnylink_enabled: bool = False
     self.torque_bar: bool = False
@@ -171,6 +174,8 @@ class UIStateSP:
     self.road_name_toggle = self.params.get_bool("RoadNameToggle")
     self.rocket_fuel = self.params.get_bool("RocketFuel")
     self.speed_limit_mode = self.params.get("SpeedLimitMode", return_default=True)
+    self.speed_limit_offset_type = int(self.params.get("SpeedLimitOffsetType", return_default=True) or 0)  # FORK(SPEED-LIMIT)
+    self.speed_limit_offset_value = float(self.params.get("SpeedLimitValueOffset", return_default=True) or 0)
     self.standstill_timer = self.params.get_bool("StandstillTimer")
     self.sunnylink_enabled = self.params.get_bool("SunnylinkEnabled")
     self.torque_bar = self.params.get_bool("TorqueBar")

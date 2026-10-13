@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import time
 
 from openpilot.cereal import messaging, custom
 from opendbc.car import structs
@@ -20,6 +21,7 @@ from openpilot.sunnypilot.models.helpers import get_active_bundle
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
+SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
 
 
 class LongitudinalPlannerSP:
@@ -62,6 +64,9 @@ class LongitudinalPlannerSP:
     self.limit_hold.update(self.resolver)
     limit = self.limit_hold
 
+    # FORK(SPEED-LIMIT): push9 - the 'now' window the comma 4's card shows, so a press in it can be the confirm
+    self.update_now_window(sm)
+
     # Speed Limit Assist
     has_speed_limit = limit.speed_limit_valid or limit.speed_limit_last_valid
     self.sla.update(long_enabled, long_override, v_ego, a_ego, v_cruise_cluster, limit.speed_limit,
@@ -78,6 +83,27 @@ class LongitudinalPlannerSP:
     self.source = min(targets, key=lambda k: targets[k][0])
     self.output_v_target, self.output_a_target = targets[self.source]
     return self.output_v_target, self.output_a_target
+
+  def update_now_window(self, sm: messaging.SubMaster) -> None:
+    """FORK(SPEED-LIMIT): push9 (speed_limit/now_confirm.py). The same inputs the HUD's ApproachState reads: mapd's
+    look-ahead (liveMapDataSP, run down by vEgo between its 1 Hz messages), the limit in force when it is a map limit
+    (the held limit this planner publishes), carState. Missing or stale: no window."""
+    if not all(hasattr(sm, a) for a in ('seen', 'alive', 'recv_frame')):
+      # the longitudinal-maneuver plant and the DEC gate tests pass a plain mapping: no map look-ahead, so no window
+      self.sla.now_confirm.reset()
+      return
+    lmd, cs = sm['liveMapDataSP'], sm['carState']
+    limit = self.limit_hold
+    conv = CV.MS_TO_KPH if self.sla.is_metric else CV.MS_TO_MPH
+    in_force = int(round(limit.speed_limit_last * conv)) \
+      if (limit.speed_limit_valid or limit.speed_limit_last_valid) and self.resolver.source == SpeedLimitSource.map else 0
+    self.sla.now_confirm.update(
+      time.monotonic(), map_ok=bool(sm.seen['liveMapDataSP'] and sm.alive['liveMapDataSP']),
+      map_frame=sm.recv_frame['liveMapDataSP'], ahead_valid=bool(lmd.speedLimitAheadValid),
+      ahead_ms=float(lmd.speedLimitAhead), ahead_dist=float(lmd.speedLimitAheadDistance),
+      nsw_state=int(lmd.nswZone.state), car_ok=bool(sm.seen['carState'] and sm.alive['carState']),
+      v_ego=float(cs.vEgo), standstill=bool(cs.standstill), limit=max(0, in_force), is_metric=self.sla.is_metric,
+      holding=limit.holding)
 
   def update(self, sm: messaging.SubMaster) -> None:
     self.events_sp.clear()

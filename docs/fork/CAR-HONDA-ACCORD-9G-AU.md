@@ -1688,6 +1688,18 @@ The comma 4 runs the small UI. It has no Cruise or Vehicle panel, so neither pag
   5 s prompt, `update_speed_limit_assist_pre_active_raise_blocked`); and a **- pressed within about a second after the
   box has gone still confirms** the lower limit - 110 straight to 100 on one press (the confirm grace, 2026-10-06).
   After that second a - is an ordinary 1 km/h step. The hold itself is `speed_limit/change_hold.py` (fork-owned).
+- **A press during 'now' is the confirm (push9, 2026-10-13, not car-gated: non-PCM cruise, area SL).** The card says
+  'now' once the coming limit is under 50 m away (or held after mapd's look-ahead ended there), but the prompt only opened
+  ~4 s later - past the sign, mapd's switch, the 1 s change hold - so a press at 'now' was a 1 km/h step and the driver
+  pressed again when the prompt came (137 305.16; 134 313.44, 446.37, 716.18, 717.54). Now a + or - release at 'now', in
+  the coming limit's direction, while engaged with SLA active or inactive, arms exactly that limit
+  (`speed_limit/now_confirm.py`); when it comes into force SLA goes straight to active and card sets it on that frame,
+  with no prompt. The press is still its own 1 km/h step until then; the other way disarms; any other limit is the
+  prompt as before; the arm lapses 2.5 s after 'now' closes (kept while the change hold holds), so a phantom 'now'
+  (134 304.52, 674.56) sets nothing. While a press would count, the card says 'press - to set 100' in place of 'now'
+  (both styles); with cruise off it still says 'now' ('-' engages). The planner and the HUD share the geometry
+  (`NEAR_M`, `reached()`), and the replay of 134/136/137 puts the planner's windows on the HUD's to the frame.
+  Replays: `CHANGELOG_SERIAL_STEERING.md`, push9.
 
 ### 11.4 sunnylink
 

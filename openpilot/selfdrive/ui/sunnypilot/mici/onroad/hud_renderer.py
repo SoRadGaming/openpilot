@@ -16,7 +16,7 @@ from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (ApproachSta
                                                                      box_breath, box_outline, ease_in_out, ease_out,
                                                                      event_name, CARD_APPROACH, CARD_ENTER_S, CARD_GROW_S,
                                                                      CARD_PENDING, CARD_DONE, CARD_DONE_S, CONFIRM_EVENT,
-                                                                     NOW_HALO_S)
+                                                                     NOW_HALO_S, SLA_MODE_ASSIST, now_prompt)
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import hud_settings, STYLE_SPLIT, STYLE_STOCK_PLUS  # FORK(HUD)
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_lane_block import BlockTurnIntent, LaneBlockTile  # FORK(HUD)
 from openpilot.selfdrive.ui.ui_state import ui_state
@@ -268,6 +268,21 @@ class HudRendererSP(HudRenderer):
       self._set_speed_alpha_filter.x = 1.0
     return True
 
+  def _now_prompt(self, limit: int) -> str:  # FORK(SPEED-LIMIT): push9
+    """'press - to set 100' in place of 'now' when a press would be the confirm (speed_limit/now_confirm.py): openpilot
+    engaged with a set speed (with cruise off, '-' engages instead - routes 137 88.47 and 479.71), Speed Limit Assist
+    on, and the car's confirm the non-PCM button flow. '' otherwise, and the card says 'now' as before."""
+    cp = ui_state.CP
+    if not (self._engaged and self.is_cruise_set) or ui_state.speed_limit_mode != SLA_MODE_ASSIST or cp is None or \
+       (cp.openpilotLongitudinalControl and cp.pcmCruise):
+      return ""
+    cp_sp = getattr(ui_state, "CP_SP", None)
+    set_disp = int(round(self.set_speed if ui_state.is_metric else self.set_speed * KM_TO_MILE))
+    return now_prompt(limit, set_disp, is_metric=ui_state.is_metric,
+                      offset_type=getattr(ui_state, "speed_limit_offset_type", 0),
+                      offset_value=getattr(ui_state, "speed_limit_offset_value", 0.0),
+                      pcm_cruise_speed=cp_sp.pcmCruiseSpeed if cp_sp is not None else True)
+
   # FORK(HUD): the coming limit (round 5)
   def _approach_now(self):
     return self._approach.update(ui_state.sm, hud_settings.get(), started_frame=ui_state.started_frame,
@@ -322,10 +337,13 @@ class HudRendererSP(HudRenderer):
       return
     from openpilot.selfdrive.ui.sunnypilot.onroad.speed_limit import SpeedLimitRenderer
     text = approach_text(SpeedLimitRenderer._format_dist(shown.dist), shown.held)
-    frac = 0.0 if text == "now" else shown.frac   # 'now': the bar has drained
+    is_now = text == "now"
+    frac = 0.0 if is_now else shown.frac   # 'now': the bar has drained
+    if is_now:
+      text = self._now_prompt(shown.limit) or text   # push9: the press 'now' takes, where it takes one
     if self._approach_t0 is None:
       self._approach_t0 = now
-    self._now_t0 = (self._now_t0 if self._now_t0 is not None else now) if text == "now" else None
+    self._now_t0 = (self._now_t0 if self._now_t0 is not None else now) if is_now else None
     if alpha >= 0.5:
       self._approach_seen, self._approach_seen_alpha = now, alpha
     lit = False
