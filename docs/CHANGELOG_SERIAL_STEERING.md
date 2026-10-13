@@ -15,7 +15,7 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
-## 2026-10-13 — push9: the update screen, a press at 'now' sets the limit, board `4d427d46`
+## 2026-10-13 — push9: the update screen, a press at 'now' sets the limit, board `883a3cd1`
 
 After the first drives on push8 (routes 132-137) the owner asked for four things and chose each in chat:
 
@@ -49,9 +49,11 @@ After the first drives on push8 (routes 132-137) the owner asked for four things
     'now' windows (304.52-308.52 and 674.56-678.49) had no press and set nothing; 812.76 (a '-' while disengaged)
     armed nothing.
   * 136: 0 frames differ.
-* **Board `4d427d46`** (board `HANDOFF.md` 0p):
+* **Board `883a3cd1`** (board `HANDOFF.md` 0p):
   * **The cluster alarms when the board is pinned at its ceiling with no hand**: once per ceiling run, 1.5 s past the
-    300 ms debounce, even inside the 10 s quiet period. Route 137's second curve (645.9-649.6 at 160 counts, 52 km/h,
+    300 ms debounce, even inside the 10 s quiet period. Only an alarm that started at or after the run's own start
+    counts as the run's alarm (an unrelated one already sounding - driver monitoring, `op_saturated`, LDW - cannot
+    use it up), and a single 10 ms dip below 90% starts a new run, on purpose. Route 137's second curve (645.9-649.6 at 160 counts, 52 km/h,
     1.1 m drift, openpilot's own alert at 648.95) was silent because curve A's alarm had ended 6.3 s earlier. 24-route
     replay: 33 alarms -> 34 (137 at 647.57; 12a's moves from 1414.11 to 1407.10); d1's 145.26 double chime does not
     come back. `hud_test` section 14.
@@ -59,8 +61,9 @@ After the first drives on push8 (routes 132-137) the owner asked for four things
     the image the bootloader starts waits like a key-on instead of re-splitting K2 0.3 s after start (the window where
     route f6's column moved 1.4 deg). The update TO this image is knocked by `b5f08583`, which keeps the bit - this
     applies from the next update on (and to a cancelled or timed-out one on this image).
-  * 49,736 bytes, SHA-256 `d5396d726301ca9bf90af368d15e124318c8d2a67b912c8d5e6be49f59a88c1c`, `APL1` at `0x08004000`.
-    Rollback: `b5f08583` (push8).
+  * 49,740 bytes, SHA-256 `0753b9f6c4e18d1340ce0b5ce40f9ae5344ba8917caa7be557f18635a978de78`, `APL1` at `0x08004000`,
+    flags `0x04`, `0x707` = `883a3cd1`. Rollback: `b5f08583` (push8, flashed and driven on 134-137 and 139). The first
+    push9 bundle, `4d427d46` (49,736 bytes, `d5396d72…`), is superseded and was never flashed.
 * **How to update now:** parked, **ignition on, engine off**; Settings -> Gateway; the screen counts down 5 s with the
   relays already on stock wiring, then erase / write / install / restart.
 
@@ -105,6 +108,14 @@ diagnostics.
   the erase went ahead. Now `0x17C` seen at the gate and gone for `ENGINE_LOST_S` (1 s) is
   ABORT and "no engine data", and the panda's ignition reading off is ABORT and "ignition off" -
   before BEGIN, the old image stays. The bench (no `0x17C` from the start) goes on as before.
+- **Board `883a3cd1` replaces `4d427d46` in the bundle.** The no-hand pin alarm is once per
+  ceiling run, and the first build let *any* alarm sounding during the run count as that run's -
+  including a driver-monitoring steer_req alarm that had started before the run and was about to
+  hit its own 5 s cap, after which the ceiling was never heard. Now only an alarm that started at
+  or after the run's start counts (board `hud.c`, `hud_test` 14f). A 10 ms dip below 90% starts a
+  new run, deliberately (no hysteresis). A steer_req onset within 10 s of a pinned alarm is
+  silent, as before (the existing quiet period). The 24-route replay is unchanged (34 alarms,
+  every onset identical to `4d427d46`). 4 bytes larger; board `HANDOFF.md` 0p.
 
 ## 2026-10-12 — push8: the board's lane-change cap is off (board `b5f08583`, nocap)
 
