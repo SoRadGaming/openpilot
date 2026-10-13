@@ -1697,9 +1697,11 @@ The comma 4 runs the small UI. It has no Cruise or Vehicle panel, so neither pag
   with no prompt. The press is still its own 1 km/h step until then; the other way disarms; any other limit is the
   prompt as before; the arm lapses 2.5 s after 'now' closes (kept while the change hold holds), so a phantom 'now'
   (134 304.52, 674.56) sets nothing. While a press would count, the card says 'press - to set 100' in place of 'now'
-  (both styles); with cruise off it still says 'now' ('-' engages). The planner and the HUD share the geometry
-  (`NEAR_M`, `reached()`), and the replay of 134/136/137 puts the planner's windows on the HUD's to the frame.
-  Replays: `CHANGELOG_SERIAL_STEERING.md`, push9.
+  (both styles); with cruise off it still says 'now' ('-' engages). The planner and the HUD run one state machine
+  (`now_confirm.ComingLimit`, push9 review: a second copy disagreed on 10f/112/129/12a, once opening 'now' with no card on
+  screen), and over 22 routes the planner's windows sit on the HUD's to the frame. The key is the way of limit + offset,
+  the number the card shows; with `HudApproachingLimit` off nothing arms; a press while the card is hidden by MAX, an
+  alert or the lane-block tile still counts. Replays: `CHANGELOG_SERIAL_STEERING.md`, push9.
 
 ### 11.4 sunnylink
 

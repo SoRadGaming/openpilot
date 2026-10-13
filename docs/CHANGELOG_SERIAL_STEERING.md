@@ -70,6 +70,27 @@ diagnostics.
 
 ---
 
+
+### push9 review (2026-10-14)
+
+- **One 'now' for the card and the planner.** The planner's window was a second copy of the
+  HUD's and disagreed on 4 of 22 routes: lost far out it ran the distance down for 3 s instead
+  of 2 and opened 'now' with no card on screen (112 at 2170.65), it lacked the "distance only
+  counts down" hysteresis (10f, 129: 'now' on the card, a plain 1 km/h step in the planner) and
+  the 15 s / 500 m window (12a). The state machine is now `now_confirm.ComingLimit`; the HUD's
+  `ApproachState` and the planner's `NowConfirm` both run it. Replayed over the 22 routes: 0
+  differing frames (was 10f/112/129/12a); 134/136/137's now-confirm replay is unchanged.
+- **The key is the target's way.** With an offset, '-'/'+' and "nothing to press" are decided on
+  limit + offset (the number the card shows) on the card and in the planner alike: 100 + 10%
+  with MAX at 110 asks for nothing; at 105 it is '+'.
+- **Only with the card on.** With `HudApproachingLimit` off nothing arms. A press while the card
+  is hidden (MAX, an alert, the lane-block tile) still counts - plannerd cannot see the screen.
+- **Update screen.** A Cancel in the countdown's last instant is honoured (Cancel leaves the
+  screen 0.5 s before the end and is read once more right before BEGIN); "too late to cancel"
+  replaces "canceling" once the erase has begun; "canceling" while starting. The engine is
+  watched through the countdown (started then: ABORT, "engine on"). No `0x17C` through the
+  panda is refused ("no engine data"). ABORT waits for its echo and ACK.
+
 ## 2026-10-12 — push8: the board's lane-change cap is off (board `b5f08583`, nocap)
 
 The owner, on hearing the board halves its torque on every indicated lane change: "On lane change remove steer

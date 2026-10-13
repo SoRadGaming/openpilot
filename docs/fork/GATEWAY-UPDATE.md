@@ -287,32 +287,43 @@ update running, and the button's sub-label goes on (`in 3`, `37%`).
 | `check` (hook, then flasher) | checking / parked, engine off | yes, nothing sent yet | 1 s |
 | `baseline` | checking / listening to the car | yes, nothing sent yet | 4 s |
 | `click` | relays to stock / the car is on stock wiring | no | knock, HELLO, ENTER, INFO: ~0.1-0.3 s |
-| `stock` | relays in stock / updating in **5 4 3 2 1** | yes: ABORT, the board keeps its firmware | 5 s (`HOLD_BEFORE_DATA_S`) |
+| `stock` | relays in stock / updating in **5 4 3 2 1** | yes, until its last 0.5 s (`CANCEL_LAST_S`): ABORT, the board keeps its firmware | 5 s (`HOLD_BEFORE_DATA_S`) |
 | `erase` | erasing / making room for the new image | no | 1.4-2.6 s |
 | `write` | writing x% / keep the car parked (bar) | no | ~9 s |
 | `install` | installing / keep the ignition on | no | FINISH, REBOOT, the copy: ~3-4 s |
 | `restart` | restarting the board / watching it start | no | the 6 s post listen |
 | `ok` (hook) | done / turn the car off, then on, before driving | - | |
-| `failed` (hook) | engine on / ignition off / failed, with the reason | - | |
+| `failed` (hook) | engine on / ignition off / no engine data / failed, with the reason | - | |
 | `cancelled` (hook or watcher) | cancelled / the board keeps its firmware | - | |
 
 **The gate, before a single frame is sent** (`run_flash`, in this order): the panda's own
 ignition (`PandaTransport.ignition()`: `ignition_line` or `ignition_can` from `health()`;
 `False` refuses with `IGNITION_OFF`, unreadable is the page's gate), stationary (the existing
 1 s `moving()` on `0x158`), then the engine: the median `0x17C` `ENGINE_RPM` over that same
-second, and again over the last second of the 4 s baseline, against `ENGINE_OFF_MAX_RPM` =
-400. Measured on the car: 0 with the engine off (the first 0.1 s of routes 135, 136 and 137,
+second, again over the last second of the 4 s baseline, and through the countdown (every
+loop over the last 0.5 s, `ENGINE_WINDOW_S`, and once more just before BEGIN; started there -
+during the click, the HELLO wait or the countdown - it is ABORT and `ENGINE_RUNNING`, the
+installed image stays), against `ENGINE_OFF_MAX_RPM` = 400. Measured on the car: 0 with the engine off (the first 0.1 s of routes 135, 136 and 137,
 before the crank), 32-188 cranking, never under 637 running (warm idle 687-706 on 134,
 816-859 on 132). Over it: `failed: Turn the engine off - leave the ignition on - then update`,
-which the screen shows as "engine on". No `0x17C` at all is allowed and logged: the bench, or
-a car bus with nothing on it, and the HELLO wait then says so in its own words.
+which the screen shows as "engine on". No `0x17C` at all is refused in the car
+(`NO_ENGINE_DATA`, "no engine data": a gate that cannot see the engine would leave the owner's
+rule unenforced - the wrong bus, no PCM traffic, accessory) whenever the transport reads the
+ignition (the panda); only the bench adapter, which has no car to see, is allowed through
+(`run_flash(require_engine_data=...)` overrides).
 
 **Cancel** is taken in `check` and `baseline` (`run_flash` returns `CANCELLED` and nothing
 has been sent: the knock has not happened, the board never noticed) and in `stock`, where it is
 ABORT: the bootloader closes the session and, its 800 ms listen window long past, jumps back
 to the firmware it has. BEGIN has not been sent, so bank 2 is untouched - the `--dry-run` path.
 From the erase on there is no cancel (`cancel: false` in the phase, the pill not drawn). The
-flasher polls `should_cancel` at most every `CANCEL_POLL_S` (0.2 s). The hook reads
+flasher polls `should_cancel` at most every `CANCEL_POLL_S` (0.2 s), stops offering Cancel for
+the countdown's last `CANCEL_LAST_S` (0.5 s), and reads it once more, unthrottled, immediately
+before BEGIN - so any Cancel the screen took is ABORT, never an erase (push9 review: one at
++4.95 s used to be ignored while the screen said "canceling"). A Cancel that still loses that
+race shows "too late to cancel" over erasing / writing / installing / restarting, never
+"canceling". ABORT is sent with its echo awaited, then the bootloader's ACK (up to 0.5 s), so
+it is on the wire before the hook's `close()` clears the panda's queues. The hook reads
 `EpsLkasFlashCancel` **before** clearing it (a Cancel pressed while `./pandad` was stopping is
 the owner's answer), clears it at every ending (`_finish()`), and the watcher drops a request
 whose Cancel came before `./pandad` was asked to stop, so the car link never goes down for it.
@@ -772,7 +783,8 @@ dry-runs.
 | refused image | `refusing this image: <reason>` |
 | ignition off (push9) | `the ignition is off - turn it on, leave the engine off, then update` (`IGNITION_OFF`) |
 | moving | `the car is moving - stop first` |
-| engine running (push9) | `Turn the engine off - leave the ignition on - then update` (`ENGINE_RUNNING`) |
+| engine running (push9) | `Turn the engine off - leave the ignition on - then update` (`ENGINE_RUNNING`); in the countdown after ABORT |
+| no engine data (push9 review) | `no engine data on the car bus - ignition on, engine off, then update` (`NO_ENGINE_DATA`): no `0x17C` through the panda |
 | cancelled (push9) | `cancelled` (`CANCELLED`): before the knock nothing was sent; in the countdown ABORT was sent |
 | no board | `no HELLO. Either the board has no bootloader (it needs one SWD visit), or it never reset.` |
 | board NAK | `refused: <nak>`. This covers the knock, ENTER and the post-reset HELLO; for example `the car is not stationary`. |
