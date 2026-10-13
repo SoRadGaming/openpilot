@@ -60,6 +60,8 @@ sitting in its bootloader with stock LKAS working (`docs/CAN-UPDATE.md` in the f
 
 ## 2. Inventory
 
+The second board's files and commits (branch `blr`, unreleased) are in §13.6.
+
 ### 2.1 sunnypilot fork
 
 | file | status | area A content |
@@ -264,7 +266,7 @@ a first flash, `EpsLkasFlashState` keeps saying `ok <hash>` for the rest of the 
 | otherwise | `to <hash>`, or the refusal reason | per `_can_update()` |
 
 `_busy()` is true when the state is `running`, when `_asked` is set, or when the request param
-is set. Since BLR-v1 (branch `blr`, §13.3) it is true when that holds for **either** board, so only
+is set. Since BLR-v1 (branch `blr`, §13.4) it is true when that holds for **either** board, so only
 one update can be in flight, and `_asked` is also cleared when the run has ended without `running`
 ever being seen.
 
@@ -458,7 +460,7 @@ There are five:
    the gateway" must not silently reflash the panda first. `count` is left alone so the
    normal alternation is undisturbed.
 4. After `flash_panda(panda_serials[0])`, which guarantees the panda is out of bootstub, and
-   before `Popen`: `flash_if_requested(panda_serials[0])`. Since BLR-v1 (branch `blr`, §13.2):
+   before `Popen`: `flash_if_requested(panda_serials[0])`. Since BLR-v1 (branch `blr`, §13.3):
    `if not flash_if_requested(panda_serials[0]): flash_if_requested(panda_serials[0], target=BLR)`,
    one update session per window, with `BLR` imported from the flasher.
 5. After `Popen` and before `process.wait()`: `watch_for_request(process,
@@ -1285,7 +1287,7 @@ This is the only test that exercises the dataclass-to-capnp splat card uses.
 
   In any of these the button would show `requested` and stay disabled until the UI process
   restarts. A fix would clear `_asked` on any change of state after `confirm()`. **Fixed on
-  branch `blr`** (§13.3): with two boards a stuck `_asked` would have held both buttons.
+  branch `blr`** (§13.4): with two boards a stuck `_asked` would have held both buttons.
 * **The watcher drops only the first onroad request.** Its `refused` flag means a second
   request written while onroad is neither dropped nor answered. That request stays set and
   is honoured once the car is offroad. The UI cannot write a request onroad; a hand-written
@@ -1398,27 +1400,95 @@ These are where the next merge can collide with area A.
 
 ---
 
-## 13. The second board: BLR-v1, the brake-lamp board (branch `blr`)
+## 13. The second board: BLR-v1, the brake-lamp board (branch `blr`, UNRELEASED)
 
-The BLR-v1 board lights the brake lamps from openpilot's `0x1FA BRAKE_LIGHTS` bit; its data side (DBC, decoder,
-cereal, card, the `Blr*` params) is [BRAKE-LAMP-RELAY.md](BRAKE-LAMP-RELAY.md). It is updated from the comma exactly
-as the EPS-LKAS board is, through the same flasher, hook, pandad window and page, and **separately**: its own
-button, its own params, its own target in the flasher. Markers `FORK(BRAKE-LAMP-RELAY)`. Board side: the EPS-LKAS
-repo, branch `blr-v1`, folder `blr/` (`docs/DESIGN.md` section E, `docs/BLR-CAN.md`).
+The BLR-v1 board lights the brake lamps from openpilot's `0x1FA BRAKE_LIGHTS` bit, which the car ignores. Its data
+side (DBC, decoder, cereal, card, the `Blr*` params) is [BRAKE-LAMP-RELAY.md](BRAKE-LAMP-RELAY.md). It is updated from
+the comma exactly as the EPS-LKAS board is, through the same flasher, hook, pandad window and page, and **separately**:
+its own button, its own params, its own target in the flasher. Markers `FORK(BRAKE-LAMP-RELAY)`. Board side: the
+EPS-LKAS repo, branch `blr-v1`, folder `blr/` (`docs/DESIGN.md` section E, `docs/BLR-CAN.md`).
 
-**Not bundled yet.** `blr_appslot.bin` is added only after the board's bench tests and a shadow drive. Until then
-the lamp board's button says `no image` and offers nothing; its card is shown as soon as the board has spoken.
+**Not pushed, and not bundled yet.** The branch waits for the board's bench tests and a shadow drive (the owner's
+call). `blr_appslot.bin` is added only after them (board design E.5, WP-H5). Until then the lamp board's button says
+`no image` and offers nothing; its card is shown as soon as the board has spoken. `eps_lkas_appslot.bin` is
+byte-identical to `nsw-live`'s, and the EPS update is unchanged on the wire (`test_eps_wire_transcript_is_frozen`).
 
-### 13.1 The flasher
+### 13.1 How the two updates are kept apart
 
-`eps_lkas_flasher.py` has a `Target` per board (`EPS`, `BLR`, `TARGETS`): IDs, magic, marker, slot, the HELLO
-board class, the allowed variants, the dirty rule, the bundled image, the census and trace IDs, DATA pacing, the NAK
-texts and the screen words. `run_flash(..., target=)`, `check_app_slot_image(image, target)`,
-`image_identity(image, target)` and `load_bundled_image(target)` default to `EPS`, whose wire behavior is frozen
-by `test_eps_wire_transcript_is_frozen`. The BLR target is pinned by `test_blr_flasher.py`. The module docstrings
-and that test file are the reference until this section grows a full account of it.
+An update of one board must never reach, start or stall the other. Five layers, each enough on its own for the
+common mistakes:
 
-### 13.2 The hook and pandad
+| layer | EPS-LKAS | BLR-v1 | what it stops |
+|---|---|---|---|
+| the request | `EpsLkasFlashRequested` | `BlrFlashRequested` | a press naming the wrong board: the request **is** the board, there is no shared request with a "which board" field |
+| the page | `UpdateBoardButton()` | `UpdateBoardButton(BLR)` | two updates at once: each button's `_busy()` is both boards' (§13.4) |
+| the window | `flash_if_requested(serial)` | `flash_if_requested(serial, target=BLR)`, only if the EPS ran none | two sessions in one pandad window (§13.3) |
+| the wire | `0x710`/`0x711`/`0x712`, `EPSBOOT` | `0x628`/`0x629`/`0x62A`, `BLRBOOT`, and HELLO **and** the ENTER ACK must say board class 2 in byte 7 | the other board's bootloader ever hearing a command; anything else answering on `0x629` is ABORTed before a byte of image |
+| the image | marker `APL1` | marker `BLR1`, shadow or live, clean tree, the bootloader's vector rules, its own length/CRC-32 trailer | the other board's image: refused **by name** before a frame is sent (`this is an EPS-LKAS image ... must never be installed on the BLR-v1 lamp board`, and the reverse). An EPS image on the lamp board would drive PB10 high, its UART idle level - the brake lamps on. |
+
+Behind all five is the board itself: the BLR bootloader refuses an `APL1` image at `CEND` 1 with NAK 8 (and closes
+the session), a truncated one at `FINISH` (NAK 8), and repeats every image check before its boot copy.
+
+### 13.2 The flasher
+
+`eps_lkas_flasher.py` has a `Target` per board (`EPS`, `BLR`, `TARGETS = {"eps": EPS, "blr": BLR}`): a frozen
+dataclass compared by identity (`eq=False`; `errs` and `words` are read-only mappings). `run_flash(..., target=)`,
+`Flasher(..., target=)`, `check_app_slot_image(image, target)`, `image_identity(image, target)`,
+`load_bundled_image(target)` and `describe_hello(d, target)` all default to `EPS`, and with `EPS` every check, pace
+and retry the BLR adds is off - which is what keeps the EPS transcript frozen. The module constants `board.py` and the
+tests import (`APP_ID_OFFSET`, `APP_ID_MAGIC`, `ID_HOST`, ...) are unchanged. The protocol methods keep v1's channel
+names `ID_HOST`/`ID_DATA`; `Flasher._wire_id()` maps them to the target's IDs and refuses anything else. There is no
+`from __future__ import annotations` in the module: the tests load it unregistered, where `dataclasses` cannot
+resolve string annotations.
+
+| | `EPS` | `BLR` |
+|---|---|---|
+| IDs, ENTER magic | `0x710`/`0x711`/`0x712`, `EPSBOOT` | `0x628`/`0x629`/`0x62A`, `BLRBOOT` |
+| marker, origin, slot | `APL1`, `0x08004000`, 112 KB | `BLR1`, `0x08004000`, 112 KB |
+| `hello_class` | not checked (the EPS bootloader sends 0) | 2, on HELLO, the ENTER ACK and the post-install HELLO; anything else is ABORT and `wrong board answered on 0x629` |
+| `allowed_variants` | none (no VARIANT field) | shadow (2), live (3); bench (1) is `bench image - never installed from the comma` |
+| `refuse_dirty` | no (it installs, with a warning) | yes |
+| `strict_image` | no | odd reset vector inside the image, reserved flag bits 1-3 zero, and the trailer (below) |
+| `data_fps_max` | none: the echo's pace | 400 DATA frames/s (2.51 ms apart): the update shares bus 0 with the EPS board, which forwards it |
+| `retry_naks` | any NAK re-sends the chunk | only NAK 1, 3 or 6, as `blr_can_update.py`: after NAK 8 the board has closed the session, and a retry would bury "image is not for this board" under "command out of sequence" |
+| NAK texts | `ERRS` 0-7 | plus 8 `image is not for this board`, 9 `board flash is not dual-bank`, 10 `lamp output is on` |
+| bundled image | `eps_lkas_appslot.bin` | `blr_appslot.bin` (not yet) |
+| census own | `0x700`-`0x70F`, `0x711` | `0x620`-`0x62F` (the EPS board's `0x70x` stay in: a lamp update that starves the EPS board is news) |
+| trace | `0x156`, `0x18F`, `0x17C`, `0x1A6`, `0x70B` -> `/data/eps-lkas-trace` | `0x17C`, `0x1A6`, `0x620`, `0x706`, `0x70B` -> `/data/blr-trace` |
+| screen words | relays to stock / relays in stock / "turn the car off, then on, before driving" | lamp output off / brake lamps are pedal-only / nothing under "done" |
+
+**The image checks for the BLR**, in order, each a string and never an exception: length, size, the marker's magic
+(`APL1` and the BLR's own bootloader record `BLB1` refused by name), the origin, SP in SRAM, the reset vector in the
+slot, then the strict rules, then VARIANT (bench, then anything not shadow or live), then dirty, then **the trailer**.
+Every BLR app `.bin` ends, since the firmware review's round 1 (BOOT-6), with 12 bytes the post-build appends:
+`{"BLRT", the whole file's length including these 12, CRC-32 of every byte before them}`, `0xFF`-padded in front to a
+double word. Nothing else says how long an image is, so without it a truncated copy that still held its reset handler
+passed every check, and the CRC-32 the host sends at `FINISH` was over exactly what it sent. `blr_trailer_problem()`
+mirrors the bootloader's `img_trailer_ok()` and the firmware's `blr_hostlib.trailer_problem()`; a test runs both on
+the same images whenever the firmware tree is reachable. The bootloader checks it again at `FINISH` and before the
+copy, so a comma that skipped it would still install nothing.
+
+**HELLO's ECC_FIXED (bit 6, review round 1, BOOT-2).** A flash page that a power cut left half-written reads back
+with an uncorrectable ECC error, which on the G0 is an NMI; the BLR bootloader records it, erases the page on the next
+boot (the staging header first, which cancels a staged image), and says so in that boot's HELLO.
+`describe_hello(d, BLR)` reports it as `eccFixed`; the log's HELLO line says `ECC page repaired this boot`, and when it
+is why the new image is not there after the `REBOOT`, the failure says so (`board reports <old> after installing <new>
+- its bootloader repaired a flash page this boot, which cancels a staged image`).
+
+**After the install** the HELLO must say `appOk`, the image's commit **and** its VARIANT: a shadow and a live image of
+one commit share a hash, so the commit alone cannot prove the install happened. Success returns `(True, <hash>)`.
+
+**The trace summary** (`BlrFlashTrace`, emitted by card into the next route as `blr flash trace ...`) is
+`_summarise_blr()`: no steering is traced, so instead `n`, `d` (seconds), a lamp verdict (`lamp output off
+throughout`, `LAMP OUTPUT ON DURING THE UPDATE` or `no lamp-board status seen`) and the per-phase table with, beside
+the usual rpm, load, census and error deltas, the lamp board's last `0x620` STATE `bst` and output `bout`, and the
+EPS board's `0x706` forwarding-ring peak `ring`, drop flags `sdrop` and FAULT `sflt` (non-zero: it fell back to bypass
+under the burst).
+
+By hand: `python -m openpilot.sunnypilot.selfdrive.pandad.eps_lkas_flasher --target blr --dry-run` (bus 0 only; with
+no bundled image it says so and opens no transport).
+
+### 13.3 The hook and pandad
 
 `eps_lkas_hook.py` keeps one table of params per board, `KEYS = {EPS: EPS_KEYS, BLR: BLR_KEYS}` (`FlashKeys`, a
 `NamedTuple`: the tests load the hook without registering it in `sys.modules`, where a dataclass cannot resolve its
@@ -1440,7 +1510,7 @@ annotations). The EPS's are the module constants of §4, unchanged.
 * **pandad.py**, in the window: `if not flash_if_requested(panda_serials[0]):
   flash_if_requested(panda_serials[0], target=BLR)`. **One session per window**: the lamp board is asked only if
   the EPS ran none. A second pending request waits for the next window, which the watcher opens once `./pandad` is
-  back. The page never lets two be pending (§13.3), so this is the backstop.
+  back. The page never lets two be pending (§13.4), so this is the backstop.
 * **`watch_for_request(process, skip_reset, params=None, targets=(EPS, BLR))`** checks each board in turn, each
   refused onroad (once per board) or cancelled by its own params; the first request that stands arms the skip and
   sends the one SIGINT. Still one thread, `eps_lkas_watch`.
@@ -1450,13 +1520,17 @@ annotations). The EPS's are the module constants of §4, unchanged.
   9 on single-bank flash, so an install proves it). `bootGit`, `uid` and `borEn` are the board's and stay as card
   read them. `BlrLastDrive` is the drive's record and is not touched. Event `blr.flashed` with the version and the
   variant.
+* The update gate is the EPS's, unchanged: ignition on, stationary on `0x158`, engine off on `0x17C`, the countdown,
+  Cancel, ABORT. On top of it the lamp board's application refuses the knock with NAK 5 when not stationary and NAK
+  10 while its lamp output is on or an ON edge is pending, and turns its output off before it resets.
 
-### 13.3 The page
+### 13.4 The page: what the lamp board's card and button show
 
 `BoardLayoutMici` is `[BoardFirmwareInfo, UpdateBoardButton(), LampBoardInfo, UpdateBoardButton(BLR)]`. The EPS
 pair is the class and the code it was. The lamp board's pair is visible only while `BlrBoardVersion` is set
 (`lamp_board_seen()`, cached on the `REFRESH_S` tick like `board_page_visible()`), and the gateway row now shows when
-**either** board has spoken.
+**either** board has spoken. With the lamp board never seen the page is **pixel-identical** to `nsw-live`'s: the
+integrator's render drew both from the same params on a frozen clock and compared them (renders below).
 
 **The lamp board's card** (`LampBoardInfo`, 520 x 180: wider than the EPS's 360 so the usual lines do not scroll;
 `lamp_board_lines()` is the pure part):
@@ -1468,24 +1542,32 @@ board id a5c3e1 • boot b28113               • no bootloader / • not dual-b
 last drive: ok                              or the fault names, or LATCHED <reason> (a latch first)
 ```
 
-What `0x62F` has not said yet is left out (`board id unknown`), never read as "no". The last drive is
-`BlrLastDrive` (`last_drive_text()`; `unknown` for a missing or malformed record).
+* Line 1: `BlrBoardVersion`, the VARIANT by name from `BlrBoardBuild["variant"]`, and the age of `BlrBoardSeenAt`
+  (when a fresh `0x620` was last heard - not when the identity latched).
+* Line 2: from `0x62F` (`uid`, `bootGit`, `bootloader`, `dualBank`). What `0x62F` has not said yet is left out
+  (`board id unknown`), never read as "no".
+* Line 3: `BlrLastDrive` (`last_drive_text()`): `ok` (no fault and no latch), the firmware's fault names
+  (`F_U4_NOT_SINKING` ... `F_FEEDBACK`), or `LATCHED U4|FEEDBACK|CLOCK|PIN_STUCK_HIGH` first, because a latch is what
+  kept the lamp output off for the rest of that power cycle; `unknown` for a missing or malformed record.
 
-**Its button** is titled `lamp board` (251 px of the 252 the title gets beside the icon; measured by a test). Its
-`_can_update()` order:
+**Its button** is titled `lamp board` (251 px of the 252 the title gets beside the icon; measured by a test; `brake
+lamp`, 248 px, is the fallback if a font change breaks it). Its `_can_update()` order:
 
 | # | test | reason |
 |---|---|---|
 | 1 | `BlrBoardBuild` has no `bootloader` key: `0x62F` not heard yet | `drive once` |
 | 2 | `bootloader` false (or no build) | `needs SWD once` |
 | 3 | `dualBank` false | `not dual-bank` (BEGIN would be NAK 9; the option byte is an SWD job) |
-| 4 | no bundled image, or one the comma would never install (bench, `VARIANT` 0, dirty, not `BLR1`) | `no image` |
+| 4 | no bundled image, or one the flasher would refuse (`check_app_slot_image(image, BLR)`: bench, `VARIANT` 0, dirty, not `BLR1`, the vector rules, no valid trailer) | `no image` |
 | 5 | bundled hash **and variant** == the board's (a shadow and a live image of one commit share a hash) | `up to date` |
 | 6, 7 | ignition, offroad, as the EPS | `ignition off`, `use always offroad` |
 | - | all pass | `to <hash>` and, on a second line, `(shadow)` or `(live)` (one line would be 366 px against 322) |
 
-`bundled_offer(target)` reads the 0x110-byte head through the target (`target.image_path`, `target.marker_magic`,
-`image_identity`, `marker_variant`), cached per image path on its mtime; `bundled_firmware(target)` is its hash.
+`bundled_offer(target)` is `(commit, variant)` through the target (`target.image_path`, `target.marker_magic`,
+`image_identity`), cached per image path on its mtime; `bundled_firmware(target)` is its hash. For the EPS it reads
+the 0x110-byte head, as before. For the lamp board it reads the whole file (at most its slot, once per mtime) and
+offers it only if the flasher's own `check_app_slot_image()` passes it: the trailer covers the whole file, and an
+image the comma would refuse is no offer rather than a press that fails.
 
 **One update at a time.** Each button's `_busy()` is true while **either** board's state is `running` or its
 request is set, or either button has asked (`set_peers()`). The other board's button is then disabled and says
@@ -1506,17 +1588,67 @@ would have held both buttons busy until the UI restarted.
 
 Everything else (checking, erasing, writing, the gate's refusals, Cancel) is both boards'.
 
-### 13.4 Tests
+**Renders** (headless raylib at 2x, the integrator's, 2026-10-14; not in the repo): the page with the lamp board never
+seen (identical to `nsw-live`), seen with no image (`no image`), and seen with a fake sealed shadow image (`to
+9f8e7d6c (shadow)`), its slider, the screen through the countdown to `done`, and the page mid-countdown (`in 3` beside
+the EPS's `busy`).
 
-| file | what it pins for the lamp board |
+### 13.5 Tests
+
+| file | tests | what it pins for the lamp board |
+|---|---|---|
+| `test_eps_lkas_flasher.py` | 42 | `test_eps_wire_transcript_is_frozen` (H1): 16 EPS scenarios on the fake clock - a full update, the dry run, each cancel point, the engine gate - every frame sent, every phase and every log line hashed against literals captured **before** the refactor. Unmodified since. |
+| `test_blr_flasher.py` | 30 + 3 skipped | the BLR target's literals, and against the firmware's headers when the tree is reachable (IDs, magic, class, NAK codes, marker, VARIANT, the trailer and ECC_FIXED); the trailer against the firmware's own `blr_hostlib`; APL1/BLR1/BLB1 refused by name; bench, dirty, VARIANT 0, the vector rules and every trailer fault refused; `BlrSim` (the bootloader and the app's knock on a fake clock): a full update, pacing <= 400/s, the class check before ENTER and before a byte, every cancel point, the engine gate, NAK 5/8/9/10, lost frames, a resident bootloader, the VARIANT read back, a truncated image refused at FINISH, an ECC repair, the trace. The 3 skipped are the bundled-image twins, which bind once `blr_appslot.bin` exists. |
+| `test_eps_lkas_hook.py` (`TestTwoBoards`, 12 of 25) | | **one session per window**, run from `pandad.py`'s own statement; a cancelled EPS request leaves the window free; each board clears only its own request; the watcher on the lamp board's params (offroad, onroad, cancelled, both pending: one SIGINT); the Cancel read before it is cleared; the identity written after an install (with and without `0x62F`); no image is a clean failure; never raising; the page's and the hook's tables name the same params; the `Blr*` params have their `EpsLkas*` twins' lifetimes |
+| `test_gateway_lamp_board.py` | 18 | `flash_view()` in the lamp board's words and never "relay" or "turn the car off"; the card; the last drive; `bundled_offer()` as the flasher's verdict on the whole file (a truncated copy, a bare `.bin`, a changed byte, an even reset vector: no offer); and the page driven in a headless raylib window (child process): the pair hidden until the board has spoken, the EPS pair unchanged with the lamp board present, titles that fit, the gate, `_busy()` across both, the confirm writing only its own params, the screen's Cancel, a run over inside one tick, `no image` |
+| `test_blr_board.py`, opendbc `test_blr.py` | 19, 14 | the data side and E.7 ([BRAKE-LAMP-RELAY.md](BRAKE-LAMP-RELAY.md)) |
+| adjusted | | `test_every_param_the_hook_and_the_page_use_is_registered` resolves the key tables and requires the `Blr*` keys; `test_the_button_title_leaves_room_for_its_sub_label` checks every target's title; `test_no_glyphs_the_baked_font_does_not_have` also checks the targets' screen words; `test_the_ui_shares_the_marker_constants_with_the_flasher` reads them through the targets and requires the lamp board's offer to be `check_app_slot_image()`'s verdict; `test_the_confirm_opens_the_screen_and_clears_a_stale_cancel` follows the confirm to `keys.*` and `GatewayFlashDialog(self._target)` |
+
+### 13.6 Inventory and commits (branch `blr`)
+
+sunnypilot, on `nsw-live` `55d9562b6`:
+
+| file | status | BLR content |
+|---|---|---|
+| `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_flasher.py` | modified | `Target`, `EPS`, `BLR`, `TARGETS`; the BLR constants; `target=` everywhere; `blr_trailer_problem()`; `_summarise_blr()`; `--target` |
+| `openpilot/sunnypilot/selfdrive/pandad/eps_lkas_hook.py` | modified | `FlashKeys`, `KEYS`, `target=`, the bool return, the watcher over both |
+| `openpilot/selfdrive/pandad/pandad.py` | modified | the lamp board asked in the window if the EPS ran none (`FORK(BRAKE-LAMP-RELAY)`) |
+| `openpilot/selfdrive/ui/sunnypilot/mici/layouts/board.py` | modified | `BoardKeys`, `LampBoardInfo`, `UpdateBoardButton(target)`, `bundled_offer()`, `lamp_board_seen()` |
+| `openpilot/sunnypilot/selfdrive/car/blr_board.py` | added | `BlrBoardParams`: card's stage/write of the `Blr*` params |
+| `openpilot/selfdrive/car/card.py` | modified | `BlrBoardParams` staged and written; `BlrFlashTrace` emitted |
+| `openpilot/cereal/custom.capnp` | modified | `CarStateSP.brakeLampRelay @5 :BrakeLampRelay` |
+| `openpilot/common/params_keys.h` | modified | the 10 `Blr*` keys |
+| tests | added / modified | `test_blr_flasher.py`, `test_gateway_lamp_board.py`, `test_blr_board.py`; `test_eps_lkas_flasher.py` (H1), `test_eps_lkas_hook.py`, `test_gateway_board_settings.py`, `test_gateway_flash_screen.py` |
+
+opendbc, on `dc7f1e7d`: `_sunnypilot_blr.dbc` (added) and its import in `honda_accord_au_2015_can.dbc`;
+`carstate.py` (registration), `carstate_ext.py` (`_update_blr()`), `structs.py` (`BrakeLampRelay`), `test_blr.py` and
+`fixtures/blr_golden_frames.json` (added), `FORK.md` section D.
+
+| commit | what |
 |---|---|
-| `test_eps_lkas_hook.py` (`TestTwoBoards`, 12) | **one session per window**, run from `pandad.py`'s own statement; a cancelled EPS request leaves the window free; each board clears only its own request; the watcher on the lamp board's params (offroad, onroad, cancelled, both pending: one SIGINT); the Cancel read before it is cleared; the identity written after an install (with and without `0x62F`); no image is a clean failure; never raising; the page's and the hook's tables name the same params; the `Blr*` params have their `EpsLkas*` twins' lifetimes |
-| `test_gateway_lamp_board.py` (18) | `flash_view()` in the lamp board's words and never "relay" or "turn the car off"; the card; the last drive; `bundled_offer()` by the target's rules; and the page driven in a headless raylib window (child process): the pair hidden until the board has spoken, the EPS pair unchanged with the lamp board present, titles that fit, the gate, `_busy()` across both, the confirm writing only its own params, the screen's Cancel, a run over inside one tick, `no image` |
-| adjusted | `test_every_param_the_hook_and_the_page_use_is_registered` resolves the key tables and requires the `Blr*` keys; `test_the_button_title_leaves_room_for_its_sub_label` checks every target's title; `test_no_glyphs_the_baked_font_does_not_have` also checks the targets' screen words; `test_the_ui_shares_the_marker_constants_with_the_flasher` reads them through the targets; `test_the_confirm_opens_the_screen_and_clears_a_stale_cancel` follows the confirm to `keys.*` and `GatewayFlashDialog(self._target)` |
+| `3e059dd8d` | H1: `test_eps_wire_transcript_is_frozen`, captured on the unmodified flasher, nothing else |
+| `12825fedf` | the data side: opendbc `f0a5284a`, `brakeLampRelay`, the `Blr*` params, `blr_board.py`, card |
+| `e1c4c4365` | H2: the `Target` refactor and the BLR target, `test_blr_flasher.py` |
+| `1809869ec` | H3: hook, pandad, page, `test_gateway_lamp_board.py` |
+| `62ea8c6cc` | H3's docs (this section's first version) |
+| integration | the trailer and ECC_FIXED (firmware review round 1), the lamp board's offer as the flasher's verdict; this section, the README rows, the changelog |
 
-### 13.5 Never
+To find the BLR hunks after a merge, grep for `FORK(BRAKE-LAMP-RELAY)`, `Blr`, `blr_`, `BLR_`, `brakeLampRelay`,
+`_update_blr` and `lamp board`.
+
+### 13.7 The firmware it was checked against
+
+`blr-v1` `31c138f`, and the firmware review's uncommitted round-1 changes in that worktree on 2026-10-14: the app
+image trailer (`BLR_TRAILER_MAGIC`/`BLR_TRAILER_BYTES`, BOOT-6), HELLO's `BLR_BOOT_HELLO_ECC_FIXED` (BOOT-2), and the
+bootloader's CAN filters (no comma change). **When that review commits, or changes them again:** re-run
+`test_blr_flasher.py` with the firmware tree reachable (`BLR_FIRMWARE_DIR` or `/mnt/s/...`):
+`test_blr_target_constants_match_the_firmware` and `test_the_trailer_is_the_firmware_post_builds` fail on any
+difference. Should the trailer be dropped, `blr_trailer_problem()` goes with it; the bundled-image twins would
+otherwise refuse the first real image.
+
+### 13.8 Never
 
 Nothing the lamp board sends or the page stores feeds `brakePressed`, `brakeLights`, a controls decision or panda
-safety (board design E.7; tests in BRAKE-LAMP-RELAY.md). The update gate is the EPS's, unchanged: ignition on,
-stationary on `0x158`, engine off on `0x17C`, the countdown, Cancel, ABORT. A failed lamp board update leaves the
-car's own pedal-driven lamps.
+safety (board design E.7; tests in BRAKE-LAMP-RELAY.md). A failed lamp board update leaves the car's own pedal-driven
+lamps: the board's application turns its output off before it resets on the knock, and its bootloader never drives
+it.

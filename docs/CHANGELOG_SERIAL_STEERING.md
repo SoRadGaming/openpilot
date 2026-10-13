@@ -15,27 +15,47 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
-## 2026-10-14 — BLR-v1 brake-lamp board: updated from Settings > gateway, separately (branch `blr`, not pushed)
+## UNRELEASED — BLR-v1 brake-lamp board: its telemetry, and its own update from Settings > gateway (branch `blr`, not pushed)
 
-The owner's second board, BLR-v1, lights the brake lamps from openpilot's `0x1FA BRAKE_LIGHTS` bit, and asked for
-it to be updated "similar to how we did eps, with bootloader etc ... separately". Its data side (DBC, decoder,
-`carStateSP.brakeLampRelay`, the `Blr*` params card writes) and the flasher's `BLR` target are in their own commits
-on this branch. This entry is the hook, pandad and the page (`docs/fork/GATEWAY-UPDATE.md` §13):
+**Not released, not pushed, and no BLR image is bundled.** The branch waits for the board's bench tests and a shadow
+drive; the owner decides when it lands. `eps_lkas_appslot.bin` is byte-identical to `nsw-live`'s and the EPS
+board's update is unchanged on the wire.
 
-* **Its own button and card** on Settings > gateway, after the EPS pair, shown once the board has spoken
-  (`BlrBoardVersion`): `lamp board`, with `<hash> • shadow|live • <age>`, `board id <uid> • boot <git>` and
-  `last drive: ok | <fault names> | LATCHED <reason>`. The gateway row now appears when either board has spoken.
-* **Separate in every way but one**: its own params (`BlrFlash*`), its own screen words (lamp output off - brake
-  lamps pedal-only; no relays, no "turn the car off, then on"), its own gate reasons (`drive once` before `0x62F`,
-  `not dual-bank`), and "up to date" on the hash **and** the variant. The one link: only one update can ever be in
-  flight, so each button is `busy` while the other board's update is pending or running.
-* **One session per pandad window**: `flash_if_requested(..., target=)` returns whether it ran one, and pandad asks
-  the lamp board only if the EPS ran none. The watcher watches both requests; each board clears only its own.
-* **No image is bundled yet** (after the bench tests and a shadow drive): the button says `no image` and offers
-  nothing.
-* **The EPS's update is unchanged on the wire** (`test_eps_wire_transcript_is_frozen`) and on the page. Two fixes
-  it shares: the button no longer sticks at `requested` when a run ends inside one refresh tick (GATEWAY-UPDATE
-  §11.2), and the hook no longer lets a failing request clear or transport `close()` escape into pandad's loop.
+The owner's second board, BLR-v1, lights the brake lamps from openpilot's `0x1FA BRAKE_LIGHTS` bit, which the car
+ignores. The owner asked for its firmware to be done "similar to how we did eps, with bootloader etc", for the
+gateway page to update the two boards separately, and for some diagnostic data out of it. Firmware: the EPS-LKAS
+repo, branch `blr-v1`, `blr/` (checked against `31c138f` and the firmware review's round-1 changes, GATEWAY-UPDATE
+§13.7).
+
+* **Its diagnostics reach the routes and the comma** (`docs/fork/BRAKE-LAMP-RELAY.md`, opendbc `f0a5284a`): the
+  board's `0x620`-`0x62F` decoded into `carStateSP.brakeLampRelay` (diagnostics only, liveness-exempt, `HONDA_ELESYS`
+  only), and card keeps its identity and each drive's fault/latch summary in `BlrBoardVersion`, `BlrBoardBuild`,
+  `BlrBoardSeenAt` and `BlrLastDrive` for the offroad page.
+* **Nothing it sends feeds a brake or controls decision.** No BLR signal reaches `brakePressed`, `brakeLights`,
+  selfdrived, controls, MADS or panda safety (board design E.7); tests hold it on what `CarState` does and on the
+  source.
+* **Updated separately** (`docs/fork/GATEWAY-UPDATE.md` §13): its own button, `lamp board`, beside the EPS's on
+  Settings > gateway, shown once the board has spoken, with its own card (`<hash> • shadow|live • <age>`, `board id
+  <uid> • boot <git>`, `last drive: ok | <faults> | LATCHED <reason>`); its own params (`BlrFlash*`); its own target
+  in the one flasher (IDs `0x628`-`0x62A`, `BLRBOOT`, board class 2 on HELLO and the ENTER ACK, marker `BLR1` - each
+  board's image refused on the other by name - shadow or live only, never dirty, DATA paced to 400 frames/s); its own
+  screen words (lamp output off - brake lamps pedal-only; no relays, no "turn the car off, then on"). The one link:
+  only one update can ever be in flight - the other board's button says `busy` - and pandad runs at most one session
+  per window, the lamp board's only if the EPS ran none.
+* **"Up to date" is the hash and the variant**: a shadow and a live image of one commit share a hash.
+* **The firmware review's round 1**, on the comma: every BLR app image now ends with a 12-byte `BLRT` length/CRC-32
+  trailer, and the comma refuses - and never offers - an image without a valid one, as the board's bootloader does at
+  `FINISH`; and a HELLO saying the bootloader repaired a flash page that failed ECC (which cancels a staged image) is
+  logged and named in the failure it explains.
+* **With no image bundled** the button says `no image` and offers nothing; with the board never seen the page is
+  pixel-identical to today's.
+* **Shared fixes**: the update button no longer sticks at `requested` when a run ends inside one refresh tick
+  (GATEWAY-UPDATE §11.2), and the hook no longer lets a failing request clear or transport `close()` escape into
+  pandad's loop.
+
+Commits: sunnypilot `3e059dd8d` (the EPS wire transcript frozen first), `12825fedf`, `e1c4c4365`, `1809869ec`,
+`62ea8c6cc` and the integration commits; opendbc `f0a5284a`. Before landing: the bench tests, the shadow drive, then
+WP-H5 bundles `blr_appslot.bin` and the three skipped bundled-image tests bind.
 
 ## 2026-10-13 — push9: the update screen, a press at 'now' sets the limit, board `883a3cd1`
 
