@@ -24,8 +24,7 @@ board's update is unchanged on the wire.
 The owner's second board, BLR-v1, lights the brake lamps from openpilot's `0x1FA BRAKE_LIGHTS` bit, which the car
 ignores. The owner asked for its firmware to be done "similar to how we did eps, with bootloader etc", for the
 gateway page to update the two boards separately, and for some diagnostic data out of it. Firmware: the EPS-LKAS
-repo, branch `blr-v1`, `blr/` (checked against `31c138f` and the firmware review's round-1 changes, GATEWAY-UPDATE
-§13.7).
+repo, branch `blr-v1`, `blr/` (checked against `de2f2d1`, after the firmware review's round 1, GATEWAY-UPDATE §13.7).
 
 * **Its diagnostics reach the routes and the comma** (`docs/fork/BRAKE-LAMP-RELAY.md`, opendbc `f0a5284a`): the
   board's `0x620`-`0x62F` decoded into `carStateSP.brakeLampRelay` (diagnostics only, liveness-exempt, `HONDA_ELESYS`
@@ -46,7 +45,8 @@ repo, branch `blr-v1`, `blr/` (checked against `31c138f` and the firmware review
 * **The firmware review's round 1**, on the comma: every BLR app image now ends with a 12-byte `BLRT` length/CRC-32
   trailer, and the comma refuses - and never offers - an image without a valid one, as the board's bootloader does at
   `FINISH`; and a HELLO saying the bootloader repaired a flash page that failed ECC (which cancels a staged image) is
-  logged and named in the failure it explains.
+  logged and named in the failure it explains. The review also found that the EPS board's bootloader would install a
+  BLR image (erasing the EPS app) and only refuse to run it: the comma's refusal by name is the only barrier there.
 * **With no image bundled** the button says `no image` and offers nothing; with the board never seen the page is
   pixel-identical to today's.
 * **Shared fixes**: the update button no longer sticks at `requested` when a run ends inside one refresh tick

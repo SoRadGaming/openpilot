@@ -1429,6 +1429,13 @@ common mistakes:
 Behind all five is the board itself: the BLR bootloader refuses an `APL1` image at `CEND` 1 with NAK 8 (and closes
 the session), a truncated one at `FINISH` (NAK 8), and repeats every image check before its boot copy.
 
+**The other direction has no such backstop** (board review round 1, BOOT-7). The deployed EPS bootloader checks no
+marker at `CEND`, `FINISH` or its copy, only at the jump: a `BLR1` image that got past the comma would be staged,
+**erase the EPS application** and then not run - the EPS board in its bootloader, relays in bypass, the car stock and
+without its LKAS function until an EPS image is pushed again. Nothing unsafe, but the comma's refusal of a `BLR1` (or
+`BLB1`) image on the EPS target, by name and before a frame, is the only thing that keeps the EPS application intact.
+`test_apl1_and_blr1_are_refused_on_each_others_board` pins it.
+
 ### 13.2 The flasher
 
 `eps_lkas_flasher.py` has a `Target` per board (`EPS`, `BLR`, `TARGETS = {"eps": EPS, "blr": BLR}`): a frozen
@@ -1638,13 +1645,14 @@ To find the BLR hunks after a merge, grep for `FORK(BRAKE-LAMP-RELAY)`, `Blr`, `
 
 ### 13.7 The firmware it was checked against
 
-`blr-v1` `31c138f`, and the firmware review's uncommitted round-1 changes in that worktree on 2026-10-14: the app
-image trailer (`BLR_TRAILER_MAGIC`/`BLR_TRAILER_BYTES`, BOOT-6), HELLO's `BLR_BOOT_HELLO_ECC_FIXED` (BOOT-2), and the
-bootloader's CAN filters (no comma change). **When that review commits, or changes them again:** re-run
-`test_blr_flasher.py` with the firmware tree reachable (`BLR_FIRMWARE_DIR` or `/mnt/s/...`):
-`test_blr_target_constants_match_the_firmware` and `test_the_trailer_is_the_firmware_post_builds` fail on any
-difference. Should the trailer be dropped, `blr_trailer_problem()` goes with it; the bundled-image twins would
-otherwise refuse the first real image.
+`blr-v1` `31c138f`, then `de2f2d1` (2026-10-14): the firmware review's round 1 (`59b1c77`..`de2f2d1`) was committed
+while this branch was being integrated. What it changed for the comma: the app image trailer
+(`BLR_TRAILER_MAGIC`/`BLR_TRAILER_BYTES`, BOOT-6; `BLR-CAN.md` §5 "Refuse an image without its trailer"), HELLO's
+`BLR_BOOT_HELLO_ECC_FIXED` (BOOT-2) and BOOT-7 (§13.1); the bootloader's CAN filters (HW-4) and the `0x1FA` counter
+rule need nothing here, and the DBC and the golden frames did not change. `test_blr_flasher.py` passes against
+`de2f2d1` with the tree reachable. **Whenever the firmware moves:** re-run it with the firmware tree reachable
+(`BLR_FIRMWARE_DIR` or `/mnt/s/...`): `test_blr_target_constants_match_the_firmware` and
+`test_the_trailer_is_the_firmware_post_builds` fail on any difference.
 
 ### 13.8 Never
 
