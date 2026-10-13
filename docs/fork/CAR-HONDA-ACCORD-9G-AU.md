@@ -1694,8 +1694,9 @@ The comma 4 runs the small UI. It has no Cruise or Vehicle panel, so neither pag
   pressed again when the prompt came (137 305.16; 134 313.44, 446.37, 716.18, 717.54). Now a + or - release at 'now', in
   the coming limit's direction, while engaged with SLA active or inactive, arms exactly that limit
   (`speed_limit/now_confirm.py`); when it comes into force SLA goes straight to active and card sets it on that frame,
-  with no prompt. The press is still its own 1 km/h step until then; the other way disarms; any other limit is the
-  prompt as before; the arm lapses 2.5 s after 'now' closes (kept while the change hold holds), so a phantom 'now'
+  with no prompt. The press is still its own 1 km/h step until then; the other way disarms, and so do presses that take
+  the set speed past the armed target (push9 re-review: armed 100, '-' on to 99 - the 100 must not raise it back; on
+  the target exactly it stays armed, nothing moves); any other limit is the prompt as before; the arm lapses 2.5 s after 'now' closes (kept while the change hold holds), so a phantom 'now'
   (134 304.52, 674.56) sets nothing. While a press would count, the card says 'press - to set 100' in place of 'now'
   (both styles); with cruise off it still says 'now' ('-' engages). The planner and the HUD run one state machine
   (`now_confirm.ComingLimit`, push9 review: a second copy disagreed on 10f/112/129/12a, once opening 'now' with no card on

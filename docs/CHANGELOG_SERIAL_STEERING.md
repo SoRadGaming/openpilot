@@ -91,6 +91,21 @@ diagnostics.
   watched through the countdown (started then: ABORT, "engine on"). No `0x17C` through the
   panda is refused ("no engine data"). ABORT waits for its echo and ACK.
 
+### push9 re-review (2026-10-14)
+
+- **Pressed past the target disarms.** Armed 100 from 102, '-' to 101 and again to 99: the arm
+  stayed, and the 100 coming into force would have RAISED the set speed back to 100 (the mirror
+  image: '+' past an armed 80 would have lowered it). `NowConfirm.track()` now sees the set speed
+  every frame after that frame's presses and disarms once it is past the armed target - the
+  ordinary prompt then, as for any unarmed change. ON the target it stays armed: the confirm
+  writes the number the set speed already is and goes straight to active, where a disarm would
+  flash the prompt for a frame. 134/136/137's now-confirm replay is unchanged.
+- **The countdown keeps the gate's proof.** It stopped only for the engine starting; `0x17C`
+  disappearing under it (the ignition switched off or to accessory) read as "not running" and
+  the erase went ahead. Now `0x17C` seen at the gate and gone for `ENGINE_LOST_S` (1 s) is
+  ABORT and "no engine data", and the panda's ignition reading off is ABORT and "ignition off" -
+  before BEGIN, the old image stays. The bench (no `0x17C` from the start) goes on as before.
+
 ## 2026-10-12 — push8: the board's lane-change cap is off (board `b5f08583`, nocap)
 
 The owner, on hearing the board halves its torque on every indicated lane change: "On lane change remove steer

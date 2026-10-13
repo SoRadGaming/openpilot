@@ -310,7 +310,12 @@ which the screen shows as "engine on". No `0x17C` at all is refused in the car
 (`NO_ENGINE_DATA`, "no engine data": a gate that cannot see the engine would leave the owner's
 rule unenforced - the wrong bus, no PCM traffic, accessory) whenever the transport reads the
 ignition (the panda); only the bench adapter, which has no car to see, is allowed through
-(`run_flash(require_engine_data=...)` overrides).
+(`run_flash(require_engine_data=...)` overrides). The countdown keeps that
+proof (push9 re-review): `0x17C` seen at the gate and gone for `ENGINE_LOST_S` (1 s) - the
+ignition switched off or to accessory under the update - is ABORT and `NO_ENGINE_DATA`, and the
+panda's ignition reading `False` (at most every 0.2 s, and once more just before BEGIN) is ABORT
+and `IGNITION_OFF`; the installed image stays. With no `0x17C` from the start (the bench) there
+is nothing to lose and the countdown goes on as before.
 
 **Cancel** is taken in `check` and `baseline` (`run_flash` returns `CANCELLED` and nothing
 has been sent: the knock has not happened, the board never noticed) and in `stock`, where it is
@@ -781,10 +786,10 @@ dry-runs.
 | ok, witnessed | `<hash>` from the post-reset HELLO: `appOk` is set and the hash equals the image's |
 | ok, not witnessed | `<hash>` from the image; no confirming HELLO within 25 s. This is logged. |
 | refused image | `refusing this image: <reason>` |
-| ignition off (push9) | `the ignition is off - turn it on, leave the engine off, then update` (`IGNITION_OFF`) |
+| ignition off (push9) | `the ignition is off - turn it on, leave the engine off, then update` (`IGNITION_OFF`); also in the countdown after ABORT (push9 re-review) |
 | moving | `the car is moving - stop first` |
 | engine running (push9) | `Turn the engine off - leave the ignition on - then update` (`ENGINE_RUNNING`); in the countdown after ABORT |
-| no engine data (push9 review) | `no engine data on the car bus - ignition on, engine off, then update` (`NO_ENGINE_DATA`): no `0x17C` through the panda |
+| no engine data (push9 review) | `no engine data on the car bus - ignition on, engine off, then update` (`NO_ENGINE_DATA`): no `0x17C` through the panda; or `0x17C` the gate saw gone for 1 s in the countdown, after ABORT (push9 re-review) |
 | cancelled (push9) | `cancelled` (`CANCELLED`): before the knock nothing was sent; in the countdown ABORT was sent |
 | no board | `no HELLO. Either the board has no bootloader (it needs one SWD visit), or it never reset.` |
 | board NAK | `refused: <nak>`. This covers the knock, ENTER and the post-reset HELLO; for example `the car is not stationary`. |
