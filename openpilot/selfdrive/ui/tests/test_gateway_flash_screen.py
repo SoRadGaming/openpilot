@@ -55,6 +55,17 @@ class TestFlashView(unittest.TestCase):
     # once pressed, never again - and the screen says so
     assert b.flash_view("running", {"p": "stock", "cancel": True, "left": 3}, False, True) == \
       ("relays in stock", "canceling", None, False)
+    assert b.flash_view("", None, True, True) == ("starting", "canceling", None, False)
+
+  def test_a_cancel_too_late_is_never_called_canceling(self):
+    """push9 review: a Cancel the flasher no longer takes (the erase has begun) showed 'canceling' over 'erasing',
+    'writing' and 'done'. From the erase on the screen says it was too late."""
+    b = _board()
+    for p in ("erase", "install", "restart"):
+      title, line, _, can = b.flash_view("running", {"p": p, "cancel": False}, False, True)
+      assert line == "too late to cancel" and not can, p
+    assert b.flash_view("running", {"p": "write", "cancel": False, "pct": 40}, False, True) == \
+      ("writing 40%", "too late to cancel", 40, False)
 
   def test_the_endings(self):
     b, f = _board(), _flasher()
@@ -62,6 +73,7 @@ class TestFlashView(unittest.TestCase):
     assert b.flash_view(f"failed: {f.ENGINE_RUNNING}", None, False, False) == \
       ("engine on", "turn the engine off - leave the ignition on - then update", None, False)
     assert b.flash_view(f"failed: {f.IGNITION_OFF}", None, False, False)[0] == "ignition off"
+    assert b.flash_view(f"failed: {f.NO_ENGINE_DATA}", None, False, False)[0] == "no engine data"
     assert b.flash_view("failed: no HELLO", None, False, False) == ("failed", "no HELLO", None, False)
 
   def test_the_confirm_opens_the_screen_and_clears_a_stale_cancel(self):

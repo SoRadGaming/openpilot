@@ -636,6 +636,7 @@ class SimBoard:
       self.info_at.append(self.clock.now)
       self._reply(0.002, [m.RSP_INFO, 0, 112, 0, 1, 2, 3, 4])
     elif cmd == m.CMD_ABORT:
+      self._reply(0.002, [m.RSP_ACK, m.CMD_ABORT])   # boot_main.c: ACK, then back to the app
       self.session = False
       self.state = "app"
     elif cmd == m.CMD_BEGIN:
@@ -674,8 +675,9 @@ class SimBoard:
     return [(a, d, k) for _, a, d, k in sorted(due, key=lambda q: q[0])]
 
 
-def _sim_run(rpm=0, cancel_in=None, ignition=None, speed=0, trace_out=None):
-  """run_flash against a SimBoard on a fake clock: (ok, msg, board, phases, mod)."""
+def _sim_run(rpm=0, cancel_in=None, ignition=None, speed=0, trace_out=None, should_cancel=None, on_phase=None):
+  """run_flash against a SimBoard on a fake clock: (ok, msg, board, phases, mod). should_cancel(phases, clock) and
+  on_phase(phase, board, clock) replace the plain cancel_in for the races."""
   mod = _module()
   clock = FakeTime()
   mod.time = clock
@@ -685,8 +687,17 @@ def _sim_run(rpm=0, cancel_in=None, ignition=None, speed=0, trace_out=None):
   if ignition is not None:
     board.ignition = lambda: ignition
   phases: list[dict] = []
-  ok, msg = mod.run_flash(board, image, log=lambda s: None, phase=phases.append, trace_out=trace_out,
-                          should_cancel=lambda: bool(cancel_in) and bool(phases) and phases[-1]["p"] == cancel_in)
+
+  def phase(d):
+    phases.append(d)
+    if on_phase is not None:
+      on_phase(d, board, clock)
+
+  if should_cancel is not None:
+    cancel = lambda: should_cancel(phases, clock)   # noqa: E731
+  else:
+    cancel = lambda: bool(cancel_in) and bool(phases) and phases[-1]["p"] == cancel_in   # noqa: E731
+  ok, msg = mod.run_flash(board, image, log=lambda s: None, phase=phase, trace_out=trace_out, should_cancel=cancel)
   return ok, msg, board, phases, mod
 
 
@@ -702,7 +713,11 @@ class TestFlashScreen(unittest.TestCase):
       if not names or names[-1] != ph["p"]:
         names.append(ph["p"])
     assert names == ["check", "baseline", "click", "stock", "erase", "write", "install", "restart"], names
-    assert [ph["left"] for ph in phases if ph["p"] == "stock"] == [5, 4, 3, 2, 1]
+    stock = [ph for ph in phases if ph["p"] == "stock"]
+    lefts = [ph["left"] for ph in stock]
+    assert [x for i, x in enumerate(lefts) if i == 0 or lefts[i - 1] != x] == [5, 4, 3, 2, 1], lefts
+    # Cancel goes off the screen for the countdown's last CANCEL_LAST_S, and only then
+    assert [ph["cancel"] for ph in stock] == [True] * (len(stock) - 1) + [False], stock
     # Cancel is offered before the knock and in the countdown, and nowhere else
     assert {ph["p"] for ph in phases if ph["cancel"]} == {"check", "baseline", "stock"}
     pcts = [ph["pct"] for ph in phases if ph["p"] == "write"]
@@ -730,6 +745,59 @@ class TestFlashScreen(unittest.TestCase):
     assert not any(a == mod.ID_DATA for _, a, _ in board.sent)
     assert board.state == "app", "the bootloader did not go back to the installed firmware"
 
+  def test_a_cancel_in_the_countdowns_last_instant_is_still_honored(self):
+    """push9 review: the Cancel used to be read at most every 0.2 s and not again before BEGIN, so one pressed at
+    +4.95 s was ignored and the update ran while the screen said 'canceling'. Now Cancel leaves the screen
+    CANCEL_LAST_S before the end and is read once more, unthrottled, right before BEGIN: a press the screen took at any
+    moment of the countdown - here after the button has gone - is ABORT, never an erase."""
+    for after_s in (4.90, 4.95, 4.99):
+      hold: dict = {}
+
+      def started(d, board, clock, hold=hold):
+        if d["p"] == "stock":
+          hold.setdefault("t", clock.now)     # the countdown's first report: its start
+
+      def cancel(phases, clock, after_s=after_s, hold=hold):
+        return "t" in hold and clock.now >= hold["t"] + after_s
+
+      ok, msg, board, phases, mod = _sim_run(should_cancel=cancel, on_phase=started)
+      cmds = [d[0] for _, a, d in board.sent if a == mod.ID_HOST]
+      assert not ok and msg == mod.CANCELLED, (after_s, msg)
+      assert mod.CMD_ABORT in cmds and mod.CMD_BEGIN not in cmds, after_s
+
+  def test_the_engine_started_in_the_countdown_is_abort(self):
+    """push9 review: the engine was checked only before the knock and over the baseline's last second; started during
+    the click, the HELLO wait or the countdown the update ran to the end. Now it is ABORT before BEGIN."""
+    def start_engine(d, board, clock):
+      if d["p"] == "stock" and d["left"] == 3:
+        board.rpm = 700
+    ok, msg, board, phases, mod = _sim_run(on_phase=start_engine)
+    cmds = [d[0] for _, a, d in board.sent if a == mod.ID_HOST]
+    assert not ok and msg == mod.ENGINE_RUNNING, msg
+    assert mod.CMD_ABORT in cmds and mod.CMD_BEGIN not in cmds
+    assert board.state == "app", "the bootloader did not go back to the installed firmware"
+    # started during the click / HELLO wait: caught at the countdown's first look
+    ok, msg, board, phases, mod = _sim_run(on_phase=lambda d, b, c: setattr(b, "rpm", 700) if d["p"] == "click" else None)
+    cmds = [d[0] for _, a, d in board.sent if a == mod.ID_HOST]
+    assert not ok and msg == mod.ENGINE_RUNNING and mod.CMD_BEGIN not in cmds, msg
+    # cranking (32-188 rpm) is not running: the countdown goes on
+    ok, msg, board, phases, mod = _sim_run(on_phase=lambda d, b, c: setattr(b, "rpm", 150) if d["p"] == "click" else None)
+    assert ok, msg
+
+  def test_abort_waits_for_its_echo_and_its_ack(self):
+    """push9 review: ABORT was fire-and-forget, and the hook's close() clears the panda's queues right after. It is now
+    sent with its echo awaited, then the bootloader's ACK - so it is on the wire before close()."""
+    mod = _module()
+    src = (Path(mod.__file__)).read_text()
+    body = src[src.index("  def abort(self"):src.index("  def mark(self")]
+    assert "self._send(ID_HOST, bytes([CMD_ABORT]))" in body and "_expect_ack(CMD_ABORT" in body
+    assert "_send_raw" not in body.split('"""')[-1]
+    logs: list[str] = []
+    f = _replay(mod, [])
+    f.log = logs.append
+    f.abort()      # nothing echoes on a replay: said in the log, never raised
+    assert any("ABORT" in x for x in logs), logs
+
   def test_no_cancel_once_the_erase_has_begun(self):
     ok, msg, board, phases, mod = _sim_run(cancel_in="write")
     assert ok, f"a Cancel in the write phase must be ignored: {msg}"
@@ -746,6 +814,9 @@ class TestFlashScreen(unittest.TestCase):
   def test_no_engine_frame_is_allowed_and_ignition_off_is_refused(self):
     ok, msg, board, phases, mod = _sim_run(rpm=None)
     assert ok, msg   # the bench: no car, no 0x17C
+    # in the car (a transport that reads the ignition: the panda) no 0x17C is a blind gate - refused, nothing sent
+    ok, msg, board, phases, mod = _sim_run(rpm=None, ignition=True)
+    assert not ok and msg == mod.NO_ENGINE_DATA and board.sent == [], msg
     ok, msg, board, phases, mod = _sim_run(ignition=False)
     assert not ok and msg == mod.IGNITION_OFF and board.sent == []
     ok, msg, board, phases, mod = _sim_run(ignition=True)

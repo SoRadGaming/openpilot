@@ -161,14 +161,25 @@ HOLD_PING_S = 2.0          # keep-alive; the bootloader resets after 10 s silent
 #
 # 0x17C ENGINE_RPM, the median over the moving() second: 0 with the engine off
 # (the first 0.1 s of routes 135/136/137, before the crank), 32-188 cranking,
-# 637-1400 running (warm idle ~695 on 134, 816-859 on 132). No 0x17C at all is
-# allowed and noted: that is the bench, or a car bus with nothing on it, and
-# the HELLO wait then says so in its own words.
+# 637-1400 running (warm idle ~695 on 134, 816-859 on 132). Checked before the
+# knock, at the end of the baseline and through the countdown up to BEGIN. No
+# 0x17C at all is refused in the car (NO_ENGINE_DATA, below) and allowed only
+# on the bench adapter, which has no car to see.
 ENGINE_OFF_MAX_RPM = 400
 ENGINE_RUNNING = "Turn the engine off - leave the ignition on - then update"
 IGNITION_OFF = "the ignition is off - turn it on, leave the engine off, then update"
+# No 0x17C at all with the ignition on in the car (PandaTransport) is a blind
+# gate - the wrong bus, no PCM traffic, accessory - and the owner's rule would
+# go unenforced: refused. 134-137 have 0x17C at 100 Hz from the first frame.
+NO_ENGINE_DATA = "no engine data on the car bus - ignition on, engine off, then update"
 CANCELLED = "cancelled"
 CANCEL_POLL_S = 0.2        # the Cancel param is a file: read it at most this often
+# The countdown stops offering Cancel this long before its end, and reads the
+# Cancel once more, unthrottled, immediately before BEGIN: a Cancel the screen
+# took is honored right up to the erase, and the screen never offers one the
+# flasher could miss (push9 review: one at +4.95 s used to be ignored).
+CANCEL_LAST_S = 0.5
+ENGINE_WINDOW_S = 0.5      # the countdown watches the engine over this much 0x17C
 POST_CAPTURE_S = 6.0       # after the post-reboot HELLO: app start and K2 re-split
 EPS_PERIOD_S = 0.010       # 0x18F cadence - the grid the firing-order fit uses
 
@@ -764,14 +775,28 @@ class Flasher:
         return d[2] | (d[3] << 8), int.from_bytes(d[4:8], "little")
     return None
 
-  def abort(self) -> None:
+  def abort(self, ack_s: float = 0.5) -> None:
     """Close the session rather than leaving it to time out.
 
     An idle session self-resets after 10 s. That reset lands wherever it lands -
     it has already interrupted an SWD programming run and shown up elsewhere as
     the board apparently rebooting on its own.
+
+    Sent with its echo awaited - the frame has left the panda before this
+    returns, so the transport's close() (can_clear) cannot drop it - and then
+    the bootloader's ACK (boot_main.c ACKs ABORT before it jumps back to the
+    app) for up to `ack_s`. Best effort: never raises, and a missing ACK only
+    means the board falls back on its 10 s session timeout, which also runs the
+    installed firmware.
     """
-    self._send_raw(ID_HOST, bytes([CMD_ABORT]))
+    try:
+      self._drain()
+      if (e := self._send(ID_HOST, bytes([CMD_ABORT]))) is None and ack_s > 0:
+        e = self._expect_ack(CMD_ABORT, timeout=ack_s)
+      if e:
+        self.log(f"  ABORT: {e} - the board's session timeout will end it")
+    except Exception as e:
+      self.log(f"  ABORT not confirmed: {type(e).__name__}: {e}")
 
   def mark(self, label: str) -> None:
     now = time.monotonic()
@@ -798,14 +823,14 @@ class Flasher:
     except Exception:
       pass
 
-  def cancelled(self) -> bool:
-    """The page's Cancel, read at most every CANCEL_POLL_S. Latched: once seen it
-    stays seen for this run. Never raises - a param that cannot be read is no
-    Cancel."""
+  def cancelled(self, now_or_never: bool = False) -> bool:
+    """The page's Cancel, read at most every CANCEL_POLL_S (always, with
+    now_or_never: the last look before BEGIN). Latched: once seen it stays seen
+    for this run. Never raises - a param that cannot be read is no Cancel."""
     if self._cancel_seen or self.should_cancel is None:
       return self._cancel_seen
     now = time.monotonic()
-    if now >= self._cancel_next:
+    if now_or_never or now >= self._cancel_next:
       self._cancel_next = now + CANCEL_POLL_S
       try:
         self._cancel_seen = bool(self.should_cancel())
@@ -816,8 +841,13 @@ class Flasher:
   def engine_rpm(self, since: float) -> int | None:
     """Median 0x17C ENGINE_RPM traced since `since` (monotonic), or None if none
     was seen. Read from the trace: 0x17C never reaches _rx."""
-    v = sorted(r for t, a, d in self._trace
-               if a == ENGINE_RPM_ID and t >= since and (r := decode_engine_rpm(d)) is not None)
+    v = []
+    for t, a, d in reversed(self._trace):     # newest first: stop at `since`
+      if t < since:
+        break
+      if a == ENGINE_RPM_ID and (r := decode_engine_rpm(d)) is not None:
+        v.append(r)
+    v.sort()
     return v[len(v) // 2] if v else None
 
   def listen(self, seconds: float, cancellable: bool = False) -> bool:
@@ -843,25 +873,45 @@ class Flasher:
     Cancel is ABORT: the bootloader closes the session and, its listen window
     long past, jumps straight back to the firmware it has. BEGIN has not been
     sent, so bank 2 is untouched and nothing has changed - the existing
-    --dry-run path. Returns CANCELLED then.
+    --dry-run path. Returns CANCELLED then. Cancel is offered until
+    CANCEL_LAST_S before the end, and read once more, unthrottled, after it.
+
+    The engine stays off (owner, 2026-10-13): 0x17C over the last
+    ENGINE_WINDOW_S, every loop and once more at the end. An engine started
+    during the click, the HELLO wait or the countdown is ABORT and
+    ENGINE_RUNNING - still before BEGIN, so nothing has changed.
     """
     start = time.monotonic()
     end = start + seconds
     next_ping = start + HOLD_PING_S
     shown = None
-    while time.monotonic() < end:
-      left = max(1, int(-(-(end - time.monotonic()) // 1)))   # 5, 4, 3, 2, 1
-      if left != shown:
-        shown = left
-        self.report("stock", cancel=True, left=left)
+    while (now := time.monotonic()) < end:
+      left = max(1, int(-(-(end - now) // 1)))   # 5, 4, 3, 2, 1
+      can = end - now > CANCEL_LAST_S
+      if (left, can) != shown:
+        shown = (left, can)
+        self.report("stock", cancel=can, left=left)
       self._pump(0.05)
-      if self.cancelled():
-        self.abort()
-        return CANCELLED
+      if (e := self._hold_stop()):
+        return e
       if time.monotonic() >= next_ping:
         next_ping += HOLD_PING_S
         if self.info() is None:
           return "the bootloader stopped answering during the hold"
+    # the last look, immediately before BEGIN: nothing throttled
+    return self._hold_stop(last=True)
+
+  def _hold_stop(self, last: bool = False) -> str | None:
+    """In the countdown: the page's Cancel, or the engine started. Either is
+    ABORT (the installed image stays) and the reason; None to go on."""
+    if self.cancelled(now_or_never=last):
+      self.abort()
+      return CANCELLED
+    rpm = self.engine_rpm(time.monotonic() - ENGINE_WINDOW_S)
+    if rpm is not None and rpm > ENGINE_OFF_MAX_RPM:
+      self.log(f"  engine started before the erase: {rpm} rpm - ABORT, the installed image stays")
+      self.abort()
+      return ENGINE_RUNNING
     return None
 
   def program(self, image: bytes) -> str | None:
@@ -1118,7 +1168,8 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
               hello_timeout: float = 25.0,
               trace_out: Callable[[dict], None] | None = None,
               phase: Callable[[dict], None] | None = None,
-              should_cancel: Callable[[], bool] | None = None) -> tuple[bool, str]:
+              should_cancel: Callable[[], bool] | None = None,
+              require_engine_data: bool | None = None) -> tuple[bool, str]:
   """Do the whole thing. Returns (ok, message). NEVER RAISES.
 
   phase / should_cancel (push9) drive the screen: the phases in order are
@@ -1126,6 +1177,12 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
   restart. Cancel is taken in check, baseline (nothing has been sent) and
   stock (ABORT before BEGIN: the old image stays); from the erase on there is
   no cancel. A cancelled run returns (False, CANCELLED).
+
+  The engine is off for the whole of it up to BEGIN: before the knock, at the
+  end of the baseline and through the countdown (ENGINE_RUNNING, with ABORT
+  once the bootloader has the session). require_engine_data: no 0x17C at all
+  is refused (NO_ENGINE_DATA) - by default whenever the transport reads the
+  ignition (the panda, in the car); the bench adapter has no car to see.
 
   NOTHING NEW REACHES THE BOARD. The gate, the countdown and the cancel are all
   on this side; the frames on the wire are the ones every board since the
@@ -1159,8 +1216,15 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
     if f.cancelled():
       return False, CANCELLED
     rpm = f.engine_rpm(t_check)
+    if require_engine_data is None:
+      # in the car (the panda, which reads the ignition) the gate must see the
+      # engine; the bench adapter has no car to see
+      require_engine_data = ignition is not None
+    if rpm is None and require_engine_data:
+      log("  no 0x17C on the car bus - the engine-off gate is blind; refused")
+      return False, NO_ENGINE_DATA
     if rpm is None:
-      log("  no 0x17C on the bus - engine state unknown (bench?); allowed")
+      log("  no 0x17C on the bus - engine state unknown (bench); allowed")
     elif rpm > ENGINE_OFF_MAX_RPM:
       log(f"  engine running: {rpm} rpm")
       return False, ENGINE_RUNNING

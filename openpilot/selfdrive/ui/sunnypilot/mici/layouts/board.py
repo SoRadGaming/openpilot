@@ -38,6 +38,7 @@ from openpilot.sunnypilot.selfdrive.pandad.eps_lkas_flasher import (
   ENGINE_RUNNING,
   EPS_LKAS_APPSLOT_BIN,
   IGNITION_OFF,
+  NO_ENGINE_DATA,
 )
 from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.lib.multilang import tr
@@ -186,7 +187,10 @@ def flash_view(state: str, phase: dict | None, requested: bool, cancel_sent: boo
   hook writes the terminal state - "ok <hash>", "failed: why", "cancelled" - to
   EpsLkasFlashState. Cancel is offered only where the flasher takes it ("cancel"
   in the phase: before the knock, and in the countdown - ABORT before anything is
-  erased), and never again once pressed."""
+  erased), and never again once pressed. A Cancel pressed is "canceling" until
+  the flasher answers; if the erase began first (the flasher reads it once more
+  right before BEGIN, so only a press in that last instant), the screen says it
+  was too late - never "canceling" while bank 2 is being written."""
   if state.startswith("ok"):
     return tr("done"), tr("turn the car off, then on, before driving"), None, False
   if state == CANCELLED:
@@ -197,10 +201,14 @@ def flash_view(state: str, phase: dict | None, requested: bool, cancel_sent: boo
       return tr("engine on"), tr("turn the engine off - leave the ignition on - then update"), None, False
     if why == IGNITION_OFF:
       return tr("ignition off"), tr("turn the ignition on, engine off, then update"), None, False
+    if why == NO_ENGINE_DATA:
+      return tr("no engine data"), tr("the car bus is quiet - ignition on, engine off, then update"), None, False
     return tr("failed"), why, None, False
   if state != "running":
     if requested:
-      return tr("starting"), tr("stopping the car link"), None, not cancel_sent
+      if cancel_sent:
+        return tr("starting"), tr("canceling"), None, False
+      return tr("starting"), tr("stopping the car link"), None, True
     return "", "", None, False
   ph = phase if isinstance(phase, dict) else {}
   p = ph.get("p", "check")
@@ -217,7 +225,7 @@ def flash_view(state: str, phase: dict | None, requested: bool, cancel_sent: boo
     view = (tr("erasing"), tr("making room for the new image"))
   elif p == "write":
     pct = int(ph.get("pct") or 0)
-    return tr("writing {}%").format(pct), tr("keep the car parked"), pct, False
+    return tr("writing {}%").format(pct), tr("too late to cancel") if cancel_sent else tr("keep the car parked"), pct, False
   elif p == "install":
     view = (tr("installing"), tr("keep the ignition on"))
   elif p == "restart":
@@ -225,7 +233,9 @@ def flash_view(state: str, phase: dict | None, requested: bool, cancel_sent: boo
   else:
     view = (tr("updating"), "")
   if cancel_sent:
-    return view[0], tr("canceling"), None, False
+    # from the erase on the update runs to the end: say so, never "canceling"
+    late = p in ("erase", "install", "restart")
+    return view[0], tr("too late to cancel") if late else tr("canceling"), None, False
   return view[0], view[1], None, can
 
 
@@ -329,7 +339,12 @@ class GatewayFlashDialog(BigDialogBase):
       except ValueError:
         phase = None
     state = params.get(STATE_PARAM) or ""
-    self._view = flash_view(state, phase, params.get_bool(REQUEST_PARAM), self._cancel_sent)
+    view = flash_view(state, phase, params.get_bool(REQUEST_PARAM), self._cancel_sent)
+    if not view[0] and self._view[0]:
+      # the hook clears the request a moment before it writes "running": keep
+      # the last view for that tick rather than flash an empty screen
+      return
+    self._view = view
     self._count = flash_countdown(state, phase, self._cancel_sent)
 
   def _update_state(self):
