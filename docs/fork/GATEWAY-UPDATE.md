@@ -1673,7 +1673,9 @@ reachable (`BLR_FIRMWARE_DIR` or `/mnt/s/...`). What each compares, and so what 
 | opendbc `test_the_copies_are_the_firmwares_files` | `blr/dbc/blr.dbc`, `blr/tools/golden_frames.json` | any BO_/SG_/CM_/VAL_ line of `0x620`-`0x624`, `0x627`, `0x62F`, and any byte of the vector |
 
 Elsewhere (CI, no S: drive) they skip, and the literals, `BlrSim` and the two copies checked against each other stand
-alone. Read at `de2f2d1` for the review fixes too.
+alone. Read at `de2f2d1` for the review fixes too, and all four re-run against `6f9e2ec` (2026-10-14, the firmware
+review's round 2, committed meanwhile: the bootloader's ECC record and the host tools - nothing the comma sends or
+reads): pass, the bridge built from that tree.
 
 ### 13.8 Never
 
