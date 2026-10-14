@@ -432,6 +432,13 @@ BLR_DATA_FPS_MAX = 400.0
 DATA_PACE_MARGIN_S = 10e-6         # 2.51 ms, not 2.50: no rounding of a clock can fit a 401st frame in a second
 BLR_APPSLOT_BIN = os.path.join(os.path.dirname(__file__), "blr_appslot.bin")
 BLR_TRACE_DIR = "/data/blr-trace"
+# A LOST FINISH ACK IS NOT A FAILED INSTALL (BLR-v1 review, lens B). The BLR bootloader's FINISH is two CRC-32 passes
+# over at most 112 KB of bank 2 and one header write - well under a second - and it ACKs a repeated FINISH again
+# without writing twice (blr_boot_main.c: the header is already exactly this one). So its ACK is awaited this long,
+# and on silence FINISH is sent once more: twice this is still inside the session's 10 s, which any frame restarts.
+# The EPS's 20 s single wait would outlast that session: the board resets and installs the image (its header is
+# written) while the page reports "no ACK for FINISH".
+BLR_FINISH_ACK_S = 4.0
 # The EPS board's GW_SPLIT_STATUS (its dbc): forwarding-ring peak byte 0, drop/overflow flags byte 4 bits 4:0,
 # FAULT byte 4 bits 7:5. Its K1 forwards a BLR update's burst from the car side to the camera side.
 EPS_SPLIT_ID = 0x706
@@ -441,8 +448,10 @@ EPS_SPLIT_ID = 0x706
 class Target:
   """One board's identity: everything that makes an update this board's and never the other's (DESIGN E.1).
 
-  Frozen, and compared by identity - EPS is EPS. None in hello_class / allowed_variants / data_fps_max / retry_naks
-  means "not checked / not paced / retried on anything", which is the EPS as proven in the car; the BLR sets all four.
+  Frozen, and compared by identity - EPS is EPS. None in hello_class / allowed_variants / data_fps_max / retry_naks /
+  finish_retry_s, and False in check_slot / knock_enters, means "not checked / not paced / retried on anything / one
+  FINISH, 20 s / INFO's slot not compared / a HELLO and nothing else answers the knock", which is the EPS as proven in
+  the car (test_eps_lkas_wire_errors.py); the BLR sets all seven, as its own host tool blr_can_update.py does.
 
   words - what the log, the trace file and the update screen call things on this board:
     board, image      the board, and its images, in a sentence
@@ -474,6 +483,9 @@ class Target:
   trace_dir: str
   data_fps_max: float | None               # DATA frame ceiling; None = the echo's pace
   retry_naks: frozenset[int] | None        # NAKs to CEND a chunk is sent again after; None = any (the EPS)
+  finish_retry_s: float | None             # FINISH's ACK awaited this long, then FINISH once more; None = once, 20 s
+  check_slot: bool                         # INFO's slot size must be slot_bytes, or ABORT before the countdown
+  knock_enters: bool                       # an ENTER ACK to the knock is a resident bootloader's open session
   errs: Mapping[int, str]                  # NAK texts
   words: Mapping[str, str]
 
@@ -522,7 +534,8 @@ EPS = Target(
   marker_magic=APP_ID_MAGIC, marker_origin=APP_ORIGIN, slot_bytes=APP_SLOT_BYTES,
   hello_class=None, allowed_variants=None, refuse_dirty=False, strict_image=False,
   image_path=EPS_LKAS_APPSLOT_BIN, census_own=CENSUS_OWN, trace_ids=TRACE_IDS, trace_dir=TRACE_DIR,
-  data_fps_max=None, retry_naks=None, errs=MappingProxyType(ERRS), words=EPS_WORDS)
+  data_fps_max=None, retry_naks=None, finish_retry_s=None, check_slot=False, knock_enters=False,
+  errs=MappingProxyType(ERRS), words=EPS_WORDS)
 
 # The census leaves out the BLR's own block (its telemetry stops at the knock and its bootloader answers on 0x629)
 # and keeps the EPS board's 0x700-0x70F in: if a BLR update's burst starves the EPS board, that is news. The trace is
@@ -530,6 +543,11 @@ EPS = Target(
 # ring (0x706) and its state (0x70B). A chunk is sent again only after a lost ACK or a NAK that a lost frame explains
 # - sequence, CRC, short (blr_can_update.py RETRY_NAKS): after NAK 8 the board has already closed the session, and
 # a retry would only bury "image is not for this board" under "command out of sequence".
+# Three session rules are the BLR host tool's too (blr_can_update.py, BLR-v1 review lens B): a FINISH whose ACK went
+# missing is asked once more (BLR_FINISH_ACK_S); INFO must report this board's 112 KB slot, or it is ABORT before the
+# countdown - a bootloader with another slot is not the one this image was checked for; and a bootloader that was
+# already running - nothing valid in its slot, so it never jumps - takes the knock for what its bytes are, an ENTER,
+# and ACKs it: that ACK is the session ("entered"), where waiting for a HELLO meant its 10 s timeout and a reset.
 BLR = Target(
   name="blr", id_host=BLR_ID_HOST, id_board=BLR_ID_BOARD, id_data=BLR_ID_DATA, magic=BLR_MAGIC,
   marker_magic=BLR_APP_ID_MAGIC, marker_origin=BLR_APP_ORIGIN, slot_bytes=BLR_APP_SLOT_BYTES,
@@ -538,6 +556,7 @@ BLR = Target(
   image_path=BLR_APPSLOT_BIN, census_own=BLR_ID_BLOCK,
   trace_ids=(ENGINE_RPM_ID, LOAD_ID, BLR_STATUS_ID, EPS_SPLIT_ID, GRANT_ID), trace_dir=BLR_TRACE_DIR,
   data_fps_max=BLR_DATA_FPS_MAX, retry_naks=frozenset({1, 3, 6}),
+  finish_retry_s=BLR_FINISH_ACK_S, check_slot=True, knock_enters=True,
   errs=MappingProxyType(BLR_ERRS), words=BLR_WORDS)
 
 TARGETS = {EPS.name: EPS, BLR.name: BLR}
@@ -1013,18 +1032,25 @@ class Flasher:
     return (f"wrong board answered on {self.target.id_board:#05x}: {what} byte 7 is {got}, " +
             f"the {self.target.words['board']} says {want} - nothing was written")
 
-  def wait_hello(self, timeout: float) -> bytes | None:
+  def wait_hello(self, timeout: float, entered: bool = False) -> bytes | None:
     """The post-reset HELLO, or None.
 
     A NAK seen here is returned too, and run_flash reports it. The board NAKs a
     knock it refuses - "the car is not stationary" - and swallowing that meant
     waiting the full timeout and then blaming the board for having no
     bootloader, which is the single most misleading thing this tool could say.
+
+    entered (the BLR, on its knock only - Target.knock_enters): an ENTER ACK is
+    returned too. A bootloader that was already running took the knock as the
+    ENTER it is, and its session is open; there will be no HELLO until that
+    session times out 10 s later. The EPS never passes it: it waits for the
+    HELLO, exactly as it always has.
     """
     end = time.monotonic() + timeout
     while time.monotonic() < end:
       d = self._recv(0.2)
-      if d is not None and d[0] in (RSP_HELLO, RSP_NAK):
+      if d is not None and (d[0] in (RSP_HELLO, RSP_NAK) or
+                            (entered and d[0] == RSP_ACK and len(d) > 2 and d[1] == CMD_ENTER)):
         return d
     return None
 
@@ -1291,10 +1317,21 @@ class Flasher:
     self.mark("finish")
     self.report("install")
     crc = zlib.crc32(image) & 0xFFFFFFFF
+    finish = bytes([CMD_FINISH]) + struct.pack("<I", crc)
     self._drain()
-    if (e := self._send(ID_HOST, bytes([CMD_FINISH]) + struct.pack("<I", crc))):
+    if (e := self._send(ID_HOST, finish)):
       return e
-    return self._expect_ack(CMD_FINISH, timeout=20.0)
+    wait = self.target.finish_retry_s
+    if wait is None:
+      return self._expect_ack(CMD_FINISH, timeout=20.0)      # the EPS: one FINISH, as proven in the car
+    # The BLR (BLR_FINISH_ACK_S): silence is asked about once more, inside the session. Not drained first, so an
+    # ACK that arrives late still counts; a NAK is the board's answer and is never asked again.
+    if (e := self._expect_ack(CMD_FINISH, timeout=wait)) is None or "no ACK" not in e:
+      return e
+    self.log(f"  {e} - FINISH again (the board ACKs a repeated FINISH and writes nothing twice)")
+    if (e := self._send(ID_HOST, finish)):
+      return e
+    return self._expect_ack(CMD_FINISH, timeout=wait)
 
   def reboot(self) -> None:
     self._drain()
@@ -1592,12 +1629,14 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
 
   THE BLR (target=BLR) runs this same sequence - the gate, the countdown, the
   cancel points and the engine-off rule unchanged - on its own IDs and magic,
-  with three additions: HELLO and the ENTER ACK must carry its board class
+  with these additions: HELLO and the ENTER ACK must carry its board class
   (anything else is ABORT, "wrong board answered", before a byte of image),
   DATA is paced to <= 400 frames/s, and the post-install HELLO must report
   the image's VARIANT as well as its commit (shadow and live of one commit
-  share a hash). The phases are the same names; the screen words are the
-  target's.
+  share a hash). And, as its own host tool does: a resident bootloader's
+  ENTER ACK to the knock is the session, INFO must say 112 KB (else ABORT),
+  and a lost FINISH ACK is asked about once more. The phases are the same
+  names; the screen words are the target's.
   """
   f = None
   try:
@@ -1658,27 +1697,42 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
       f.mark("knock")
       f.knock()
 
-    hello = f.wait_hello(hello_timeout)
+    hello = f.wait_hello(hello_timeout, entered=target.knock_enters and knock)
     f.mark("hello")
     if hello is None:
       return False, target.words["no_hello"]
     if hello[0] == RSP_NAK:
       return False, f"refused: {describe_nak(hello, target.errs)}"
-    if (e := f.wrong_board(hello, "HELLO")):
+    # the BLR only (knock_enters): a bootloader already running took the knock as ENTER - its session is open
+    entered = hello[0] == RSP_ACK
+    if (e := f.wrong_board(hello, "ENTER ACK" if entered else "HELLO")):
       f.abort()                         # its 800 ms window ends, whatever it was goes back to its app
       return False, e
-    h = describe_hello(hello, target)
-    log(f"  HELLO v{h['proto']}: installed {h['git']}, appOk={h['appOk']}"
-        + (f", {h['variant']}" if "variant" in h else "")
-        + (", ECC page repaired this boot" if h.get("eccFixed") else ""))
+    if entered:
+      if hello[2] != PROTO_VERSION:
+        f.abort()
+        return False, f"board speaks protocol v{hello[2]}, this speaks v{PROTO_VERSION}"
+      # no HELLO to read: a bootloader that never jumped has nothing valid installed, or it reset just now
+      h = {"git": "unknown"}
+      log("  the bootloader was already running and took the knock as ENTER: in session, no HELLO to read")
+    else:
+      h = describe_hello(hello, target)
+      log(f"  HELLO v{h['proto']}: installed {h['git']}, appOk={h['appOk']}"
+          + (f", {h['variant']}" if "variant" in h else "")
+          + (", ECC page repaired this boot" if h.get("eccFixed") else ""))
 
-    if (e := f.enter()):
-      return False, e
+      if (e := f.enter()):
+        return False, e
 
     slot = f.info()
     if slot is None:
       return False, "no INFO reply"
     log(f"  app slot {slot[0]} KB, current contents CRC32 {slot[1]:#010x}")
+    if target.check_slot and slot[0] * 1024 != target.slot_bytes:
+      # blr_can_update.py: another slot size is another bootloader than the one this image was checked for
+      f.abort()
+      return False, (f"the board reports a {slot[0]} KB app slot, not {target.slot_bytes // 1024} KB - " +
+                     "not the bootloader this image is for; nothing was written")
 
     # The countdown starts on the INFO reply: HELLO already proved the board
     # reset with its relays de-energised (the bootloader drives PA0/PA1 low at

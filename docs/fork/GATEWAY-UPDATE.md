@@ -1458,6 +1458,9 @@ resolve string annotations.
 | `strict_image` | no | odd reset vector inside the image, reserved flag bits 1-3 zero, and the trailer (below) |
 | `data_fps_max` | none: the echo's pace | 400 DATA frames/s (2.51 ms apart): the update shares bus 0 with the EPS board, which forwards it |
 | `retry_naks` | any NAK re-sends the chunk | only NAK 1, 3 or 6, as `blr_can_update.py`: after NAK 8 the board has closed the session, and a retry would bury "image is not for this board" under "command out of sequence" |
+| `finish_retry_s` | none: one FINISH, its ACK given 20 s | 4 s, then FINISH once more (`BLR_FINISH_ACK_S`; review lens B). The header is written when FINISH is ACKed, so a lost ACK used to read `no ACK for FINISH` after 20 s - by when the 10 s session had timed out and the board had installed the image anyway. The bootloader ACKs a repeated FINISH again and writes nothing twice; twice 4 s is inside its session. A NAK is never asked again. |
+| `check_slot` | no | INFO must say 112 KB, or ABORT before the countdown, `the board reports a <n> KB app slot, not 112 KB` (as `blr_can_update.update()`) |
+| `knock_enters` | no: only a HELLO answers the knock | a bootloader that was already running (nothing valid in its slot, so it never jumps) takes the knock for the ENTER its bytes are and ACKs it, class 2: that ACK is the session - no second ENTER, and no waiting out its 10 s timeout and a reset for a HELLO (`blr_can_update.py`'s "entered"). The log says `took the knock as ENTER`; a dry run there says `installed unknown`. |
 | NAK texts | `ERRS` 0-7 | plus 8 `image is not for this board`, 9 `board flash is not dual-bank`, 10 `lamp output is on` |
 | bundled image | `eps_lkas_appslot.bin` | `blr_appslot.bin` (not yet) |
 | census own | `0x700`-`0x70F`, `0x711` | `0x620`-`0x62F` (the EPS board's `0x70x` stay in: a lamp update that starves the EPS board is news) |
@@ -1581,6 +1584,13 @@ request is set, or either button has asked (`set_peers()`). The other board's bu
 `busy`. The confirm re-checks it, and writes only its own board's params, in the EPS's order, then opens
 `GatewayFlashDialog(target)`.
 
+**The price of that coupling, accepted (review lens A, a nit).** A `BlrFlashState` left at `running` - pandad killed
+mid-update, before the hook's finish wrote the result - now holds the **EPS** button at `busy` too, where before this
+branch a stuck EPS `running` held only the EPS button. Both states are `CLEAR_ON_MANAGER_START`, so a reboot clears
+it, which is also what a pandad that died in its flash window wants anyway (the panda is left in ELM327). Telling a
+live run from a dead one (a phase param that stopped changing) would be a second clock in the one place both updates
+meet; not done.
+
 **`_asked` no longer sticks** (§11.2, first item). A non-empty state other than `running` with the request cleared
 means the run is over, so `_asked` is cleared even when `running` was never seen. With two boards a stuck `_asked`
 would have held both buttons busy until the UI restarted.
@@ -1605,10 +1615,11 @@ the EPS's `busy`).
 | file | tests | what it pins for the lamp board |
 |---|---|---|
 | `test_eps_lkas_flasher.py` | 42 | `test_eps_wire_transcript_is_frozen` (H1): 16 EPS scenarios on the fake clock - a full update, the dry run, each cancel point, the engine gate - every frame sent, every phase and every log line hashed against literals captured **before** the refactor. Unmodified since. |
-| `test_blr_flasher.py` | 30 + 3 skipped | the BLR target's literals, and against the firmware's headers when the tree is reachable (IDs, magic, class, NAK codes, marker, VARIANT, the trailer and ECC_FIXED); the trailer against the firmware's own `blr_hostlib`; APL1/BLR1/BLB1 refused by name; bench, dirty, VARIANT 0, the vector rules and every trailer fault refused; `BlrSim` (the bootloader and the app's knock on a fake clock): a full update, pacing <= 400/s, the class check before ENTER and before a byte, every cancel point, the engine gate, NAK 5/8/9/10, lost frames, a resident bootloader, the VARIANT read back, a truncated image refused at FINISH, an ECC repair, the trace. The 3 skipped are the bundled-image twins, which bind once `blr_appslot.bin` exists. |
+| `test_eps_lkas_wire_errors.py` | 3 | H1's second half (review lens A): 22 EPS **error paths**, hashed the same way against literals captured on `nsw-live`'s flasher with H1's own `SimBoard` - a CEND NAK 3/6/1/8/10 and the chunk sent again, a lost CEND ACK asked again (x1, x2, x4), NAKs at BEGIN and ENTER, a lost FINISH ACK (one FINISH, 20 s) and a FINISH NAK, HELLO byte 7 = 2 or 0xFF, an ENTER ACK before the HELLO, INFO saying 96 KB, the wrong commit after the install, dirty / read-only / even-PC / standalone images - and every run's **trace file** (header and rows) and its `steering trace: N frames -> ...` log line, which H1 stubs. The scenarios are spot-checked to take the path their names say; a BLR1/BLB1 image on the EPS (the one intended difference from `nsw-live`) is pinned by hand. 14 flasher mutations of the EPS side (seven H1 cannot see, the reviewer's survivors among them - the chunk retry, the NAK texts, the warnings, the trace header and word, the lost-ACK re-ask - and seven of the BLR's session rules leaking onto the EPS) are all caught. |
+| `test_blr_flasher.py` | 34 + 3 skipped | the BLR target's literals, and against the firmware's headers when the tree is reachable (IDs, magic, class, NAK codes, marker, VARIANT, the trailer and ECC_FIXED); the trailer against the firmware's own `blr_hostlib`; APL1/BLR1/BLB1 refused by name; bench, dirty, VARIANT 0, the vector rules and every trailer fault refused; `BlrSim` (the bootloader and the app's knock on a fake clock): a full update, pacing <= 400/s, the class check before ENTER and before a byte, every cancel point, the engine gate, NAK 5/8/9/10, lost frames, a resident bootloader taken at its ENTER ACK (and, that ACK lost, at its next HELLO), a lost FINISH ACK or frame asked again, INFO's slot size, the VARIANT read back, a truncated image refused at FINISH, an ECC repair, the trace. **And the same `run_flash` against the shipping bootloader** (`TestBlrAgainstTheShippingBootloader`, review lens B): `blr_boot_main.c` compiled with gcc through the firmware's own `blr_boot_bridge.c`, whenever the firmware tree and gcc are reachable (skipped elsewhere; a reachable tree that does not build fails) - a full update, a resident bootloader, a dry run, a Cancel, a truncated and an EPS image (the comma's check bypassed), a lost FINISH ACK - with the bridge's invariants (no transmit outside NORMAL, the bootloader never written, the slot only by the copy). Two bootloader changes `BlrSim` does not model (a repeated FINISH rewriting the header, padded commands refused) fail it and nothing else. The 3 skipped are the bundled-image twins, which bind once `blr_appslot.bin` exists. |
 | `test_eps_lkas_hook.py` (`TestTwoBoards`, 12 of 25) | | **one session per window**, run from `pandad.py`'s own statement; a cancelled EPS request leaves the window free; each board clears only its own request; the watcher on the lamp board's params (offroad, onroad, cancelled, both pending: one SIGINT); the Cancel read before it is cleared; the identity written after an install (with and without `0x62F`); no image is a clean failure; never raising; the page's and the hook's tables name the same params; the `Blr*` params have their `EpsLkas*` twins' lifetimes |
 | `test_gateway_lamp_board.py` | 18 | `flash_view()` in the lamp board's words and never "relay" or "turn the car off"; the card; the last drive; `bundled_offer()` as the flasher's verdict on the whole file (a truncated copy, a bare `.bin`, a changed byte, an even reset vector: no offer); and the page driven in a headless raylib window (child process): the pair hidden until the board has spoken, the EPS pair unchanged with the lamp board present, titles that fit, the gate, `_busy()` across both, the confirm writing only its own params, the screen's Cancel, a run over inside one tick, `no image` |
-| `test_blr_board.py`, opendbc `test_blr.py` | 19, 14 | the data side and E.7 ([BRAKE-LAMP-RELAY.md](BRAKE-LAMP-RELAY.md)) |
+| `test_blr_board.py`, opendbc `test_blr.py` | 19, 15 | the data side and E.7 ([BRAKE-LAMP-RELAY.md](BRAKE-LAMP-RELAY.md)); with the firmware tree reachable, the DBC copy line for line and the golden vector byte for byte against the firmware's own files (review lens B) |
 | adjusted | | `test_every_param_the_hook_and_the_page_use_is_registered` resolves the key tables and requires the `Blr*` keys; `test_the_button_title_leaves_room_for_its_sub_label` checks every target's title; `test_no_glyphs_the_baked_font_does_not_have` also checks the targets' screen words; `test_the_ui_shares_the_marker_constants_with_the_flasher` reads them through the targets and requires the lamp board's offer to be `check_app_slot_image()`'s verdict; `test_the_confirm_opens_the_screen_and_clears_a_stale_cancel` follows the confirm to `keys.*` and `GatewayFlashDialog(self._target)` |
 
 ### 13.6 Inventory and commits (branch `blr`)
@@ -1625,7 +1636,7 @@ sunnypilot, on `nsw-live` `55d9562b6`:
 | `openpilot/selfdrive/car/card.py` | modified | `BlrBoardParams` staged and written; `BlrFlashTrace` emitted |
 | `openpilot/cereal/custom.capnp` | modified | `CarStateSP.brakeLampRelay @5 :BrakeLampRelay` |
 | `openpilot/common/params_keys.h` | modified | the 10 `Blr*` keys |
-| tests | added / modified | `test_blr_flasher.py`, `test_gateway_lamp_board.py`, `test_blr_board.py`; `test_eps_lkas_flasher.py` (H1), `test_eps_lkas_hook.py`, `test_gateway_board_settings.py`, `test_gateway_flash_screen.py` |
+| tests | added / modified | `test_blr_flasher.py`, `test_gateway_lamp_board.py`, `test_blr_board.py`, `test_eps_lkas_wire_errors.py`; `test_eps_lkas_flasher.py` (H1), `test_eps_lkas_hook.py`, `test_gateway_board_settings.py`, `test_gateway_flash_screen.py` |
 
 opendbc, on `dc7f1e7d`: `_sunnypilot_blr.dbc` (added) and its import in `honda_accord_au_2015_can.dbc`;
 `carstate.py` (registration), `carstate_ext.py` (`_update_blr()`), `structs.py` (`BrakeLampRelay`), `test_blr.py` and
@@ -1639,6 +1650,7 @@ opendbc, on `dc7f1e7d`: `_sunnypilot_blr.dbc` (added) and its import in `honda_a
 | `1809869ec` | H3: hook, pandad, page, `test_gateway_lamp_board.py` |
 | `62ea8c6cc` | H3's docs (this section's first version) |
 | integration | the trailer and ECC_FIXED (firmware review round 1), the lamp board's offer as the flasher's verdict; this section, the README rows, the changelog |
+| review fixes | lens A: the EPS error paths and trace file frozen (`test_eps_lkas_wire_errors.py`), the `_busy()` coupling noted (13.4); lens B: the BLR's FINISH asked again, INFO's slot compared, a resident bootloader's ENTER ACK taken, the tests against the shipping bootloader; opendbc: the copies against the firmware's files |
 
 To find the BLR hunks after a merge, grep for `FORK(BRAKE-LAMP-RELAY)`, `Blr`, `blr_`, `BLR_`, `brakeLampRelay`,
 `_update_blr` and `lamp board`.
@@ -1650,9 +1662,18 @@ while this branch was being integrated. What it changed for the comma: the app i
 (`BLR_TRAILER_MAGIC`/`BLR_TRAILER_BYTES`, BOOT-6; `BLR-CAN.md` §5 "Refuse an image without its trailer"), HELLO's
 `BLR_BOOT_HELLO_ECC_FIXED` (BOOT-2) and BOOT-7 (§13.1); the bootloader's CAN filters (HW-4) and the `0x1FA` counter
 rule need nothing here, and the DBC and the golden frames did not change. `test_blr_flasher.py` passes against
-`de2f2d1` with the tree reachable. **Whenever the firmware moves:** re-run it with the firmware tree reachable
-(`BLR_FIRMWARE_DIR` or `/mnt/s/...`): `test_blr_target_constants_match_the_firmware` and
-`test_the_trailer_is_the_firmware_post_builds` fail on any difference.
+`de2f2d1` with the tree reachable. **Whenever the firmware moves:** re-run both test files with the firmware tree
+reachable (`BLR_FIRMWARE_DIR` or `/mnt/s/...`). What each compares, and so what "fails on any difference" covers:
+
+| test | against the firmware's | fails on |
+|---|---|---|
+| `test_blr_target_constants_match_the_firmware` | `blr_proto.h`, `blr_boot_proto.h`, `blr_app_id.h`, `blr_logic.h`, `blr_can_update.py` | an ID, magic, class, command/response/NAK code, HELLO bit, marker field, VARIANT code, the trailer's constants, the session timeout, the pacing |
+| `test_the_trailer_is_the_firmware_post_builds` | `blr_hostlib.py` | the trailer's bytes or verdict |
+| `test_the_comma_and_the_shipping_bootloader_agree` | `blr_boot_main.c` itself (through `blr_boot_bridge.c`, built with gcc) | any change in what the bootloader does with what the comma sends: shapes, sequencing, NAKs, the session, FINISH, the copy |
+| opendbc `test_the_copies_are_the_firmwares_files` | `blr/dbc/blr.dbc`, `blr/tools/golden_frames.json` | any BO_/SG_/CM_/VAL_ line of `0x620`-`0x624`, `0x627`, `0x62F`, and any byte of the vector |
+
+Elsewhere (CI, no S: drive) they skip, and the literals, `BlrSim` and the two copies checked against each other stand
+alone. Read at `de2f2d1` for the review fixes too.
 
 ### 13.8 Never
 

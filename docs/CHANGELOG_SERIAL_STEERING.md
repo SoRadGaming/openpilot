@@ -52,6 +52,15 @@ repo, branch `blr-v1`, `blr/` (checked against `de2f2d1`, after the firmware rev
 * **Shared fixes**: the update button no longer sticks at `requested` when a run ends inside one refresh tick
   (GATEWAY-UPDATE §11.2), and the hook no longer lets a failing request clear or transport `close()` escape into
   pandad's loop.
+* **The two reviews' fixes** (GATEWAY-UPDATE §13.2, §13.5, §13.7). The EPS update's **error paths** are frozen now as
+  its happy path was - 22 of them, NAKs and lost ACKs, refusals, a lost FINISH ACK, odd HELLOs and images, each with
+  its trace file - captured on `nsw-live`'s flasher; nothing on the EPS wire changed. On the lamp board, as its own host
+  tool does: a FINISH whose ACK is lost is asked again inside the session (it used to report a failure while the board
+  installed the image anyway), INFO must say its 112 KB slot, and a bootloader already sitting resident is taken at the
+  knock's ENTER ACK instead of after a 10 s timeout. With the firmware tree reachable the comma's update now also runs
+  against the **shipping bootloader** compiled for the host, and the DBC and golden-frame copies are held to the
+  firmware's own files. A stuck lamp-board `running` holding the EPS button at `busy` until a reboot is accepted and
+  written down.
 
 Commits: sunnypilot `3e059dd8d` (the EPS wire transcript frozen first), `12825fedf`, `e1c4c4365`, `1809869ec`,
 `62ea8c6cc` and the integration commits; opendbc `f0a5284a`. Before landing: the bench tests, the shadow drive, then

@@ -15,8 +15,12 @@ run_flash serves both - and an update of one must never reach the other. This fi
   the wire    run_flash against BlrSim - the BLR bootloader as blr_boot_main.c implements it and the app's knock as
               BLR-CAN.md section 4 states it, with the car and the EPS board around it, on a fake clock: a full
               update, every cancel point, the engine gate, the class check, pacing, NAK 5/8/9/10, lost frames, a
-              resident bootloader, the VARIANT read back after the install, a truncated image refused at FINISH, a
-              boot that repaired an ECC page (BOOT-2), and the trace
+              resident bootloader taken at its ENTER ACK, a lost FINISH ACK asked again, INFO's slot size, the VARIANT
+              read back after the install, a truncated image refused at FINISH, a boot that repaired an ECC page
+              (BOOT-2), and the trace
+  the board   the same run_flash against THE SHIPPING BOOTLOADER: blr_boot_main.c compiled for the host through the
+              firmware's own blr_boot_bridge.c, whenever the firmware tree and gcc are reachable (review lens B) - so
+              BlrSim cannot drift from the code the board runs unnoticed
 
 The EPS side is pinned elsewhere, unchanged: test_eps_lkas_flasher.py, including test_eps_wire_transcript_is_frozen.
 """
@@ -26,10 +30,13 @@ import io
 import os
 import random
 import re
+import shutil
 import struct
+import subprocess
 import tempfile
 import unittest
 import zlib
+from collections import deque
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -134,15 +141,17 @@ class BlrSim:
 
   AROUND IT: 0x158 and 0x17C at 100 Hz, and the EPS board's 0x706 (1 Hz) and 0x70B (10 Hz).
 
-  `cls` / `ack_cls` impersonate a board that is not a BLR; `drop_rx(id, data)` loses a host frame on the wire,
-  `drop_tx(data)` one of the board's replies; `fail_copy` makes the boot copy refuse."""
+  `cls` / `ack_cls` impersonate a board that is not a BLR, `slot_kb` a bootloader with another slot in INFO;
+  `drop_rx(id, data)` loses a host frame on the wire, `drop_tx(data)` one of the board's replies; `fail_copy` makes the
+  boot copy refuse."""
 
   CMD_LEN = {0x01: 8, 0x02: 1, 0x08: 1, 0x09: 1, 0x03: 5, 0x07: 5, 0x04: 3, 0x06: 5}
 
   def __init__(self, mod, clock, app: bytes | None = None, rpm: int | None = 0, speed: int = 0,
                ignition: bool | None = True, board_moving=False, output_on=False, dual_bank=True,
-               cls=2, ack_cls=2, resident=False, lbt_s=0.1, app_init_s=0.3, ecc_boots=()):
+               cls=2, ack_cls=2, resident=False, lbt_s=0.1, app_init_s=0.3, ecc_boots=(), slot_kb=SLOT // 1024):
     self.mod, self.clock = mod, clock
+    self.slot_kb = slot_kb
     self.ecc_boots = frozenset(ecc_boots)
     self.rpm, self.speed = rpm, speed
     if ignition is not None:
@@ -349,7 +358,7 @@ class BlrSim:
     s["last"] = now
     if cmd == 0x02:
       c = zlib.crc32(bytes(self.slot)) if self.app_present() else 0
-      return self._reply([0x82, 1, (SLOT // 1024) & 0xFF, (SLOT // 1024) >> 8] + list(c.to_bytes(4, "little")))
+      return self._reply([0x82, 1, self.slot_kb & 0xFF, self.slot_kb >> 8] + list(c.to_bytes(4, "little")))
     if cmd == 0x03:
       n = struct.unpack_from("<I", d, 1)[0]
       s.update(begun=False, chunk_open=False, have=bytearray())
@@ -525,6 +534,10 @@ class TestBlrTarget(unittest.TestCase):
     assert (b.marker_magic, b.marker_origin, b.slot_bytes) == (BLR1, APP_ORIGIN, SLOT)
     assert b.hello_class == 2 and b.allowed_variants == frozenset({2, 3})
     assert b.refuse_dirty and b.strict_image and b.data_fps_max == 400.0 and b.retry_naks == frozenset({1, 3, 6})
+    # the host tool's session rules (review lens B): FINISH asked once more after 4 s of silence - twice that inside
+    # the bootloader's 10 s session - INFO's slot compared, a resident bootloader's ENTER ACK to the knock taken
+    assert (b.finish_retry_s, b.check_slot, b.knock_enters) == (4.0, True, True)
+    assert 2 * b.finish_retry_s < 10.0
     assert b.census_own == frozenset(range(0x620, 0x630))
     assert b.trace_ids == (0x17C, 0x1A6, 0x620, 0x706, 0x70B) and b.trace_dir == "/data/blr-trace"
     assert Path(b.image_path) == BLR_IMAGE and b.image_path == mod.BLR_APPSLOT_BIN
@@ -557,6 +570,8 @@ class TestBlrTarget(unittest.TestCase):
     assert e.image_path == mod.EPS_LKAS_APPSLOT_BIN and dict(e.errs) == mod.ERRS
     assert (e.hello_class, e.allowed_variants, e.data_fps_max, e.retry_naks) == (None, None, None, None)
     assert not e.refuse_dirty and not e.strict_image
+    assert (e.finish_retry_s, e.check_slot, e.knock_enters) == (None, False, False), \
+      "one FINISH and 20 s, INFO's slot not compared, only a HELLO answers the knock (test_eps_lkas_wire_errors.py)"
     # and it is the default everywhere a target is taken
     import inspect
     for fn in (mod.run_flash, mod.check_app_slot_image, mod.image_identity, mod.load_bundled_image,
@@ -979,6 +994,7 @@ class TestBlrUpdate(unittest.TestCase):
     assert sim.naks == [(mod.CMD_FINISH, 8)]
     cmds = [h[0] for h in _host(sim, mod)]
     assert mod.CMD_REBOOT not in cmds and sim.hdr is None and sim.installs == 0
+    assert cmds.count(mod.CMD_FINISH) == 1, "a NAK is the board's answer: FINISH is asked again only after silence"
     assert bytes(sim.slot[:len(old)]) == old
 
   def test_a_boot_that_repaired_an_ecc_page(self):
@@ -1028,15 +1044,95 @@ class TestBlrUpdate(unittest.TestCase):
 
   def test_a_resident_bootloader_is_recovered_from_the_comma(self):
     """A board whose slot holds nothing valid sits in its bootloader, PB10 low - stock lamps - and has said its HELLO
-    long ago. The knock opens a session there; it times out after 10 s, the board resets and says HELLO again, inside
-    the flasher's 25 s wait, and the update goes on."""
+    long ago. The knock's bytes are an ENTER, so that bootloader opens a session and ACKs it, class 2: that ACK is the
+    session (review lens B; blr_can_update.py's "entered"). The update goes on from there - no second ENTER, and no
+    waiting out the 10 s session timeout and a reset for a HELLO, which is what the flasher used to do."""
     mod, clock, sim = _setup(None, resident=True)
     img = make_image(git=0x5, seed=5)
     t0 = clock.now
-    ok, msg, *_ = _run(mod, sim, img)
+    ok, msg, phases, logs, _ = _run(mod, sim, img)
     assert ok and msg == "00000005", msg
-    assert bytes(sim.slot[:len(img)]) == img and sim.boots == 3   # resident, the session timeout, the REBOOT
-    assert clock.now - t0 < 60
+    assert bytes(sim.slot[:len(img)]) == img and sim.boots == 2   # resident, then the REBOOT: no session timeout
+    assert any("took the knock as ENTER" in x for x in logs), logs
+    host = _host(sim, mod)
+    assert host[0] == KNOCK and host[1][0] == mod.CMD_INFO, "the knock was the ENTER: INFO next"
+    t_info = next(t for t, a, d in sim.sent if a == mod.BLR_ID_HOST and d[0] == mod.CMD_INFO)
+    assert t_info - t0 < 8.0, "no 10 s session timeout waited out"
+    assert clock.now - t0 < 40
+    # the ENTER ACK lost: the old way still works - the session times out, the board resets, HELLO, ENTER
+    mod, clock, sim = _setup(None, resident=True)
+    lost = {"n": 0}
+
+    def lose_first_enter_ack(d):
+      if d[0] == 0x80 and d[1] == 0x01 and lost["n"] == 0:
+        lost["n"] += 1
+        return True
+      return False
+
+    sim.drop_tx = lose_first_enter_ack
+    ok, msg, *_ = _run(mod, sim, img)
+    assert ok and msg == "00000005" and sim.boots == 3 and lost["n"] == 1, msg   # resident, the timeout, the REBOOT
+    # a dry run on a resident board says what it could not read
+    mod, clock, sim = _setup(None, resident=True)
+    ok, msg, *_ = _run(mod, sim, img, dry_run=True)
+    assert ok and msg == "dry run: reached the bootloader, installed unknown, nothing written", msg
+    assert _host(sim, mod)[-1][0] == mod.CMD_ABORT and mod.CMD_BEGIN not in [h[0] for h in _host(sim, mod)]
+
+  def test_a_resident_bootloader_of_another_class_is_abort(self):
+    """The ENTER ACK the knock got carries the class too: whatever answered with another is ABORTed, before INFO."""
+    mod, clock, sim = _setup(None, resident=True, ack_cls=0)
+    ok, msg, *_ = _run(mod, sim, make_image(git=0x5))
+    assert not ok and msg.startswith("wrong board answered on 0x629: ENTER ACK byte 7 is 0"), msg
+    assert [h[0] for h in _host(sim, mod)] == [mod.CMD_ENTER, mod.CMD_ABORT] and not _data(sim, mod)
+
+  def test_a_lost_finish_ack_is_asked_again(self):
+    """Review lens B: the header is written when FINISH is ACKed, so a lost ACK used to be reported as "no ACK for
+    FINISH" - after 20 s, by when the 10 s session had timed out and the board had installed the image anyway. Now
+    FINISH is asked again after 4 s, inside the session; the board ACKs it again and writes nothing twice. A lost
+    FINISH frame is the same silence and the same cure."""
+    for lose in ("ack", "frame"):
+      mod, clock, sim = _setup(make_image(git=0x1))
+      n = {"lost": 0}
+      if lose == "ack":
+        def drop_tx(d, n=n):
+          if d[0] == 0x80 and d[1] == 0x07 and n["lost"] == 0:
+            n["lost"] += 1
+            return True
+          return False
+        sim.drop_tx = drop_tx
+      else:
+        def drop_rx(can_id, d, n=n):
+          if can_id == 0x628 and d[0] == 0x07 and n["lost"] == 0:
+            n["lost"] += 1
+            return True
+          return False
+        sim.drop_rx = drop_rx
+      img = make_image(git=0x2, seed=13)
+      ok, msg, phases, logs, _ = _run(mod, sim, img)
+      assert ok and msg == "00000002" and n["lost"] == 1, (lose, msg)
+      finishes = [t for t, a, d in sim.sent if a == mod.BLR_ID_HOST and d[0] == mod.CMD_FINISH]
+      assert len(finishes) == 2 and 3.9 < finishes[1] - finishes[0] < 10.0, (lose, finishes)
+      assert sim.installs == 1 and sim.boots == 2, "the knock and the REBOOT: installed by the REBOOT, no session timeout"
+      assert any("FINISH again" in x for x in logs), logs
+    # both lost: a failure after the second, never a third FINISH
+    mod, clock, sim = _setup(make_image(git=0x1))
+    sim.drop_tx = lambda d: d[0] == 0x80 and d[1] == 0x07
+    ok, msg, *_ = _run(mod, sim, make_image(git=0x2, seed=13))
+    assert not ok and msg == "no ACK for FINISH within 4.0s", msg
+    assert [h[0] for h in _host(sim, mod)].count(mod.CMD_FINISH) == 2 and mod.CMD_REBOOT not in [h[0] for h in _host(sim, mod)]
+
+  def test_info_must_say_this_boards_slot(self):
+    """Review lens B, as blr_can_update.update(): a bootloader whose INFO reports another slot than 112 KB is not the
+    one this image was checked for. ABORT, before the countdown and before BEGIN - the board goes back to its app."""
+    old = make_image(git=0x1)
+    for kb in (96, 128, 0):
+      mod, clock, sim = _setup(old, slot_kb=kb)
+      ok, msg, phases, *_ = _run(mod, sim, make_image(git=0x2))
+      assert not ok and msg.startswith(f"the board reports a {kb} KB app slot, not 112 KB"), msg
+      cmds = [h[0] for h in _host(sim, mod)]
+      assert cmds[-1] == mod.CMD_ABORT and mod.CMD_BEGIN not in cmds and not _data(sim, mod), cmds
+      assert "stock" not in [p["p"] for p in phases], "refused before the countdown"
+      assert sim.mode == "app" and bytes(sim.slot[:len(old)]) == old
 
   def test_a_dry_run(self):
     old = make_image(git=0x1)
@@ -1118,6 +1214,228 @@ class TestBlrUpdate(unittest.TestCase):
     assert mod.describe_hello(ecc, mod.BLR)["eccFixed"] is True and mod.describe_hello(ecc, mod.BLR)["variant"] == "live"
     assert "variant" not in mod.describe_hello(hello), "the EPS HELLO is read as it always was"
     assert set(mod.describe_hello(ecc)) == {"proto", "appOk", "appId", "dirty", "staged", "git"}
+
+
+# ---------------------------------------------------------------------------
+# THE SHIPPING BOOTLOADER, not a model of it (BLR-v1 review, lens B). BlrSim above is typed in from blr_boot_main.c,
+# and a bootloader change it is not given would leave every test above green. The firmware ships its own answer to
+# that: blr_boot_bridge.c, the boot check test's simulated flash and bus behind a line protocol, with blr_boot_main.c
+# compiled in for the host - so what is driven here is the bootloader's own code. Opt-in by reachability: it runs
+# whenever the firmware tree and gcc are there (the owner's machine, from WSL) and skips elsewhere, like the header
+# comparison. A tree that is reachable but whose bridge does not build is a failure: that is news.
+
+_BRIDGE: dict[str, object] = {}
+
+
+def _bridge_exe() -> str:
+  """Build the firmware's bootloader bridge once per process (into a temporary directory), or skip."""
+  if "exe" in _BRIDGE:
+    return str(_BRIDGE["exe"])
+  fw = _firmware_dir()
+  if fw is None:
+    raise unittest.SkipTest("the EPS-LKAS blr/ tree is not reachable (set BLR_FIRMWARE_DIR)")
+  gcc = shutil.which("gcc")
+  if gcc is None:
+    raise unittest.SkipTest("no gcc to build the firmware's bootloader bridge")
+  src = [fw / "tools/blr_boot_bridge.c", fw / "src/blr_lbt.c"]
+  if not all(p.is_file() for p in src + [fw / "tools/blr_boot_check_test.c", fw / "src/blr_boot_main.c"]):
+    raise unittest.SkipTest("this firmware tree has no bootloader bridge (blr/tools/blr_boot_bridge.c)")
+  tmp = tempfile.TemporaryDirectory()
+  _BRIDGE["tmp"] = tmp                      # lives as long as the process: the executable is reused
+  exe = Path(tmp.name) / "blr_boot_bridge"
+  r = subprocess.run([gcc, "-std=c11", "-O2", f"-I{fw / 'inc'}", "-o", str(exe)] + [str(p) for p in src],
+                     capture_output=True, text=True, timeout=300)
+  assert r.returncode == 0, f"the firmware tree is reachable and its bootloader bridge does not build:\n{r.stderr[-3000:]}"
+  _BRIDGE["exe"] = exe
+  return str(exe)
+
+
+class BridgeBus:
+  """The flasher's transport AND clock, on the shipping BLR bootloader behind blr_boot_bridge's pipe (commands E, L,
+  P, S, W, F, Q; replies "R <ms> <id> <hex>" and ". <ms>"). Time is the board's simulated millisecond: 0.25 ms per
+  frame sent (one DLC-8 frame at 500 kbit/s), and every wait steps the board. Every frame sent is echoed, as the
+  panda does. `drop_tx(data)` loses one of the board's replies on 0x629 - the one fault the bridge cannot make."""
+  FRAME_S = 0.00025
+
+  def __init__(self, mod, exe: str, slot: bytes | None, workdir: Path):
+    self.mod = mod
+    self.p = subprocess.Popen([exe], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+    self.t_ms = 0
+    self.frac = 0.0
+    self.q: deque[tuple[int, bytes, str]] = deque()
+    self.sent: list[tuple[float, int, bytes]] = []
+    self.replies: list[tuple[int, int, bytes]] = []
+    self.drop_tx = None
+    if slot is None:
+      self.cmd("E")
+    else:
+      path = workdir / "slot.bin"
+      path.write_bytes(slot)
+      self.cmd(f"L {path}")
+    self.cmd("P")
+    self.cmd("S 3000")                      # HELLO, the 800 ms window, then the app - or resident
+    self.q.clear()
+
+  def cmd(self, s: str) -> None:
+    assert self.p.stdin is not None and self.p.stdout is not None
+    self.p.stdin.write(s + "\n")
+    self.p.stdin.flush()
+    while True:
+      ln = self.p.stdout.readline()
+      if not ln:
+        raise RuntimeError("the bootloader bridge exited")
+      parts = ln.split()
+      if parts[0] == "R":
+        can_id, data = int(parts[2], 16), bytes.fromhex(parts[3]) if len(parts) > 3 else b""
+        self.replies.append((int(parts[1]), can_id, data))
+        if not (can_id == BLR_BOARD_ID and self.drop_tx is not None and self.drop_tx(data)):
+          self.q.append((can_id, data, self.mod.RX))
+      elif parts[0] == ".":
+        self.t_ms = int(parts[1])
+        return
+      else:
+        raise RuntimeError(ln.strip())
+
+  # the flasher's clock (mod.time)
+  def monotonic(self) -> float:
+    return self.t_ms / 1000.0 + self.frac
+
+  def time(self) -> float:
+    return 1.7e9 + self.monotonic()
+
+  def sleep(self, s: float) -> None:
+    self._advance(s)
+
+  def _advance(self, dt: float) -> None:
+    self.frac += max(0.0, dt)
+    n = int(self.frac * 1000.0 + 1e-9)
+    if n > 0:
+      self.frac -= n / 1000.0
+      self.cmd(f"S {n}")
+
+  # the transport
+  def describe(self) -> str:
+    return "blr bootloader bridge"
+
+  def close(self) -> None:
+    pass
+
+  def send(self, can_id: int, data: bytes) -> None:
+    wire = bytes(data).ljust(8, b"\x00")    # the panda pads every frame to DLC 8
+    self.sent.append((self.monotonic(), can_id, wire))
+    self.cmd(f"F {can_id:x} {wire.hex()}")
+    self.q.append((can_id, wire, self.mod.ECHO))
+    self._advance(self.FRAME_S)
+
+  def poll(self, timeout: float = 0.0) -> list[tuple[int, bytes, str]]:
+    if not self.q:
+      self.cmd(f"W {max(1, int(timeout * 1000 + 0.999))}")   # steps until the board sends, or the timeout
+    out = list(self.q)
+    self.q.clear()
+    return out
+
+  def quit(self) -> dict[str, int]:
+    """The bridge's invariant counters, and the process gone."""
+    assert self.p.stdin is not None and self.p.stdout is not None
+    self.p.stdin.write("Q\n")
+    self.p.stdin.flush()
+    words = self.p.stdout.readline().split()
+    self.p.wait(timeout=10)
+    assert words and words[0] == "stats", words
+    return {k: int(v) for k, v in (w.split("=") for w in words[1:])}
+
+
+BLR_BOARD_ID = 0x629
+
+
+class TestBlrAgainstTheShippingBootloader(unittest.TestCase):
+  def _run(self, name, slot, image, bypass_check=False, cancel_in=None, drop_tx=None, **kw):
+    """run_flash(target=BLR) on a freshly powered bridge: (ok, msg, logs, bus, stats)."""
+    exe = _bridge_exe()
+    mod = _module()
+    with tempfile.TemporaryDirectory() as tmp:
+      bus = BridgeBus(mod, exe, slot, Path(tmp))
+      try:
+        mod.time = bus
+        mod.Flasher.save_trace = lambda self, directory=None: None   # never /data from a test
+        if bypass_check:
+          mod.check_app_slot_image = lambda image, target=None: None
+        bus.drop_tx = drop_tx
+        phases: list[dict] = []
+        logs: list[str] = []
+        ok, msg = mod.run_flash(bus, image, log=logs.append, target=mod.BLR, phase=phases.append,
+                                should_cancel=lambda: bool(cancel_in) and bool(phases) and phases[-1]["p"] == cancel_in,
+                                **kw)
+        bus.cmd("S 3000")                   # let whatever the board does next happen
+        stats = bus.quit()
+      finally:
+        if bus.p.poll() is None:
+          bus.p.kill()
+          bus.p.wait()
+    # in every run: no transmit outside FDCAN NORMAL, the bootloader region never written, the slot written only by
+    # the boot copy
+    for k in ("tx_violations", "boot_writes", "slot_writes_outside_copy"):
+      assert stats[k] == 0, (name, stats)
+    return ok, msg, logs, bus, stats
+
+  @staticmethod
+  def _host(bus) -> list[bytes]:
+    return [d for _, a, d in bus.sent if a == 0x628]
+
+  def test_the_comma_and_the_shipping_bootloader_agree(self):
+    old = make_image(variant=2, git=0x11111111, seed=2)
+    new = make_image(variant=3, git=0x22222222, size=6 * 1024 + 4, seed=3)
+
+    # a full update with the knock, over an installed app: back in the app with the new image, its HELLO saying so
+    ok, msg, logs, bus, stats = self._run("full", old, new)
+    assert ok and msg == "22222222", msg
+    hellos = [d for _, a, d in bus.replies if a == BLR_BOARD_ID and d[0] == 0x83]
+    assert hellos[-1][3:7] == (0x22222222).to_bytes(4, "little") and (hellos[-1][2] >> 4) & 3 == 3, hellos[-1].hex()
+    assert all(d[7] == 2 for d in hellos)
+    assert stats["jumps"] >= 1 and stats["boots"] >= 2, stats
+
+    # an empty slot: the bootloader is resident, and the knock is its ENTER - straight on, no 10 s session timeout
+    ok, msg, logs, bus, stats = self._run("resident", None, new)
+    assert ok and msg == "22222222", msg
+    assert any("took the knock as ENTER" in x for x in logs), logs
+    host = self._host(bus)
+    assert host[0] == KNOCK and host[1][0] == 0x02, [h.hex() for h in host[:3]]
+    t_knock = next(t for t, a, d in bus.sent if a == 0x628 and d == KNOCK)
+    t_info = next(t for t, a, d in bus.sent if a == 0x628 and d[0] == 0x02)
+    assert t_info - t_knock < 1.0, (t_knock, t_info)
+
+    # a dry run ends in an ABORT the bootloader ACKs; a Cancel in the countdown is an ABORT before BEGIN
+    ok, msg, logs, bus, stats = self._run("dry", old, new, dry_run=True)
+    assert ok and msg == "dry run: reached the bootloader, installed 11111111, nothing written", msg
+    assert self._host(bus)[-1][0] == 0x09 and any(a == BLR_BOARD_ID and d[:2] == b"\x80\x09" for _, a, d in bus.replies)
+    ok, msg, logs, bus, stats = self._run("cancel", old, new, cancel_in="stock")
+    cmds = [h[0] for h in self._host(bus)]
+    assert not ok and msg == "cancelled" and 0x09 in cmds and 0x03 not in cmds, (msg, cmds)
+
+    # the comma's own checks bypassed: the bootloader refuses a truncated image at FINISH, and an EPS image at CEND 1
+    # after exactly two chunks - and the flasher stops there, with the board's reason
+    ok, msg, logs, bus, stats = self._run("truncated", old, new[:-40], bypass_check=True)
+    assert not ok and msg == "board refused FINISH: image is not for this board", msg
+    assert [h[0] for h in self._host(bus)].count(0x07) == 1
+    eps = make_image(magic=APL1, size=12 * 1024, trailer=False)
+    ok, msg, logs, bus, stats = self._run("eps", old, eps, bypass_check=True)
+    assert not ok and msg == "chunk 1: board refused CEND: image is not for this board", msg
+    assert sum(1 for _, a, _ in bus.sent if a == 0x62A) == 64
+    assert not {0x07, 0x08} & {h[0] for h in self._host(bus)}
+
+    # a lost FINISH ACK: FINISH asked again, inside the session - and the shipping bootloader ACKs it again
+    lost = {"n": 0}
+
+    def lose_first_finish_ack(d):
+      if d[:2] == b"\x80\x07" and lost["n"] == 0:
+        lost["n"] += 1
+        return True
+      return False
+
+    ok, msg, logs, bus, stats = self._run("finish_ack_lost", old, new, drop_tx=lose_first_finish_ack)
+    assert ok and msg == "22222222" and lost["n"] == 1, msg
+    finish_acks = [d for _, a, d in bus.replies if a == BLR_BOARD_ID and d[:2] == b"\x80\x07"]
+    assert [h[0] for h in self._host(bus)].count(0x07) == 2 and len(finish_acks) == 2
 
 
 if __name__ == "__main__":

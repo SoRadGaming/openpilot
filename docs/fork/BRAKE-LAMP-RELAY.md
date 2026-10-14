@@ -85,11 +85,14 @@ The names are the firmware's, so a value read on the device greps against `blr/d
 ## Tests
 
 ```bash
-cd opendbc_repo && python -m unittest opendbc.sunnypilot.car.honda.test_blr       # 14: DBC, decoder, E.7
+cd opendbc_repo && python -m unittest opendbc.sunnypilot.car.honda.test_blr       # 15: DBC, decoder, E.7
 RAYLIB_BACKEND=headless python tools/test_runner.py openpilot/sunnypilot/selfdrive/car/tests/test_blr_board.py   # 19
 ```
 
 The board's bytes in both are the firmware's golden vector:
 `opendbc/sunnypilot/car/honda/fixtures/blr_golden_frames.json` is a byte-for-byte copy of the board repo's
 `blr/tools/golden_frames.json`, which the shipping `blr_pack()` produces and the firmware's `blr_dbc_test.py` checks
-against `blr/dbc/blr.dbc`. Re-copy it whenever the firmware re-pins it.
+against `blr/dbc/blr.dbc`. Re-copy it whenever the firmware re-pins it. With the firmware tree reachable
+(`BLR_FIRMWARE_DIR`, or the S: drive from WSL), `test_the_copies_are_the_firmwares_files` holds both copies to the
+firmware's own files - `_sunnypilot_blr.dbc` line for line for the seven telemetry frames, the vector byte for byte -
+so a layout changed in both of the firmware's files is caught too, not only one that disagrees with the other.
