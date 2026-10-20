@@ -388,6 +388,8 @@ off until restart" (or "TAKE CONTROL IMMEDIATELY" if something was engaged, lane
 moving included). If the gateway board had already taken
 over the steering, steering stays manual until key-off; ACC, CMBS and AEB still work.
 
+---
+
 ## The honest summary
 
 **Nothing here has been tested on a car.** Every number in this document comes from one of:

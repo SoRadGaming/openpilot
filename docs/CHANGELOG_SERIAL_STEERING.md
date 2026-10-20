@@ -15,11 +15,120 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
-## UNRELEASED — round 8: the lift-off ramp, a softer stop, the PID floor, a stopped car at long range, the steering floor, latsplit v2
+## 2026-10-20 — push10: round 8, KTuner coexistence and the 'now' flash in one update (board `883a3cd1` unchanged)
 
-Branch `round8`: sunnypilot on `55d9562b6` (push9), opendbc branch `round8` on `dc7f1e7d`. **Not pushed, not driven.**
-The board is unchanged (`883a3cd1`). From the analysis of drives 13d-143 (17-19 Oct, push9; full rlogs for 13d, 141,
-142 and 143, qlogs only for 13e and 13f). The owner chose, on 2026-10-19, six of its ten proposals: "Ramp after gas
+The owner, 2026-10-20: "Keep it all in main btw I don't want to bother installing and testing. Different branches", and,
+offered a push as soon as all three were reviewed and merged with every test passing: "Push when ready (Recommended)".
+So push10 is three features in one update to master. Each was built on push9 (`nsw-live` `55d9562b6`) in a branch of
+its own, reviewed there twice by independent agents and fixed: round 8 (`round8` `9e0f11e80`), KTuner (`ktuner`
+`0c8f364b8`) and sla-flash (`sla-flash` `3931db219`). They are merged into `push10` in that order, round 8 (the largest)
+first; opendbc `push10` (`7f34fcde`) is `dc7f1e7d` with opendbc's `round8` (`1c3e53ad`) and `sla-flash` (`f8e1dc09`)
+merged. **Not driven yet.**
+
+* **The board image does not change.** `eps_lkas_appslot.bin` is the same blob as push9's: board `883a3cd1`, 49,740
+  bytes, SHA-256 `0753b9f6c4e18d1340ce0b5ce40f9ae5344ba8917caa7be557f18635a978de78`, so the gateway page has nothing to
+  install. The panda stays `74a0adce` and is not reflashed. The BLR brake-lamp board (branch `blr`) is not part of it.
+* **Unchanged by all three:** the stock-ACC stand-down (`SCM_BUTTONS` `MAIN_ON = 0`) and stock ACC mode, CMBS/AEB and
+  panda safety (replayed below).
+
+### What is in it
+
+* **Round 8** (its section below). The owner chose, on 2026-10-19, six of the analysis's ten proposals: "Ramp after gas
+  lift-off", "Softer stop", "No windup at full brake", "Build it, test hard first", "Learner floor 0.875 -> 1.10" and
+  "Steering logging v2".
+  * The plan ramps back in, at most 1.5 m/s^3 for 1.5 s, after a gas lift-off - not after an engagement, and not behind
+    a lead braking harder than -2.0 m/s^2 or a plan or MPC trajectory under -2.0. The review's closed-loop sim: 0 new
+    collisions in 192 hard-braking-lead scenarios (11 as first built); open loop it binds on the same 20 lift-offs of
+    13d-143, frame for frame.
+  * The soft stop's cap 125 -> 105 counts: decel at the stop a median 0.70 -> 0.58 m/s^2 (closed loop), the snap only
+    about 3% smaller (4.78 -> 4.64 m/s^3), one stop in ten marginally harsher (13d t=380.8).
+  * The longitudinal PID's floor -4.0 -> -3.2, lowered on a climb by g*sin(pitch) and never below -4.0: full brake on
+    every grade (254 counts at 0-12%). On 13d-143 only 143 t=172.04-174.69 changes (265 frames, nothing on the wire).
+  * radard: where it fell back to the camera's lead, a stationary track the camera's far (>= 50 m), confident lead
+    confirms for 0.3 s stands for it, unless a moving track is near the camera's lead; off in stock ACC mode and
+    without openpilot longitudinal. 143: -1.5 m/s^2 0.55 s earlier; 69 routes: no new FCW. **Offered on condition:**
+    13e/13f have qlogs only and could not be replayed.
+  * torqued's factor floor on this car 0.875 -> 1.10 (nothing resets; it slides up over about 20 min onroad).
+  * latsplit v2: torqued's fit by hands x speed, logging only (`lateralTorqueParameters` identical on 7 drives).
+* **KTuner** (its section below). After routes 144, 145 and 147: "the last two where I'm parked OP errored ... it cause
+  acc and cmbs ... and constantly for a split second airbag light error". The owner chose both fixes: fix 1 as "an
+  on-screen note", fix 2 "openpilot off until restart", on a bus-off only.
+  * Fix 1 (card): a diagnostic tool's requests on the car bus while parked keep the car stock - at key-on card holds
+    its first `controls_update`, so the panda stays in its start-up `elm327`; later `DiagToolStock` makes pandad leave
+    the car mode. Back by itself after 10 s of quiet in P (30 s, then 60 s, for a tool back within 2 minutes). 144,
+    145 and 147 are stock from the first parked carState; 143 and b5 never; no frame qualified on 189 normal routes.
+  * Fix 2 (pandad): a car-bus bus-off puts the car stock in the same poll, until the key is switched off. 144, 145,
+    147, db and dc latch, 0.0-0.3 s after the first car-mode poll; 143 and 129 never; of 194 route exports only
+    those five.
+  * On screen: "Diagnostic Tool Connected / openpilot paused, car is stock"; "Car Bus Error / car is stock, openpilot
+    off until restart" with one chime, or "TAKE CONTROL IMMEDIATELY / Car Bus Error: Car Is Stock" if engaged.
+* **sla-flash** (its section below). After the push9 drives: "I don't like the speed limit how setting it changes it
+  to one different of speed than it swaps once you past 50m if you press early". He chose "Hold it and flash" and
+  "Comma screen and dash".
+  * A press at 'now' moves nothing; the coming limit flashes on the comma card (0.4 s lit, 0.2 s dim) and in the
+    cluster (openpilot's own `0x30C` `CRUISE_SPEED`, 4 frames N / 2 blank, the Elesys radar's own rhythm) until it
+    comes into force, and then the set speed changes once, straight to it. An arm lasts 12 s at most.
+  * Replays: all 10 'now' arms of 134, 137, 13d, 141, 142 and 143 hold and change the set speed once (141's phantom
+    lapses with nothing to undo), the `0x30C` flash in the exact 4/2 pattern; without a press the new code equals the
+    logged build on every set speed, SLA state and `0x30C` frame of 12 routes.
+
+### Where the three meet
+
+* **They share no code path.** Round 8 is the planner, controlsd's PID floor, radard, torqued and opendbc's soft stop;
+  KTuner is card's guard, pandad and selfdrived's alerts; sla-flash is card's cruise, the speed-limit planner, the HUD,
+  `controlsd_ext.py` and opendbc's `0x30C` send. Files two of them touch: `card.py` (KTuner's guard and sla-flash's
+  report, separate hunks), `custom.capnp`, opendbc's `carcontroller.py` (round 8's comment on the crawl run, sla-flash's
+  `ACC_HUD` send) and `test_elesys.py`, and the docs.
+* **cereal ordinals do not collide:** KTuner takes `OnroadEventSP.EventName` `@33`-`@36`; sla-flash
+  `LongitudinalPlanSP.SpeedLimit.Assist` `@5`-`@12`, `CarStateSP.speedLimitNow @5` and `CarControlSP.speedLimitNowFlash
+  @6`; round 8 adds none. (`blr`'s `CarStateSP.brakeLampRelay` must now take `@6`: docs/fork/README.md.)
+* **While the car is stock on purpose (KTuner) nothing of round 8 or sla-flash reaches the car:** the panda is in
+  `noOutput` or its start-up `elm327`, so no openpilot frame goes out - `0x30C`'s flash and `0x1FA`'s soft stop
+  included. Fix 1 only ever enters parked with nothing engaged, and a 'now' window never offers a key with openpilot
+  disengaged; fix 2 at speed is a disengagement, and a disengagement disarms a held press (`armEnd` off).
+* The `0x30C` flash (sla-flash) and the soft stop's cap (round 8) are different frames: in the replay below only
+  `0x1FA` differs, and only in the stopping state.
+
+### push10: the merge, the gates and the replays
+
+* **Conflicts only in the docs, each side kept:** `CHANGELOG-elesys.md`, where all three had written a section 22
+  (round 8 is 22, KTuner 23, sla-flash 24); this changelog (one entry now); the file tables of the CAR doc and the fork
+  README. And the `opendbc_repo` gitlink, round8 `1c3e53ad` against sla-flash `f8e1dc09`, resolved to opendbc's own
+  merge of both (no conflict there). The code merged without a conflict: after the three merges every code file was the
+  branch's own byte for byte, except `card.py` and `custom.capnp`, which are exactly KTuner's with sla-flash's patch
+  applied.
+* **One test needed the merge:** sla-flash's `test_speed_limit_now_wiring` runs the real `Car.state_update` on a bare
+  `Car`, and on push10 `state_update` also runs KTuner's guard (`'Car' object has no attribute 'diag_guard'`, 2
+  errors); the rig now gives it the real `DiagToolGuard`, armed for this car (test only). opendbc `7f34fcde` drops a
+  `ty: ignore` that sla-flash's new test did not need.
+* **Gates:** `scons -j16` clean; the full suite (`tools/test_runner.py -j 12`) 2882 passed, 46 skipped, 1 xfailed
+  (the first run, on the merges alone: 2880 passed and the 2 errors above; nothing failed under load, and locationd, the
+  livestream session and logmessaged pass alone too, 65 + 4); each branch's own test files on the merge: round 8 115
+  passed, KTuner 131 (with `test_native.py`'s 5: `test_car_bus_guard` and `test_pandad_stock` run, not skipped),
+  sla-flash 280; opendbc's suite 10,321 tests OK (1,272 skipped); ruff clean on both; ty the same 4 diagnostics on
+  `openpilot` as `nsw-live`, at the same places (run with `PYTHONPATH` on each tree), and on opendbc the same 5 as
+  `dc7f1e7d`; codespell no new hits (`scripts/lint/lint.sh`'s file set: 34 hits, the same 34 as `nsw-live`; the changed
+  docs and opendbc files: none new); the repo's lint (`ruff`, indentation, files over 120 KB - none added, the largest
+  added file 75,785 bytes -, shebangs, nomerge) passes; `compile_settings_ui --check` clean; no file mode changed; no
+  `params_keys.h` duplicate.
+* **[R] KTuner's card replay of route 143** (process replay, 90,314 `sendcan` messages), push10's `card.py` against
+  `nsw-live`'s and `sla-flash`'s in the push10 tree: identical in the stand-down (safety 36: 221,271 frames, `sendcan`
+  `15965bfe…`, `carState` `0a122d13…`) and in stock ACC mode (68: 99,346 frames, `ceea515c…`, `5e33815c…`) - the same
+  digests KTuner recorded against `nsw-live`.
+* **[R] Round 8's open-loop `CarInterface` replay of 13d, 141, 142 and 143**, push9 (`nsw-live` with opendbc
+  `dc7f1e7d`) against push10 (506,468 control steps, 1,240,852 frames): every frame identical - `0x0E4`, `0x1A6` (the
+  stand-down), `0x200`, `0x30C`, `0x500` - except `0x1FA` on 754 steps, all in the stopping state of the 10 stops,
+  at most 20 counts lower, with the same `hondastop` reasons; stock ACC mode identical on all four (557,116 frames).
+  The same numbers as round 8's own integration replay.
+* **[R] sla-flash's 'now' replays** (`scratchpad/slaflash/REPLAYS.md`, closed loop on 12 routes) re-run on push10: every
+  per-route result byte-identical to sla-flash's own run after its review fixes; all 10 arms PASS; unexplained
+  intervals 0 on every route.
+
+### Round 8: the lift-off ramp, a softer stop, the PID floor, a stopped car at long range, the steering floor, latsplit v2
+
+Branch `round8` (`9e0f11e80`): sunnypilot on `55d9562b6` (push9), opendbc branch `round8` (`1c3e53ad`) on `dc7f1e7d`;
+merged into push10. The board is unchanged (`883a3cd1`). From the analysis of drives 13d-143 (17-19 Oct, push9; full
+rlogs for 13d, 141, 142 and 143, qlogs only for 13e and 13f). The owner chose, on 2026-10-19, six of its ten proposals: "Ramp after gas
 lift-off", "Softer stop", "No windup at full brake", "Build it, test hard first" (the long-range stopped car, offered
 only if it passed the clutter set), "Learner floor 0.875 -> 1.10" and "Steering logging v2". Not chosen and not built:
 the S-mode engine-brake allowance, the softer launch cap, DEC, and the radar matching changes R1 and R3 on their own
@@ -30,7 +139,7 @@ aero-credit ramp. Design and identifiers: `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 
 Labels as in the analysis: [M] measured in the logs, [R] replayed on the logged inputs (open loop unless it says closed
 loop), [I] inferred.
 
-### 1. The plan ramps in after a gas override (planner, `reentry_ramp.py`; proposal 2)
+#### 1. The plan ramps in after a gas override (planner, `reentry_ramp.py`; proposal 2)
 
 * **What.** For 1.5 s after the gas override ends (the gas pressed within the last 0.5 s; since the round 8 review an
   engagement is upstream's), the published plan may fall at most 1.5 m/s^3, from min(aEgo, 0) on the first frame back
@@ -81,7 +190,7 @@ loop), [I] inferred.
 * 13e/13f (qlogs, the plan at 2 Hz) cannot be replayed; on the logged plan the ramp would bind on 2 and 17 re-entries,
   by at most 0.28 and 0.43 m/s^2.
 
-### 2. Softer stop: the soft-stop cap 125 -> 105 counts (opendbc `elesys_stop.py`; proposal 5)
+#### 2. Softer stop: the soft-stop cap 125 -> 105 counts (opendbc `elesys_stop.py`; proposal 5)
 
 * **The pump is unchanged.** 105 stays above C1b's and v5's crawl threshold (100): min(c, 105) > 100 exactly when
   c > 100, so the crawl run pumps the same frames (a test walks every command 0-255), and the rise to the 189 hold is
@@ -103,7 +212,7 @@ loop), [I] inferred.
 * The bound: the rise from 105 to 189 takes about 0.34 s, the ceiling is gone 0.60 s after the rise starts, nothing of
   it is left 2.50 s after entry (2.42 at 125).
 
-### 3. No windup at full brake: the PID floor -4.0 -> -3.2 (opendbc `interface.py`; proposal 9)
+#### 3. No windup at full brake: the PID floor -4.0 -> -3.2 (opendbc `interface.py`; proposal 9)
 
 * `get_pid_accel_limits()` returns -3.2 on HONDA_ELESYS outside stock ACC mode; `NIDEC_ACCEL_MIN` (-4.0) everywhere
   else. On the level -3.2 is still full brake (that starts at -2.6 net).
@@ -119,7 +228,7 @@ loop), [I] inferred.
   pitch changes the same 265 frames and none on 13d, 141, 142, 10f, 129, 12a or 137, and on no frame of the eight brakes
   less than -4.0 with the climb's term added back.
 
-### 4. A stopped car at long range the camera reads as moving (radard; proposal 3) - **included, on condition: 13e/13f could not be replayed**
+#### 4. A stopped car at long range the camera reads as moving (radard; proposal 3) - **included, on condition: 13e/13f could not be replayed**
 
 * **The rule** (`elesys_radar_guard.long_range_track()`, HONDA_ELESYS, leadOne only): only on a frame where radard has
   fallen back to the camera's lead, a stationary track (|vLead| < 1.5 m/s) within 20% of the camera's range and 1 m of
@@ -177,7 +286,7 @@ loop), [I] inferred.
   wrong lead fail too; the one edit that passed (dropping `fell_back` from the return line) changes nothing, because
   on those frames it returns the track radard already chose.
 
-### 5. The steering learner's floor 0.875 -> 1.10 (torqued, `torque_floor.py`; proposal 6)
+#### 5. The steering learner's floor 0.875 -> 1.10 (torqued, `torque_floor.py`; proposal 6)
 
 * The window is 1.10-1.625 live (1.10-1.875 for the qlog estimator), the 1.25 prior unchanged. HONDA_ELESYS with
   torque tuning only; it only raises upstream's floor and never above the prior; under sunnypilot's relaxed toggle the
@@ -194,7 +303,7 @@ loop), [I] inferred.
   (chained from 115, the cache carried between drives): 13d 0.8826 -> 0.9966, 1.0985 at the end of 143. Open loop: a
   higher factor commands less torque, which would move later points.
 
-### 6. latsplit v2, logging only (`lat_speed_split.py`; proposal 7)
+#### 6. latsplit v2, logging only (`lat_speed_split.py`; proposal 7)
 
 * Points split by hands - the largest |`steeringTorque`| over torqued's own override window: off (< 300), on
   (300-1199), hard (>= 1200) - and speed (54-70, 70-90, 90+ km/h): 9 cells, each with the TLS moments, steer bins and
@@ -208,7 +317,7 @@ loop), [I] inferred.
   point in `hard`. The hands-off share is above the analysis's 3-9% because torqued sees `carState` at 20 Hz and misses
   short touches.
 
-### Integration
+#### Integration
 
 * **[R] The real `CarInterface`, open loop on the logged CAN and carControl** of 13d, 141, 142 and 143 (506,468
   control steps, 1,240,852 frames), opendbc `round8` against `dc7f1e7d`: every frame identical - `0x0E4`, `0x1A6`
@@ -230,7 +339,7 @@ loop), [I] inferred.
   editable installs map `openpilot` and `opendbc` to `~/sp-merge`, and without it `tools/test_runner.py` silently
   tests `~/sp-merge`'s code.
 
-### Round 8 review (2026-10-20)
+#### Round 8 review (2026-10-20)
 
 Two independent safety reviews of `nsw-live..round8`; each finding was re-checked before anything changed, and every
 fix has tests that fail on round 8 as first built (checked by loading the committed modules behind shims that only add
@@ -269,12 +378,10 @@ build's numbers were reproduced exactly before the fixes were measured.
   new hits; `compile_settings_ui --check` clean. 18 deliberate breaks of the review fixes (8 in the ramp, 5 in the veto
   and its gate, 5 in the floor) each fail at least one test.
 
----
+### KTuner and the comma together: stock while a diagnostic tool talks, stock after a car-bus bus-off
 
-## UNRELEASED — KTuner and the comma together: stock while a diagnostic tool talks, stock after a car-bus bus-off
-
-Branch `ktuner` (from `nsw-live` `55d9562b6`), not pushed. opendbc and the panda are **not** changed: the submodules
-stay at `dc7f1e7d` and `74a0adce`, so the panda is not reflashed by this update.
+Branch `ktuner` (`0c8f364b8`, from `nsw-live` `55d9562b6`); merged into push10. KTuner changes **neither** opendbc nor
+the panda: the panda stays `74a0adce` and is not reflashed by this update.
 
 **What happened.** Routes 144, 145 and 147 (2026-10-19), parked, ignition on, KTuner datalogging the engine ECU over
 the OBD port: "the last two where I'm parked OP errored ... it cause acc and cmbs ... and constantly for a split second
@@ -380,9 +487,9 @@ Tests: 126 new (`test_diag_tool_guard.py` 38, `test_card_diag_hook.py` 10, `test
 `selfdrive/pandad/tests/test_car_bus_guard` and `test_pandad_stock`. Not driven yet: the checks for the first drives
 are in section 16.10 of the car document.
 
----
+### sla-flash: a press at 'now' holds, flashes, and sets the limit once
 
-## UNRELEASED — sla-flash: a press at 'now' holds, flashes, and sets the limit once
+Branch `sla-flash` (`3931db219`; opendbc `sla-flash` `f8e1dc09`), on `nsw-live` `55d9562b6`; merged into push10.
 
 The owner after the push9 drives (2026-10-19): "I don't like the speed limit how setting it changes it to one different
 of speed than it swaps once you past 50m if you press early". push9's press at 'now' was also its ordinary 1 km/h

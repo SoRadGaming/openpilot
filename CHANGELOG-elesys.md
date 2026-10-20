@@ -756,10 +756,10 @@ Driver-facing summary: `docs/CHANGELOG_SERIAL_STEERING.md`, 2026-10-01 "Longitud
 
 ---
 
-## 22. Round 8: the lift-off ramp, a softer stop, the PID floor, a stopped car at long range (2026-10-20)
+## 22. Round 8: the lift-off ramp, a softer stop, the PID floor, a stopped car at long range (2026-10-20, push10)
 
 Branch `round8` (sunnypilot on `55d9562b6`, opendbc on `dc7f1e7d`), from the analysis of drives 13d-143. Numbers,
-replays and the owner's choices: `docs/CHANGELOG_SERIAL_STEERING.md`, "UNRELEASED - round 8". Design:
+replays and the owner's choices: `docs/CHANGELOG_SERIAL_STEERING.md`, 2026-10-20 "push10", "Round 8". Design:
 `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 5.3, 7.8, 7.12 and 10.8. In short:
 
 - **Planner** (`reentry_ramp.py`): for 1.5 s after a gas override (the gas pressed within 0.5 s; not an engagement)
@@ -779,10 +779,10 @@ replays and the owner's choices: `docs/CHANGELOG_SERIAL_STEERING.md`, "UNRELEASE
 
 ---
 
-## 23. A tuner or scan tool on the car bus, and a car-bus bus-off (2026-10-19, UNRELEASED)
+## 23. A tuner or scan tool on the car bus, and a car-bus bus-off (2026-10-19, push10)
 
 Branch `ktuner`. The full design is `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` section 16; the changelog entry is in
-`docs/CHANGELOG_SERIAL_STEERING.md` under UNRELEASED.
+`docs/CHANGELOG_SERIAL_STEERING.md`, 2026-10-20 "push10", "KTuner".
 
 **Why.** With KTuner datalogging while parked (routes 144, 145, 147; and dc, db on 2026-09-16) the comma's own frames
 started failing the moment openpilot took over the car bus, the comma's car-bus connection died within a fraction of a
@@ -814,7 +814,7 @@ reflashed by this change.
 
 ---
 
-## 24. The cluster flashes the set speed a held 'now' press will give (sla-flash, 2026-10-19, UNRELEASED)
+## 24. The cluster flashes the set speed a held 'now' press will give (sla-flash, 2026-10-19, push10)
 
 `opendbc/car/structs.py` (`CarControlSP.speedLimitNowFlash`, `CarStateSP.speedLimitNow`), `opendbc/car/honda/hondacan.py`
 (`now_flash_speed`, `NOW_FLASH_ON` / `NOW_FLASH_PERIOD`), `opendbc/car/honda/carcontroller.py` (the ACC_HUD send);
@@ -822,7 +822,7 @@ tests `test_elesys.py` `TestElesysNowFlash`, `test_elesys_stock_acc.py`.
 
 The owner (2026-10-19): a press at 'now' should not change the set speed, the limit should be set once at the sign,
 and "also flash the set speed on the car's cluster (in openpilot's own ACC HUD frame) while it is armed, like stock
-shows a speed it is building up to". sunnypilot holds the press (`docs/CHANGELOG_SERIAL_STEERING.md`, sla-flash);
+shows a speed it is building up to". sunnypilot holds the press (`docs/CHANGELOG_SERIAL_STEERING.md`, 2026-10-20 "push10", "sla-flash");
 this side draws the flash:
 
 - While `CarControlSP.speedLimitNowFlash` (m/s, from the planner's armed target, held 2 controlsd cycles) is set and is

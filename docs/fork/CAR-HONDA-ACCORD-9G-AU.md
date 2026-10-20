@@ -11,7 +11,7 @@ History and specs already exist in these files. This document does not repeat th
 
 | document | what it is |
 |---|---|
-| `CHANGELOG-elesys.md` | the longitudinal work on this car, sections 1-21, with measurements |
+| `CHANGELOG-elesys.md` | the longitudinal work on this car, sections 1-24, with measurements |
 | `FEATURES-elesys.md` | plain-English feature notes for the owner. **Its PCM-blend material is stale throughout.** The toggle was removed in sunnypilot `cb4e0c34b` / opendbc `aa73e60a`, but the file still has a `The two toggles` section, its subsection 2 (`...also blend the PCM gas above 30 km/h`), a `Gas - the PCM gas factor` line under `Seeing what it has learned`, and `Leave the PCM blend off` in `The honest summary` |
 | `docs/CHANGELOG_SERIAL_STEERING.md` | the serial-steering changelog, including `Things about this car worth not rediscovering` |
 | `docs/SP_GATEWAY_FIRMWARE.md`, `docs/SP_HUD_STATUS.md` | area B specs |
@@ -2279,7 +2279,7 @@ written apart and merged together. What each part of batch 2 does in stock mode,
 
 ## 16. A diagnostic tool on the car bus, and a car-bus bus-off (KTuner, 2026-10-19)
 
-Branch `ktuner`, not pushed; changelog entry "UNRELEASED" in `docs/CHANGELOG_SERIAL_STEERING.md`. Every hunk is
+Branch `ktuner`, merged into push10 (2026-10-20); changelog entry "push10" in `docs/CHANGELOG_SERIAL_STEERING.md`. Every hunk is
 `FORK(HONDA_ACCORD_9G_AU)`. No opendbc or panda change: `git diff --stat nsw-live -- opendbc_repo panda` is empty.
 
 ### 16.1 What happened
