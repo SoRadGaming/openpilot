@@ -18,8 +18,9 @@ static const std::vector<cereal::PandaState::PandaType> SUPPORTED_PANDA_TYPES = 
 class PandaSafety {
 public:
   PandaSafety(Panda *panda) : panda_(panda) {}
-  void configureSafetyMode(bool is_onroad);
+  void configureSafetyMode(bool is_onroad, bool stay_stock = false);  // FORK(HONDA_ACCORD_9G_AU): stay_stock
   bool getOffroadMode();
+  bool getDiagToolStock();  // FORK(HONDA_ACCORD_9G_AU)
 
 private:
   void updateMultiplexingMode();
@@ -30,6 +31,7 @@ private:
   bool log_once_ = false;
   bool safety_configured_ = false;
   bool prev_obd_multiplexing_ = false;
+  bool stock_held_ = false;  // FORK(HONDA_ACCORD_9G_AU): the car mode was held back or left for stock this drive
   Panda *panda_;
   Params params_;
 };
