@@ -29,6 +29,10 @@ nothing engaged (carControl enabled/latActive/longActive all false, or carContro
 LEAVE: QUIET_NS without a qualifying frame AND parked. The quiet time only grows across `can` messages that carry at
 least one src-0 frame, each gap counted at most QUIET_GAP_CAP_NS, so a dead car-bus receiver (a bus-off) never reads as
 quiet. Never while moving: resuming is entering the car mode, which stands down a stock ACC the driver may have engaged.
+BACK-OFF (review fix 2026-10-20): a tool that comes back within REENTRY_NS of a release is the same tool polling
+slowly, and each return to the car mode transmits into its bus, so the quiet that ends the next episode grows through
+QUIET_STEPS_NS (10 s, 30 s, 60 s). A tool polling every 11 s held the car stock 1 s in 11 before - 21 relay switches in
+two minutes; now 3. A tool back after REENTRY_NS starts again at 10 s.
 
 HOW card USES IT (card.py, FORK lines):
   * before controls first start, `stock` holds card's first controls_update - no CI.init, no ControlsReady, no
@@ -47,7 +51,9 @@ GearShifter = structs.CarState.GearShifter
 
 REQ_WINDOW_NS = 1_000_000_000         # the requests that count must lie within this
 REQ_MIN = 2                           # dc's scan tool: 2 in 1 s is 0.22 s after its first request, 0.47 s before the switch
-QUIET_NS = 10_000_000_000             # no request for this long (and parked) ends it
+QUIET_STEPS_NS = (10_000_000_000, 30_000_000_000, 60_000_000_000)  # no request for this long (and parked) ends it
+QUIET_NS = QUIET_STEPS_NS[0]          # ... the first time; and a tool that went away (seen_logged)
+REENTRY_NS = 120_000_000_000          # back within this of a release: the next episode's quiet is the next step
 QUIET_GAP_CAP_NS = 100_000_000        # one gap in car-bus RX counts at most this much toward the quiet time
 CAR_BUS_SRC = 0                       # a frame received from another node on the car bus
 TESTER_SA = range(0xF0, 0xFE)         # ISO 15765-2 / J1939 off-board tester source addresses
@@ -88,6 +94,8 @@ class DiagToolGuard:
     self._since_ns: int | None = None             # entered stock at (None: inherited, time unknown)
     self._seen_logged = False                     # "seen while not parked/idle" logged for this episode
     self._now_ns = 0
+    self._level = 0                               # index into QUIET_STEPS_NS for this episode
+    self._released_ns: int | None = None          # the last release
 
   def update(self, can_list, CS, CC, cc_alive: bool, controls_started: bool = False) -> tuple[str, dict] | None:
     """One card step. can_list: card's [(logMonoTime, [(addr, dat, src), ...]), ...]. Returns (event, fields) for
@@ -126,10 +134,12 @@ class DiagToolGuard:
     if not self.stock:
       if len(self._req) >= REQ_MIN:
         if is_parked and not active:
+          back = self._released_ns is not None and self._now_ns - self._released_ns <= REENTRY_NS
+          self._level = min(self._level + 1, len(QUIET_STEPS_NS) - 1) if back else 0
           self.stock = True
           self._since_ns = self._now_ns
           self._seen_logged = False
-          return "diag_tool_stock", self._record(CS, controls_started, on=True)
+          return "diag_tool_stock", self._record(CS, controls_started, on=True, quiet_needed_s=self.quiet_needed_ns / 1e9)
         # "seen, but it cannot act" is for a car that is known to be moving or engaged. Before the car's CAN is valid
         # (the first ~2.5-3.5 s of every start, KTuner already talking) the gear is not known yet: wait, say nothing.
         if bool(CS.canValid) and not self._seen_logged:
@@ -140,13 +150,14 @@ class DiagToolGuard:
         self._forget_ids()
       return None
 
-    if self._quiet_ns >= QUIET_NS and is_parked:
+    if self._quiet_ns >= self.quiet_needed_ns and is_parked:
       rec = self._record(CS, controls_started, on=False, quiet_s=round(self._quiet_ns / 1e9, 2),
                          duration_s=None if self._since_ns is None else round((self._now_ns - self._since_ns) / 1e9, 2),
-                         inherited=self._inherited)
+                         inherited=self._inherited, quiet_needed_s=self.quiet_needed_ns / 1e9)
       self.stock = False
       self._inherited = False
       self._since_ns = None
+      self._released_ns = self._now_ns
       self._forget_ids()
       return "diag_tool_stock", rec
     return None
@@ -154,6 +165,11 @@ class DiagToolGuard:
   @property
   def quiet_s(self) -> float:
     return self._quiet_ns / 1e9
+
+  @property
+  def quiet_needed_ns(self) -> int:
+    """The quiet that ends this episode: 10 s, more for a tool that keeps coming back (BACK-OFF above)."""
+    return QUIET_STEPS_NS[self._level]
 
   def _forget_ids(self) -> None:
     self._ids.clear()

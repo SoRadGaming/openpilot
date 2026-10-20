@@ -6,17 +6,19 @@ See the LICENSE.md file in the root directory for more details.
 
 FORK(HONDA_ACCORD_9G_AU): KTuner fix 1's detector (diag_tool_guard.py) on synthetic frames in card's exact can_list
 shape [(logMonoTime, [(addr, dat, src), ...]), ...]. What must hold: only a tester REQUEST received from another node
-on the car bus counts (never a response, never our own echo or the radar side, never the boards' ids); two within a
-second, parked and idle, enter; ten seconds without one, counted only while the car bus is heard, and parked, leave;
-nothing on any other car.
+on the car bus counts (never a response, never our own echo or the radar side, never the boards' ids - also when they
+arrive through update() at their real rates); two within a second, parked and idle, enter; ten seconds without one,
+counted only while the car bus is heard on src 0, and parked, leave - 30 s, then 60 s, for a tool that keeps coming
+back within two minutes of a release (the back-off); nothing on any other car. Times are written out here, not taken
+from the module's constants, so a changed constant fails.
 """
 from types import SimpleNamespace
 
 from opendbc.car import structs
 from opendbc.car.honda.values import CAR, HondaSafetyFlags
 from openpilot.common.test import OpenpilotTestCase
-from openpilot.sunnypilot.selfdrive.car.diag_tool_guard import DiagToolGuard, is_tester_request, REQ_WINDOW_NS, \
-  QUIET_NS, QUIET_GAP_CAP_NS, armed_for
+from openpilot.sunnypilot.selfdrive.car.diag_tool_guard import DiagToolGuard, is_tester_request, REQ_WINDOW_NS, REQ_MIN, \
+  QUIET_NS, QUIET_STEPS_NS, REENTRY_NS, QUIET_GAP_CAP_NS, armed_for
 
 GearShifter = structs.CarState.GearShifter
 MS = 1_000_000
@@ -47,6 +49,7 @@ def cc(enabled=False, lat=False, lon=False):
 
 
 DRIVING = {"gear": GearShifter.drive, "standstill": False, "v_ego": 10.0}
+S = 100             # card steps in a second
 
 
 class Sim:
@@ -56,9 +59,10 @@ class Sim:
     self.t = 1_000 * MS
     self.records: list[tuple[str, dict]] = []
 
-  def step(self, frames=(), rx=True, cs_kw=None, cc_kw=None, cc_alive=True, n=1):
+  def step(self, frames=(), rx=True, cs_kw=None, cc_kw=None, cc_alive=True, n=1, other=()):
+    """other: frames on other sources in every step (our echoes, the radar side), heard whatever bus 0 does."""
     for _ in range(n):
-      body = list(frames) + ([(OTHER, b"", 0)] if rx else [])
+      body = list(frames) + ([(OTHER, b"", 0)] if rx else []) + list(other)
       r = self.g.update([(self.t, body)] if body else [], cs(**(cs_kw or {})), cc(**(cc_kw or {})), cc_alive)
       if r is not None:
         self.records.append(r)
@@ -120,9 +124,38 @@ class TestSourceAndThreshold(OpenpilotTestCase):
   def test_two_more_than_a_second_apart_do_not(self):
     s = Sim()
     s.requests(1)
-    s.step(n=REQ_WINDOW_NS // STEP_NS + 9)   # 1.1 s
+    s.step(n=110)                    # 1.1 s
     assert not s.requests(1)
     assert not s.step(n=300)
+
+  def test_eleven_bit_obd_requests_through_update(self):
+    """A generic ELM327 / scan-tool dongle: 0x7DF functional, 0x7E0-0x7E7 physical - and never its answers."""
+    for addr in (0x7DF, 0x7E0, 0x7E7):
+      assert Sim().requests(2, addr=addr), hex(addr)
+    for addr in (0x7E8, 0x7EF):
+      assert not Sim().requests(300, addr=addr), hex(addr)
+
+
+class TestTheBusIsNotATool(OpenpilotTestCase):
+  def test_everything_else_on_src_0_at_its_real_rate(self):
+    """Review B 2: what is really on src 0, through update(), parked and idle for a minute - the EPS board's 0x700-0x71F
+    (0x700/0x701/0x70C at 100 Hz on route 143), the BLR board's 0x620-0x62F, the ECUs' answers to our FW query
+    (0x18DAF1xx) and to a scan tool (0x7E8-0x7EF), and the car's own traffic: never stock, no record."""
+    board = list(range(0x700, 0x720))
+    blr = list(range(0x620, 0x630))
+    answers = [0x18DAF10E, 0x18DAF127, 0x18DAF153, 0x18DAF15C, 0x18DAF160, 0x18DAF1B0, 0x18DAF130, *range(0x7E8, 0x7F0)]
+    car = [0x091, 0x0E4, 0x13C, 0x156, 0x158, 0x17C, 0x1A6, 0x1FA, 0x30C, 0x33D, 0x39F, 0x500, 0x510]
+    frames = [(a, b"", 0) for a in board + blr + answers + car]
+    s = Sim()
+    assert not s.step(frames=frames, n=60 * S)
+    assert s.records == [] and len(s.g._req) == 0
+
+  def test_our_fw_query_on_other_sources(self):
+    """openpilot's own requests: src 2 through the closed relay, 128/129/130 as echoes - at a burst rate."""
+    for src in (2, 128, 129, 130):
+      s = Sim()
+      assert not s.step(frames=[(0x18DA10F1, b"", src), (0x18DB33F1, b"", src), (0x7DF, b"", src), (0x7E0, b"", src)], n=500)
+      assert s.records == [], src
 
 
 class TestParkedAndActive(OpenpilotTestCase):
@@ -179,12 +212,12 @@ class TestQuiet(OpenpilotTestCase):
 
   def test_ten_seconds_quiet_in_p_releases(self):
     s = self.enter()
-    s.step(n=QUIET_NS // STEP_NS - 2)          # 9.98 s after the last request's step
+    s.step(n=998)                               # 9.98 s after the last request's step
     assert s.g.stock
     assert not s.step(n=2)
     name, rec = s.records[-1]
     assert name == "diag_tool_stock" and rec["on"] is False and 10.0 <= rec["quiet_s"] < 10.1
-    assert rec["duration_s"] is not None and rec["inherited"] is False
+    assert rec["duration_s"] is not None and rec["inherited"] is False and rec["quiet_needed_s"] == 10.0
 
   def test_quiet_while_moving_waits_for_park(self):
     s = self.enter()
@@ -197,9 +230,17 @@ class TestQuiet(OpenpilotTestCase):
     s = self.enter()
     s.step(n=3000, rx=False)                    # 30 s with no src-0 frame at all (bus-off)
     assert s.g.stock and s.g.quiet_s == 0
-    s.step(n=QUIET_NS // STEP_NS - 10)          # the 30 s hole counts 0.1 s, then 989 x 10 ms: 9.99 s
+    s.step(n=990)                               # the 30 s hole counts 0.1 s, then 989 x 10 ms: 9.99 s
     assert s.g.stock
     assert not s.step(n=2)
+
+  def test_a_dead_car_bus_with_the_rest_still_talking_is_not_quiet(self):
+    """Review B 5: in the car a dead bus 0 still leaves can messages - our echoes (128), the radar side (2) and its
+    forwards (130), our own sendcan. Only src-0 frames count toward the quiet."""
+    s = self.enter()
+    others = [(0x1FA, b"", 2), (0x30C, b"", 2), (0xE4, b"", 128), (0x1A6, b"", 130), (0x18DA0EF1, b"", 130)]
+    s.step(n=3000, rx=False, other=others)
+    assert s.g.stock and s.g.quiet_s == 0
 
   def test_gaps_count_at_most_the_cap(self):
     s = self.enter()
@@ -261,7 +302,7 @@ class TestRecords(OpenpilotTestCase):
   def test_one_record_per_transition(self):
     s = Sim()
     s.requests(500, every_ns=20 * MS)
-    s.step(n=1100)
+    s.step(n=13_500)                  # released 10 s in, and back more than 2 min after that: 10 s again
     s.requests(500, every_ns=20 * MS)
     s.step(n=1100)
     names = [(n, r.get("on")) for n, r in s.records]
@@ -280,3 +321,63 @@ class TestRecords(OpenpilotTestCase):
     s.step(n=1100)
     off = s.records[1][1]
     assert len(on["ids"]) <= 17 and len(off["ids"]) == 17 and off["ids"]["other"] == 0x40 - 16
+
+
+class TestConstants(OpenpilotTestCase):
+  def test_the_numbers(self):
+    """What the design and the owner's words say, written out."""
+    assert (REQ_MIN, REQ_WINDOW_NS, QUIET_NS, QUIET_GAP_CAP_NS) == (2, 1_000_000_000, 10_000_000_000, 100_000_000)
+    assert QUIET_STEPS_NS == (10_000_000_000, 30_000_000_000, 60_000_000_000) and REENTRY_NS == 120_000_000_000
+
+
+class TestBackOff(OpenpilotTestCase):
+  """Review A F2: a tool that does one exchange (request + its flow control: 2 frames) every N s, parked."""
+  @staticmethod
+  def slow_tool(period_s: float, total_s: float = 120.0):
+    s = Sim()
+    trans = []
+    for k in range(int(total_s * S)):
+      if k % int(period_s * S) == 0:
+        s.step(frames=[(KTUNER, b"", 0), (KTUNER, b"", 0)])
+      else:
+        s.step()
+      if s.records and (not trans or len(s.records) > trans[-1][0]):
+        trans.append((len(s.records), round(k / S, 2), s.records[-1][1]["on"]))
+    return [(t, on) for _, t, on in trans]
+
+  def test_an_eleven_second_poller_no_longer_flaps(self):
+    """It switched the relay 21 times in two minutes, 1 s of car mode in every 11 s; now: in, out once, back for good."""
+    assert self.slow_tool(11.0) == [(0.0, True), (10.0, False), (11.0, True)]
+
+  def test_the_quiet_grows_10_30_60_and_stops_there(self):
+    t = self.slow_tool(61.0, total_s=400.0)
+    rel = [(on_t, on) for on_t, on in t]
+    assert rel == [(0.0, True), (10.0, False), (61.0, True), (91.0, False), (122.0, True), (182.0, False), (183.0, True),
+                   (243.0, False), (244.0, True), (304.0, False), (305.0, True), (365.0, False), (366.0, True)], rel
+
+  def test_a_tool_back_after_two_minutes_starts_at_ten_seconds(self):
+    s = Sim()
+    assert s.requests(2)
+    s.step(n=11 * S)
+    assert not s.g.stock
+    s.step(n=121 * S)                 # more than REENTRY after the release
+    assert s.requests(2) and s.records[-1][1]["quiet_needed_s"] == 10.0
+    s.step(n=10 * S)
+    assert not s.g.stock
+
+  def test_back_within_two_minutes_needs_thirty(self):
+    s = Sim()
+    assert s.requests(2)
+    s.step(n=11 * S)
+    assert not s.g.stock
+    s.step(n=100 * S)                 # 110 s after the release
+    assert s.requests(2) and s.records[-1][1]["quiet_needed_s"] == 30.0
+    s.step(n=29 * S)
+    assert s.g.stock
+    s.step(n=2 * S)
+    assert not s.g.stock and s.records[-1][1]["quiet_needed_s"] == 30.0
+
+  def test_inherited_starts_at_ten_seconds(self):
+    s = Sim(inherited=True)
+    s.step(n=10 * S + 5)
+    assert not s.g.stock

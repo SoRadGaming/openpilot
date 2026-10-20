@@ -9,6 +9,10 @@ Two kinds, each a small compressed .npz, committed:
   fix 1 (card's diag_tool_guard.py), from rlog parquet, in openpilot/sunnypilot/selfdrive/car/tests/fixtures/ktuner/:
     * per `can` message: its logMonoTime (0.1 ms, delta-coded) and whether it held a src-0 frame;
     * every frame whose address is a tester request (on EVERY src), and the responses 1 in 10;
+    * and, chosen without the request rule (review fix 2026-10-20), every src-0 frame in 0x600-0x7FF and every 29-bit
+      frame on any src - the EPS board's 0x700-0x71F, the BLR's 0x620-0x62F, the ECUs' answers - the first BROAD_PER_S
+      of each (address, src) in each second of the route, so a detector that counted any of them would see them at
+      their real rate;
     * carState gear/standstill/canValid/vEgo and carControl enabled/latActive/longActive, at their change points;
     * the logged time of the first car-mode pandaState (the switch) and of the first sendcan (the first
       controls_update).
@@ -53,6 +57,7 @@ HARNESS = {"notConnected": 0, "normal": 1, "flipped": 2}
 GEARS = ["unknown", "park", "drive", "neutral", "reverse", "sport", "low", "brake", "eco", "manumatic"]
 NONCAR = ("silent", "noOutput", "elm327", "allOutput")
 TQ_NS = 100_000   # 0.1 ms
+BROAD_PER_S = 2   # broad frames kept per (address, src) per second: two within a second, what entering needs
 
 
 def is_request(addr: np.ndarray) -> np.ndarray:
@@ -66,6 +71,24 @@ def is_response(addr: np.ndarray) -> np.ndarray:
   sa, ta, pgn = addr & 0xFF, (addr >> 8) & 0xFF, addr >> 16
   r29 = (addr > 0x7FF) & ((pgn == 0x18DA) | (pgn == 0x18DB)) & (ta >= 0xF0) & (ta <= 0xFD) & ~((sa >= 0xF0) & (sa <= 0xFD))
   return r29 | ((addr >= 0x7E8) & (addr <= 0x7EF))
+
+
+def broad_keep(t_frame: np.ndarray, t0: int, addr: np.ndarray, src: np.ndarray) -> np.ndarray:
+  """Every src-0 frame in 0x600-0x7FF and every 29-bit frame, whatever it is, the first BROAD_PER_S of each
+  (address, src) in each second. Independent of is_request(): the replay must see the traffic the detector must ignore."""
+  sel = ((src == 0) & (addr >= 0x600) & (addr <= 0x7FF)) | (addr > 0x7FF)
+  idx = np.flatnonzero(sel)
+  sec = (t_frame[idx] - t0) // 1_000_000_000
+  key = np.stack([addr[idx], src[idx], sec])
+  order = np.lexsort((idx, key[2], key[1], key[0]))
+  k = key[:, order]
+  start = np.ones(len(order), bool)
+  start[1:] = np.any(k[:, 1:] != k[:, :-1], axis=0)
+  group_start = np.maximum.accumulate(np.where(start, np.arange(len(order)), 0))
+  rank = np.arange(len(order)) - group_start
+  keep = np.zeros(len(addr), bool)
+  keep[idx[order[rank < BROAD_PER_S]]] = True
+  return keep
 
 
 def base_dir(store: str, route: str, sunny: Path, seg: Path) -> Path:
@@ -150,7 +173,7 @@ def build_fix1(name: str, base: Path, keep_s: float | None, out: Path) -> None:
   for s in np.unique(src[resp]):
     w = np.flatnonzero(resp & (src == s))
     resp_keep[w[::10]] = True
-  keep = req | resp_keep
+  keep = req | resp_keep | broad_keep(t[parent], t0, addr, src)
   fr_msg, fr_addr, fr_src = parent[keep], addr[keep], src[keep]
   o2 = np.lexsort((fr_addr, fr_msg))
 

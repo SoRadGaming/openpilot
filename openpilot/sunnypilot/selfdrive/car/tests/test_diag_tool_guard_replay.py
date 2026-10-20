@@ -137,3 +137,19 @@ class TestReplay(OpenpilotTestCase):
   def test_a_bus_off_without_a_tool_is_not_fix_1s(self):
     r = replay("rdb")
     assert not r["stock"].any() and r["records"] == []
+
+  def test_the_fixtures_hold_what_the_detector_must_ignore(self):
+    """Review B 2: the replays above prove "never a false positive" only if the frames a broken detector would count are
+    in them. Kept without the request rule (ktuner_fixtures.broad_keep): the EPS board's ids on src 0 through all of 143
+    at two a second each, the ECUs' answers on src 0 to our own FW query (b5) and to dc's scan tool."""
+    def frames(name):
+      z = np.load(FIX / f"{name}.npz")
+      return z["fr_addr"].astype(np.int64), z["fr_src"], z["fr_msg"]
+    a, s, m = frames("r143")
+    board = (s == 0) & (a >= 0x700) & (a <= 0x71F)
+    assert board.sum() > 15000 and {0x700, 0x701, 0x704, 0x705, 0x708, 0x70B, 0x70C} <= set(a[board].tolist())
+    assert len(np.unique(m[board & (a == 0x700)])) > 1500, "0x700 all through the route"
+    for name, want in (("rb5", {0x18DAF10E, 0x18DAF153, 0x18DAF160, 0x18DAF1B0}),
+                       ("rdc", {0x18DAF10E, 0x18DAF127, 0x18DAF153, 0x18DAF15C, 0x18DAF160, 0x18DAF1B0})):
+      a, s, _ = frames(name)
+      assert want <= set(a[(s == 0) & ((a >> 8) == 0x18DAF1)].tolist()), name
