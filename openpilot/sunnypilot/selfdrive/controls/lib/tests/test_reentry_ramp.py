@@ -1,9 +1,11 @@
-"""FORK(HONDA_ACCORD_9G_AU): the ramp-in after a gas override or an engagement (reentry_ramp.py, round 8 proposal 2).
+"""FORK(HONDA_ACCORD_9G_AU): the ramp-in after the driver lifts off the gas (reentry_ramp.py, round 8 proposal 2).
 
-The unit tests pin the ramp itself: the window, the rate, the start, the three exceptions, the speed gate and the
-log line. TestReentryRampPlanner drives the real LongitudinalPlanner (MPC included) through a gas override and a
-lift-off. It checks that the published aTarget falls at most 1.5 m/s^3 for 1.5 s on this car and nowhere else, and
-that every frame outside the window is bit-identical to the planner without the ramp.
+The unit tests pin the ramp itself: the window, the rate, the start, the exceptions (FCW, the MPC's crash flag, the
+MPC's plan or the plan itself under -2.0, a lead braking harder than -2.0), the gas gate (a lift-off, not an
+engagement), the speed gate and the log line. TestReentryRampPlanner drives the real LongitudinalPlanner (MPC
+included) through a gas override and a lift-off. It checks that the published aTarget falls at most 1.5 m/s^3 for
+1.5 s on this car and nowhere else, that every frame outside the window is bit-identical to the planner without the
+ramp, and that an engagement, a hard-braking lead and an MPC trajectory under -2.0 get upstream's plan at once.
 """
 import math
 from types import SimpleNamespace
@@ -17,7 +19,7 @@ from openpilot.cereal import custom, log, messaging
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.selfdrive.controls.lib import reentry_ramp as rr
-from openpilot.sunnypilot.selfdrive.controls.lib.reentry_ramp import ReentryRamp, reentry_ramp_applies
+from openpilot.sunnypilot.selfdrive.controls.lib.reentry_ramp import ReentryRamp, lead_decel, reentry_ramp_applies
 
 STEP = rr.REENTRY_RAMP_JERK * DT_MDL      # 0.075 m/s^2 per 20 Hz frame
 WINDOW = round(rr.REENTRY_RAMP_S / DT_MDL)   # 30 frames
@@ -25,14 +27,15 @@ LongCtrlState = structs.CarControl.Actuators.LongControlState
 
 
 class Drive:
-  """Feeds ReentryRamp one planner frame at a time. Defaults: 15 m/s, a calm MPC, no FCW, no crash."""
+  """Feeds ReentryRamp one planner frame at a time. Defaults: 15 m/s, a calm MPC, no FCW, no crash, no lead, and the
+  gas pressed exactly while reset (a gas override)."""
 
   def __init__(self):
     self.r = ReentryRamp()
     self.out = []
 
-  def step(self, plan, reset=False, v=15.0, a=-0.2, mpc=0.0, fcw=False, crash=0.0):
-    o = self.r.update(reset, v, a, plan, mpc, fcw, crash)
+  def step(self, plan, reset=False, v=15.0, a=-0.2, mpc=0.0, fcw=False, crash=0.0, gas=None, lead=None):
+    o = self.r.update(reset, v, a, plan, mpc, fcw, crash, reset if gas is None else gas, lead)
     self.out.append(o)
     return o
 
@@ -47,6 +50,7 @@ class TestReentryRamp(OpenpilotTestCase):
   def test_constants(self):
     self.assertEqual((rr.REENTRY_RAMP_S, rr.REENTRY_RAMP_JERK, rr.REENTRY_RAMP_MPC_FLOOR, rr.REENTRY_RAMP_MIN_SPEED),
                      (1.5, 1.5, -2.0, 3.0))
+    self.assertEqual((rr.REENTRY_RAMP_LEAD_DECEL, rr.REENTRY_RAMP_GAS_S), (-2.0, 0.5))
     self.assertEqual(WINDOW, 30)
 
   def test_nothing_while_the_driver_overrides(self):
@@ -82,10 +86,10 @@ class TestReentryRamp(OpenpilotTestCase):
       self.assertAlmostEqual(o, -1.95, places=9)
     d = Drive()
     d.override(plan=-1.0)
-    out = d.run(WINDOW, lambda k: -0.3 if k < WINDOW - 1 else -3.0, a=0.0)   # a plan that drops late in the window
+    out = d.run(WINDOW, lambda k: -0.3 if k < WINDOW - 1 else -1.9, a=0.0)   # a plan that drops late in the window
     self.assertAlmostEqual(out[-1], -0.3 - STEP)
     self.assertFalse(d.r.active)
-    self.assertEqual(d.step(-3.0, a=0.0), -3.0)             # one frame after the window: upstream's plan
+    self.assertEqual(d.step(-1.9, a=0.0), -1.9)             # one frame after the window: upstream's plan
 
   def test_a_plan_above_the_limit_is_untouched(self):
     d = Drive()
@@ -102,7 +106,8 @@ class TestReentryRamp(OpenpilotTestCase):
 
   def test_the_exceptions_skip_the_ramp_for_the_rest_of_the_reentry(self):
     for label, kw in (("fcw", {"fcw": True}), ("crash", {"crash": 1.0}), ("mpc", {"mpc": -2.01}),
-                      ("mpc nan", {"mpc": float("nan")}), ("crash nan", {"crash": float("nan")})):
+                      ("mpc nan", {"mpc": float("nan")}), ("crash nan", {"crash": float("nan")}),
+                      ("lead", {"lead": -2.01}), ("lead -inf", {"lead": -math.inf}), ("lead nan", {"lead": float("nan")})):
       with self.subTest(label), mock.patch.object(rr.cloudlog, "info") as info:
         d = Drive()
         d.override(plan=-1.5)
@@ -117,6 +122,50 @@ class TestReentryRamp(OpenpilotTestCase):
     d = Drive()
     d.override(plan=-1.5)
     self.assertAlmostEqual(d.step(-1.5, a=0.0, mpc=-2.0), -STEP)
+    d = Drive()
+    d.override(plan=-1.5)
+    self.assertAlmostEqual(d.step(-1.5, a=0.0, lead=-2.0), -STEP)   # a lead at exactly -2.0 too
+    d = Drive()
+    d.override(plan=-1.5)
+    self.assertAlmostEqual(d.step(-2.0, a=0.0), -STEP)              # and a plan of exactly -2.0
+
+  def test_a_plan_under_minus_2_skips_the_ramp_whatever_the_mpc(self):
+    # round 8 review: a hard e2e plan (0dd t=296.8, -2.05) was held back by 1.73 m/s^2 while the MPC sat above -2.0.
+    # The floor applies to the plan the planner publishes, the min of every candidate, not only to the MPC's
+    with mock.patch.object(rr.cloudlog, "info") as info:
+      d = Drive()
+      d.override(plan=-1.5)
+      d.run(3, -1.5, a=0.0, mpc=0.5)
+      self.assertEqual(d.step(-2.05, a=0.0, mpc=0.5), -2.05)
+      self.assertFalse(d.r.active)
+      self.assertEqual(d.run(3, -1.9, a=0.0, mpc=0.5), [-1.9] * 3)
+      self.assertTrue("end=plan " in info.call_args_list[0].args[0])
+
+  def test_a_hard_braking_lead_skips_the_ramp(self):
+    # round 8 review: in the closed-loop sim a lead braking at -3 to -6 m/s^2 just after the lift-off turned 11
+    # near-misses into collisions while the MPC's action-time plan was still above -2.0; aLeadK under -2.0 now passes
+    # the plan at once, also on the first frame back
+    d = Drive()
+    d.override(plan=-1.2)
+    self.assertEqual(d.step(-1.2, a=0.0, lead=-2.5), -1.2)
+    self.assertFalse(d.r.active)
+    d = Drive()
+    d.override(plan=-1.2)
+    self.assertAlmostEqual(d.step(-1.2, a=0.0, lead=-1.6), -STEP)  # a lead braking less hard keeps the ramp
+    self.assertTrue(d.r.active)
+    self.assertEqual(d.step(-1.4, a=0.0, lead=-2.2), -1.4)          # and it ends when the lead brakes harder
+    self.assertFalse(d.r.active)
+
+  def test_lead_decel(self):
+    def L(present, a):
+      return SimpleNamespace(present=present, aLeadK=a)
+    self.assertIsNone(lead_decel(()))
+    self.assertIsNone(lead_decel((L(False, -5.0), L(False, -5.0))))
+    self.assertEqual(lead_decel((L(True, -0.5), L(False, -5.0))), -0.5)
+    self.assertEqual(lead_decel((L(True, -0.5), L(True, -2.5))), -2.5)
+    self.assertEqual(lead_decel((L(True, float("nan")), L(True, 0.0))), -math.inf)   # unknown: as braking hard
+    self.assertEqual(lead_decel((L(True, None),)), -math.inf)
+    self.assertEqual(lead_decel(None), -math.inf)                                     # never raises
 
   def test_urgent_on_the_first_frame_back(self):
     d = Drive()
@@ -146,11 +195,39 @@ class TestReentryRamp(OpenpilotTestCase):
     self.assertAlmostEqual(d.step(-1.5, a=0.3), -STEP)      # and lifts off again: a fresh ramp from min(0.3, 0)
     self.assertTrue(d.r.active)
 
-  def test_engagement_is_a_reentry_too(self):
-    # reset_state is also what disengaged looks like: the first engaged frame starts a ramp
+  def test_an_engagement_is_upstreams(self):
+    # round 8 review: reset_state is also what disengaged looks like, and the ramp as first built armed on every
+    # engagement (13d t=370.9: re-engaging after the driver braked, behind a lead at aLeadK -3.5, the plan -1.04 was
+    # published as -0.48). The owner chose a ramp after a gas lift-off: with no gas in the last 0.5 s it never arms
     d = Drive()
-    self.assertEqual(d.step(-1.3, reset=True, a=-0.3), -1.3)
-    self.assertAlmostEqual(d.step(-1.3, a=-0.3), -0.3 - STEP)
+    d.override(10, plan=-1.3, a=-0.3, gas=False)
+    self.assertEqual(d.run(5, -1.3, a=-0.3), [-1.3] * 5)
+    self.assertFalse(d.r.active)
+    d = Drive()                                                   # a cold start: never reset with the gas
+    self.assertEqual(d.step(-1.3, a=-0.3), -1.3)
+    self.assertFalse(d.r.active)
+
+  def test_the_gas_must_have_been_pressed_in_the_last_half_second(self):
+    for n_after, ramps in ((0, True), (1, True), (9, True), (10, True), (11, False), (40, False)):
+      with self.subTest(frames_after_the_gas=n_after):
+        d = Drive()
+        d.override(5, plan=-1.3, gas=True)
+        d.override(n_after, plan=-1.3, gas=False)   # still reset (e.g. disengaged), the foot already off
+        o = d.step(-1.3, a=0.0)
+        self.assertEqual(d.r.active, ramps)
+        if ramps:
+          self.assertAlmostEqual(o, -STEP)
+        else:
+          self.assertEqual(o, -1.3)
+    d = Drive()                                     # the gas on the first frame back counts too
+    d.override(5, plan=-1.3, gas=False)
+    self.assertAlmostEqual(d.step(-1.3, a=0.0, gas=True), -STEP)
+    self.assertTrue(d.r.active)
+    d = Drive()                                     # a gas press long ago, before another reset, does not
+    d.override(3, plan=-1.3, gas=True)
+    d.run(40, 0.0, a=0.0)
+    d.override(3, plan=-1.3, gas=False)
+    self.assertEqual(d.step(-1.3, a=0.0), -1.3)
 
   def test_non_finite_inputs(self):
     d = Drive()
@@ -217,20 +294,22 @@ class _SM(dict):
     return True
 
 
-def build_sm(override: bool, a_ego: float, e2e: float, lead_d: float | None = None) -> _SM:
+def build_sm(override: bool, a_ego: float, e2e: float, lead_d: float | None = None, gas: bool | None = None,
+             lead_v: float = 0.0, lead_a: float = 0.0) -> _SM:
   services = {}
   for service in ("vehicleParameters", "carStateSP", "liveMapDataSP", "gpsLocationExternal", "gpsLocation"):
     services[service] = getattr(messaging.new_message(service), service)
   rs = messaging.new_message('radarState')
   if lead_d is not None:
     lead = rs.radarState.leadOne
-    lead.present, lead.dRel, lead.vLead, lead.vLeadK, lead.vRel, lead.modelProb = True, lead_d, 0.0, 0.0, -V_EGO, 1.0
+    lead.present, lead.dRel, lead.vLead, lead.vLeadK, lead.vRel, lead.modelProb = True, lead_d, lead_v, lead_v, lead_v - V_EGO, 1.0
+    lead.aLeadK, lead.aLeadTau = lead_a, 1.5
     lead.radar, lead.radarTrackId = True, 7
   services['radarState'] = rs.radarState.as_reader()
   cs = messaging.new_message('carState')
   cs.carState.vEgo, cs.carState.aEgo = V_EGO, a_ego
   cs.carState.vCruise = cs.carState.vCruiseCluster = 100.0
-  cs.carState.gasPressed = override
+  cs.carState.gasPressed = override if gas is None else gas
   services['carState'] = cs.carState.as_reader()
   ctl = messaging.new_message('controlsState')
   ctl.controlsState.longControlState = LongCtrlState.off if override else LongCtrlState.pid
@@ -267,11 +346,13 @@ def planner(fingerprint=CAR.HONDA_ACCORD_9G_AU, ramp=True):
   return pl
 
 
-def drive(pl, n_override=20, n_after=50, e2e=-1.6, a_override=0.3, a_after=-0.2, lead_d=None):
+def drive(pl, n_override=20, n_after=50, e2e=-1.6, a_override=0.3, a_after=-0.2, lead_d=None, gas=True, **lead):
+  """n_override frames reset (the gas held when gas is True; reset without it, i.e. not engaged, when False), then
+  n_after frames engaged with the foot off."""
   out = []
   for k in range(n_override + n_after):
     over = k < n_override
-    pl.update(cast(Any, build_sm(over, a_override if over else a_after, e2e, lead_d)))
+    pl.update(cast(Any, build_sm(over, a_override if over else a_after, e2e, lead_d, gas=over and gas, **lead)))
     out.append(float(pl.output_a_target))
   return out
 
@@ -306,6 +387,33 @@ class TestReentryRampPlanner(OpenpilotTestCase):
     CP_SP = custom.CarParamsSP.new_message()
     CP_SP.flags = HondaFlagsSP.ELESYS_STOCK_ACC.value
     self.assertIsNone(LongitudinalPlanner(CP, CP_SP.as_reader(), init_v=V_EGO).reentry_ramp)
+
+  def test_an_engagement_gets_upstreams_plan(self):
+    # reset with the gas never pressed (disengaged, then engaged): the planner is upstream's on every frame
+    out = drive(planner(), gas=False)
+    ref = drive(planner(ramp=False), gas=False)
+    self.assertEqual(out, ref)
+    self.assertAlmostEqual(out[20], -1.6, places=3)
+
+  def test_a_hard_braking_lead_gets_upstreams_plan(self):
+    # a lead 60 m ahead at our speed but braking at -2.5 (radarState aLeadK): the planner's leads reach the ramp
+    kw = {'lead_d': 60.0, 'lead_v': V_EGO, 'lead_a': -2.5}
+    out, ref = drive(planner(), **kw), drive(planner(ramp=False), **kw)
+    self.assertGreater(ref[20], -2.0, "not a plan exception")
+    self.assertEqual(out, ref)
+    # the same lead braking at -1.0: the ramp binds
+    kw = {'lead_d': 60.0, 'lead_v': V_EGO, 'lead_a': -1.0}
+    out, ref = drive(planner(), **kw), drive(planner(ramp=False), **kw)
+    self.assertGreater(out[20], ref[20] + 0.5)
+
+  def test_an_mpc_trajectory_under_minus_2_gets_upstreams_plan(self):
+    # closing on a slower lead: the MPC's action-time plan is above -2.0 on the first frame back, but its trajectory
+    # over the next 2.5 s goes under it. The planner hands the ramp the lower of the two, so the plan passes at once
+    kw = {'lead_d': 32.0, 'lead_v': V_EGO - 7.0, 'lead_a': 0.0}
+    pl, base = planner(), planner(ramp=False)
+    out, ref = drive(pl, e2e=0.0, **kw), drive(base, e2e=0.0, **kw)
+    self.assertGreater(ref[20], -2.0)
+    self.assertEqual(out, ref)
 
   def test_a_stopped_car_close_ahead_skips_the_ramp(self):
     # lifting off at 15 m/s with a stopped car 40 m ahead: the MPC plans past -2.0 (and flags a crash), so the plan is

@@ -18,7 +18,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 from openpilot.sunnypilot.selfdrive.controls.lib.stopping_tune import STOPPING_SPEED  # FORK(HONDA_ACCORD_9G_AU)
 from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import real_lead  # FORK(HONDA_ACCORD_9G_AU)
-from openpilot.sunnypilot.selfdrive.controls.lib.reentry_ramp import ReentryRamp, reentry_ramp_applies  # FORK(HONDA_ACCORD_9G_AU)
+from openpilot.sunnypilot.selfdrive.controls.lib.reentry_ramp import ReentryRamp, lead_decel, reentry_ramp_applies  # FORK(HONDA_ACCORD_9G_AU)
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
@@ -73,8 +73,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.output_should_stop = False
     # FORK(HONDA_ACCORD_9G_AU): per-car stopping speed (stopping_tune.py); None keeps upstream's for every other car.
     self.v_ego_stopping = STOPPING_SPEED.get(CP.carFingerprint)
-    # FORK(HONDA_ACCORD_9G_AU): the ramp-in after a gas override or an engagement (reentry_ramp.py); None on every
-    # other car and in stock ACC mode, which keeps upstream's plan bit for bit.
+    # FORK(HONDA_ACCORD_9G_AU): the ramp-in after the driver lifts off the gas (reentry_ramp.py); None on every other
+    # car and in stock ACC mode, which keeps upstream's plan bit for bit.
     self.reentry_ramp = ReentryRamp(dt) if reentry_ramp_applies(CP, CP_SP) else None
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
@@ -159,11 +159,14 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       candidates.append((output_a_target_e2e, LongitudinalPlanSource.e2e, output_should_stop_e2e))
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
-    # FORK(HONDA_ACCORD_9G_AU): for 1.5 s after a gas override or an engagement the plan may fall at most 1.5 m/s^3,
-    # from min(aEgo, 0); skipped on FCW, the MPC's crash flag or an MPC plan under -2.0 (reentry_ramp.py)
+    # FORK(HONDA_ACCORD_9G_AU): for 1.5 s after the driver lifts off the gas the plan may fall at most 1.5 m/s^3, from
+    # min(aEgo, 0); skipped on FCW, the MPC's crash flag, a plan (or the MPC's next 2.5 s) under -2.0, or a lead
+    # braking harder than that (reentry_ramp.py)
     if self.reentry_ramp is not None:
       output_a_target = self.reentry_ramp.update(reset_state, v_ego, sm['carState'].aEgo, output_a_target,
-                                                 output_a_target_mpc, self.fcw, self.mpc.crash_cnt)
+                                                 min(output_a_target_mpc, float(np.min(self.a_desired_trajectory))),
+                                                 self.fcw, self.mpc.crash_cnt, sm['carState'].gasPressed,
+                                                 lead_decel((sm['radarState'].leadOne, sm['radarState'].leadTwo)))
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 
