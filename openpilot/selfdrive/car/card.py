@@ -21,6 +21,7 @@ from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper
 from openpilot.selfdrive.car.helpers import convert_carControlSP, convert_to_capnp
+from openpilot.sunnypilot.selfdrive.car.cruise_ext import write_speed_limit_now  # FORK(SPEED-LIMIT): sla-flash
 
 from openpilot.sunnypilot.mads.helpers import set_alternative_experience, set_car_specific_params
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
@@ -225,7 +226,9 @@ class Car:
     if can_rcv_valid and REPLAY:
       self.can_log_mono_time = messaging.log_from_bytes(can_strs[0]).logMonoTime
 
-    self.v_cruise_helper.update_speed_limit_assist(self.is_metric, self.sm['longitudinalPlanSP'])
+    # FORK(SPEED-LIMIT): sla-flash - a plan no longer arriving offers no 'now' arm
+    self.v_cruise_helper.update_speed_limit_assist(self.is_metric, self.sm['longitudinalPlanSP'],
+                                                   plan_alive=self.sm.alive['longitudinalPlanSP'])
     self.v_cruise_helper.update_v_cruise(CS, self.sm['carControl'].enabled, self.is_metric)
     if self.sm['carControl'].enabled and not self.CC_prev.enabled:
       # Use CarState w/ buttons from the step selfdrived enables on
@@ -234,6 +237,9 @@ class Car:
     # TODO: mirror the carState.cruiseState struct?
     CS.vCruise = float(self.v_cruise_helper.v_cruise_kph)
     CS.vCruiseCluster = float(self.v_cruise_helper.v_cruise_cluster_kph)
+    # FORK(SPEED-LIMIT): sla-flash - the presses card took as a 'now' arm (no set-speed change), for plannerd to arm.
+    # On the capnp builder (CS_SP is one since convert_to_capnp above); carStateSP goes out before carState.
+    write_speed_limit_now(CS_SP, self.v_cruise_helper)
 
     return CS, CS_SP, RD
 

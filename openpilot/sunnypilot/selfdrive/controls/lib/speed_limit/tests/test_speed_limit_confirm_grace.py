@@ -41,7 +41,9 @@ PLANNER_EVERY = 5   # card frames per planner frame: 100 Hz / 20 Hz
 
 class Rig:
   """card + selfdrived + plannerd. `plan_lag`: card frames before card sees a plan; `button_lag`: card frames before
-  the planner sees the buttons (selfdrived publishing, then the planner's poll)."""
+  the planner sees the buttons (selfdrived publishing, then the planner's poll) - and card's report of the presses it
+  took as a 'now' arm (carStateSP.speedLimitNow, sla-flash), which travels the same way. `engaged`, `gas` and
+  `plan_alive` (card's sm.alive for the plan) can be changed between steps."""
   def __init__(self, set_kph: float, limit_kph: float, plan_lag: int = 1, button_lag: int = 1, pcm_cruise: bool = False):
     CarInterface = interfaces[HONDA.HONDA_ACCORD_9G_AU]
     CP = CarInterface.get_non_essential_params(HONDA.HONDA_ACCORD_9G_AU)
@@ -57,6 +59,7 @@ class Rig:
     self.limit_kph = limit_kph
     self.final_kph = limit_kph   # speedLimitFinalLast: the limit with any offset
     self.plan_lag, self.button_lag = plan_lag, button_lag
+    self.engaged, self.gas, self.plan_alive = True, False, True
     self.frame = 0
     self.plans: list = [(-1000, self._plan())]   # (planner frame, its plan); card starts on a disabled one
     self.buttons: list = []
@@ -70,28 +73,37 @@ class Rig:
     r.speedLimitValid = r.speedLimitLastValid = True
     r.speedLimit = r.speedLimitLast = self.limit_kph * CV.KPH_TO_MS
     r.speedLimitFinal = r.speedLimitFinalLast = self.final_kph * CV.KPH_TO_MS
-    msg.speedLimit.assist.state = self.sla.state
+    a = msg.speedLimit.assist
+    a.state = self.sla.state
+    # FORK(SPEED-LIMIT): sla-flash - as LongitudinalPlannerSP.publish_longitudinal_plan_sp fills them
+    nc = self.sla.now_confirm
+    a.nowKey, a.nowLimit, a.nowTarget = self.sla.now_offer
+    a.armedLimit, a.armedTarget = nc.armed, nc.armed_target
+    a.armedSpeed = float(nc.armed_target * CV.KPH_TO_MS) if nc.armed else 0.
+    a.armSeq, a.armEnd = nc.arm_seq & 0xFFFF, nc.last_end
     return msg
 
   def step(self, events=()):
     # card: the newest plan it has heard of, then this frame's buttons
     plan = next(p for f, p in reversed(self.plans) if f + self.plan_lag <= self.frame)
-    self.card.update_speed_limit_assist(True, plan)
-    cs = car.CarState(cruiseState={"available": True}, vEgo=60 * CV.KPH_TO_MS)
+    self.card.update_speed_limit_assist(True, plan, plan_alive=self.plan_alive)
+    cs = car.CarState(cruiseState={"available": True}, vEgo=60 * CV.KPH_TO_MS, gasPressed=self.gas)
     cs.buttonEvents = [ButtonEvent(type=b, pressed=p) for b, p in events]
-    self.card.update_v_cruise(cs, enabled=True, is_metric=True)
+    self.card.update_v_cruise(cs, enabled=self.engaged, is_metric=True)
     self.set_speeds.append(float(self.card.v_cruise_kph))
     # selfdrived
     self.tracker.update(cs)
-    self.buttons.append((self.tracker.release_toggle, self.tracker.pressed, self.card.v_cruise_cluster_kph))
+    report = (self.card.now_consumed_seq, self.card.now_consumed_limit, self.card.now_consumed_plus)
+    self.buttons.append((self.tracker.release_toggle, self.tracker.pressed, self.card.v_cruise_cluster_kph, report))
     # plannerd at 20 Hz
     if self.frame % PLANNER_EVERY == 0:
       self.now = self.frame * DT_CTRL
-      toggle, pressed, cluster_kph = self.buttons[max(self.frame - self.button_lag, 0)]
+      toggle, pressed, cluster_kph, report = self.buttons[max(self.frame - self.button_lag, 0)]
       self.sla.update_buttons(toggle, pressed)
+      self.sla.update_now_consumed(*report)
       before = self.sla.state
-      self.sla.update(True, False, 60 * CV.KPH_TO_MS, 0., cluster_kph * CV.KPH_TO_MS, self.limit_kph * CV.KPH_TO_MS,
-                      self.final_kph * CV.KPH_TO_MS, True, 0., EventsSP())
+      self.sla.update(self.engaged, False, 60 * CV.KPH_TO_MS, 0., cluster_kph * CV.KPH_TO_MS,
+                      self.limit_kph * CV.KPH_TO_MS, self.final_kph * CV.KPH_TO_MS, True, 0., EventsSP())
       if before == AssistState.preActive and self.sla.state == AssistState.inactive:
         self.timeout_frame = self.frame
       self.plans.append((self.frame, self._plan()))

@@ -18,6 +18,7 @@ from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
 from openpilot.sunnypilot.selfdrive.controls.lib.blinker_pause_lateral import BlinkerPauseLateral
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import LatControlTorque as LatControlTorqueV0
 from openpilot.sunnypilot.selfdrive.controls.lib.steer_saturated import SteerSaturatedAlert
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.now_confirm import NowFlashHold  # FORK(SPEED-LIMIT)
 
 
 class ControlsExt(ModelStateBase):
@@ -28,12 +29,15 @@ class ControlsExt(ModelStateBase):
     self._param_update_time: float = 0.0
     self.blinker_pause_lateral = BlinkerPauseLateral()
     self.steer_saturated = SteerSaturatedAlert()  # FORK(LKAS-GATEWAY): 0x500 OP_SATURATED, see state_control_ext
+    self.now_flash = NowFlashHold()  # FORK(SPEED-LIMIT): sla-flash - the cluster's set-speed flash, see state_control_ext
 
     cloudlog.info("controlsd_ext is waiting for CarParamsSP")
     self.CP_SP = messaging.log_from_bytes(params.get("CarParamsSP", block=True), custom.CarParamsSP)
     cloudlog.info("controlsd_ext got CarParamsSP")
 
-    self.sm_services_ext = ['radarState', 'selfdriveStateSP']
+    # FORK(SPEED-LIMIT): longitudinalPlanSP, for the 'now' arm's cluster flash (sla-flash). controlsd checks no service
+    # list as a whole (all_checks only names lateralTorqueParameters), so the subscription changes nothing else.
+    self.sm_services_ext = ['radarState', 'selfdriveStateSP', 'longitudinalPlanSP']
     self.pm_services_ext = ['carControlSP']
 
   def initialize_lateral_control(self, lac, CI, dt):
@@ -126,7 +130,23 @@ class ControlsExt(ModelStateBase):
     if LaC is not None:
       CC_SP.lateralControl.integratorFrozen = bool(getattr(LaC, 'integrator_frozen', False))
 
+    CC_SP.speedLimitNowFlash = self.now_flash_speed(sm)  # FORK(SPEED-LIMIT): sla-flash
+
     return CC_SP
+
+  def now_flash_speed(self, sm) -> float:
+    """FORK(SPEED-LIMIT): sla-flash. The set speed the cluster flashes (m/s, 0 = none) while Speed Limit Assist holds a
+    press made at 'now': the plan's armedSpeed while the plan is still arriving, held NOW_FLASH_HOLD_FRAMES cycles
+    after it drops so the take hands over to the new set speed with no frame of the old one (now_confirm.NowFlashHold).
+    Only the honda carcontroller reads it, for openpilot's own ACC_HUD."""
+    hold = getattr(self, 'now_flash', None)
+    if hold is None:   # built without __init__ (tests): no flash yet
+      hold = self.now_flash = NowFlashHold()
+    alive = getattr(sm, 'alive', None)
+    armed = 0.
+    if alive is not None and alive.get('longitudinalPlanSP', False):
+      armed = float(sm['longitudinalPlanSP'].speedLimit.assist.armedSpeed)
+    return hold.update(armed)
 
   @staticmethod
   def publish_ext(CC_SP: custom.CarControlSP, sm: messaging.SubMaster, pm: messaging.PubMaster) -> None:
