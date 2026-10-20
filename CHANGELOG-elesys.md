@@ -756,6 +756,38 @@ Driver-facing summary: `docs/CHANGELOG_SERIAL_STEERING.md`, 2026-10-01 "Longitud
 
 ---
 
+## 22. A tuner or scan tool on the car bus, and a car-bus bus-off (2026-10-19, UNRELEASED)
+
+Branch `ktuner`. The full design is `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` section 16; the changelog entry is in
+`docs/CHANGELOG_SERIAL_STEERING.md` under UNRELEASED.
+
+**Why.** With KTuner datalogging while parked (routes 144, 145, 147; and dc, db on 2026-09-16) the comma's own frames
+started failing the moment openpilot took over the car bus, the comma's car-bus connection died within a fraction of a
+second, and with it the radar's path to the car: "CAN Bus Disconnected", the ACC and CMBS lamps, a flicker of the SRS
+lamp. Before that moment - the first seconds of every start, when the comma sends nothing - KTuner and the car were
+fine on every route.
+
+**What you'll see.**
+
+* **KTuner (or any scan tool) talking while you are parked:** a quiet note, "Diagnostic Tool Connected / openpilot
+  paused, car is stock". The comma sends nothing and the radar stays on the car's own wiring, so ACC, CMBS and AEB are
+  the car's own and KTuner logs undisturbed. Pressing an engage button says "Diagnostic Tool Connected" (in P it may
+  say "Gear not D" - either way it is refused). About 10 s after the tool stops talking, in P, the note goes away and
+  openpilot is available as after any start. It never switches back while you are driving.
+* **The car bus going bus-off** (with or without a tool): one chime and "Car Bus Error / car is stock, openpilot off
+  until restart". If something was engaged: "TAKE CONTROL IMMEDIATELY / Car Bus Error: Car Is Stock" with one warning
+  sound. The car is stock at once (the radar back on the car's wiring) and stays that way until you switch the
+  ignition off and on.
+* **After a car-bus error at speed the EPS board keeps steering manual until key-off** if it had already taken over
+  (the board has no hand-back yet); ACC, CMBS and AEB are the car's own. With KTuner plugged in at key-on the board
+  never takes over, so the car is fully stock, lane keeping included.
+
+Nothing changes on a normal drive: replayed over all of route 143, card sends the same bytes as before, in the
+stand-down and in stock ACC mode. The stand-down itself and stock ACC mode are not touched, and the panda is not
+reflashed by this change.
+
+---
+
 ## Status
 
 *As of 2026-09-08: two weeks of real driving on the tuner (sections 12-13); the paragraph below

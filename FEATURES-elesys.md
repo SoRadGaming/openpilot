@@ -303,6 +303,18 @@ this bit the same thing, which confirms it.
 
 ---
 
+## When a tuner or scan tool is plugged in (October 2026)
+
+If KTuner, or any scan tool, is talking to the car while you are parked, openpilot steps aside: you see a quiet
+"Diagnostic Tool Connected - openpilot paused, car is stock". The comma sends nothing, the radar stays wired straight to
+the car, and ACC, CMBS and AEB are the car's own. The tool can log as long as it likes. About 10 seconds after it goes
+quiet, with the car in P, openpilot is back as after a normal start. It never switches back while you are driving.
+
+If the car's bus ever goes bus-off (the comma's connection to the car stops working), the car is put back to stock at
+once and openpilot stays off until you turn the car off and on: one chime and "Car Bus Error - car is stock, openpilot
+off until restart" (or "TAKE CONTROL IMMEDIATELY" if something was engaged). If the gateway board had already taken
+over the steering, steering stays manual until key-off; ACC, CMBS and AEB still work.
+
 ## The honest summary
 
 **Nothing here has been tested on a car.** Every number in this document comes from one of:
