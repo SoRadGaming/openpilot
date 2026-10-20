@@ -181,10 +181,11 @@ Each stop writes one `hondastop` line to the log, saying what happened.
 **Round 8 (October 2026): the hold while rolling is now 105, not 125.** Your drives of 17-19 Oct showed the 125 hold
 working as built, but the car still met the stop braking at about 0.74 m/s² (target 0.6), because 125 itself was
 that much brake. 105 should take that to about 0.58 and make the last roll about 0.2 s longer (the stop 0.1-0.2 m
-longer). It is still above 100, so the brake pump behaves exactly as before. One stop in about ten - one
-that already rolled long and slowly at 125 - will now run out of time before the wheels stop and fall back to the
-older, firmer finish; the `hondastop` line then says `rise=weak` or `rise=max_roll`. If that happens often, the fix
-is a longer roll timer, not a higher hold.
+longer). It is still above 100, so the brake pump behaves exactly as before. **Do not expect a much smaller snap at
+the very end:** in the simulation the decel at the stop falls as hoped, but the jolt as the wheels stop is only about
+3% smaller. One stop in about ten - one that already rolled long and slowly at 125 - will now run out of time before
+the wheels stop and fall back to the older, firmer finish, marginally harsher; the `hondastop` line then says
+`rise=weak` or `rise=max_roll`. If that happens often, the fix is a longer roll timer, not a higher hold.
 
 ---
 
@@ -194,12 +195,17 @@ When you press the gas while openpilot is following, openpilot keeps planning un
 slowing, that plan is already braking. When you lifted off, the brake used to come straight in at that plan, which is
 the jolt you felt on 141 at 15:52 and 16:18.
 
-Now, for 1.5 s after you lift off (or engage), the braking may build up at most 1.5 m/s³, starting from what the car
-was doing. In the simulation that takes the worst jolts from about -3.1 to about -2.4 m/s³ - better, but not the -1.5 to -2.0
-that was hoped for. It is skipped -
-full braking straight away, as before - if openpilot raises a collision warning, sees a collision course, or plans
-harder than -2.0 m/s². It only works above about 11 km/h. The cost: when you lift off behind a car braking hard but
-not hard enough for those exceptions, braking can start up to about 0.2 s later.
+Now, for 1.5 s after you lift off, the braking may build up at most 1.5 m/s³, starting from what the car was doing.
+In the simulation that takes the worst jolts from about -3.1 to about -2.4 m/s³ - better, but not the -1.5 to -2.0
+that was hoped for. It is skipped - full braking straight away, as before - if openpilot raises a collision warning,
+sees a collision course, plans harder than -2.0 m/s² now or in the next 2.5 s, or the car ahead is braking harder than
+-2.0 m/s². It only works above about 11 km/h, and only after the gas: engaging openpilot (say after you braked) brakes
+as before. The cost: when you lift off behind a car that is slowing, but not that hard, braking can start up to about
+0.2-0.5 s later and you end up to about 1.5 m closer to it.
+
+The first build of this checked only openpilot's own plan, which itself takes up to about a second to reach -2.0
+behind a car braking hard. In a simulation of lifting off behind a car that brakes hard just then, that first build
+turned 11 of 192 near-misses into collisions; with the extra checks, none.
 
 ---
 
@@ -207,8 +213,10 @@ not hard enough for those exceptions, braking can start up to about 0.2 s later.
 
 At full brake the car can only give about -1.8 to -2.0 m/s². When openpilot wanted more than that (the stopped car on
 143), its controller kept piling up extra brake request it could never get, which would have held the brake on longer
-once the danger passed. Its limit is now -3.2 instead of -4.0: still full brake, just without the pile-up. Nothing else
-changes, and on your four full-log drives only those 2.7 s on 143 were affected.
+once the danger passed. Its limit is now -3.2 instead of -4.0: still full brake, just without the pile-up. Going
+uphill the limit moves down with the slope (to -4.0 from about 8%), because the hill compensation adds back what the
+slope does: the first build of this lost about a fifth of full brake on a 10% climb, and more on steeper ones. Nothing else changes,
+and on your four full-log drives only those 2.7 s on 143 were affected.
 
 ---
 
@@ -220,9 +228,13 @@ and the radar has a **stopped** object right where the camera's car is (within 2
 position), with the camera confident, at least 50 m ahead, for 0.3 s in a row, openpilot uses the radar's stopped
 object instead. On 143 that would have started the firm braking about half a second earlier.
 
-It was tested against the 14 drives full of roadside clutter that the radar fix was tuned on, plus your four newest:
-no new phantom brake anywhere. **It does not make the car stop for that kind of hazard on its own** - full brake is
-still only about 0.2 g - it just starts sooner. Keep covering the brake at night.
+It was tested against the 14 drives full of roadside clutter that the radar fix was tuned on, your four newest with
+full logs, and 51 more drives: no new phantom brake anywhere. It now also stands back whenever the radar sees a
+**moving** car near where the camera puts its car (twice in those drives a roadside return came close to counting as a
+stopped car while you were following a moving one). It is off in stock ACC mode. **13e and 13f could not be tested**
+(only their small logs are on disk, without radar data), so treat this one as conditional until they are. **It does
+not make the car stop for that kind of hazard on its own** - full brake is still only about 0.2 g - it just starts
+sooner. Keep covering the brake at night.
 
 ---
 
