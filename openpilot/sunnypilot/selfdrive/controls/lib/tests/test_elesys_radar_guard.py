@@ -16,7 +16,8 @@ radar points as [trackId, dRel x 128, yRel x 128, vRel x 64] (the DBC's 1/128 m 
 frame and on each new radar update only (radard sees the last update again in between).
 
 fixtures/elesys_long_range_frames.json.gz holds, in the same format, the windows for the guard's long-range rule
-(long_range_track()): the stopped car on route 143 that it must take, and drives where it must not.
+(long_range_track()): the stopped car on route 143 that it must take, and drives where it must not (c8 and c9, a
+moving car radard matches; 0e1, a moving car radard set aside on range, with clutter short of it).
 """
 import gzip
 import json
@@ -112,8 +113,9 @@ class _Radar:
       self.g.update_tracks(tracks, self.frame, v_ego)
 
 
-def car_params(fingerprint, brand='honda'):
-  return car.CarParams.new_message(brand=brand, carFingerprint=fingerprint).as_reader()
+def car_params(fingerprint, brand='honda', op_long=True):
+  # this car runs openpilot longitudinal; the long-range rule needs it (elesys_radar_guard.long_range_applies())
+  return car.CarParams.new_message(brand=brand, carFingerprint=fingerprint, openpilotLongitudinalControl=op_long).as_reader()
 
 
 def is_hold(r):
@@ -122,10 +124,10 @@ def is_hold(r):
           abs(r.d - (guard.STOP_DISTANCE + guard.HOLD_T_FOLLOW * r.v_ego)) < 1e-6)
 
 
-def replay(window, fingerprint=ELESYS):
+def replay(window, fingerprint=ELESYS, op_long=True, sp_flags=0):
   """radard over one window. One row per frame: the camera lead, radard's filtered prob for it, and leadOne."""
   w = WINDOWS[window]
-  rd = radard.RadarD(car_params(fingerprint), SimpleNamespace(flags=0), w['radar_delay'])
+  rd = radard.RadarD(car_params(fingerprint, op_long=op_long), SimpleNamespace(flags=sp_flags), w['radar_delay'])
   sm = _SubMaster()
   rows = []
   for n, fr in enumerate(w['frames']):
@@ -147,11 +149,12 @@ def replay(window, fingerprint=ELESYS):
     # the tracks the long-range rule's geometry takes on this frame, if its other gates are open (whatever radard did)
     far = rd.v_ego > guard.LR_V_EGO and prob >= guard.LR_PROB and guard.camera_distance(cam_lead) >= guard.LR_D_MIN
     agree = {c.identifier for c in rd.tracks.values() if guard.long_range_agrees(c, cam_lead)} if far else set()
+    moving = {c.identifier for c in rd.tracks.values() if guard.long_range_moving_near(c, cam_lead)} if far else set()
     rows.append(SimpleNamespace(t=fr['t'], v_ego=fr['v_ego'], cam_d=cam[0] - radard.RADAR_TO_CAMERA, cam_v=cam[4],
                                 cam_prob=prob, present=lo.present, radar=lo.radar,
                                 held=held_lead.is_held(lo), d=lo.dRel, v_lead=lo.vLead,
                                 track=held_lead.held_track_id(lo) if held_lead.is_held(lo) else lo.radarTrackId,
-                                lr_agree=agree))
+                                lr_agree=agree, lr_moving=moving))
   return rows
 
 
@@ -167,6 +170,26 @@ class TestGate(unittest.TestCase):
     self.assertIsNone(radard.RadarD(car_params(OTHER_HONDA), SimpleNamespace(flags=0)).clutter_guard)
     self.assertIsNone(radard.RadarD(car_params('TOYOTA_COROLLA_TSS2', 'toyota'), SimpleNamespace(flags=0)).clutter_guard)
     self.assertIsNone(radard.RadarD(car_params(ELESYS, 'toyota'), SimpleNamespace(flags=0)).clutter_guard)
+
+  def test_the_long_range_rule_needs_openpilot_longitudinal_and_not_stock_acc_mode(self):
+    # round 8 review: in stock ACC mode the rule could still change radarState and the planner's FCW, and selfdrived
+    # raises the planner FCW alert whenever openpilot is enabled. It now has the re-entry ramp's gate
+    from opendbc.sunnypilot.car.honda.values_ext import HondaFlagsSP
+    stock_acc = HondaFlagsSP.ELESYS_STOCK_ACC.value
+    self.assertTrue(radard.RadarD(car_params(ELESYS), SimpleNamespace(flags=0)).long_range)
+    self.assertFalse(radard.RadarD(car_params(ELESYS, op_long=False), SimpleNamespace(flags=0)).long_range)
+    self.assertFalse(radard.RadarD(car_params(ELESYS), SimpleNamespace(flags=stock_acc)).long_range)
+    self.assertFalse(radard.RadarD(car_params(OTHER_HONDA), SimpleNamespace(flags=0)).long_range)
+    self.assertFalse(guard.long_range_applies(SimpleNamespace(), SimpleNamespace(flags=0)))   # never raises
+    # the clutter guard itself stays on in stock ACC mode, as before round 8
+    self.assertIsNotNone(radard.RadarD(car_params(ELESYS), SimpleNamespace(flags=stock_acc)).clutter_guard)
+    # and on route 143's stopped car, stock ACC mode's radard is the guard without the rule
+    def key(r):
+      return r.present, r.radar, r.track, r.d, r.v_lead
+    with mock.patch.object(guard, 'LR_FRAMES', 10 ** 6):
+      plain = replay('stopped_car_143')
+    self.assertEqual([key(r) for r in replay('stopped_car_143', sp_flags=stock_acc)], [key(r) for r in plain])
+    self.assertEqual([key(r) for r in replay('stopped_car_143', op_long=False)], [key(r) for r in plain])
 
   def test_constants_are_radards_and_the_mpcs(self):
     self.assertEqual(guard.RADAR_TO_CAMERA, radard.RADAR_TO_CAMERA)
@@ -543,6 +566,41 @@ class TestLongRange(unittest.TestCase):
     got = self._leads([({272: stopped, 274: near}, cam)] * guard.LR_FRAMES)  # a new run takes the nearer one
     self.assertEqual(got[-1]['radarTrackId'], 274)
 
+  def test_a_moving_track_near_the_camera_lead_vetoes_the_rule(self):
+    # round 8 review: radard falls back to the camera when its one best match fails upstream's range check, and at long
+    # range the camera's range runs short, so a real moving car can be set aside with it still there. Route 0e1
+    # t=887.2: a car at 101 m doing 18 m/s, the camera's lead at 79 m doing 18 m/s, clutter at 74 m. A track moving
+    # faster than LR_V_MOVING within LR_MOVING_D_SHARE of the camera's range and LR_MOVING_Y_TOL of its side vetoes
+    stopped, cam = self._trk(272, d=74.0), self._cam(d=79.0, v=18.0)
+    moving = self._trk(15, d=101.5, y=0.5, v_lead=18.0)
+    self.assertIsNone(radard.match_vision_to_track(self.V_EGO, cam, {272: stopped, 15: moving}))   # dist_sane
+    g = guard.ElesysRadarGuard()
+    for ld in self._leads([({272: stopped, 15: moving}, cam)] * 20, g=g):
+      self.assertFalse(ld['radar'])
+      self.assertEqual(g.lr_frames, 0)
+    # the moving car gone: a fresh run, LR_FRAMES frames, as without it
+    got = self._leads([({272: stopped}, cam)] * guard.LR_FRAMES, g=g)
+    self.assertEqual([ld['radar'] for ld in got], [False] * (guard.LR_FRAMES - 1) + [True])
+    # one moving frame inside a run resets it
+    seq = [({272: stopped}, cam)] * 4 + [({272: stopped, 15: moving}, cam)] + [({272: stopped}, cam)] * 5
+    self.assertFalse(any(ld['radar'] for ld in self._leads(seq)))
+    self.assertEqual((guard.LR_V_MOVING, guard.LR_MOVING_D_SHARE, guard.LR_MOVING_Y_TOL), (3.0, 0.30, 1.5))
+    # each limit: just inside vetoes, just outside does not (all beyond upstream's 25% range check, so radard falls back
+    # to the camera's lead either way; the camera lead's side is 0.3 m)
+    d_cam = 79.0
+    inside = {'30% beyond': {'d': d_cam * 1.299, 'y': 0.3, 'v_lead': 18.0}, '30% short': {'d': d_cam * 0.701, 'y': 0.3, 'v_lead': 18.0},
+              '1.5 m to the side': {'d': 101.0, 'y': 1.49 + 0.3, 'v_lead': 18.0}, 'just over 3 m/s': {'d': 101.0, 'y': 0.3, 'v_lead': 3.01}}
+    outside = {'31% beyond': {'d': d_cam * 1.31, 'y': 0.3, 'v_lead': 18.0}, '1.6 m to the side': {'d': 101.0, 'y': 1.61 + 0.3, 'v_lead': 18.0},
+               'at 3 m/s': {'d': 101.0, 'y': 0.3, 'v_lead': 3.0}, 'coming toward us': {'d': 101.0, 'y': 0.3, 'v_lead': -18.0}}
+    for name, kw in {**inside, **outside}.items():
+      with self.subTest(name):
+        trk = self._trk(15, **kw)
+        candidates = guard.match_candidates({272: stopped, 15: trk}, cam)
+        self.assertTrue(not candidates or radard.match_vision_to_track(self.V_EGO, cam, candidates) is None, name)
+        got = self._leads([({272: stopped, 15: trk}, cam)] * guard.LR_FRAMES)
+        self.assertEqual(got[-1]['radar'] and got[-1]['radarTrackId'] == 272, name in outside, name)
+        self.assertFalse(any(ld['radar'] for ld in got[:-1]), name)
+
   def test_radards_own_match_carries_the_run(self):
     # Route 143 t=169.71: the camera's speed dips under 10 m/s for a frame and upstream matches the stopped car itself
     stopped = self._trk(272)
@@ -716,6 +774,31 @@ class TestLoggedFrames(unittest.TestCase):
     self.assertEqual(sum(b.radar for b in between(plain, 169.12, 169.65)), 0)
     # Upstream's own radard (no guard) keeps the camera's lead there too
     self.assertEqual(sum(r.radar for r in between(replay('stopped_car_143', OTHER_HONDA), 169.12, 169.65)), 0)
+
+  def test_0e1_a_moving_car_beyond_the_camera_range_with_clutter_short_of_it(self):
+    # Route 0e1 t=887.18-887.28, engaged, 16.2 m/s, the gas override just ended: radard followed the moving car (route
+    # track 2094, here 15) at 101 m doing 18 m/s, but where the camera put its lead at 79-80 m it failed upstream's 25%
+    # range check and radard fell back to the camera's lead. A stationary return (route track 2090, here 11) at 72-74 m,
+    # 0.7 m off the camera lead's side, met the rule's geometry on 3 frames in a row; the car drove through its point
+    # 4.4 s later at 16.4 m/s. At 6 frames it would have been a stopped car 74 m ahead at 16 m/s: full brake. The veto,
+    # not the frame count, must keep it out: with the run cut to 3 frames radard is still unchanged
+    def key(r):
+      return r.present, r.radar, r.track, r.d, r.v_lead
+    with mock.patch.object(guard, 'LR_FRAMES', 10 ** 6):
+      plain = replay('moving_lead_0e1')
+    for frames in (guard.LR_FRAMES, 3, 2):
+      with self.subTest(frames=frames), mock.patch.object(guard, 'LR_FRAMES', frames):
+        self.assertEqual([key(r) for r in replay('moving_lead_0e1')], [key(r) for r in plain])
+    near = [r for r in between(replay('moving_lead_0e1'), 887.15, 887.30) if 11 in r.lr_agree]
+    self.assertGreaterEqual(len(near), 3)                     # the clutter met the rule's geometry ...
+    for r in near:
+      self.assertTrue(15 in r.lr_moving, r.t)                 # ... with the moving car beside the camera's lead
+      self.assertFalse(r.radar, r.t)                          # where radard had fallen back to the camera
+    # without the veto, a 3-frame run would have taken the clutter for a stopped car
+    with mock.patch.object(guard, 'LR_FRAMES', 3), mock.patch.object(guard, 'LR_V_MOVING', math.inf):
+      taken = [r for r in replay('moving_lead_0e1') if r.radar and r.track == 11]
+    self.assertTrue(taken)
+    self.assertTrue(all(abs(r.v_lead) < guard.LR_V_STATIONARY and 70.0 < r.d < 75.0 for r in taken))
 
   def test_following_a_moving_car_with_a_stationary_return_near_it(self):
     # Routes c8 t=1157.8-1158.3 and c9 t=1104.6-1105.0, engaged at 99 and 87 km/h: radard follows a car the radar

@@ -233,6 +233,8 @@ class RadarD:
     self.ready = False
     # FORK(HONDA_ACCORD_9G_AU): the clutter guard's state on HONDA_ELESYS, None (upstream's radard) elsewhere
     self.clutter_guard = elesys_radar_guard.ElesysRadarGuard() if elesys_radar_guard.enabled(CP) else None
+    # FORK(HONDA_ACCORD_9G_AU): its long-range rule for leadOne only with openpilot longitudinal, not in stock ACC mode
+    self.long_range = self.clutter_guard is not None and elesys_radar_guard.long_range_applies(CP, CP_SP)
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
@@ -288,7 +290,7 @@ class RadarD:
 
       self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x,
                                           self.CP, self.CP_SP, low_speed_override=True, clutter_guard=self.clutter_guard,
-                                          long_range=True)
+                                          long_range=self.long_range)
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x,
                                           self.CP, self.CP_SP, low_speed_override=False, clutter_guard=self.clutter_guard)
 
