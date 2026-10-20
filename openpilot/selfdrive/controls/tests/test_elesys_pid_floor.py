@@ -1,16 +1,22 @@
 """FORK(HONDA_ACCORD_9G_AU): the longitudinal PID's floor on HONDA_ELESYS, -3.2 instead of -4.0 (round 8, proposal 9).
 
-opendbc's test_elesys.py pins get_pid_accel_limits() itself. This drives the real LongControl with those limits:
-the integrator stops winding at -3.2 minus the plan while the brake is railed (route 143 t172.9-174.6 wound it to
--1.33 at -4.0), the brake command is the same full brake either way, the release after it is quicker, and every
-frame whose output stays above -3.2 is bit-identical to the -4.0 floor.
+opendbc's test_elesys.py pins get_pid_accel_limits() and elesys_pid_accel_min() itself. This drives the real
+LongControl with those limits: the integrator stops winding at -3.2 minus the plan while the brake is railed (route 143
+t172.9-174.6 wound it to -1.33 at -4.0), the brake command is the same full brake either way, the release after it is
+quicker, and every frame whose output stays above -3.2 is bit-identical to the -4.0 floor. On a climb the floor
+follows the pitch controlsd passes (round 8 review): the car controller adds the climb's term back after the PID, and
+the brake stays as full as it was with -4.0.
 """
 import random
 from dataclasses import dataclass, field
 
 from opendbc.car.structs import car
 from opendbc.car.honda.carcontroller import compute_gb_honda_elesys
-from opendbc.car.honda.interface import CarInterface, ELESYS_PID_ACCEL_MIN
+import inspect
+import math
+
+from opendbc.car import ACCELERATION_DUE_TO_GRAVITY
+from opendbc.car.honda.interface import CarInterface, ELESYS_PID_ACCEL_MIN, elesys_pid_accel_min, elesys_pid_floor_applies
 from opendbc.car.honda.values import CAR, CarControllerParams
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.selfdrive.controls.lib import longcontrol as lc
@@ -102,3 +108,39 @@ class TestElesysPidFloor(OpenpilotTestCase):
     old, new = _run(UPSTREAM_FLOOR, frames), _run(ELESYS_PID_ACCEL_MIN, frames)
     self.assertGreater(min(o for o, _ in old), ELESYS_PID_ACCEL_MIN)
     self.assertEqual(old, new)
+
+  def test_on_a_climb_the_floor_follows_the_pitch_and_the_brake_stays_full(self):
+    # an emergency the car cannot meet (plan -3.5, the car at -1.9) on a climb: the PID saturates at the floor, the car
+    # controller adds the climb's g*sin(pitch) back, and compute_gb_honda_elesys() must still see full brake wherever
+    # the old -4.0 floor gave it. A flat -3.2 did not from about 6% (the round 8 review's finding)
+    for grade in (0.0, 3.0, 6.0, 7.0, 8.0, 10.0, 12.0, 15.0):
+      pitch = math.atan(grade / 100.0)
+      hill = ACCELERATION_DUE_TO_GRAVITY * math.sin(pitch)
+      floor = elesys_pid_accel_min(_cp(), _CP_SP(), pitch)
+      sat = [(-3.5, -1.9, 17.0)] * 300
+      new, old = _run(floor, sat), _run(UPSTREAM_FLOOR, sat)
+      for (o_new, _), (o_old, _) in zip(new, old, strict=True):
+        b_new, b_old = compute_gb_honda_elesys(o_new + hill, 17.0)[1], compute_gb_honda_elesys(o_old + hill, 17.0)[1]
+        self.assertGreaterEqual(b_new, b_old, grade)
+      self.assertEqual(compute_gb_honda_elesys(new[-1][0] + hill, 17.0)[1], compute_gb_honda_elesys(old[-1][0] + hill, 17.0)[1])
+      if grade <= 8.0:
+        self.assertEqual(compute_gb_honda_elesys(new[-1][0] + hill, 17.0)[1], 1.0, grade)
+    flat = _run(ELESYS_PID_ACCEL_MIN, [(-3.5, -1.9, 17.0)] * 300)[-1][0]
+    self.assertAlmostEqual(flat, -3.2, delta=0.01)
+    self.assertLess(compute_gb_honda_elesys(flat + ACCELERATION_DUE_TO_GRAVITY * math.sin(math.atan(0.10)), 17.0)[1], 0.9,
+                    "the flat floor's shortfall on a 10% climb, which the pitch removes")
+
+  def test_controlsd_passes_the_pitch(self):
+    # the floor is lowered in controlsd, which owns the pose: pin the hunk so a merge cannot drop it silently
+    from openpilot.selfdrive.controls import controlsd
+    self.assertTrue(elesys_pid_floor_applies(_cp(), _CP_SP()))
+    init, ctl = inspect.getsource(controlsd.Controls.__init__), inspect.getsource(controlsd.Controls.state_control)
+    self.assertTrue("elesys_pid_floor_applies(self.CP, self.CP_SP)" in init)
+    hunk = "\n".join(("    if self.elesys_pid_floor:",
+                       "      pitch = self.calibrated_pose.orientation.y if self.calibrated_pose is not None else None",
+                       "      pid_accel_limits = (elesys_pid_accel_min(self.CP, self.CP_SP, pitch), pid_accel_limits[1])", ""))
+    self.assertTrue(hunk in ctl, "the controlsd hunk")
+    self.assertLess(ctl.index("get_pid_accel_limits("), ctl.index("elesys_pid_accel_min("))
+    self.assertLess(ctl.index("elesys_pid_accel_min("), ctl.index("self.LoC.update("))
+    # no pose yet: upstream's floor
+    self.assertEqual(elesys_pid_accel_min(_cp(), _CP_SP(), None), UPSTREAM_FLOOR)
