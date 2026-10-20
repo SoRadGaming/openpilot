@@ -14,6 +14,9 @@ The fixture is stored by column, to stay under CI's 120 KB file limit, and load_
 values exactly: times in whole ms, the speeds and the model's leads as the shortest text of their float32 value, the
 radar points as [trackId, dRel x 128, yRel x 128, vRel x 64] (the DBC's 1/128 m and 1/64 m/s steps), stored on the first
 frame and on each new radar update only (radard sees the last update again in between).
+
+fixtures/elesys_long_range_frames.json.gz holds, in the same format, the windows for the guard's long-range rule
+(long_range_track()): the stopped car on route 143 that it must take, and drives where it must not.
 """
 import gzip
 import json
@@ -41,6 +44,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimen
 from openpilot.sunnypilot.selfdrive.controls.lib.stopping_tune import STOPPING_SPEED
 
 FIXTURE = os.path.join(os.path.dirname(__file__), 'fixtures', 'elesys_radar_guard_frames.json.gz')
+LONG_RANGE_FIXTURE = os.path.join(os.path.dirname(__file__), 'fixtures', 'elesys_long_range_frames.json.gz')
 
 
 def _f32(x):
@@ -71,7 +75,7 @@ def load_windows(path):
   return windows
 
 
-WINDOWS = load_windows(FIXTURE)
+WINDOWS = {**load_windows(FIXTURE), **load_windows(LONG_RANGE_FIXTURE)}
 
 ELESYS = 'HONDA_ACCORD_9G_AU'
 OTHER_HONDA = 'HONDA_ACCORD'
@@ -138,10 +142,16 @@ def replay(window, fingerprint=ELESYS):
     rd.update(cast(Any, sm), SimpleNamespace(points=points, errors={}))
     lo = rd.radar_state.leadOne
     cam = fr['leads'][0]
+    cam_lead = sm['modelV2'].leadsV3[0]
+    prob = rd.lead_prob_filters[0].x
+    # the tracks the long-range rule's geometry takes on this frame, if its other gates are open (whatever radard did)
+    far = rd.v_ego > guard.LR_V_EGO and prob >= guard.LR_PROB and guard.camera_distance(cam_lead) >= guard.LR_D_MIN
+    agree = {c.identifier for c in rd.tracks.values() if guard.long_range_agrees(c, cam_lead)} if far else set()
     rows.append(SimpleNamespace(t=fr['t'], v_ego=fr['v_ego'], cam_d=cam[0] - radard.RADAR_TO_CAMERA, cam_v=cam[4],
-                                cam_prob=rd.lead_prob_filters[0].x, present=lo.present, radar=lo.radar,
+                                cam_prob=prob, present=lo.present, radar=lo.radar,
                                 held=held_lead.is_held(lo), d=lo.dRel, v_lead=lo.vLead,
-                                track=held_lead.held_track_id(lo) if held_lead.is_held(lo) else lo.radarTrackId))
+                                track=held_lead.held_track_id(lo) if held_lead.is_held(lo) else lo.radarTrackId,
+                                lr_agree=agree))
   return rows
 
 
@@ -427,6 +437,121 @@ class TestOdometer(unittest.TestCase):
     self.assertEqual(g.moving, {7})
 
 
+class TestLongRange(unittest.TestCase):
+  """The long-range rule (long_range_track()): where radard fell back to the camera's lead, a stationary track the
+  camera's far, confident lead confirms for LR_FRAMES frames. Route 143 t=168.3-170.1 in numbers: the car at 16 m/s, the
+  camera's lead 80 m ahead doing 12 m/s, a stopped car on the radar at 84 m."""
+  V_EGO = 16.0
+  CP_SP = cast(Any, SimpleNamespace(flags=0))
+
+  @staticmethod
+  def _cam(d=80.0, y=0.3, v=12.0, prob=0.95):
+    # yRel = y; the model's saturated xStd/vStd, as on routes 10f-143
+    return _lead(d + radard.RADAR_TO_CAMERA, 59874.0, -y, 0.5, v, 8000.0, 0.0, prob)
+
+  @classmethod
+  def _trk(cls, identifier, d=84.0, y=0.0, v_lead=0.0):
+    trk = radard.Track(identifier, v_lead, radard.KalmanParams(radard.DT_MDL))
+    trk.update(d, y, v_lead - cls.V_EGO, v_lead)
+    return trk
+
+  def _leads(self, frames, fingerprint=ELESYS, long_range=True, g=None, v_ego=V_EGO):
+    """get_lead for leadOne, once per radard frame. frames: a list of (tracks, camera lead)."""
+    if g is None and fingerprint == ELESYS:
+      g = guard.ElesysRadarGuard()
+    return [radard.get_lead(v_ego, True, tracks, cam, v_ego, cam.prob, car_params(fingerprint), self.CP_SP,
+                            clutter_guard=g, long_range=long_range) for tracks, cam in frames]
+
+  def test_takes_the_stopped_car_after_six_frames(self):
+    stopped, cam = self._trk(272), self._cam()
+    self.assertIsNone(radard.match_vision_to_track(self.V_EGO, cam, {272: stopped}))  # upstream's vel_sane sets it aside
+    self.assertEqual(guard.match_candidates({272: stopped}, cam), {})                 # and so does the guard
+    self.assertEqual(guard.LR_FRAMES, 6)  # 0.3 s of radard frames
+    for n, ld in enumerate(self._leads([({272: stopped}, cam)] * 10)):
+      if n < guard.LR_FRAMES - 1:
+        self.assertTrue(ld['present'] and not ld['radar'], n)  # the camera's lead, doing 12 m/s
+        self.assertAlmostEqual(ld['vLead'], 12.0, places=4)
+      else:
+        self.assertTrue(ld['present'] and ld['radar'], n)      # the stopped car, from the sixth frame on
+        self.assertEqual((ld['radarTrackId'], ld['dRel'], ld['vLead']), (272, 84.0, 0.0))
+
+  def test_upstream_other_cars_and_lead_two_are_unchanged(self):
+    stopped, cam = self._trk(272), self._cam()
+    for fingerprint, long_range in ((OTHER_HONDA, True), (ELESYS, False)):
+      g = guard.ElesysRadarGuard() if fingerprint == ELESYS else None
+      for ld in self._leads([({272: stopped}, cam)] * 10, fingerprint, long_range, g):
+        self.assertTrue(ld['present'] and not ld['radar'], fingerprint)
+      if g is not None:
+        self.assertEqual((g.lr_track, g.lr_frames), (None, 0))  # leadTwo never touches the rule's state
+
+  def test_only_where_radard_fell_back_to_the_camera(self):
+    # The condition that makes the rule narrow. Following a car the radar matches (track 9, at the camera's range and
+    # speed) with a stationary return 4 m beyond it, 0.3 m off: the return meets every other condition of the rule, and
+    # without this one it would replace the car radard follows (in the replay of 18 routes: 8 times while engaged, at
+    # 42-110 km/h, 6 of them with plans of -1.8 to -3.5 m/s^2)
+    car, stopped, cam = self._trk(9, d=80.5, y=0.3, v_lead=12.0), self._trk(272), self._cam()
+    self.assertTrue(guard.long_range_agrees(stopped, cam))
+    self.assertIs(radard.match_vision_to_track(self.V_EGO, cam, {9: car, 272: stopped}), car)
+    g = guard.ElesysRadarGuard()
+    for ld in self._leads([({9: car, 272: stopped}, cam)] * 20, g=g):
+      self.assertTrue(ld['radar'] and ld['radarTrackId'] == 9)
+      self.assertEqual(g.lr_frames, 0)
+    # the car gone, radard falls back to the camera's lead: only then does the run start
+    got = self._leads([({272: stopped}, cam)] * guard.LR_FRAMES, g=g)
+    self.assertFalse(any(ld['radar'] for ld in got[:-1]))
+    self.assertTrue(got[-1]['radar'] and got[-1]['radarTrackId'] == 272)
+
+  def test_each_condition(self):
+    base = {'d': 80.0, 'y': 0.3, 'v': 12.0, 'prob': 0.95}
+    outside = {  # (camera lead, the stationary track, v_ego): each just outside one condition
+      'camera prob under 0.9': ({**base, 'prob': 0.89}, {'d': 84.0}, self.V_EGO),
+      'camera lead under 50 m': ({**base, 'd': 49.9}, {'d': 52.0}, self.V_EGO),
+      'track more than 20% beyond': (base, {'d': 96.1}, self.V_EGO),
+      'track more than 20% short': (base, {'d': 63.9}, self.V_EGO),
+      'track 1.1 m to the side': (base, {'d': 84.0, 'y': 1.4}, self.V_EGO),
+      'track moving away at 1.5 m/s': (base, {'d': 84.0, 'v_lead': 1.5}, self.V_EGO),
+      'track coming at 1.5 m/s': (base, {'d': 84.0, 'v_lead': -1.5}, self.V_EGO),
+      'car at 5 m/s': (base, {'d': 84.0}, 5.0),
+    }
+    for name, (cam_kw, trk_kw, v_ego) in outside.items():
+      with self.subTest(name):
+        for ld in self._leads([({272: self._trk(272, **trk_kw)}, self._cam(**cam_kw))] * 12, v_ego=v_ego):
+          self.assertFalse(ld['radar'], name)
+    inside = [({**base, 'prob': 0.9}, {'d': 84.0}), ({**base, 'd': 50.0}, {'d': 52.0}), (base, {'d': 95.9}),
+              (base, {'d': 64.1}), (base, {'d': 84.0, 'y': 1.29}), (base, {'d': 84.0, 'v_lead': 1.49}),
+              (base, {'d': 84.0, 'v_lead': -1.49})]
+    for cam_kw, trk_kw in inside:  # and just inside each, at 5.01 m/s
+      with self.subTest(str((cam_kw, trk_kw))):
+        got = self._leads([({272: self._trk(272, **trk_kw)}, self._cam(**cam_kw))] * guard.LR_FRAMES, v_ego=5.01)
+        self.assertTrue(got[-1]['radar'] and got[-1]['radarTrackId'] == 272)
+        self.assertFalse(any(ld['radar'] for ld in got[:-1]))
+
+  def test_the_run_must_be_unbroken_and_on_one_track(self):
+    stopped, cam = self._trk(272), self._cam()
+    g = guard.ElesysRadarGuard()
+    seq = [({272: stopped}, cam)] * 5 + [({272: stopped}, self._cam(prob=0.8))] + [({272: stopped}, cam)] * 5
+    self.assertFalse(any(ld['radar'] for ld in self._leads(seq, g=g)))      # 5, a frame under 0.9, 5: never six
+    self.assertTrue(self._leads([({272: stopped}, cam)], g=g)[0]['radar'])  # the sixth in a row
+    g = guard.ElesysRadarGuard()
+    seq = [({272: stopped}, cam)] * 3 + [({273: self._trk(273, d=86.0)}, cam)] * 3  # 272 gone: 273 starts its own run
+    self.assertFalse(any(ld['radar'] for ld in self._leads(seq, g=g)))
+    self.assertEqual((g.lr_track, g.lr_frames), (273, 3))
+    # with two in the window the run stays on its own track, though the other is nearer the camera's range
+    near = self._trk(274, d=80.5)
+    got = self._leads([({272: stopped}, cam)] * 3 + [({272: stopped, 274: near}, cam)] * 3)
+    self.assertEqual([ld['radarTrackId'] for ld in got], [-1] * 5 + [272])
+    got = self._leads([({272: stopped, 274: near}, cam)] * guard.LR_FRAMES)  # a new run takes the nearer one
+    self.assertEqual(got[-1]['radarTrackId'], 274)
+
+  def test_radards_own_match_carries_the_run(self):
+    # Route 143 t=169.71: the camera's speed dips under 10 m/s for a frame and upstream matches the stopped car itself
+    stopped = self._trk(272)
+    seq = [({272: stopped}, self._cam())] * 3 + [({272: stopped}, self._cam(v=9.5))] * 2 + [({272: stopped}, self._cam())]
+    got = self._leads(seq)
+    self.assertEqual([ld['radar'] for ld in got], [False, False, False, True, True, True])
+    self.assertEqual({ld['radarTrackId'] for ld in got[3:]}, {272})
+
+
 class TestLoggedFrames(unittest.TestCase):
   def test_10f_near_range_stationary_returns_at_walking_pace(self):
     # Route 10f t=2740.25-2745.55, 2.7-3.3 m/s: the camera's lead fades (filtered prob 0.12-0.58, at 3-13 m, under
@@ -482,11 +607,21 @@ class TestLoggedFrames(unittest.TestCase):
     self.assertTrue(any(a.cam_v - a.v_lead > 8.0 for a, _ in kept))  # the camera still lagging at range
     stop = between(on, 264.9, 265.2)
     self.assertTrue(all(r.radar and r.track == 809 and r.d < 5.5 and abs(r.d - r.cam_d) < 1.0 for r in stop))
-    # every frame but one is identical. At t=253.96 the camera reads 10.1 m/s at 87 m, so track 809 is out of the
-    # guard's 10 m/s (upstream's vel_sane rejected it too and took the camera); with it out, another stationary track
-    # of the queue, at 68.8 m, is radard's best match and passes upstream's checks
-    self.assertLessEqual(sum((a.radar, a.track, a.d, a.v_lead) != (b.radar, b.track, b.d, b.v_lead)
-                             for a, b in zip(on, off, strict=True)), 1)
+    # Without the long-range rule every frame but one is identical. At t=253.96 the camera reads 10.1 m/s at 87 m, so
+    # track 809 is out of the guard's 10 m/s (upstream's vel_sane rejected it too and took the camera); with it out,
+    # another stationary track of the queue, at 68.8 m, is radard's best match and passes upstream's checks
+    def key(r):
+      return r.radar, r.track, r.d, r.v_lead
+    with mock.patch.object(guard, 'LR_FRAMES', 10 ** 6):
+      plain = replay('stopped_queue_c0')
+    self.assertLessEqual(sum(key(a) != key(b) for a, b in zip(plain, off, strict=True)), 1)
+    # The rule fills in the frames where radard still fell back to the camera's lead (doing 9.9-10.9 m/s) with track
+    # 809, the stopped car, at 64-84 m (t=254.46-255.96)
+    filled = [(a, b) for a, b in zip(on, plain, strict=True) if key(a) != key(b)]
+    self.assertTrue(1 <= len(filled) <= 8, len(filled))
+    for a, b in filled:
+      self.assertTrue(a.radar and a.track == 809 and 60.0 < a.d < 85.0 and abs(a.v_lead) < 0.5, a.t)
+      self.assertTrue(b.present and not b.radar and b.v_lead > 8.0, a.t)
 
   def test_10f_vehicle_creeping_close_ahead(self):
     # Route 10f t=2756.4-2757.5, daylight, 3.0-4.0 m/s: a vehicle creeps 4-5 m ahead (tracks 6568, 6566, then 6567,
@@ -550,6 +685,55 @@ class TestLoggedFrames(unittest.TestCase):
     # once 2652 moves, the guard follows it like upstream
     for a in between(replay('night_stop_06'), 1309.75, 1310.80):
       self.assertTrue(a.radar and a.track == 2652 and a.v_lead > 1.4, a.t)
+
+  def test_143_stopped_car_at_night_taken_at_long_range(self):
+    # Route 143 t=168.3-170.1 (Mon 00:46:03), engaged, at night, 16 m/s: a vehicle stopped in the lane, on the radar from
+    # t=168.32 at 94 -> 73 m, stationary (-0.4 to +0.2 m/s; track 272 in the route, 14 in this window). The camera reads
+    # its lead at 10-16 m/s, so upstream's vel_sane sets the track aside and radard keeps the camera's lead, but for
+    # single frames where the camera's speed dips under 10 m/s (t=168.68, 169.08), until t=169.68. The long-range rule
+    # takes the track from t=169.13 (radard's filtered prob reached 0.9 at t=168.88): in the plan replay -1.0 m/s^2 comes
+    # 0.4 s and -1.5 m/s^2 0.55 s earlier. It changes only frames where radard fell back to the camera's lead
+    on = replay('stopped_car_143')
+    with mock.patch.object(guard, 'LR_FRAMES', 10 ** 6):
+      plain = replay('stopped_car_143')  # the guard without the rule: radard as it was
+    changed = [(a, b) for a, b in zip(on, plain, strict=True)
+               if (a.present, a.radar, a.track, a.d, a.v_lead) != (b.present, b.radar, b.track, b.d, b.v_lead)]
+    self.assertTrue(changed)
+    first = changed[0][0]
+    self.assertTrue(169.10 < first.t < 169.15, first.t)
+    stopped = first.track
+    for a, b in changed:
+      # only ever the camera's lead, radard's fallback, given up for that track: stopped, at the camera's range and side
+      self.assertTrue(b.present and not b.radar and b.cam_prob >= guard.LR_PROB and b.cam_d >= guard.LR_D_MIN, a.t)
+      self.assertGreater(b.v_lead, 7.0, a.t)
+      self.assertTrue(a.radar and a.track == stopped and abs(a.v_lead) < guard.LR_V_STATIONARY and 65.0 < a.d < 84.0, a.t)
+      self.assertTrue(stopped in a.lr_agree, a.t)  # the rule's own geometry
+      self.assertLess(a.t, 170.1, a.t)
+    self.assertGreaterEqual(len(changed), 12)
+    # from the first frame it is taken to radard's own steady match, every frame has the stopped car
+    for r in between(on, 169.12, 169.75):
+      self.assertTrue(r.radar and r.track == stopped, r.t)
+    self.assertEqual(sum(b.radar for b in between(plain, 169.12, 169.65)), 0)
+    # Upstream's own radard (no guard) keeps the camera's lead there too
+    self.assertEqual(sum(r.radar for r in between(replay('stopped_car_143', OTHER_HONDA), 169.12, 169.65)), 0)
+
+  def test_following_a_moving_car_with_a_stationary_return_near_it(self):
+    # Routes c8 t=1157.8-1158.3 and c9 t=1104.6-1105.0, engaged at 99 and 87 km/h: radard follows a car the radar
+    # matches, 70-93 m ahead at the camera's speed, while a stationary return sits within 20% of the camera's range and
+    # 1 m of its side for 0.3 s or more. Every other condition of the long-range rule holds there; only the fallback
+    # condition keeps it out (without it, in the plan replay: -3.5 m/s^2 at both, against -1.2 and -0.1)
+    def key(r):
+      return r.present, r.radar, r.track, r.d, r.v_lead
+    for window in ('moving_car_c8', 'moving_car_c9'):
+      on = replay(window)
+      with mock.patch.object(guard, 'LR_FRAMES', 10 ** 6):
+        plain = replay(window)
+      self.assertEqual([key(a) for a in on], [key(b) for b in plain], window)
+      run = longest = 0
+      for r in on:  # radard on a moving radar track while a stationary one meets the rule's geometry and gates
+        run = run + 1 if r.radar and r.v_lead > 15.0 and r.lr_agree and r.track not in r.lr_agree else 0
+        longest = max(longest, run)
+      self.assertGreaterEqual(longest, guard.LR_FRAMES, window)
 
 
 if __name__ == '__main__':

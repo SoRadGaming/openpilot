@@ -34,6 +34,28 @@ What. Only on HONDA_ELESYS, and only where radard picks a radar track:
     held_lead.py): it is a lead for the MPC only, and DEC, longitudinalPlan.hasLead, the e2e alerts and the UI skip it.
 A stopped car the camera also sees as stopped or slow is kept, at any range.
 
+Long range (long_range_track()): a stopped car the camera finds far ahead but reads as moving. Route 143 t=168.3-170.1
+(Mon 00:46:03, at night, 58 km/h): radar track 272 had a vehicle stopped in the lane at 94 -> 73 m from t=168.32, but
+the camera read it at 10-16 m/s, so upstream's vel_sane (and from 67 m this guard's tolerance, the same 10 m/s) set
+the track aside and radard used the camera's lead, but for single frames, until t=169.7; the plan stayed at -0.3 to
+-0.9 m/s^2 until t=170.1 and the car, at its full brake of about -1.8 m/s^2, needed the driver. Only on HONDA_ELESYS,
+only for leadOne, and only on a frame where radard has FALLEN BACK to the camera's lead (its match found no track),
+radard takes a stationary track (|vLead| under LR_V_STATIONARY) within LR_D_SHARE of the camera's range and LR_Y_TOL of
+its lateral position, with the car above LR_V_EGO, the camera's lead LR_D_MIN or more away and radard's filtered prob
+for it at LR_PROB or more, once the same track has met that for LR_FRAMES frames in a row (0.3 s; a frame where
+radard's own match took that track continues the run). Every other frame is decided as before.
+  * replayed (radard and the planner, open loop) on the 14 routes above and 13d, 141, 142 and 143, it changed radard's
+    lead on 4 of them: engaged only behind real stopped cars (143 t=169.13-170.08, where the plan reaches -1.0 m/s^2
+    0.4 s and -1.5 m/s^2 0.55 s earlier; c0 t=254.5-256.0, the stopped queue below, 5 frames, at most 0.1 m/s^2
+    firmer), and disengaged on vehicles stopped in the lane that then drove off (141 t=1557.4, 142 t=959.5). No FCW,
+    and the plan's dips per minute are unchanged on every route;
+  * the fallback condition is what makes it narrow. Without it the same test replaced a MOVING car the radar matched
+    with a stationary return near it 8 times while engaged, at 42-110 km/h; 6 of them planned -1.8 to -3.5 m/s^2 where
+    radard's own plan was -1.2 to 0.0 (08 t=945.5, c8 t=615.0 and t=1157.8, c9 t=1104.6, 10f t=2068.2, 142 t=998.5),
+    with an FCW on c8;
+  * the 20% range window is wide on purpose: at 55-80 m the camera's range runs 8-17% short of the radar's, and a
+    10% window with a 0.5 s run first fired at t=170.9 on route 143, after the brake was nearly full.
+
 Given up (the camera is the only discriminator for a stationary return that works in this data, see below):
   * below 4 m/s, a stationary object that only the radar sees no longer stops the car: the guard holds the plan for
     it, and the stop rests on the camera, e2e and the driver. Worst engaged case: route 06 t=1306.3-1309.8, at night,
@@ -113,6 +135,15 @@ HOLD_UPDATES = 5        # radar updates: once seen for at least this many
 STOP_DISTANCE = 6.0     # m: long_mpc.STOP_DISTANCE (test_elesys_radar_guard.py pins the two equal)
 HOLD_T_FOLLOW = 1.25    # s: long_mpc's shortest T_FOLLOW (aggressive), pinned the same way
 
+# Long range: where radard fell back to the camera's lead, a stationary track the camera's far, confident lead confirms
+LR_V_EGO = 5.0          # m/s: the car faster than this
+LR_D_MIN = 50.0         # m: the camera's lead at least this far (camera_distance())
+LR_PROB = 0.9           # radard's filtered prob for it at least this
+LR_V_STATIONARY = 1.5   # m/s: a track whose raw vLead is under this (either way)
+LR_D_SHARE = 0.20       # within this share of the camera's range
+LR_Y_TOL = 1.0          # m: and within this of the camera lead's lateral position
+LR_FRAMES = 6           # radard frames in a row (0.3 s), the same track
+
 
 def enabled(CP) -> bool:
   return CP.brand == 'honda' and CP.carFingerprint in HONDA_ELESYS
@@ -170,6 +201,8 @@ class ElesysRadarGuard:
     self.state: dict[int, _TrackState] = {}
     self.moving: set[int] = set()             # track ids latched as moving
     self.camera_confident = False
+    self.lr_track: int | None = None          # long range: the track standing for the camera's lead,
+    self.lr_frames = 0                        # for this many radard frames in a row
 
   def update_tracks(self, tracks: dict, radar_frame: int, v_ego: float) -> None:
     """tracks: radard's, after this frame's update. radar_frame: radard's recv_frame['radarTracks'], which changes when
@@ -243,6 +276,33 @@ class ElesysRadarGuard:
     or None."""
     held = [c for c in refused if c.identifier in self.state and self.state[c.identifier].updates >= HOLD_UPDATES]
     return min(held, key=lambda c: c.dRel) if held else None
+
+  def long_range_track(self, tracks: dict, lead_msg, lead_prob: float, v_ego: float, matched, fell_back: bool):
+    """leadOne only, once per radard frame: the stationary track radard takes for the camera's far, confident lead on
+    a frame where it fell back to that lead (fell_back: its match found no track), or None (radard's own choice
+    stands). matched: the track radard's match took, if any; while it is the run's track the run goes on."""
+    camera_d = camera_distance(lead_msg)
+    track = None
+    if v_ego > LR_V_EGO and lead_prob >= LR_PROB and camera_d >= LR_D_MIN:
+      if fell_back:
+        found = [c for c in tracks.values() if long_range_agrees(c, lead_msg)]
+        if found:  # the run's track while it still agrees, else the one nearest the camera's range
+          track = min(found, key=lambda c: (c.identifier != self.lr_track, abs(c.dRel - camera_d)))
+      elif matched is not None and matched.identifier == self.lr_track:
+        track = matched
+    if track is None:
+      self.lr_track, self.lr_frames = None, 0
+      return None
+    self.lr_frames = self.lr_frames + 1 if track.identifier == self.lr_track else 1
+    self.lr_track = track.identifier
+    return track if fell_back and self.lr_frames >= LR_FRAMES else None
+
+
+def long_range_agrees(track, lead_msg) -> bool:
+  """Is the track stationary and at the camera lead's range (within LR_D_SHARE) and lateral position (LR_Y_TOL)?"""
+  camera_d = camera_distance(lead_msg)
+  return (abs(track.vLead) < LR_V_STATIONARY and abs(track.dRel - camera_d) <= LR_D_SHARE * camera_d and
+          abs(track.yRel + lead_msg.y[0]) <= LR_Y_TOL)
 
 
 def hold_lead(lead_dict: dict, v_ego: float) -> dict:
