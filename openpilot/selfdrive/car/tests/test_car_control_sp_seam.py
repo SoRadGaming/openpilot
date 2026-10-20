@@ -66,6 +66,15 @@ def run_checks() -> list[tuple[str, bool, str]]:
   check("lateralControl.steerSaturated defaults False",
         convert_carControlSP(custom.CarControlSP.new_message().as_reader()).lateralControl.steerSaturated is False)
 
+  # FORK(SPEED-LIMIT): sla-flash - the cluster's set-speed flash, a FLAT field: it crosses by the top-level splat, so the
+  # dataclass must have it by the same name (a capnp-only name would be a TypeError in card every frame it is set)
+  msg_flash = custom.CarControlSP.new_message()
+  msg_flash.speedLimitNowFlash = 22.5
+  flash = getattr(convert_carControlSP(msg_flash.as_reader()), "speedLimitNowFlash", None)
+  check("speedLimitNowFlash survives the seam", flash is not None and abs(flash - 22.5) < 1e-6, f"{flash!r}")
+  check("speedLimitNowFlash defaults 0",
+        convert_carControlSP(custom.CarControlSP.new_message().as_reader()).speedLimitNowFlash == 0.0)
+
   # the exact expression that crashed card, on a default message too
   cc_sp_default = convert_carControlSP(custom.CarControlSP.new_message().as_reader())
   try:
@@ -103,6 +112,14 @@ def run_checks() -> list[tuple[str, bool, str]]:
   check("fwGitHash is UInt32: a top-bit-set commit survives", rf.fwGitHash == 0xF1234567)
   check("boardUid round-trips", rf.boardUid == 0x3F2A10)
   check("unset firmware fields default false/zero", not rf.fwDirty and not rf.fwReadOnly)
+
+  # FORK(SPEED-LIMIT): sla-flash - the 'now' arm report: zeros from the car layer, written by card on the builder
+  cap_now = convert_to_capnp(structs.CarStateSP())
+  check("speedLimitNow converts as zeros", cap_now.as_reader().speedLimitNow.consumedSeq == 0 and
+        not cap_now.as_reader().speedLimitNow.consumedPlus)
+  cap_now.speedLimitNow.consumedSeq, cap_now.speedLimitNow.consumedLimit, cap_now.speedLimitNow.consumedPlus = 0xFFFFFFFF, 80, True
+  rn = cap_now.as_reader().speedLimitNow
+  check("speedLimitNow is written on the builder (UInt32 seq)", (rn.consumedSeq, rn.consumedLimit, rn.consumedPlus) == (0xFFFFFFFF, 80, True))
 
   # --- every nested struct in the capnp schema must be rebuilt by the converter
   schema_nested = [n for n in custom.CarControlSP.schema.fieldnames
