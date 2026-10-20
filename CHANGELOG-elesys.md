@@ -754,6 +754,31 @@ Driver-facing summary: `docs/CHANGELOG_SERIAL_STEERING.md`, 2026-10-01 "Longitud
   entry at the latest (it was rolling time, about 2.97 s); and no ceiling when stopping is entered above 1.2 m/s
   (measured entries reach 1.08), logged as `hondastop skip=speed`. Neither changes a replayed stop.
 
+## 22. The cluster flashes the set speed a held 'now' press will give (sla-flash, 2026-10-19, UNRELEASED)
+
+`opendbc/car/structs.py` (`CarControlSP.speedLimitNowFlash`, `CarStateSP.speedLimitNow`), `opendbc/car/honda/hondacan.py`
+(`now_flash_speed`, `NOW_FLASH_ON` / `NOW_FLASH_PERIOD`), `opendbc/car/honda/carcontroller.py` (the ACC_HUD send);
+tests `test_elesys.py` `TestElesysNowFlash`, `test_elesys_stock_acc.py`.
+
+The owner (2026-10-19): a press at 'now' should not change the set speed, the limit should be set once at the sign,
+and "also flash the set speed on the car's cluster (in openpilot's own ACC HUD frame) while it is armed, like stock
+shows a speed it is building up to". sunnypilot holds the press (`docs/CHANGELOG_SERIAL_STEERING.md`, sla-flash);
+this side draws the flash:
+
+- While `CarControlSP.speedLimitNowFlash` (m/s, from the planner's armed target, held 2 controlsd cycles) is set and is
+  not the set speed already, openpilot's own `ACC_HUD` (`0x30C`, bus 0) sends `CRUISE_SPEED` = N for 4 frames and 255
+  for 2, at 10 Hz - the Elesys radar's own flash in all 5 stock episodes of 13 fully-stock drives (0.4 s / 0.2 s, ACC_ON
+  held at 1, never two numbers alternating). Lit first; solid again on the first send where the set speed is N (the
+  limit applied) or the flash is 0. Cluster units as `hud_v_cruise` (mph with dynamic units).
+- HONDA_ELESYS, openpilot longitudinal, not stock ACC mode, `speedVisible` only. Only byte 3 and the checksum change:
+  `hud_control.setSpeed`, `0x500 SET_SPEED`, `ACC_ON`, `PCM_SPEED`, `PCM_GAS`, `HUD_LEAD` and the rest are as before.
+- Safe because nothing reads it back: panda's `0x30C` check reads bytes 0-2; carstate reads the radar's `0x30C` (bus
+  2) and `0x324`; the PCM does not follow openpilot's `CRUISE_SPEED`; the board forwards `0x30C` unparsed; stock ACC
+  mode sends no `0x30C`. Tests: the pattern, the stops, 255 when not visible, imperial, the `SCM_BUTTONS` stand-down and
+  every other frame byte-identical, other Hondas byte-identical, stock ACC mode byte-identical with the field set, and
+  every flashed frame through the honda safety tx hook with this car's params (and a byte-3 change never altering a
+  verdict).
+
 ---
 
 ## Status

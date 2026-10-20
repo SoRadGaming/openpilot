@@ -1694,15 +1694,58 @@ The comma 4 runs the small UI. It has no Cruise or Vehicle panel, so neither pag
   pressed again when the prompt came (137 305.16; 134 313.44, 446.37, 716.18, 717.54). Now a + or - release at 'now', in
   the coming limit's direction, while engaged with SLA active or inactive, arms exactly that limit
   (`speed_limit/now_confirm.py`); when it comes into force SLA goes straight to active and card sets it on that frame,
-  with no prompt. The press is still its own 1 km/h step until then; the other way disarms, and so do presses that take
-  the set speed past the armed target (push9 re-review: armed 100, '-' on to 99 - the 100 must not raise it back; on
-  the target exactly it stays armed, nothing moves); any other limit is the prompt as before; the arm lapses 2.5 s after 'now' closes (kept while the change hold holds), so a phantom 'now'
-  (134 304.52, 674.56) sets nothing. While a press would count, the card says 'press - to set 100' in place of 'now'
-  (both styles); with cruise off it still says 'now' ('-' engages). The planner and the HUD run one state machine
+  with no prompt. **sla-flash (owner, 2026-10-19: "Hold it and flash"): the press moves nothing until then.** push9's
+  press was also its own 1 km/h step, so the set speed changed twice - the step at 'now', the limit at the sign - in 7
+  of the 10 push9 windows, and the 2 phantoms left a step he undid by hand (13f 326.35, 141 236.62). Now card swallows
+  the press (`cruise_ext._sla_now_consume`: its first action - a short press's release, a long press's first 0.5 s
+  step - on the key the planner offers, `longitudinalPlanSP.speedLimit.assist.nowKey`, which carries every SLA guard)
+  and reports it (`carStateSP.speedLimitNow`); the planner arms exactly what card reports, never on its own view of the
+  releases, and never a limit already in force. The rest of that press, and the same key again while armed (in 'now'
+  or in the 2.5 s after), are swallowed too. While armed the coming limit's number flashes on the card - lit 0.4 s, dim
+  (25 %) 0.2 s, the Elesys radar's own rhythm - with 'sets 100 at sign' and no key, everything else solid, drawn from
+  the planner's arm (`assist.armedLimit`) even once the look-ahead's hold has ended; the cluster flashes too (next
+  bullet). At the sign: one change, straight to the limit, and the card cross-fades into the stock MAX number. The
+  other key is still its ordinary step and disarms (`assist.armEnd` otherKey); a walk begun before 'now' (its first
+  step came first) is never frozen nor armed, and if it runs past the armed target it disarms (push9 re-review: armed
+  100, on to 99 - the 100 must not raise it back); any other limit is the prompt as before; the arm lapses 2.5 s after
+  'now' closes (kept while the change hold holds), so a phantom 'now' (134 304.52, 674.56) moves nothing at all. In
+  'now' the card's key no longer steps the set speed (up to ~8 s: 50 m, the 3 s hold, 2.5 s for a phantom): brake, the
+  other key, or wait for the sign. While a press would count, the card says 'press - to set 100' in place of 'now'
+  (both styles) - since sla-flash from the planner's own offer, so exactly when card would take it (push9 guessed it in
+  the UI and also said it in the prompt, pending, on the first frame after engaging); with cruise off it still says
+  'now' ('-' engages). How each arm ended is in `assist.armEnd`; `armSeq` counts them. The planner and the HUD run one state machine
   (`now_confirm.ComingLimit`, push9 review: a second copy disagreed on 10f/112/129/12a, once opening 'now' with no card on
   screen), and over 22 routes the planner's windows sit on the HUD's to the frame. The key is the way of limit + offset,
-  the number the card shows; with `HudApproachingLimit` off nothing arms; a press while the card is hidden by MAX, an
-  alert or the lane-block tile still counts. Replays: `CHANGELOG_SERIAL_STEERING.md`, push9.
+  the number the card shows; with `HudApproachingLimit` off nothing arms; a press while the card is hidden by an
+  alert or the lane-block tile still counts (the cluster flash is the feedback then). Replays:
+  `CHANGELOG_SERIAL_STEERING.md`, push9 and sla-flash.
+- **The cluster flashes the armed set speed (sla-flash, 2026-10-19, HONDA_ELESYS only, openpilot longitudinal only).**
+  While a press made at 'now' is held, openpilot's own ACC_HUD (`0x30C`, bus 0) shows the set speed it will become as
+  the Elesys radar shows a speed it is building up to: `CRUISE_SPEED` = N for 4 frames, 255 (blank, `ACC_ON` still 1)
+  for 2, at 10 Hz - 0.4 s / 0.2 s, the pattern of every stock flash in 13 fully-stock drives (never two numbers
+  alternating). It starts lit on the first send after the arm (about 0.2 s after the press: card, planner, controlsd,
+  the next 10 Hz send) and goes solid on the first send where the set speed is N (the take) or the arm has gone.
+  The path: `assist.armedSpeed` (m/s) -> controlsd (`controlsd_ext.now_flash_speed`, held 2 cycles after it drops so
+  the take never shows the old number for one send) -> `CarControlSP.speedLimitNowFlash` (flat, through
+  `convert_carControlSP`) -> `carcontroller.py`, `hondacan.now_flash_speed`. Only `CRUISE_SPEED` (byte 3) and the
+  checksum change; `hudControl.setSpeed`, `0x500 SET_SPEED` and every other byte are as before. Who reads it:
+
+  | reader | reads openpilot's `CRUISE_SPEED`? |
+  |---|---|
+  | the cluster | yes - it is the point |
+  | panda `honda_tx_hook` | no: the `0x30C` check reads bytes 0-2 (`PCM_SPEED`, `PCM_GAS`) only; relay and forwarding are by address |
+  | honda carstate | no: it reads the radar's `0x30C` (bus 2); `cruiseState.speed` is `0x324` |
+  | the PCM (`0x324 CRUISE_SPEED_PCM`) | no: it followed none of openpilot's 19 changes on route 143 |
+  | selfdrived `cruiseMismatch` | no: `ACC_STATUS` |
+  | the EPS-LKAS board | no: it forwards `0x30C` unparsed |
+  | `0x500 SET_SPEED` | separate: `hudControl.setSpeed`, untouched |
+  | stock ACC mode (`HondaElesysStockAcc`) | openpilot sends no `0x30C` there, and Speed Limit Assist is unavailable |
+
+  The `SCM_BUTTONS` stand-down, CMBS/AEB and panda safety are untouched (`test_elesys.py` `TestElesysNowFlash`,
+  `test_elesys_stock_acc.py`: the pattern, solid at the take and at a drop, 255 when not visible, imperial, every other
+  frame byte-identical, other Hondas byte-identical, every flashed frame allowed by the safety tx hook and a byte-3
+  change never altering its verdict). The flash shows the destination, as stock does; the car still holds the old set
+  speed until the sign, which the comma card says ('sets 100 at sign') and its MAX half shows.
 
 ### 11.4 sunnylink
 
