@@ -12,12 +12,12 @@ What it must do:
     entry edge (the panda reports noOutput before selfdrived has read the reason), not on the release edge (the
     reason has cleared, pandad has not switched back), not through a 60 s start-up hold in ELM327;
   * the car bus went bus-off: one chime, then a silent "Car Bus Error" banner until restart; "CAN Bus Disconnected:
-    Likely Faulty Cable" never on screen; anything engaged is disengaged by upstream's own controlsMismatch with ONE
-    warningImmediate, and the text names the bus error - also when the reason reaches selfdrived after the
-    disengagement;
+    Likely Faulty Cable" never on screen; anything engaged - a MADS paused while the car moves too, which would resume
+    by itself - is disengaged by upstream's own controlsMismatch with ONE warningImmediate, and the text names the bus
+    error - also when the reason reaches selfdrived after the disengagement;
   * every other controlsMismatch is upstream's, untouched: a non-car mode with no reason, a wrong param, rx checks,
     the mismatch counter, anything engaged; and nothing at all on any other car;
-  * FCW / stock AEB and a newer equal-priority alert still take the screen.
+  * FCW / stock AEB, driver monitoring's stage 2 and a newer equal-priority alert still take the screen.
 Each frame is selfdrived.step() in miniature: the pandaStates mismatch check, this helper, selfdrived's state machine,
 MADS (the real class), then create_alerts -> adjust_alerts -> AlertManager.
 """
@@ -38,6 +38,7 @@ from openpilot.selfdrive.selfdrived.events import Events, EVENTS
 from openpilot.selfdrive.selfdrived.state import StateMachine
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP, EVENTS_SP, ET, Alert, Priority, AlertSize, \
   AudibleAlert, ImmediateDisableAlert, EngagementAlert
+from openpilot.sunnypilot.mads.helpers import MadsSteeringModeOnBrake
 from openpilot.sunnypilot.selfdrive.selfdrived.car_stock_alert import CarStockAlert, ENTRY_GRACE, EXIT_GRACE, \
   ANNOUNCE_FRAMES, DIAG_REPLACES, BUS_OFF_REPLACES, DISENGAGE_REPLACES
 
@@ -89,8 +90,9 @@ def panda(mode=CAR_MODE, rx_invalid=False):
                          controlsAllowed=mode == CAR_MODE, controlsAllowedLateral=mode == CAR_MODE, faults=[])
 
 
-def car_state(gear=GearShifter.park, v_ego=0.0, lkas=False):
+def car_state(gear=GearShifter.park, v_ego=0.0, lkas=False, brake=False):
   cs = car.CarState.new_message()
+  cs.brakePressed = brake
   cs.vEgo = v_ego
   cs.standstill = v_ego < 0.001
   cs.gearShifter = gear
@@ -154,14 +156,14 @@ class Drive:
     self.engageable: list[bool] = []
 
   def step(self, mode=CAR_MODE, n=1, rx_invalid=False, gear=GearShifter.park, v_ego=0.0, lkas=False, extra=(), extra_sp=(),
-           mismatch_counter=0):
+           mismatch_counter=0, brake=False):
     sd = self.sd
     for _ in range(n):
       if self.frame % 10 == self.read_phase % 10:
         self.helper.read_params(self.params)
       sd.events.clear()
       sd.events_sp.clear()
-      cs = car_state(gear, v_ego, lkas)
+      cs = car_state(gear, v_ego, lkas, brake)
       if gear == GearShifter.park:
         sd.events.add(EventName.wrongGear)   # the car events raise it in P; MADS turns it into its silent pause
       for e in extra:
@@ -178,7 +180,7 @@ class Drive:
         if (safety_mismatch and self.frame * DT_CTRL > 10.) or p.safetyRxChecksInvalid or mismatch_counter >= 200:
           sd.events.add(EventName.controlsMismatch)
       # FORK hook, right after that loop
-      for e in self.helper.update(sd.events, ps, mismatch_counter, sd.enabled or self.mads.active):
+      for e in self.helper.update(sd.events, ps, mismatch_counter, sd.enabled or self.mads.active, self.mads.enabled and not cs.standstill):
         sd.events_sp.add(e)
       # selfdrived.step(): its state machine, then MADS, then update_alerts()
       sd.enabled, sd.active = sd.state_machine.update(sd.events)
@@ -274,6 +276,17 @@ class TestDiagnosticTool(MadsPin):
     d.step(mode=NO_OUTPUT, extra=(EventName.buttonEnable,), **kw)
     assert not d.sd.enabled and d.shown[-1][:2] == (ne.alert_text_1, ne.alert_text_2), d.shown[-1]
     assert not any("Car Not Ready" in s[0] + s[1] or "Controls Mismatch" in s[0] + s[1] for s in d.shown)
+
+  def test_driving_off_with_the_tool_still_talking_is_no_alarm(self):
+    """Fix 1 went stock in P; the driver drives off with the tool still talking. MADS, paused since P, is refused (our
+    words) and stays paused while moving - no critical alert: it has not steered since the car was parked."""
+    d = Drive(mads_state=MadsState.paused)
+    d.params.values["DiagToolStock"] = True
+    d.step(mode=NO_OUTPUT, n=100)
+    d.step(mode=NO_OUTPUT, n=500, gear=GearShifter.drive, v_ego=15.)
+    assert critical(d) == [] and d.mads_state == MadsState.paused
+    ne = EVENTS_SP[DIAG][ET.NO_ENTRY]
+    assert d.shown[-1][:2] in ((ne.alert_text_1, ne.alert_text_2), DIAG_TEXT), d.shown[-1]
 
   def test_a_paused_mads_cannot_resume(self):
     """Out of P (the car's own "Gear not D" was what kept it paused) MADS would resume by itself (silentLkasEnable):
@@ -440,6 +453,37 @@ class TestBusOff(MadsPin):
     assert d.mads_state == MadsState.paused and d.shown[-1][:2] == (ne.alert_text_1, ne.alert_text_2), d.shown[-1]
     assert critical(d) == []
 
+  def test_mads_paused_while_moving_is_disengaged_and_told_why(self):
+    """Review A F4: paused on the brake at speed (Pause mode), MADS resumes by itself on release. A bus-off there is a
+    disengagement, as for an active MADS: ONE warningImmediate, our text, MADS disabled - never a chime and a refusal
+    when the brake comes off. No canBusMissing / canError here: the fallback re-inits the core in the poll that latches,
+    so card need not lose the car's CAN at all, and then controlsMismatch is the only disengagement there is."""
+    for late in (0, 1, 5):
+      d = Drive(mads_state=MadsState.paused)
+      d.mads.steering_mode_on_brake = MadsSteeringModeOnBrake.PAUSE
+      kw = {"gear": GearShifter.drive, "v_ego": 25., "brake": True}
+      d.step(n=50, **kw)
+      assert d.mads_state == MadsState.paused and not d.mads.active
+      if late == 0:
+        d.params.values["CarBusOffStock"] = True
+      d.step(mode=NO_OUTPUT, n=max(late, 1), **kw)
+      d.params.values["CarBusOffStock"] = True
+      d.step(mode=NO_OUTPUT, n=60, **kw)
+      d.step(mode=NO_OUTPUT, n=600, gear=GearShifter.drive, v_ego=25.)   # the brake released
+      assert d.mads_state == MadsState.disabled, late
+      assert sounds(d.shown) == [AudibleAlert.warningImmediate], (late, sounds(d.shown))
+      assert any(sh[:2] == DISENGAGE_TEXT for sh in d.shown), late
+      assert d.shown[-1][:2] == BUS_OFF_TEXT
+
+  def test_mads_paused_at_a_standstill_in_d_stays_paused(self):
+    """The mask's other side: stopped (standstill) with MADS paused on the brake, a bus-off is the parked case."""
+    d = Drive(mads_state=MadsState.paused)
+    d.mads.steering_mode_on_brake = MadsSteeringModeOnBrake.PAUSE
+    d.step(n=50, gear=GearShifter.drive, brake=True)
+    d.params.values["CarBusOffStock"] = True
+    d.step(mode=NO_OUTPUT, n=300, gear=GearShifter.drive, brake=True)
+    assert critical(d) == [] and sounds(d.shown) == [AudibleAlert.prompt] and d.mads_state == MadsState.paused
+
   def test_announced_once_per_session(self):
     h = CarStockAlert(make_cp())
     h.bus_off = True
@@ -466,6 +510,17 @@ class TestPrecedenceAndPriorities(MadsPin):
         d.step(mode=NO_OUTPUT, n=600)
         d.step(mode=NO_OUTPUT, n=5, extra=(e,))
         assert d.shown[-1][0] == "BRAKE!", (reason, e, d.shown[-1])
+
+  def test_driver_monitoring_stage_2_takes_the_screen(self):
+    """Design 10.6 item 8: a stage-2 driver-monitoring alert (MID) covers every banner of ours."""
+    for reason in ("DiagToolStock", "CarBusOffStock"):
+      for e in (EventName.driverDistracted2, EventName.driverUnresponsive2):
+        d = Drive()
+        d.params.values[reason] = True
+        d.step(mode=NO_OUTPUT, n=600)
+        d.step(mode=NO_OUTPUT, n=5, extra=(e,))
+        dm = EVENTS[e][ET.PERMANENT]
+        assert d.shown[-1][:2] == (dm.alert_text_1, dm.alert_text_2), (reason, e, d.shown[-1])
 
   def test_a_newer_equal_priority_alert_shows_over_the_note(self):
     """The VSA's announcement (LOW, 3.5 s) is newer than the note (LOW): it shows for its time, then the note again."""
@@ -652,7 +707,8 @@ class TestSelfdrivedWiring(OpenpilotTestCase):
     assert "from openpilot.sunnypilot.selfdrive.selfdrived.car_stock_alert import CarStockAlert  # FORK(HONDA_ACCORD_9G_AU)" in src
     assert "self.car_stock_alert = CarStockAlert(self.CP)" in src
     call = src.index("for e in self.car_stock_alert.update(self.events, self.sm['pandaStates'], self.mismatch_counter, " +
-                     "self.enabled or self.mads.active):\n      self.events_sp.add(e)")
+                     "self.enabled or self.mads.active,\n" + " " * 41 + "self.mads.enabled and not CS.standstill):\n" +
+                     "      self.events_sp.add(e)")
     # after the pandaStates loop has raised controlsMismatch, before num_events and the catch-all reads `events`
     assert src.index("self.events.add(EventName.controlsMismatch)") < src.index("self.events.add(EventName.relayMalfunction)") < call
     assert call < src.index("num_events = len(self.events)")

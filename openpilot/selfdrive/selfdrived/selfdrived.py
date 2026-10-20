@@ -425,7 +425,8 @@ class SelfdriveD(CruiseHelper):
 
     # FORK(HONDA_ACCORD_9G_AU): the car left stock on purpose (KTuner; car_stock_alert.py): the expected controlsMismatch
     # becomes carNotReady while nothing is engaged, and the SP events carry the words
-    for e in self.car_stock_alert.update(self.events, self.sm['pandaStates'], self.mismatch_counter, self.enabled or self.mads.active):
+    for e in self.car_stock_alert.update(self.events, self.sm['pandaStates'], self.mismatch_counter, self.enabled or self.mads.active,
+                                         self.mads.enabled and not CS.standstill):
       self.events_sp.add(e)
 
     # Handle HW and system malfunctions

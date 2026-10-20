@@ -19,7 +19,8 @@ panda's mode differs from CP.safetyConfigs once it is 10 s old - which is exactl
 MADS paused in P (enabled, not active) would drop to disabled with "TAKE CONTROL IMMEDIATELY / Controls Mismatch" on
 both edges, because pandad and selfdrived read the params at 10 Hz each, out of step. So controlsMismatch is
 replaced by upstream's carNotReady (NO_ENTRY only - engagement is still refused) when ALL of these hold:
-  * nothing is engaged (openpilot, or MADS active);
+  * nothing is engaged (openpilot, MADS active, or - unless a diagnostic tool is the reason - MADS paused while the
+    car moves: it would resume by itself);
   * every panda reports a mode that transmits nothing (noOutput, elm327);
   * there is a reason, or the non-car mode is younger than ENTRY_GRACE (the panda reported before this process read
     the param), or the reason cleared less than EXIT_GRACE ago (pandad has not switched back yet);
@@ -80,9 +81,10 @@ class CarStockAlert:
       self.diag = params.get_bool("DiagToolStock")
       self.bus_off = params.get_bool("CarBusOffStock")
 
-  def update(self, events, panda_states, mismatch_counter: int, active: bool) -> list[int]:
+  def update(self, events, panda_states, mismatch_counter: int, active: bool, mads_moving: bool = False) -> list[int]:
     """One selfdrived frame, after the pandaStates loop has raised controlsMismatch. Edits `events` (the mask and the
-    refusal) and returns the EventNameSP to add. active: openpilot enabled or MADS active."""
+    refusal) and returns the EventNameSP to add. active: openpilot enabled or MADS active. mads_moving: MADS enabled
+    (paused counts) and the car not at a standstill."""
     self.masked = False
     if not self.armed:
       return []
@@ -92,9 +94,15 @@ class CarStockAlert:
     self._noncar_frames = min(self._noncar_frames + 1, ENTRY_GRACE + 1) if noncar else 0
     self._reason_off = 0 if reason else min(self._reason_off + 1, EXIT_GRACE)
 
+    # Review A F4: a MADS paused while the car moves (on the brake, or the board's driver-override pause) resumes by
+    # itself, so for anything but a diagnostic tool it is engaged here: a bus-off at speed knocks it to disabled with
+    # upstream's critical controlsMismatch, and ours names it - as for an active MADS. A tool's stock began parked
+    # (fix 1 never enters moving) and MADS has been refused since: the note and the refusal say why, no alarm.
+    engaged = active or (mads_moving and not (self.diag and not self.bus_off))
+
     expected = noncar and (reason or self._noncar_frames <= ENTRY_GRACE or self._reason_off < EXIT_GRACE)
     rx_invalid = any(ps.safetyRxChecksInvalid for ps in panda_states)
-    if expected and not active and mismatch_counter < 200 and not rx_invalid and events.has(EventName.controlsMismatch):
+    if expected and not engaged and mismatch_counter < 200 and not rx_invalid and events.has(EventName.controlsMismatch):
       self.masked = True
       while events.has(EventName.controlsMismatch):
         events.remove(EventName.controlsMismatch)
@@ -104,7 +112,7 @@ class CarStockAlert:
     out: list[int] = []
     if self.bus_off:
       out.append(EventNameSP.carBusOffStock)
-      if active:
+      if engaged:
         out.append(EventNameSP.carBusOffDisengage)
       if not self._announced:
         self._announced = True
