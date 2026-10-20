@@ -1699,18 +1699,28 @@ The comma 4 runs the small UI. It has no Cruise or Vehicle panel, so neither pag
   of the 10 push9 windows, and the 2 phantoms left a step he undid by hand (13f 326.35, 141 236.62). Now card swallows
   the press (`cruise_ext._sla_now_consume`: its first action - a short press's release, a long press's first 0.5 s
   step - on the key the planner offers, `longitudinalPlanSP.speedLimit.assist.nowKey`, which carries every SLA guard)
-  and reports it (`carStateSP.speedLimitNow`); the planner arms exactly what card reports, never on its own view of the
-  releases, and never a limit already in force. The rest of that press, and the same key again while armed (in 'now'
-  or in the 2.5 s after), are swallowed too. While armed the coming limit's number flashes on the card - lit 0.4 s, dim
+  and reports it (`carStateSP.speedLimitNow`); the planner arms what card reports, never on its own view of the
+  releases, and only on the offer it published last (`SpeedLimitAssist._now_arm_ok`: that limit on that key, an arm's
+  own key only while that arm still stands, never a limit already in force). The report is a frame or two behind the
+  press: review 1 found one landing after a hand-over to a DIFFERENT limit arming the announced one on the prompt for
+  2.6 s (the cluster flashing 50 while the card asked + for 70), one landing after a phantom's lapse arming it for
+  2.5 s more, and a restarted plannerd taking card's old tally for a press; each is now a press spent with nothing
+  moved. The rest of that press, and the same key again while armed (in 'now' or in the 2.5 s after), are swallowed
+  too; a long press is taken whole at its first 0.5 s step (DESIGN 15's default, his "does NOT change your set speed
+  at all": a deliberate walk down before the sign is swallowed as well - the other way, long presses as ordinary
+  walks, would bring the double change back on route 13e at 1043.59, his long '-' in the window). While armed the coming limit's number flashes on the card - lit 0.4 s, dim
   (25 %) 0.2 s, the Elesys radar's own rhythm - with 'sets 100 at sign' and no key, everything else solid, drawn from
   the planner's arm (`assist.armedLimit`) even once the look-ahead's hold has ended; the cluster flashes too (next
   bullet). At the sign: one change, straight to the limit, and the card cross-fades into the stock MAX number. The
   other key is still its ordinary step and disarms (`assist.armEnd` otherKey); a walk begun before 'now' (its first
   step came first) is never frozen nor armed, and if it runs past the armed target it disarms (push9 re-review: armed
   100, on to 99 - the 100 must not raise it back); any other limit is the prompt as before; the arm lapses 2.5 s after
-  'now' closes (kept while the change hold holds), so a phantom 'now' (134 304.52, 674.56) moves nothing at all. In
-  'now' the card's key no longer steps the set speed (up to ~8 s: 50 m, the 3 s hold, 2.5 s for a phantom): brake, the
-  other key, or wait for the sign. While a press would count, the card says 'press - to set 100' in place of 'now'
+  'now' closes (kept while the change hold holds), so a phantom 'now' (134 304.52, 674.56) moves nothing at all, and
+  no arm lives longer than 12 s from its press (`now_confirm.ARM_MAX_S`, `armEnd` capped; 'now' still open, the key is
+  offered again). In 'now' the card's key no longer steps the set speed. How long: 'now' opens 50 m before the sign
+  (below ~12 km/h within 15 s of travel, the look-ahead's window), and a press holds until the limit is in force - in
+  the replays 0.4-4.1 s after the press - or, for a phantom, 3 s past the sign plus 2.5 s: about 8.5 s at 60 km/h,
+  11.5 s at 30 km/h, and the 12 s cap below that. To slow more before the sign: brake, the other key, or wait for it. While a press would count, the card says 'press - to set 100' in place of 'now'
   (both styles) - since sla-flash from the planner's own offer, so exactly when card would take it (push9 guessed it in
   the UI and also said it in the prompt, pending, on the first frame after engaging); with cruise off it still says
   'now' ('-' engages). How each arm ended is in `assist.armEnd`; `armSeq` counts them. The planner and the HUD run one state machine
@@ -1744,8 +1754,11 @@ The comma 4 runs the small UI. It has no Cruise or Vehicle panel, so neither pag
   The `SCM_BUTTONS` stand-down, CMBS/AEB and panda safety are untouched (`test_elesys.py` `TestElesysNowFlash`,
   `test_elesys_stock_acc.py`: the pattern, solid at the take and at a drop, 255 when not visible, imperial, every other
   frame byte-identical, other Hondas byte-identical, every flashed frame allowed by the safety tx hook and a byte-3
-  change never altering its verdict). The flash shows the destination, as stock does; the car still holds the old set
-  speed until the sign, which the comma card says ('sets 100 at sign') and its MAX half shows.
+  change never altering its verdict, and - review 2 - a take landing in the flash's dark phase is solid N on that very
+  send). The flash shows the destination, as stock does; the car still holds the old set speed until the sign, which
+  the comma card says ('sets 100 at sign') and the split card's MAX half shows. The stock-plus card puts the coming
+  limit in the MAX number's place, so in that style the held set speed is on neither display while armed (only the
+  speedometer shows what the car holds); the owner drives the split card.
 
 ### 11.4 sunnylink
 

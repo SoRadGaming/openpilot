@@ -777,7 +777,9 @@ this side draws the flash:
   mode sends no `0x30C`. Tests: the pattern, the stops, 255 when not visible, imperial, the `SCM_BUTTONS` stand-down and
   every other frame byte-identical, other Hondas byte-identical, stock ACC mode byte-identical with the field set, and
   every flashed frame through the honda safety tx hook with this car's params (and a byte-3 change never altering a
-  verdict).
+  verdict). Review 2 added the take landing in the flash's dark phase (the 5th and 6th sends): solid N on that very
+  send, never a blank at the change - without the "solid once the set speed is N" rule that send was 255 and no test
+  noticed.
 
 ---
 

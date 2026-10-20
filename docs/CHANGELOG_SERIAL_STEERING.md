@@ -37,10 +37,12 @@ step, so the set speed changed twice - the step at the press, the limit at the s
   radar's own flash for a speed it is building up to), solid at the take (`CarControlSP.speedLimitNowFlash`; opendbc
   `CHANGELOG-elesys.md` 22). Only byte 3 and its checksum change; panda, carstate, the PCM, the board, the stand-down,
   stock ACC mode and CMBS/AEB are untouched.
-* In 'now' the card's key no longer steps the set speed (at most ~8 s); to slow more before the sign: brake, the other
-  key, or wait. Logged for the next drive: `assist.armSeq` / `armEnd` (taken, lapsed, otherKey, walkedPast, off,
-  cardOff, otherLimit, selfRaised), `carControlSP.speedLimitNowFlash`, `sendcan 0x30C` byte 3
-  (`scratchpad/slaflash/nowlog.py` lists them per route).
+* In 'now' the card's key no longer steps the set speed - a long press included, taken whole at its first 0.5 s step.
+  A press holds until the limit is in force (0.4-4.1 s in the replays) or, for a phantom, 3 s past the sign plus
+  2.5 s: about 8.5 s at 60 km/h, 11.5 s at 30 km/h, and never more than 12 s from the press (the cap, below). To slow
+  more before the sign: brake, the other key, or wait. Logged for the next drive: `assist.armSeq` / `armEnd` (taken,
+  lapsed, otherKey, walkedPast, off, cardOff, otherLimit, selfRaised, capped), `carControlSP.speedLimitNowFlash`,
+  `sendcan 0x30C` byte 3 (`scratchpad/slaflash/nowlog.py` lists them per route).
 
 Replays (card + selfdrived + plannerd closed loop on the logged inputs, NEW against the logged build; the old copy
 reproduces the logged set speed on 13d/142/143 frame for frame, on 141 but 8 frames, on 134/137 but 6 - prompt
@@ -62,6 +64,23 @@ confirms a planner frame early or late, none at a 'now' press; `scratchpad/slafl
 In every arm the predicted 0x30C flashes from the first send after the press (about 0.1 s) to the take in the exact
 4 / 2 pattern. Without a 'now' press NEW equals the logged build on every set speed, SLA state and 0x30C frame of all
 12 routes (unexplained differences: 0).
+
+Review fixes (two reviews; nothing on the wire changed):
+
+* **The planner arms a report only on the offer it published last** - that limit on that key, an arm's own key only
+  while that arm stands, never a limit in force. card's report is a frame or two behind the press, and three late
+  reports armed what they should not: after a hand-over to a different limit (the cluster flashing 50 for 2.6 s on the
+  prompt for a 70, or an arm for 50 under a 40 the press had confirmed), after a phantom's lapse (2.5 s more of
+  flashing), and after a plannerd restart (card's old tally). Each is now a press spent with nothing moved.
+* **An arm lasts at most 12 s from its press** (`ARM_MAX_S`, `armEnd` capped): at a crawl 'now' can open 15 s of
+  travel before the sign, and the cluster flash would run past anything stock shows (8.6 s at most in 13 stock drives).
+  'now' still open, the key is offered again; at the sign the prompt asks as before.
+* **Tests that run the real hops:** card's `state_update` writing the report, plannerd's loop reading it, the planner
+  publishing the arm (never the offer) as `armedSpeed`, controlsd flashing the arm only and only while the plan
+  arrives, disengaging disarming, and the cluster going solid at a take that lands in the flash's dark phase. A
+  mutation of each of those passed every test before.
+* Known: on the stock-plus card the held set speed shows on neither display while armed (the card takes the MAX
+  number's place and the cluster shows the target); the split card's MAX half shows it.
 
 ---
 
