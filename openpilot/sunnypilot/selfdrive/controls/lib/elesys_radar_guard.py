@@ -34,6 +34,50 @@ What. Only on HONDA_ELESYS, and only where radard picks a radar track:
     held_lead.py): it is a lead for the MPC only, and DEC, longitudinalPlan.hasLead, the e2e alerts and the UI skip it.
 A stopped car the camera also sees as stopped or slow is kept, at any range.
 
+Long range (long_range_track()): a stopped car the camera finds far ahead but reads as moving. Route 143 t=168.3-170.1
+(Mon 00:46:03, at night, 58 km/h): radar track 272 had a vehicle stopped in the lane at 94 -> 73 m from t=168.32, but
+the camera read it at 10-16 m/s, so upstream's vel_sane (and from 67 m this guard's tolerance, the same 10 m/s) set
+the track aside and radard used the camera's lead, but for single frames, until t=169.7; the plan stayed at -0.3 to
+-0.9 m/s^2 until t=170.1 and the car, at its full brake of about -1.8 m/s^2, needed the driver. Only on HONDA_ELESYS,
+only for leadOne, and only on a frame where radard has FALLEN BACK to the camera's lead (its match found no track),
+radard takes a stationary track (|vLead| under LR_V_STATIONARY) within LR_D_SHARE of the camera's range and LR_Y_TOL of
+its lateral position, with the car above LR_V_EGO, the camera's lead LR_D_MIN or more away and radard's filtered prob
+for it at LR_PROB or more, once the same track has met that for LR_FRAMES frames in a row (0.3 s; a frame where
+radard's own match took that track continues the run). Every other frame is decided as before. A frame with a MOVING
+track (raw vLead above LR_V_MOVING) within LR_MOVING_D_SHARE of the camera's range and LR_MOVING_Y_TOL of its side
+takes nothing and breaks the run (long_range_moving_near()). Only with openpilot longitudinal and stock ACC mode off
+(long_range_applies(), radard's RadarD.long_range): in stock ACC mode radard is the clutter guard as before round 8.
+  * the veto (round 8 review). "Fell back" means radard's one best match failed upstream's range or speed check, not
+    that no radar car is there: at long range the camera's range runs short, so a real moving car at its true range
+    fails the 25% range check and radard falls back with that car still on the radar. Route 0e1 t=887.18-887.28
+    (engaged, 16 m/s, just off the gas): the car radard had been following, 101 m ahead at 18 m/s, against the camera's
+    79 m; a stationary return at 74 m, 0.7 m off the camera lead's side, met the rule for 3 frames; the car drove through
+    its point 4.4 s later. At 6 frames it would have been a stopped car 74 m ahead: full brake. Route 08 t=946.0, the
+    same at 15 m/s (a return at 80 m, the moving car 26% beyond the camera's 73 m). Replayed on 69 routes (the guard's 14
+    clutter routes, listed under Thresholds below, 13d, 141, 142, 143 and the review's 51): the veto ends both of those
+    runs, the only engaged runs of 3 or more frames on a return the car then drove through, and changes radard's lead on
+    no frame of any route against the rule without it;
+  * replayed (radard and the planner, open loop) on the 14 routes above and 13d, 141, 142 and 143, it changed radard's
+    lead on 4 of them: engaged only behind real stopped cars (143 t=169.13-170.08, where the plan reaches -1.0 m/s^2
+    0.4 s and -1.5 m/s^2 0.55 s earlier; c0 t=254.5-256.0, the stopped queue below, 5 frames, at most 0.1 m/s^2
+    firmer), and disengaged on vehicles stopped in the lane that then drove off (141 t=1557.4, 142 t=959.5). No FCW,
+    and the plan's dips per minute are unchanged on every route. On the round 8 review's 51 further routes it changed
+    radard's lead once while engaged: d4 t=89.89-90.99, 22 frames, the plan at most -1.51 for -0.98, on a vehicle
+    crawling at 0.4-0.7 m/s 80 m ahead that then pulled away (radard matched it itself from t=90.94); no FCW;
+  * the fallback condition is what makes it narrow. Without it the same test replaced a MOVING car the radar matched
+    with a stationary return near it 8 times while engaged, at 42-110 km/h; 6 of them planned -1.8 to -3.5 m/s^2 where
+    radard's own plan was -1.2 to 0.0 (08 t=945.5, c8 t=615.0 and t=1157.8, c9 t=1104.6, 10f t=2068.2, 142 t=998.5),
+    with an FCW on c8;
+  * the 20% range window is wide on purpose: at 55-80 m the camera's range runs 8-17% short of the radar's, and a
+    10% window with a 0.5 s run first fired at t=170.9 on route 143, after the brake was nearly full;
+  * where it lets go: on 143 the camera's range jitters, so the run breaks twice (t=170.13, the camera 21% short of the
+    track; t=170.58, radard's own match on another track of the car for a frame) and radard falls back to the camera's
+    moving lead for 3 frames each time (170.13-170.23, 170.68-170.78), with the plan held at -1.55 and -1.70 to -1.74
+    there (push9: -1.01 to -1.07, -1.54 to -1.58). Open loop, the plan then reaches -2.0 at t=171.28, 0.10 s after
+    push9's 171.18 and at most 0.06 m/s^2 softer: the planner's own speed (v_desired) integrates its earlier, firmer
+    plan while the replayed car keeps push9's speed, an open-loop artifact (on the road the car would be slower too);
+  * routes 13e and 13f (round 8's new drives) have qlogs only, which carry no radar CAN: not replayed.
+
 Given up (the camera is the only discriminator for a stationary return that works in this data, see below):
   * below 4 m/s, a stationary object that only the radar sees no longer stops the car: the guard holds the plan for
     it, and the stop rests on the camera, e2e and the driver. Worst engaged case: route 06 t=1306.3-1309.8, at night,
@@ -83,6 +127,7 @@ import math
 from collections import deque
 
 from opendbc.car.honda.values import HONDA_ELESYS
+from opendbc.sunnypilot.car.honda.values_ext import HondaFlagsSP
 from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import held_id
 
 RADAR_TO_CAMERA = 1.52  # radard.RADAR_TO_CAMERA (test_elesys_radar_guard.py pins the two equal)
@@ -113,9 +158,32 @@ HOLD_UPDATES = 5        # radar updates: once seen for at least this many
 STOP_DISTANCE = 6.0     # m: long_mpc.STOP_DISTANCE (test_elesys_radar_guard.py pins the two equal)
 HOLD_T_FOLLOW = 1.25    # s: long_mpc's shortest T_FOLLOW (aggressive), pinned the same way
 
+# Long range: where radard fell back to the camera's lead, a stationary track the camera's far, confident lead confirms
+LR_V_EGO = 5.0          # m/s: the car faster than this
+LR_D_MIN = 50.0         # m: the camera's lead at least this far (camera_distance())
+LR_PROB = 0.9           # radard's filtered prob for it at least this
+LR_V_STATIONARY = 1.5   # m/s: a track whose raw vLead is under this (either way)
+LR_D_SHARE = 0.20       # within this share of the camera's range
+LR_Y_TOL = 1.0          # m: and within this of the camera lead's lateral position
+LR_FRAMES = 6           # radard frames in a row (0.3 s), the same track
+LR_V_MOVING = 3.0       # m/s: and not while a track faster than this (raw vLead, moving away) sits
+LR_MOVING_D_SHARE = 0.30  # within this share of the camera's range
+LR_MOVING_Y_TOL = 1.5   # m: and this of its lateral position (a moving car the camera's lead may well be)
+
 
 def enabled(CP) -> bool:
   return CP.brand == 'honda' and CP.carFingerprint in HONDA_ELESYS
+
+
+def long_range_applies(CP, CP_SP) -> bool:
+  """The long-range rule: HONDA_ELESYS with openpilot longitudinal and stock ACC mode off, the same gate as the
+  planner's re-entry ramp. In stock ACC mode radard is upstream's plus the clutter guard, as before round 8."""
+  try:
+    if not enabled(CP) or not CP.openpilotLongitudinalControl:
+      return False
+    return not (int(getattr(CP_SP, 'flags', 0)) & HondaFlagsSP.ELESYS_STOCK_ACC.value)
+  except Exception:
+    return False
 
 
 def camera_distance(lead_msg) -> float:
@@ -170,6 +238,8 @@ class ElesysRadarGuard:
     self.state: dict[int, _TrackState] = {}
     self.moving: set[int] = set()             # track ids latched as moving
     self.camera_confident = False
+    self.lr_track: int | None = None          # long range: the track standing for the camera's lead,
+    self.lr_frames = 0                        # for this many radard frames in a row
 
   def update_tracks(self, tracks: dict, radar_frame: int, v_ego: float) -> None:
     """tracks: radard's, after this frame's update. radar_frame: radard's recv_frame['radarTracks'], which changes when
@@ -243,6 +313,43 @@ class ElesysRadarGuard:
     or None."""
     held = [c for c in refused if c.identifier in self.state and self.state[c.identifier].updates >= HOLD_UPDATES]
     return min(held, key=lambda c: c.dRel) if held else None
+
+  def long_range_track(self, tracks: dict, lead_msg, lead_prob: float, v_ego: float, matched, fell_back: bool):
+    """leadOne only, once per radard frame: the stationary track radard takes for the camera's far, confident lead on
+    a frame where it fell back to that lead (fell_back: its match found no track), or None (radard's own choice
+    stands). matched: the track radard's match took, if any; while it is the run's track the run goes on."""
+    camera_d = camera_distance(lead_msg)
+    track = None
+    if v_ego > LR_V_EGO and lead_prob >= LR_PROB and camera_d >= LR_D_MIN:
+      # a moving track near the camera's lead vetoes the frame: at long range the camera's range runs short, so radard's
+      # match can set a real moving car aside on range (dist_sane) and fall back with that car still there
+      if fell_back and not any(long_range_moving_near(c, lead_msg) for c in tracks.values()):
+        found = [c for c in tracks.values() if long_range_agrees(c, lead_msg)]
+        if found:  # the run's track while it still agrees, else the one nearest the camera's range
+          track = min(found, key=lambda c: (c.identifier != self.lr_track, abs(c.dRel - camera_d)))
+      elif matched is not None and matched.identifier == self.lr_track:
+        track = matched
+    if track is None:
+      self.lr_track, self.lr_frames = None, 0
+      return None
+    self.lr_frames = self.lr_frames + 1 if track.identifier == self.lr_track else 1
+    self.lr_track = track.identifier
+    return track if fell_back and self.lr_frames >= LR_FRAMES else None
+
+
+def long_range_agrees(track, lead_msg) -> bool:
+  """Is the track stationary and at the camera lead's range (within LR_D_SHARE) and lateral position (LR_Y_TOL)?"""
+  camera_d = camera_distance(lead_msg)
+  return (abs(track.vLead) < LR_V_STATIONARY and abs(track.dRel - camera_d) <= LR_D_SHARE * camera_d and
+          abs(track.yRel + lead_msg.y[0]) <= LR_Y_TOL)
+
+
+def long_range_moving_near(track, lead_msg) -> bool:
+  """Is the track moving away (raw vLead above LR_V_MOVING) within LR_MOVING_D_SHARE of the camera lead's range and
+  LR_MOVING_Y_TOL of its lateral position: a car the camera's lead may well be?"""
+  camera_d = camera_distance(lead_msg)
+  return (track.vLead > LR_V_MOVING and abs(track.dRel - camera_d) <= LR_MOVING_D_SHARE * camera_d and
+          abs(track.yRel + lead_msg.y[0]) <= LR_MOVING_Y_TOL)
 
 
 def hold_lead(lead_dict: dict, v_ego: float) -> dict:

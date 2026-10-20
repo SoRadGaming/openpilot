@@ -19,6 +19,11 @@ try:  # FORK(HONDA_ACCORD_9G_AU): a shadow (lat_speed_split.py); if it cannot be
 except Exception:
   def make_lat_speed_split(CP, prior_factor, decimated):
     return None
+try:  # FORK(HONDA_ACCORD_9G_AU): this car's higher factor floor (torque_floor.py); without it, upstream's window
+  from openpilot.sunnypilot.selfdrive.locationd.torque_floor import lataccel_factor_floor
+except Exception:
+  def lataccel_factor_floor(CP, prior, upstream_floor, upstream_window):
+    return upstream_floor
 
 HISTORY = 5  # secs
 POINTS_PER_BUCKET = 1500
@@ -92,7 +97,7 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     self.calibrator = PoseCalibrator()
 
     TorqueEstimatorExt.initialize_custom_params(self, decimated)
-    # FORK(HONDA_ACCORD_9G_AU): a shadow speed-split factor (lat_speed_split.py) that logs and applies nothing.
+    # FORK(HONDA_ACCORD_9G_AU): a shadow hands x speed split of torqued's fit (lat_speed_split.py) that logs and applies nothing.
     # None on every other car and for the decimated estimator.
     self.lat_split = make_lat_speed_split(CP, self.offline_latAccelFactor, decimated)
 
@@ -109,6 +114,10 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     self.decay = MIN_FILTER_DECAY
     self.min_lataccel_factor = (1.0 - self.factor_sanity) * self.offline_latAccelFactor
     self.max_lataccel_factor = (1.0 + self.factor_sanity) * self.offline_latAccelFactor
+    # FORK(HONDA_ACCORD_9G_AU): 1.10 instead of 0.875 on the Elesys Accord (torque_floor.py); every other car, and this
+    # one under the relaxed toggle, keeps upstream's. Not in the restore key: the cache is kept, raw estimates clipped.
+    self.min_lataccel_factor = lataccel_factor_floor(CP, self.offline_latAccelFactor, self.min_lataccel_factor,
+                                                     self.factor_sanity == (FACTOR_SANITY_QLOG if decimated else FACTOR_SANITY))
     self.min_friction = (1.0 - self.friction_sanity) * self.offline_friction
     self.max_friction = (1.0 + self.friction_sanity) * self.offline_friction
 
@@ -194,6 +203,8 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
       # TODO: check if high aEgo affects resulting lateral accel
       self.raw_points["vego"].append(msg.vEgo)
       self.raw_points["steer_override"].append(msg.steeringPressed)
+      if self.lat_split is not None:  # FORK(HONDA_ACCORD_9G_AU): the driver's raw torque, for the shadow's hands split
+        self.lat_split.add_driver_torque(t + self.lag, msg.steeringTorque)
     elif which == "extrinsicsCalibration":
       self.calibrator.feed_extrinsics_calibration(msg)
     elif which == "lateralDelay":
@@ -221,7 +232,7 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
           if abs(lateral_acc) <= LAT_ACC_THRESHOLD:
             self.filtered_points.add_point(steer, lateral_acc)
             if self.lat_split is not None:  # FORK(HONDA_ACCORD_9G_AU): shadow only, never raises
-              self.lat_split.add_point(vego, steer, lateral_acc)
+              self.lat_split.add_point(vego, steer, lateral_acc, t - MIN_ENGAGE_BUFFER, t + self.lag)
 
           if self.track_all_points:
             self.all_torque_points.append([steer, lateral_acc])
@@ -274,9 +285,14 @@ def main(demo=False):
 
   params = Params()
   estimator = TorqueEstimator(messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams))
+  # FORK(HONDA_ACCORD_9G_AU): the shadow's own inputs (the controller's integrator, paramsd's roll) on a SubMaster of
+  # its own, so torqued's sm, its checks and its timing stay exactly upstream's. None on every other car.
+  shadow_sm = estimator.lat_split.make_submaster() if estimator.lat_split is not None else None
 
   while True:
     sm.update()
+    if shadow_sm is not None:  # FORK(HONDA_ACCORD_9G_AU): non-blocking, never raises
+      estimator.lat_split.observe(shadow_sm)
     if sm.all_checks():
       for which in sm.updated.keys():
         if sm.updated[which]:
@@ -285,7 +301,8 @@ def main(demo=False):
 
     TorqueEstimatorExt.update_use_params(estimator)
     if estimator.lat_split is not None:  # FORK(HONDA_ACCORD_9G_AU): the shadow's once-a-minute log line
-      estimator.lat_split.tick(estimator.filtered_params['latAccelFactor'].x)
+      estimator.lat_split.tick(estimator.filtered_params['latAccelFactor'].x,
+                               (estimator.min_lataccel_factor, estimator.max_lataccel_factor))
 
     # 4Hz driven by deviceMotion
     if sm.frame % 5 == 0:

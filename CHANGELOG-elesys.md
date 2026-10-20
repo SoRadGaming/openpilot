@@ -756,6 +756,29 @@ Driver-facing summary: `docs/CHANGELOG_SERIAL_STEERING.md`, 2026-10-01 "Longitud
 
 ---
 
+## 22. Round 8: the lift-off ramp, a softer stop, the PID floor, a stopped car at long range (2026-10-20)
+
+Branch `round8` (sunnypilot on `55d9562b6`, opendbc on `dc7f1e7d`), from the analysis of drives 13d-143. Numbers,
+replays and the owner's choices: `docs/CHANGELOG_SERIAL_STEERING.md`, "UNRELEASED - round 8". Design:
+`docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 5.3, 7.8, 7.12 and 10.8. In short:
+
+- **Planner** (`reentry_ramp.py`): for 1.5 s after a gas override (the gas pressed within 0.5 s; not an engagement)
+  the plan may fall at most 1.5 m/s^3, from min(aEgo, 0). Skipped on FCW, the MPC's crash flag, an MPC plan or its
+  trajectory under -2.0, any plan under -2.0, or a lead braking harder than -2.0. Only on HONDA_ELESYS with openpilot
+  longitudinal, not in stock ACC mode, and only at 3 m/s or faster.
+- **Soft stop:** the cap is 125 -> 105 counts (still above 100, so the pump's crawl run is unchanged).
+- **PID floor:** -4.0 -> -3.2 on HONDA_ELESYS, not in stock ACC mode, lowered on a climb by g*sin(pitch) (never
+  below -4.0), so it is full brake on every grade.
+- **radard:** where it fell back to the camera's lead, a stationary radar track the camera's far (>= 50 m),
+  confident (>= 0.9) lead confirms within 20% / 1 m for 0.3 s stands for it (`elesys_radar_guard.long_range_track()`),
+  unless a moving track sits within 30% / 1.5 m of the camera's lead; only with openpilot longitudinal, not in stock
+  ACC mode. Offered on condition: 13e/13f (qlogs only) could not be replayed.
+- The round 8 review's fixes to the ramp, the floor and radard are in the CHANGELOG_SERIAL_STEERING entry.
+- Unchanged: the stock-ACC stand-down and stock ACC mode (byte-identical CAN), CMBS/AEB, panda safety, pump rule C1b,
+  the brake learner, the D brake law and the aero-credit ramp.
+
+---
+
 ## Status
 
 *As of 2026-09-08: two weeks of real driving on the tuner (sections 12-13); the paragraph below

@@ -7,6 +7,8 @@ FORK(HONDA_ACCORD_9G_AU): shadow_learn_report.py reads what the shadow learners 
 * Lines from before the lead split and the gain (the batch-2 replay dumps) still read.
 * (batch 3) Routes from different builds are never pooled, lines from before the build tags are a group of their own,
   and a launch measured without the launch cap is never offered as a multiplier.
+* (round 8) latsplit v=2 lines (hands x speed cells) parse, report each cell's fit and controller sums, and pool by
+  summed moments only within one build (commit, board, torqued's window); v=1 lines still read and pool apart.
 """
 import io
 import math
@@ -20,6 +22,7 @@ import openpilot.tools.lib.logreader  # noqa: F401  # imported before pandas is 
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.tools import shadow_learn_report as rep
 from opendbc.sunnypilot.car.honda.shadow_learn import HondaShadowLearners
+import openpilot.sunnypilot.selfdrive.locationd.lat_speed_split as ls
 
 
 def shadow_line(brake_err=0.2, gain=1.05, lead_launch=False, build=None, gas_law=""):
@@ -198,3 +201,108 @@ class TestShadowLearnReport(OpenpilotTestCase):
     assert c is not None
     assert "lnl" not in c
     self.assertTrue(math.isfinite(c["lratio"][0]))
+
+
+def lat_line(seed=0, commit="55d9562b6", board="883a3cd1", window=(1.10, 1.625), factors=None, n=3000):
+  """A real latsplit v=2 line: cells filled with points of a known factor, and integrator/roll sums."""
+  import numpy as np
+  factors = factors or {("off", "54"): 1.6, ("on", "54"): 0.7, ("on", "70"): 1.1, ("on", "90"): 1.3}
+  tags = {"GitCommit": commit, "EpsLkasBoardVersion": board}
+  sh = ls.LatSpeedSplitShadow(1.25, params=mock.Mock(get=lambda k: tags.get(k)))
+  sh.window = window
+  rng = np.random.default_rng(seed)
+  for cell, f in factors.items():
+    for x in rng.uniform(-0.45, 0.45, n):
+      sh.cells[cell].add(float(x), float(f * x - 0.43 + rng.normal(0, 0.05)))
+      r = float(rng.normal(0.3, 0.1))
+      sh.cells[cell].add_ctl(0.05 - 0.4 * r, r)
+  return sh, sh.line(window[0])
+
+
+class TestShadowLearnReportLatsplitV2(OpenpilotTestCase):
+  def test_constants_are_the_shadows(self):
+    self.assertEqual(rep.LAT_CELLS, ls.CELLS)
+    self.assertEqual(rep.LAT_BANDS, ls.BANDS)
+    self.assertEqual(rep.LAT_HANDS, ls.HANDS)
+    self.assertEqual(list(rep.LAT_MIN_BUCKET_POINTS), ls.MIN_BUCKET_POINTS)
+    self.assertEqual(rep.LAT_MIN_POINTS_TOTAL, ls.MIN_POINTS_TOTAL)
+
+  def test_a_v2_line_parses_and_reports_every_cell(self):
+    sh, line = lat_line()
+    tag, d = rep.parse_line(line)
+    self.assertEqual(tag, "latsplit")
+    self.assertTrue(rep.lat_is_v2(d))
+    self.assertEqual(rep.lat_build_key(d), ("55d9562b6", "883a3cd1", "1.100-1.625"))
+    for (h, b), cell in sh.cells.items():
+      mom, bins, ctl = rep.lat_cell(d, h, b)
+      self.assertEqual(int(mom[0]), cell.n)
+      if cell.n:
+        fit = rep._fit_row(mom)
+        self.assertAlmostEqual(fit[0], cell.fit()[0], places=4)
+        self.assertEqual(bins, [float(x) for x in cell.bins])
+        mi, _, mr, slope = rep._ctl_stats(ctl)
+        self.assertAlmostEqual(slope, -0.4, places=3)
+    out = io.StringIO()
+    with redirect_stdout(out):
+      rep.report_lat2(d)
+    text = out.getvalue()
+    for words in ("latsplit v=2", "commit=55d9562b6 board=883a3cd1 win=1.100-1.625", "hands-off only", "54-70 km/h"):
+      assert words in text, words
+    self.assertNotIn("hard  90+", text)                       # an empty cell is not printed
+
+  def test_v2_routes_pool_only_within_one_build(self):
+    a1, la1 = lat_line(1)
+    a2, la2 = lat_line(2)
+    _, lb = lat_line(3, board="c8221c29", factors={("off", "54"): 0.9})
+    _, lc = lat_line(4, window=(0.875, 1.625), factors={("off", "54"): 0.5})
+    with tempfile.TemporaryDirectory() as d:
+      paths = write_routes(d, [("bbbb0001", la1), ("bbbb0002", la2), ("bbbb0003", lb), ("bbbb0004", lc)])
+      out = io.StringIO()
+      with redirect_stdout(out), mock.patch.object(rep, "combine_lat2", wraps=rep.combine_lat2) as comb:
+        self.assertEqual(rep.main(paths), 0)
+    text = out.getvalue()
+    assert "LATERAL NOT POOLED: the v=2 routes come from 3 different builds" in text, text
+    self.assertEqual(comb.call_count, 1, "only the first build has two routes")
+    pooled = rep.combine_lat2(comb.call_args[0][0])
+    assert pooled is not None
+    both = ls.Cell()
+    for sh in (a1, a2):
+      c = sh.cells[("off", "54")]
+      for k in ("n", "sx", "sy", "sxx", "sxy", "syy"):
+        setattr(both, k, getattr(both, k) + getattr(c, k))
+    mom, _, ctl = rep.lat_cell(pooled, "off", "54")
+    self.assertEqual(int(mom[0]), 6000)
+    self.assertAlmostEqual(rep._fit_row(mom)[0], both.fit()[0], places=4)     # summed moments, refit: exact
+    self.assertAlmostEqual(rep._fit_row(mom)[0], 1.6, delta=0.02)             # 0.9 and 0.5 of the other builds left out
+    self.assertEqual(int(ctl[0]), 6000)
+    assert "LATERAL COMBINED over 2 routes of one build" in text
+
+  def test_v1_lines_still_read_and_pool_apart_from_v2(self):
+    lo, hi = ls.Cell(), ls.Cell()
+    import numpy as np
+    rng = np.random.default_rng(5)
+    for x in rng.uniform(-0.45, 0.45, 2000):
+      lo.add(float(x), float(0.8 * x - 0.43))
+      hi.add(float(x), float(1.4 * x - 0.43))
+    def fl(vals):
+      return "[" + ",".join(format(v, ".7g") for v in vals) + "]"
+    v1 = (f"latsplit v=1 split=19.44 prior=1.250 main=0.875 n=[{lo.n},{hi.n}] fac=[0.800,1.400] clip=[0.875,1.400] " +
+          f"off=[-0.430,-0.430] fric=[0.000,0.000] cal=[25,25] valid=[0,0] mom_lo={fl(lo.moments())} bins_lo={fl(lo.bins)} " +
+          f"mom_hi={fl(hi.moments())} bins_hi={fl(hi.bins)}")
+    _, d1 = rep.parse_line(v1)
+    self.assertFalse(rep.lat_is_v2(d1))
+    self.assertEqual(rep.lat_build_key(d1), rep.UNTAGGED)
+    _, l2 = lat_line(6)
+    with tempfile.TemporaryDirectory() as d:
+      paths = write_routes(d, [("cccc0001", v1), ("cccc0002", v1), ("cccc0003", l2)])
+      out = io.StringIO()
+      with redirect_stdout(out), mock.patch.object(rep, "combine_lat", wraps=rep.combine_lat) as comb1:
+        self.assertEqual(rep.main(paths), 0)
+    text = out.getvalue()
+    self.assertEqual(sorted(comb1.call_args[0][0]), ["cccc0001", "cccc0002"], "v=1 lines pool with v=1 lines only")
+    assert "LATERAL COMBINED over 2 v=1 routes" in text
+    assert "LATERAL (L3)" in text and "latsplit v=2" in text
+    c = rep.combine_lat({"a": d1, "b": d1})
+    assert c is not None
+    self.assertAlmostEqual(c["fac"][0], 0.8, places=4)
+    self.assertAlmostEqual(c["fac"][1], 1.4, places=4)

@@ -158,7 +158,8 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
              model_v_ego: float, lead_prob: float, CP: structs.CarParams, CP_SP: structs.CarParamsSP,
              low_speed_override: bool = True,
-             clutter_guard: elesys_radar_guard.ElesysRadarGuard | None = None) -> dict[str, Any]:
+             clutter_guard: elesys_radar_guard.ElesysRadarGuard | None = None,
+             long_range: bool = False) -> dict[str, Any]:
   # Determine leads, this is where the essential logic happens
   if len(tracks) > 0 and ready and lead_prob > .5:
     # FORK(HONDA_ACCORD_9G_AU): on HONDA_ELESYS a track much slower than the camera's lead may not stand for it
@@ -166,6 +167,14 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
     track = match_vision_to_track(v_ego, lead_msg, candidates) if len(candidates) > 0 else None
   else:
     track = None
+
+  # FORK(HONDA_ACCORD_9G_AU): on HONDA_ELESYS, leadOne only, where radard falls back to the camera's lead, a stationary
+  # track the camera's far, confident lead confirms for 0.3 s (a stopped car the camera reads as moving)
+  if long_range and clutter_guard is not None:
+    confirmed = clutter_guard.long_range_track(tracks, lead_msg, lead_prob, v_ego, track,
+                                               fell_back=track is None and ready and lead_prob > .5)
+    if confirmed is not None:
+      track = confirmed
 
   lead_dict = {'present': False}
   if track is not None:
@@ -224,6 +233,8 @@ class RadarD:
     self.ready = False
     # FORK(HONDA_ACCORD_9G_AU): the clutter guard's state on HONDA_ELESYS, None (upstream's radard) elsewhere
     self.clutter_guard = elesys_radar_guard.ElesysRadarGuard() if elesys_radar_guard.enabled(CP) else None
+    # FORK(HONDA_ACCORD_9G_AU): its long-range rule for leadOne only with openpilot longitudinal, not in stock ACC mode
+    self.long_range = self.clutter_guard is not None and elesys_radar_guard.long_range_applies(CP, CP_SP)
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
@@ -278,7 +289,8 @@ class RadarD:
         self.clutter_guard.update_camera(self.lead_prob_filters[0].x)
 
       self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x,
-                                          self.CP, self.CP_SP, low_speed_override=True, clutter_guard=self.clutter_guard)
+                                          self.CP, self.CP_SP, low_speed_override=True, clutter_guard=self.clutter_guard,
+                                          long_range=self.long_range)
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x,
                                           self.CP, self.CP_SP, low_speed_override=False, clutter_guard=self.clutter_guard)
 

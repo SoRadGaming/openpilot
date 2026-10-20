@@ -11,6 +11,7 @@ from openpilot.common.realtime import config_realtime_process, DT_CTRL, Priority
 from openpilot.common.swaglog import cloudlog
 
 from opendbc.car.car_helpers import interfaces
+from opendbc.car.honda.interface import elesys_pid_accel_min, elesys_pid_floor_applies  # FORK(HONDA_ACCORD_9G_AU)
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
@@ -58,6 +59,8 @@ class Controls(ControlsExt):
     self.calibrated_pose: Pose | None = None
 
     self.LoC = LongControl(self.CP, self.CP_SP)
+    # FORK(HONDA_ACCORD_9G_AU): HONDA_ELESYS's PID floor follows the climb (honda/interface.py elesys_pid_accel_min())
+    self.elesys_pid_floor = self.CP.brand == 'honda' and elesys_pid_floor_applies(self.CP, self.CP_SP)
     self.VM = VehicleModel(self.CP)
     self.LaC: LatControl
     if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
@@ -136,6 +139,11 @@ class Controls(ControlsExt):
 
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, self.CP_SP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
+    # FORK(HONDA_ACCORD_9G_AU): -3.2 on the level; on a climb lowered by g*sin(pitch), which the car controller's pitch
+    # feedforward adds back after the PID, never below upstream's -4.0; -4.0 without a pose
+    if self.elesys_pid_floor:
+      pitch = self.calibrated_pose.orientation.y if self.calibrated_pose is not None else None
+      pid_accel_limits = (elesys_pid_accel_min(self.CP, self.CP_SP, pitch), pid_accel_limits[1])
     actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits))
 
     # Steering PID loop and lateral MPC
