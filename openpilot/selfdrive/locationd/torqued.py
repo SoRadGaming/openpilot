@@ -19,6 +19,11 @@ try:  # FORK(HONDA_ACCORD_9G_AU): a shadow (lat_speed_split.py); if it cannot be
 except Exception:
   def make_lat_speed_split(CP, prior_factor, decimated):
     return None
+try:  # FORK(HONDA_ACCORD_9G_AU): this car's higher factor floor (torque_floor.py); without it, upstream's window
+  from openpilot.sunnypilot.selfdrive.locationd.torque_floor import lataccel_factor_floor
+except Exception:
+  def lataccel_factor_floor(CP, prior, upstream_floor, upstream_window):
+    return upstream_floor
 
 HISTORY = 5  # secs
 POINTS_PER_BUCKET = 1500
@@ -109,6 +114,10 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     self.decay = MIN_FILTER_DECAY
     self.min_lataccel_factor = (1.0 - self.factor_sanity) * self.offline_latAccelFactor
     self.max_lataccel_factor = (1.0 + self.factor_sanity) * self.offline_latAccelFactor
+    # FORK(HONDA_ACCORD_9G_AU): 1.10 instead of 0.875 on the Elesys Accord (torque_floor.py); every other car, and this
+    # one under the relaxed toggle, keeps upstream's. Not in the restore key: the cache is kept, raw estimates clipped.
+    self.min_lataccel_factor = lataccel_factor_floor(CP, self.offline_latAccelFactor, self.min_lataccel_factor,
+                                                     self.factor_sanity == (FACTOR_SANITY_QLOG if decimated else FACTOR_SANITY))
     self.min_friction = (1.0 - self.friction_sanity) * self.offline_friction
     self.max_friction = (1.0 + self.friction_sanity) * self.offline_friction
 
