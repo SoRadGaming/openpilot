@@ -15,6 +15,182 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## UNRELEASED — round 8: the lift-off ramp, a softer stop, the PID floor, a stopped car at long range, the steering floor, latsplit v2
+
+Branch `round8`: sunnypilot on `55d9562b6` (push9), opendbc branch `round8` on `dc7f1e7d`. **Not pushed, not driven.**
+The board is unchanged (`883a3cd1`). From the analysis of drives 13d-143 (17-19 Oct, push9; full rlogs for 13d, 141,
+142 and 143, qlogs only for 13e and 13f). The owner chose, on 2026-10-19, six of its ten proposals: "Ramp after gas
+lift-off", "Softer stop", "No windup at full brake", "Build it, test hard first" (the long-range stopped car, offered
+only if it passed the clutter set), "Learner floor 0.875 -> 1.10" and "Steering logging v2". Not chosen and not built:
+the S-mode engine-brake allowance, the softer launch cap, DEC, and the radar matching changes R1 and R3 on their own
+(proposal 3 did not need R1, so R1 is not in it). Unchanged by all of it: the stock-ACC stand-down (`SCM_BUTTONS`
+`MAIN_ON = 0`) and stock ACC mode, CMBS/AEB, panda safety, pump rule C1b, the brake learner, the D brake law and the
+aero-credit ramp. Design and identifiers: `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 2.4, 5.3, 7.8, 7.12, 9.3 and 10.8.
+
+Labels as in the analysis: [M] measured in the logs, [R] replayed on the logged inputs (open loop unless it says closed
+loop), [I] inferred.
+
+### 1. The plan ramps in after a gas override (planner, `reentry_ramp.py`; proposal 2)
+
+* **What.** For 1.5 s after the gas override ends, or longitudinal engages, the published plan may fall at most
+  1.5 m/s^3, from min(aEgo, 0) on the first frame back (starting from the last published plan would not help: it is
+  often already -1.6 while the foot is on the gas). It only ever raises the plan. It ends for that re-entry, passing
+  the plan as it is, on the planner's FCW, the MPC's crash flag, or an MPC plan under -2.0. **Added beyond the
+  proposal:** it arms only at 3 m/s or faster, the range the 92 measured re-entries covered. HONDA_ELESYS with
+  openpilot longitudinal only; stock ACC mode and every other car get upstream's plan. One `reentryramp end= t= v= a0=
+  plan0= short= frames=` line per re-entry where it bound.
+* **[R] Replay, the planner on 13d/141/142/143** (fidelity: 92-97% of frames within 0.01 of the logged plan): the 92
+  re-entries of the analysis; the ramp bound on 26.
+  * 141 t=207.8 (Sun 15:52:07): the plan stepped -0.18 -> -1.59 in one frame; it now ramps at 1.5 m/s^3 and meets the
+    plan 0.9 s later. 141 t=206.4 (15:52:06): the steepest half-second fall -2.4 -> -1.5 m/s^3.
+  * The exceptions fired as designed: an MPC plan under -2.0 at 141 t=1784.4; the driver's brake at 142 t=1243.1.
+  * Untouched elsewhere (integration check, 8 routes - 13d, 141, 142, 143, 10f, 113, 120, 121 - 187,206 planner
+    frames against the same planner with the ramp off, upstream's code path): every frame before each route's first
+    re-entry bit-identical (86-2,866 frames per route), `fcw` and `shouldStop` identical on every frame. After a
+    re-entry where it bound, the MPC is warm-started from the ramped accel: up to 0.020 m/s^2 in the 2 s after the
+    window (142), and beyond that at most 0.012 (13d), 0.006 (141) and 0.002 or less on the other six routes.
+  * Cost: the median braking re-entry starts braking no later; the worst 0.18 s later, at most 0.34 m further by the
+    end of the window.
+* **[R] Felt jerk, closed loop through the real controller and the batch-3 car model** (m/s^3):
+
+  | re-entry | logged | sim, today | sim, with the ramp |
+  |---|---|---|---|
+  | 141 16:18:22 | -3.86 | -3.10 | -2.44 |
+  | 141 15:52:07 | -3.62 | -3.06 | -2.42 |
+  | 141 15:52:06 | -1.87 | -1.94 | -1.04 |
+  | 142 17:58:04 | -0.22 | -0.05 | -0.05 |
+
+  **Short of the hoped-for -1.5 to -2.0 on the two worst.** What is left is the PID's integrator winding against the
+  brake's lag on top of the ramp. Tried for information only, not built: a 1.0 m/s^3 ramp gives about -1.7, and also
+  holding the integrator during the ramp about -2.0. 142 17:58:04 was an engagement, not a lift-off: the -3.63 the
+  analysis gave it was the driver's own braking at t=1243.1.
+* 13e/13f (qlogs, the plan at 2 Hz) cannot be replayed; on the logged plan the ramp would bind on 2 and 17 re-entries,
+  by at most 0.28 and 0.43 m/s^2.
+
+### 2. Softer stop: the soft-stop cap 125 -> 105 counts (opendbc `elesys_stop.py`; proposal 5)
+
+* **The pump is unchanged.** 105 stays above C1b's and v5's crawl threshold (100): min(c, 105) > 100 exactly when
+  c > 100, so the crawl run pumps the same frames (a test walks every command 0-255), and the rise to the 189 hold is
+  still more than `ELESYS_PUMP_BIG_RISE` over the cap. [R] In the sim every crawl frame above 100 counts pumped with
+  either cap, and the rise to the hold still pumps.
+* **Full brake is unchanged**: the cap acts only in the stopping state (143's full-brake window: 0 brake frames differ).
+* **[M/I] Decel at the stop** (the 10 logged stops): while rolling at the cap it was a median 0.82 m/s^2 on the IMU;
+  at 105 about 0.58, and entry to wheel-stop 0.80 -> 0.99 s (median). [R] Closed loop: 0.08-0.22 m/s^2 lower decel at
+  the stop on the five stops where only the cap changes; three unchanged.
+* **The cost: about one stop in ten becomes harsher.** 13d t=380.8 already rolled 1.74 s at 125 with only 0.35 m/s^2
+  at the cap; at 105 it has too little decel, and the soft stop's escapes (weak / `max_roll`) hand it to the old brake
+  ramp, which is harsher. The sim shows that on 13d t=380.8 and 141 t=234.7. Lengthening the 1.9 s escape timer
+  (`SOFT_STOP_MAX_ROLL`) would be the fix; it is the owner's call and not built. Road check: the `hondastop rise=`
+  reason on every stop (`weak`, or `max_roll` while rolling, is that case), decel at the IMU-confirmed stop (target
+  median <= 0.6), the gap at the stop (>= 3.5 m).
+* The bound: the rise from 105 to 189 takes about 0.34 s, the ceiling is gone 0.60 s after the rise starts, nothing of
+  it is left 2.50 s after entry (2.42 at 125).
+
+### 3. No windup at full brake: the PID floor -4.0 -> -3.2 (opendbc `interface.py`; proposal 9)
+
+* `get_pid_accel_limits()` returns -3.2 on HONDA_ELESYS outside stock ACC mode; `NIDEC_ACCEL_MIN` (-4.0) everywhere
+  else. -3.2 is still full brake (that starts at -2.6 net), also with the pitch feedforward of an uphill of up to ~6%.
+* [R] The real controller on every engaged frame of 13d, 141, 142 and 143 (median error against the logged output
+  0.0005 m/s^2): one stretch changes, 143 t=172.0-174.67 (267 frames), where the integrator stops at -0.81 instead of
+  -1.33. The brake was at full on every one of those frames either way, and the driver braked at 174.68, so nothing
+  changed on the wire. Not one frame changes on 13d, 141 or 142.
+
+### 4. A stopped car at long range the camera reads as moving (radard; proposal 3) - **passed, included**
+
+* **The rule** (`elesys_radar_guard.long_range_track()`, HONDA_ELESYS, leadOne only): only on a frame where radard has
+  fallen back to the camera's lead, a stationary track (|vLead| < 1.5 m/s) within 20% of the camera's range and 1 m of
+  its lateral position, with the camera's filtered prob >= 0.9, its range >= 50 m and the car above 5 m/s, once the same
+  track has held 6 frames (0.3 s), stands for the lead; a frame where radard matched that track itself continues the
+  run. It bypasses upstream's `vel_sane` and the guard's tolerance for that case only. R1 (sane-first matching) is not
+  needed and is not bundled.
+* **[R] 143** (RadarInterface, radard and the planner, open loop): it fires at t=169.13 (Mon 00:46:04), on track 272 at
+  82.6 m.
+
+  | plan reaches | push9 | round 8 | earlier by |
+  |---|---|---|---|
+  | -1.0 m/s^2 | t=170.13 | t=169.73 | 0.40 s |
+  | -1.5 m/s^2 | t=170.68 | t=170.13 | 0.55 s |
+  | -1.8 m/s^2 | t=170.98 | t=170.88 | 0.10 s |
+
+  At most 0.54 m/s^2 firmer. **Short of the ~0.7 s expected**: that figure assumed the radar's speed was trusted from
+  t=168.3, and this rule cannot start until the camera's prob reaches 0.9 at t=168.88. [I] When the driver braked, the
+  car would have been 0.4 m/s slower with 1.8 m more room; without him it would still have reached the stopped car, at
+  about 2.7 m/s instead of about 4.5.
+* **[R] The 14-route clutter set** (01, 06, 07, 08, 10, 14, c0, c8, c9, 10f, 113, 115, 120, 121; about 210 engaged
+  min): **zero new engaged phantom brakes, no FCW**; plan dips per minute identical to push9 on every route. radard's
+  lead changed on one route only: c0 t=254.5-256.0, engaged, 5 frames on the real stopped queue the car then stopped
+  5 m behind, at most 0.10 m/s^2 firmer.
+* **[R] The new drives, every firing:** 143 t=169.13-170.08, engaged, the stopped car; 141 t=1557.4, 6 frames, not
+  engaged (the driver braking; a car 86-88 m ahead pulling away from a stop at 0.7-1.4 m/s, which push9 also took on
+  some frames); 142 t=959.5 and 959.8, 3 frames, not engaged (a car stopped 72-77 m ahead that push9 took on alternate
+  frames; it then drove off and was followed); 13d: none. 13e/13f have qlogs only: a coarse check found 10 s and
+  1.8 s of engaged time where it could even have applied, the same range as the full-log drives (1.7-12.7 s), where
+  it fired engaged only behind real stopped cars.
+* **[R] Without the fallback condition** it swapped a car it was following for a stationary return 8 times while
+  engaged at 42-110 km/h; six planned -1.8 to -3.5 m/s^2 where push9 planned -1.2 to 0.0 (08 t=945.5, c8 t=615.0 and
+  t=1157.8, c9 t=1104.6, 10f t=2068.2, 142 t=998.5), and c8 at 110 km/h raised an FCW. The analysis's "5-50 times per
+  route" came from a prototype that also skipped the lateral check.
+* Tests: 6 synthetic (each limit just inside and outside, the 0.3 s run, the fallback condition, leadTwo and other
+  cars unchanged), 2 on logged frames (143's stopped car taken; c8/c9 following a moving car with a stationary return
+  near it, unchanged), c0 updated for its 5 filled-in frames; a second fixture, 25.6 KB. Broken deliberately 12 ways:
+  removing the fallback condition (in the guard or in radard) fails 4 tests each time, every limit change and the
+  wrong lead fail too; the one edit that passed (dropping `fell_back` from the return line) changes nothing, because
+  on those frames it returns the track radard already chose.
+
+### 5. The steering learner's floor 0.875 -> 1.10 (torqued, `torque_floor.py`; proposal 6)
+
+* The window is 1.10-1.625 live (1.10-1.875 for the qlog estimator), the 1.25 prior unchanged. HONDA_ELESYS with
+  torque tuning only; it only raises upstream's floor and never above the prior; under sunnypilot's relaxed toggle the
+  0-2.5 window stands; if the module fails to import torqued keeps upstream's window.
+* **Confirmed in the code: nothing resets.** The restore key is (fingerprint, tuning, friction prior, factor prior,
+  `VERSION`), without the bounds, so the cache is restored as it is; a low raw estimate is clipped (`np.clip`), never
+  reset (`reset()` runs only on a NaN estimate); the restored filtered value is not clipped, so it slides up at decay
+  250, about 21 min of onroad time. Installed on the car's cached 0.909: about 1.00 after 13 min onroad, 1.05 after
+  28, 1.09 after 61.
+* **[R] The car's own raw estimates re-filtered through the new clip** (the method reproduces the logged filtered
+  factor to 5e-5), installed before 13d: 13d 0.883 -> 0.997, 13e -> 1.075, 13f -> 1.095, 141 -> 1.099, 142 and 143
+  1.100 (logged: 0.879, 0.876, 0.875, 0.879, 0.928, 0.909). The raw estimate was below 1.10 on every sample of all
+  seven drives, so in town the factor sits on the floor; only highway driving lifts it. Through the real torqued
+  (chained from 115, the cache carried between drives): 13d 0.8826 -> 0.9966, 1.0985 at the end of 143. Open loop: a
+  higher factor commands less torque, which would move later points.
+
+### 6. latsplit v2, logging only (`lat_speed_split.py`; proposal 7)
+
+* Points split by hands - the largest |`steeringTorque`| over torqued's own override window: off (< 300), on
+  (300-1199), hard (>= 1200) - and speed (54-70, 70-90, 90+ km/h): 9 cells, each with the TLS moments, steer bins and
+  the controller's integrator and roll term (only while both are fresh), all combining exactly across drives. Lines
+  are tagged `commit=` `board=` `win=` and pooled by the report only within one build; v1 lines still read. The
+  controller inputs come from a second, non-blocking SubMaster only this car creates; torqued's own is unchanged.
+* **Proof it applies nothing:** `lateralTorqueParameters` identical with and without the shadow on every publish of 7
+  replayed drives.
+* [R] Pooled over 13d, 141, 142 and 143: hands-off share 11.5% / 5.1% / 6.2% (54-70 / 70-90 / 90+); factor hands-off
+  against hands-on 1.261 / 0.741 at 54-70 and 1.236 / 1.052 at 70-90 (90+: 1.352 hands-on, 88 points hands-off); no
+  point in `hard`. The hands-off share is above the analysis's 3-9% because torqued sees `carState` at 20 Hz and misses
+  short touches.
+
+### Integration
+
+* **[R] The real `CarInterface`, open loop on the logged CAN and carControl** of 13d, 141, 142 and 143 (506,468
+  control steps, 1,240,852 frames), opendbc `round8` against `dc7f1e7d`: every frame identical - `0x0E4`, `0x1A6`
+  (the stand-down), `0x200`, `0x30C`, `0x500` - except `0x1FA` on 754 steps, all inside the stopping state of the 10
+  stops (13d 1, 141 2, 142 7), at most 20 counts lower (the cap), with the same `hondastop` reasons. **Stock ACC mode**
+  (`HondaElesysStockAcc` through the real `_initialize_honda()`): every frame of all four routes identical (557,116
+  frames; only `0x0E4` and `0x500` are sent). The planner's ramp is not built in stock ACC mode, and the PID floor is
+  upstream's there. radard's long-range rule follows the clutter guard (HONDA_ELESYS in either mode); in stock ACC mode
+  radarState reaches the CAN only through `0x500`: `LEAD_VISIBLE`, which the rule cannot change (it fires only while a
+  lead is already present), and the `FCW` bit, through the planner's FCW, which it changed on no frame of the 18
+  replayed routes.
+* Gates: `scons -j16`; the full sunnypilot suite (`tools/test_runner.py`, with `PYTHONPATH` on this tree) 2671 passed,
+  45 skipped, 1 xfailed; opendbc's suite 10,310 tests OK (1,272 skipped); ruff clean on both; ty the same 4
+  diagnostics as `nsw-live` on `openpilot` (and opendbc's own 5 as `dc7f1e7d`), at the same places; codespell no new
+  hits; `compile_settings_ui --check` clean (no settings changed); the touched tests pass at every one of the round's
+  commits.
+* **Tests in a second worktree must run with `PYTHONPATH=$HOME/<tree>:$HOME/<tree>/opendbc_repo`**: the venv's
+  editable installs map `openpilot` and `opendbc` to `~/sp-merge`, and without it `tools/test_runner.py` silently
+  tests `~/sp-merge`'s code.
+
+---
+
 ## 2026-10-13 — push9: the update screen, a press at 'now' sets the limit, board `883a3cd1`
 
 After the first drives on push8 (routes 132-137) the owner asked for four things and chose each in chat:

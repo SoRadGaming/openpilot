@@ -178,6 +178,65 @@ Each stop writes one `hondastop` line to the log, saying what happened.
 
 **This has not been on the road yet.** Watch the last half-second of each stop, and how close you stop to the car ahead.
 
+**Round 8 (October 2026): the hold while rolling is now 105, not 125.** Your drives of 17-19 Oct showed the 125 hold
+working as built, but the car still met the stop braking at about 0.74 m/s² (target 0.6), because 125 itself was
+that much brake. 105 should take that to about 0.58 and make the last roll about 0.2 s longer (the stop 0.1-0.2 m
+longer). It is still above 100, so the brake pump behaves exactly as before. One stop in about ten - one
+that already rolled long and slowly at 125 - will now run out of time before the wheels stop and fall back to the
+older, firmer finish; the `hondastop` line then says `rise=weak` or `rise=max_roll`. If that happens often, the fix
+is a longer roll timer, not a higher hold.
+
+---
+
+## Lifting off the gas into a braking car (round 8, October 2026)
+
+When you press the gas while openpilot is following, openpilot keeps planning underneath you - and if the car ahead is
+slowing, that plan is already braking. When you lifted off, the brake used to come straight in at that plan, which is
+the jolt you felt on 141 at 15:52 and 16:18.
+
+Now, for 1.5 s after you lift off (or engage), the braking may build up at most 1.5 m/s³, starting from what the car
+was doing. In the simulation that takes the worst jolts from about -3.1 to about -2.4 m/s³ - better, but not the -1.5 to -2.0
+that was hoped for. It is skipped -
+full braking straight away, as before - if openpilot raises a collision warning, sees a collision course, or plans
+harder than -2.0 m/s². It only works above about 11 km/h. The cost: when you lift off behind a car braking hard but
+not hard enough for those exceptions, braking can start up to about 0.2 s later.
+
+---
+
+## The cruise controller no longer "winds up" at full brake (round 8)
+
+At full brake the car can only give about -1.8 to -2.0 m/s². When openpilot wanted more than that (the stopped car on
+143), its controller kept piling up extra brake request it could never get, which would have held the brake on longer
+once the danger passed. Its limit is now -3.2 instead of -4.0: still full brake, just without the pile-up. Nothing else
+changes, and on your four full-log drives only those 2.7 s on 143 were affected.
+
+---
+
+## A stopped car far ahead that the camera thinks is moving (round 8)
+
+On 143 at 00:46 the radar saw the stopped car 80-90 m ahead, but the camera thought it was doing 10-16 m/s, and
+openpilot's standard rule believed the camera. Now, only when openpilot has nothing but the camera's car to go on,
+and the radar has a **stopped** object right where the camera's car is (within 20% of its distance and 1 m of its
+position), with the camera confident, at least 50 m ahead, for 0.3 s in a row, openpilot uses the radar's stopped
+object instead. On 143 that would have started the firm braking about half a second earlier.
+
+It was tested against the 14 drives full of roadside clutter that the radar fix was tuned on, plus your four newest:
+no new phantom brake anywhere. **It does not make the car stop for that kind of hazard on its own** - full brake is
+still only about 0.2 g - it just starts sooner. Keep covering the brake at night.
+
+---
+
+## Steering learner: it can no longer learn itself so low (round 8)
+
+The steering learner's number had sunk to its floor (0.875), mostly because a hand resting on the wheel in town makes
+the car look like it needs less steering. That made the steering push too strong on the motorway. Its floor is now
+1.10 (the top, 1.625, and the starting point, 1.25, are unchanged). Nothing resets: it slides up by itself over about
+20 minutes of driving. In town it will now sit on the new floor; on the motorway it can still go higher. Expect the
+wheel to feel a little calmer on straights and slightly slower to turn in on slow bends with a hand on.
+
+The learner also now logs (logging only, nothing applied) how the car steers with your hands off versus resting on the
+wheel, in three speed bands, so the next change can be based on that.
+
 ---
 
 ## The brake pump is quieter
