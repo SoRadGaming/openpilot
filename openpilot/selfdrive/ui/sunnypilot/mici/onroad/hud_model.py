@@ -114,7 +114,8 @@ LEAD_DEPART_S = 0.4     # ... continuously for this long (radarState is 20 Hz: 8
 # the compact confirm's card outline, from the frame it is first half visible: it flashes solid BOX_BLINKS times,
 # BOX_BLINK_ON_S lit and BOX_BLINK_OFF_S not - 2.8 flashes a second, under the 3 Hz photosensitivity line - then, while
 # the prompt waits, the split card's dashes march clockwise at BOX_MARCH_PX_S and the stock-plus card's outline breathes
-# at BREATH_HZ. The digits never blink.
+# at BREATH_HZ. The confirm's digits never blink. An ARMED coming limit's number (sla-flash, below) flashes at
+# ARM_FLASH_*, 1.67 Hz, under the 3 Hz line like the box's 2.8 Hz.
 BOX_BLINKS = 2
 BOX_BLINK_ON_S = 0.18
 BOX_BLINK_OFF_S = 0.18
@@ -127,6 +128,12 @@ CARD_GROW_S = 0.25      # the coming limit's card turns into the confirm's (stoc
 CARD_DONE_S = 0.3       # the confirm done: the split card's target slides into MAX's place, the stock-plus card
                         # dissolves round its digits - then the stock MAX number takes over
 NOW_HALO_S = 0.2        # stock-plus: 'now' lights the outline once (the split card's red bar glows BOX_BLINKS times)
+# FORK(SPEED-LIMIT): sla-flash - a press at 'now' arms the coming limit and moves no set speed; until the limit is in
+# force its number flashes, the rest of the card solid
+ARM_FLASH_ON_S = 0.4    # an ARMED coming limit's number: lit 0.4 s ...
+ARM_FLASH_OFF_S = 0.2   # ... dim 0.2 s - the Elesys radar's own CRUISE_SPEED flash (4 frames N, 2 blank at 10 Hz),
+#                         1.67 Hz, under the 3 Hz photosensitivity line
+ARM_FLASH_FLOOR = 0.25  # dim, not gone: the card is where the driver reads the number, so it stays legible
 
 # the compact alerts, by event name (hud_alerts.py draws them), each only under the one event type it has today
 # (COMPACT_TYPES): a new type of a listed name - a '/noEntry' 'openpilot Unavailable', which is normal / LOW / none like
@@ -214,21 +221,40 @@ def approach_now(sm, *, started_frame: int, is_metric: bool, limit: int, map_age
 SLA_MODE_ASSIST = 3     # SpeedLimitMode: assist (speed_limit/common.py Mode.assist) - the mode with the confirm
 
 
+def press_words(lower: bool, target: int) -> str:
+  """FORK(SPEED-LIMIT): push9's words for the press 'now' takes: 'press - to set 100' ('+' when not lower); '' with no
+  target."""
+  return f"press {'-' if lower else '+'} to set {target}" if target > 0 else ""
+
+
 def now_prompt(limit: int, set_speed: int, *, is_metric: bool, offset_type: int = 0, offset_value: float = 0.0,
                pcm_cruise_speed: bool = True) -> str:
   """FORK(SPEED-LIMIT): push9. The card's words at 'now' while the press would be the confirm (now_confirm.py):
   'press - to set 100' when the set speed that limit gives is under the set speed, 'press + to set 100' over it; ''
   when neither (the set speed is already it). The number - and so the key - is the set speed the press gives once the
   limit is in force: the limit with the user's offset as the resolver adds it, clamped and rounded as the confirm
-  stores it (now_confirm.confirm_target, which the planner's NowConfirm.press arms by). The caller decides WHETHER:
-  engaged, non-PCM, Speed Limit Assist on. Pure."""
+  stores it (now_confirm.confirm_target, which the planner's NowConfirm.offer keys by). Pure. sla-flash: the card no
+  longer guesses with this - it shows the planner's own offer (assist.nowKey / nowTarget, press_words), which is
+  exactly when card would take the press; this stays as the reference the offer is tested against."""
   if limit <= 0 or set_speed <= 0:
     return ""
   target = confirm_target(limit, is_metric=is_metric, offset_type=offset_type, offset_value=offset_value,
                           pcm_cruise_speed=pcm_cruise_speed)
   if target <= 0 or target == set_speed:
     return ""
-  return f"press {'-' if target < set_speed else '+'} to set {target}"
+  return press_words(target < set_speed, target)
+
+
+def arm_flash(t: float) -> float:
+  """FORK(SPEED-LIMIT): sla-flash. The armed coming limit's digit strength t seconds into the arm: 1 for ARM_FLASH_ON_S,
+  then ARM_FLASH_FLOOR for ARM_FLASH_OFF_S, repeating - lit first, the cluster's own rhythm. (A microsecond added so a
+  frame clock that sums 0.05 s steps - 1.2 s as 1.1999999 - lands in the phase it means.)"""
+  return 1.0 if (max(0.0, t) + 1e-6) % (ARM_FLASH_ON_S + ARM_FLASH_OFF_S) < ARM_FLASH_ON_S else ARM_FLASH_FLOOR
+
+
+def armed_text(target: int) -> str:
+  """FORK(SPEED-LIMIT): sla-flash. The card's words while a press at 'now' is held: the set speed it becomes, and when."""
+  return f"sets {target} at sign"
 
 
 class ApproachState:
@@ -323,6 +349,10 @@ class MaxCard:
   done: float = 0.0           # CARD_DONE: 0..1, eased
   max_right: float = math.inf  # the card's right edge stays left of this x (the stop timer, the road's edge): the
   #                              stock-plus card squeezes its row to fit (the split card is narrower than any limit)
+  armed: bool = False         # approach (sla-flash): a coming limit whose press at 'now' is held - drawn as at 'now',
+  #                              with text 'sets 80 at sign' and no key
+  digits: float = 1.0         # approach: the coming limit's number's strength, 0..1 (arm_flash while armed); nothing
+  #                              else on the card flashes
 
 
 # ------------------------------------------------------------------------------------------- alerts

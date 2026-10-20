@@ -8,15 +8,18 @@ import dataclasses
 
 import pyray as rl
 
+from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer, CRUISE_DISABLED_CHAR, KM_TO_MILE
 from openpilot.selfdrive.ui.sunnypilot.onroad.blind_spot_indicators import BlindSpotIndicators
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_alerts, hud_draw  # FORK(HUD)
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (ApproachState, MaxCard, approach_text,  # FORK(HUD)
-                                                                     box_breath, box_outline, ease_in_out, ease_out,
-                                                                     event_name, CARD_APPROACH, CARD_ENTER_S, CARD_GROW_S,
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (Approach, ApproachState, MaxCard,  # FORK(HUD)
+                                                                     approach_text, arm_flash, armed_text, box_breath,
+                                                                     box_outline, ease_in_out, ease_out, event_name,
+                                                                     fresh, press_words, resolver_map_limit,
+                                                                     CARD_APPROACH, CARD_ENTER_S, CARD_GROW_S,
                                                                      CARD_PENDING, CARD_DONE, CARD_DONE_S, CONFIRM_EVENT,
-                                                                     NOW_HALO_S, SLA_MODE_ASSIST, now_prompt)
+                                                                     NOW_HALO_S)
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import hud_settings, STYLE_SPLIT, STYLE_STOCK_PLUS  # FORK(HUD)
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_lane_block import BlockTurnIntent, LaneBlockTile  # FORK(HUD)
 from openpilot.selfdrive.ui.ui_state import ui_state
@@ -58,6 +61,9 @@ class HudRendererSP(HudRenderer):
     self._done_t0: float | None = None      # the press done: the card turning into the stock MAX (CARD_DONE_S) ...
     self._done_from = ""                    # ... with the MAX it replaces beside it ...
     self._done_alpha0 = 1.0                 # ... from the strength the card (or the stock MAX) had: no jump
+    # FORK(SPEED-LIMIT): sla-flash - a press at 'now' held by the planner (assist.armedLimit): the card is drawn from it
+    self._armed_t0: float | None = None     # its first frame armed: the number's flash runs from it (arm_flash)
+    self._armed_shown: tuple | None = None  # (limit, target) of the last armed card: what fades out once the arm drops
     # FORK(HUD): a refused lane change as a tile on the blinker side (hud_lane_block.py); the wheel's turn-intent arrow
     # stays up under it
     self._lane_block = LaneBlockTile()
@@ -268,20 +274,31 @@ class HudRendererSP(HudRenderer):
       self._set_speed_alpha_filter.x = 1.0
     return True
 
-  def _now_prompt(self, limit: int) -> str:  # FORK(SPEED-LIMIT): push9
-    """'press - to set 100' in place of 'now' when a press would be the confirm (speed_limit/now_confirm.py): openpilot
-    engaged with a set speed (with cruise off, '-' engages instead - routes 137 88.47 and 479.71), Speed Limit Assist
-    on, and the car's confirm the non-PCM button flow. '' otherwise, and the card says 'now' as before."""
-    cp = ui_state.CP
-    if not (self._engaged and self.is_cruise_set) or ui_state.speed_limit_mode != SLA_MODE_ASSIST or cp is None or \
-       (cp.openpilotLongitudinalControl and cp.pcmCruise):
+  def _plan_assist(self):  # FORK(SPEED-LIMIT): sla-flash
+    """longitudinalPlanSP's Speed Limit Assist while the plan is this drive's and still arriving, else None."""
+    if not fresh(ui_state.sm, 'longitudinalPlanSP', ui_state.started_frame):
+      return None
+    return ui_state.sm['longitudinalPlanSP'].speedLimit.assist
+
+  def _now_prompt(self, limit: int) -> str:  # FORK(SPEED-LIMIT): push9, sla-flash
+    """'press - to set 100' in place of 'now' exactly when card would take the press as the arm for `limit`: the plan's
+    own offer (assist.nowKey / nowLimit / nowTarget, with every Speed Limit Assist guard applied - speed_limit/
+    now_confirm.py), openpilot engaged with a set speed (with cruise off, '-' engages instead - routes 137 88.47 and
+    479.71). push9 guessed it here from the settings; the guess also said it in the prompt, on the first planner frame
+    after engaging and with the mode changing under it, where the press is now an ordinary step. '' otherwise, and the
+    card says 'now' as before."""
+    a = self._plan_assist()
+    if a is None or not (self._engaged and self.is_cruise_set) or int(a.nowKey) == 0 or int(a.nowLimit) != limit:
       return ""
-    cp_sp = getattr(ui_state, "CP_SP", None)
-    set_disp = int(round(self.set_speed if ui_state.is_metric else self.set_speed * KM_TO_MILE))
-    return now_prompt(limit, set_disp, is_metric=ui_state.is_metric,
-                      offset_type=getattr(ui_state, "speed_limit_offset_type", 0),
-                      offset_value=getattr(ui_state, "speed_limit_offset_value", 0.0),
-                      pcm_cruise_speed=cp_sp.pcmCruiseSpeed if cp_sp is not None else True)
+    return press_words(int(a.nowKey) < 0, int(a.nowTarget))
+
+  def _armed(self) -> tuple[int, int] | None:  # FORK(SPEED-LIMIT): sla-flash
+    """(limit, target) of the press at 'now' the planner holds (assist.armedLimit / armedTarget, display units) while
+    openpilot is engaged with a set speed and the plan still arriving; None otherwise."""
+    a = self._plan_assist()
+    if a is None or not (self._engaged and self.is_cruise_set) or int(a.armedLimit) <= 0:
+      return None
+    return int(a.armedLimit), int(a.armedTarget)
 
   # FORK(HUD): the coming limit (round 5)
   def _approach_now(self):
@@ -313,33 +330,56 @@ class HudRendererSP(HudRenderer):
     if blocker == APPROACH_CUT:
       return False
     fading = self._approach_alpha.x > 1e-2 and rl.get_time() - self._approach_t <= PENDING_STALE_S
-    return fading or (blocker == APPROACH_FREE and self._approach_now() is not None)
+    # (sla-flash: an armed card counts like a coming limit's, ApproachState or not)
+    return fading or (blocker == APPROACH_FREE and (self._approach_now() is not None or self._armed() is not None))
 
   def _draw_approach(self, rect: rl.Rectangle) -> None:  # FORK(HUD)
     """The coming limit in the MAX number's place, as the style's card: fades in (0.1 s, as the MAX number; the split
     card also opens out of its MAX half, CARD_ENTER_S); fades out when the look-ahead and its hold end, or under the
     stock MAX number taking the place; goes at once when anything else takes it. 'now' glows (split card: the red bar,
-    twice) or lights its outline once (stock-plus)."""
+    twice) or lights its outline once (stock-plus).
+
+    sla-flash: while the planner holds a press made at 'now' (_armed), the card is drawn from THAT - the coming limit,
+    held 'now', 'sets 80 at sign' and no key, its number flashing (arm_flash), everything else solid - over whatever
+    ApproachState shows: ApproachState drops the coming limit at most APPROACH_HOLD_S after the look-ahead ended, the
+    arm lives up to ARM_KEEP_S longer, and the card must stay until the limit is in force. When the arm drops the card
+    fades (or cross-fades into the stock MAX number the take brings, as a coming limit does) with the armed words and
+    the number solid; if 'now' is still open (a press the other way) it is the 'now' card again."""
     ap = self._approach_now()
+    armed = self._armed()
     now = rl.get_time()
     blocker = self._approach_blocker()
     if blocker == APPROACH_CUT or now - self._approach_t > PENDING_STALE_S:
       self._approach_alpha.x = 0.0   # (or the road view was not drawn for a while: no tail)
-    self._approach_alpha.update(1.0 if ap is not None and blocker == APPROACH_FREE else 0.0)
+    self._approach_alpha.update(1.0 if (ap is not None or armed is not None) and blocker == APPROACH_FREE else 0.0)
     self._approach_t = now
-    if ap is not None:
-      self._approach_shown = ap
+    if armed is not None:
+      if self._armed_t0 is None:
+        self._armed_t0 = now
+      self._armed_shown = armed
+      self._approach_shown = Approach(limit=armed[0], lower=self._armed_lower(*armed), dist=0.0, frac=0.0, held=True)
+    else:
+      self._armed_t0 = None
+      if ap is not None:
+        self._armed_shown = None
+        self._approach_shown = ap
     shown = self._approach_shown
     # the stock MAX number fading in as it goes: one or the other, never both at full
     alpha = self._approach_alpha.x * (1.0 - self._set_speed_alpha_filter.x)
     if shown is None or alpha < 1e-2:
       self._approach_t0 = self._now_t0 = None
+      self._armed_shown = None
       return
     from openpilot.selfdrive.ui.sunnypilot.onroad.speed_limit import SpeedLimitRenderer
+    held = self._armed_shown is not None
     text = approach_text(SpeedLimitRenderer._format_dist(shown.dist), shown.held)
-    is_now = text == "now"
+    is_now = held or text == "now"
     frac = 0.0 if is_now else shown.frac   # 'now': the bar has drained
-    if is_now:
+    digits = 1.0
+    if held:
+      text = armed_text(self._armed_shown[1])   # sla-flash: the press held
+      digits = arm_flash(now - self._armed_t0) if self._armed_t0 is not None else 1.0
+    elif is_now:
       text = self._now_prompt(shown.limit) or text   # push9: the press 'now' takes, where it takes one
     if self._approach_t0 is None:
       self._approach_t0 = now
@@ -351,4 +391,15 @@ class HudRendererSP(HudRenderer):
       t = now - self._now_t0
       lit = box_outline(t)[0] if hud_settings.get().limit_style == STYLE_SPLIT else t < NOW_HALO_S
     self._draw_card(rect, MaxCard(CARD_APPROACH, shown.limit, shown.lower, self._current_text(), text=text, frac=frac,
-                                  alpha=alpha, lit=lit, enter=ease_out((now - self._approach_t0) / CARD_ENTER_S)))
+                                  alpha=alpha, lit=lit, enter=ease_out((now - self._approach_t0) / CARD_ENTER_S),
+                                  armed=held, digits=digits))
+
+  def _armed_lower(self, limit: int, target: int) -> bool:  # FORK(SPEED-LIMIT): sla-flash
+    """The armed limit's chevron: lower than the limit in force (the resolver's map limit), or - with none - its set
+    speed under the one held now."""
+    conv = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
+    in_force = resolver_map_limit(ui_state.sm, ui_state.started_frame, conv)
+    if in_force > 0:
+      return limit < in_force
+    held = round(self.set_speed if ui_state.is_metric else self.set_speed * KM_TO_MILE)
+    return target < held

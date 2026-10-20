@@ -92,7 +92,7 @@ def reset_calls():
   calls.update(banner=0, banner_text=None, box=0, box_rect=None, box_text=None, box_note=None, box_alpha=None, lit=None,
                phase=None, breath=None, grow=None, approach=0, approach_rect=None, approach_args=None, approach_lit=None,
                enter=None, done=0, done_args=None, style=None, card=None, approach_current=None, box_current=None,
-               done_alpha=None, max_right=None)
+               done_alpha=None, max_right=None, approach_armed=None, approach_digits=None, approach_alpha=None)
 
 
 def counted_banner(*a, **k):
@@ -113,7 +113,8 @@ def counted(real, style):
     elif c.kind == HM.CARD_APPROACH:
       calls["approach"] += 1
       calls.update(approach_rect=r, approach_args=[c.value, c.lower, c.text, round(c.frac, 3)], approach_lit=bool(c.lit),
-                   enter=round(c.enter, 3), approach_current=c.current)
+                   enter=round(c.enter, 3), approach_current=c.current, approach_armed=bool(c.armed),
+                   approach_digits=round(c.digits, 3), approach_alpha=round(c.alpha, 3))
     else:
       calls["done"] += 1
       calls["done_args"] = [c.value, c.current, round(c.done, 3)]
@@ -172,10 +173,12 @@ def put(svc, fill, frame=5):
 
 def scene(v=110 / KPH, limit=110, ahead=0, ahead_dist=0.0, ahead_valid=True, nsw_state=2, source="map",
           standstill=False, alert=None, assist="active", set_kph=110, lead=None, lp=True, cs=True, offset=0, rail=None,
-          map_frame=5, enabled=True):
+          map_frame=5, enabled=True, now_key=None, armed=None):
   """rail = dict(stop_m, solid, curve_kph, confident): the right rail's messages (modelV2's plan, carControl,
   longitudinalPlan, smart cruise control) - none of them otherwise. No limit ahead unless ahead > 0. enabled=False:
-  openpilot not engaged (selfdriveState), the set speed kept as this non-PCM car keeps it."""
+  openpilot not engaged (selfdriveState), the set speed kept as this non-PCM car keeps it. sla-flash: now_key =
+  (key, limit, target), the planner's offer (assist.nowKey / nowLimit / nowTarget); armed = (limit, target), the press
+  it holds (assist.armedLimit / armedTarget / armedSpeed)."""
   for svc in SERVICES + RAIL_SERVICES:
     sm.seen[svc] = sm.alive[svc] = sm.updated[svc] = False
     sm.recv_frame[svc] = 0
@@ -219,6 +222,12 @@ def scene(v=110 / KPH, limit=110, ahead=0, ahead_dist=0.0, ahead_valid=True, nsw
     r.speedLimitValid = r.speedLimitLastValid = True
     r.source = source
     p.speedLimit.assist.state = assist
+    a = p.speedLimit.assist
+    if now_key is not None:
+      a.nowKey, a.nowLimit, a.nowTarget = now_key
+    if armed is not None:
+      a.armedLimit, a.armedTarget = armed
+      a.armedSpeed, a.armSeq = armed[1] / KPH, 1
     if rail.get("curve_kph"):
       vis = p.smartCruiseControl.vision
       vis.state, vis.active, vis.vTarget = "entering", True, rail["curve_kph"] / KPH
@@ -925,6 +934,103 @@ software = gui_app.texture("../../sunnypilot/selfdrive/assets/offroad/icon_softw
 out["gateway_icon"] = {"b": [icon_b.id, icon_b.width, icon_b.height], "fallback_id": icon_fallback.id,
                        "software_id": software.id}
 
+# ----------------------------------------------------------------------------------------- sla-flash: the armed card
+# A press at 'now' the planner holds (assist.armedLimit): the coming limit's number flashes - lit 0.4 s, dim 0.2 s, 8 and
+# 4 frames at 20 fps - and nothing else on the card; 'sets 100 at sign' and no key; drawn from the arm with the
+# look-ahead gone; when the arm drops it fades with the armed words and solid digits (a lapse), or the take's stock MAX
+# number takes the place. The 'press' words come from the planner's offer, and only for that limit.
+NOW_M4 = dict(M4, ahead=100, ahead_dist=30.0, map_frame=6)                    # 110, the 100 under 50 m: 'now'
+ARMED = dict(NOW_M4, now_key=(-1, 100, 100), armed=(100, 100))
+ARMED_GONE = dict(M4, map_frame=7, now_key=(-1, 100, 100), armed=(100, 100))  # the look-ahead gone, still armed
+TAKEN = dict(M4, limit=100, set_kph=100, map_frame=8, alert=CHANGED)
+LAPSED = dict(M4, map_frame=7)
+
+
+def digit_box(card, style):
+  """The coming limit's digits' ink box (+2 px of anti-aliasing), from the HUD rect's top left."""
+  txt = str(int(card.value))
+  if style == "split":
+    tx, ty, tw, th = hud_draw.split_layout(card, 0, 0).target
+  else:
+    mx, my, _, _ = hud_draw._max_ink(txt)
+    tw, th, _, _ = hud_draw.ink(txt, hud_draw.SP_APPROACH_SIZE, 1.0, FontWeight.DISPLAY)
+    tx, ty = mx, my
+  return (int(tx) - 2, int(ty) - 2, int(tx + tw) + 3, int(ty + th) + 3)
+
+
+def outside(a, b, bx):
+  """Pixels that differ outside the box bx."""
+  d = np.abs(a - b).max(axis=2) > 0
+  x0, y0, x1, y1 = bx
+  d[max(0, y0):y1, max(0, x0):x1] = False
+  return int(d.sum())
+
+
+CARD_BOX = (0, 0, 300, 170)
+# the stock MAX number has the place for 2.5 s after engaging (and its fade), and mapd's one message runs down to the
+# change in a second and is held 3 s: cruise 5 s first, then 'now' for 2 s (its glow and the fade-in done)
+LEAD_IN = [(M4, 100, "cruise"), (NOW_M4, 40, "now")]
+armed_r = {}
+views = []
+for tag, prm in (("d3", ON), ("d1", D1)):
+  g = run(prm, [(kw, n, f"armed_{tag}_0{i}_{nm}") for i, (kw, n, nm) in enumerate(LEAD_IN)] +
+          [(ARMED, 1, f"armed_{tag}_{i + 1:02d}") for i in range(14)])
+  g_calls = list(phase_calls)[1:]
+  g = g[1:]
+  style = g_calls[-1]["style"]
+  bx = digit_box(calls["card"], style)
+  fr = g_calls[1:]
+  lit = [i + 1 for i, c in enumerate(fr) if c["approach_digits"] == 1.0]
+  dim = [i + 1 for i, c in enumerate(fr) if c["approach_digits"] is not None and c["approach_digits"] < 1.0]
+  r = {"digits": [c["approach_digits"] for c in fr], "armed": [c["approach_armed"] for c in fr],
+       "text": [c["approach_args"][2] if c["approach_args"] else None for c in fr],
+       "value": [c["approach_args"][0] if c["approach_args"] else None for c in fr],
+       "top_icons": [c["top_icons"] for c in fr], "style": style, "box": bx,
+       "now_text": g_calls[0]["approach_args"][2] if g_calls[0]["approach_args"] else None,
+       "green": [count(x, CARD_BOX, "green") for x in g[1:]], "now_green": count(g[0], CARD_BOX, "green"),
+       "lit_vs_dim": same(g[lit[0]], g[dim[0]]) if lit and dim else None,
+       "lit_vs_dim_outside": outside(g[lit[0]], g[dim[0]], bx) if lit and dim else None,
+       "lit_vs_lit": same(g[lit[0]], g[lit[1]]) if len(lit) > 1 else None,
+       "dim_vs_dim": same(g[dim[0]], g[dim[1]]) if len(dim) > 1 else None,
+       "lit_digit_white": count(g[lit[0]], bx, "white") if lit else None,
+       "dim_digit_white": count(g[dim[0]], bx, "white") if dim else None}
+  # the look-ahead gone (ApproachState drops the coming limit after its 3 s hold): still drawn, from the arm
+  g = run(prm, LEAD_IN + [(ARMED, 10, f"armed_gone_{tag}_1"), (ARMED_GONE, 80, f"armed_gone_{tag}_2")],
+          setup=views.append)
+  r["gone"] = dict(phase_calls[-1], approach_state=views[-1]._hud_renderer._approach.frame is not None)
+  # the take: the set speed becomes the limit (one change) - the stock MAX number takes the place, the card fades into it
+  g = run(prm, LEAD_IN + [(ARMED, 20, f"armed_take_{tag}_1")] +
+          [(TAKEN, 1, f"armed_take_{tag}_{i + 2:02d}") for i in range(12)] + [(TAKEN, 30, f"armed_take_{tag}_99")])
+  r["take"] = [dict(approach=c["approach"], text=c["approach_args"][2] if c["approach"] else None,
+                    digits=c["approach_digits"] if c["approach"] else None, alpha=c["approach_alpha"] if c["approach"] else None,
+                    top_icons=c["top_icons"]) for c in phase_calls[3:]]
+  r["take_max_white"] = count(g[-1], MAX_BOX, "white")
+  # a lapse (a phantom): the arm drops with nothing coming - the card fades with the armed words, the number solid
+  g = run(prm, LEAD_IN + [(ARMED, 10, f"armed_lapse_{tag}_1"), (ARMED_GONE, 80, f"armed_lapse_{tag}_2")] +
+          [(LAPSED, 1, f"armed_lapse_{tag}_{i + 3:02d}") for i in range(10)] + [(LAPSED, 30, f"armed_lapse_{tag}_99")])
+  r["lapse"] = [dict(approach=c["approach"], text=c["approach_args"][2] if c["approach"] else None,
+                     digits=c["approach_digits"] if c["approach"] else None, alpha=c["approach_alpha"] if c["approach"] else None)
+                for c in phase_calls[4:]]
+  # the other key: the arm drops while 'now' is still open - the 'now' card again
+  run(prm, LEAD_IN + [(ARMED, 10, f"armed_other_{tag}_1"), (NOW_M4, 3, f"armed_other_{tag}_2")])
+  r["other_key"] = dict(phase_calls[-1])
+  armed_r[tag] = r
+
+# the 'press' words: only with the planner's key for THAT limit; push9's guess (Speed Limit Assist mode, engaged) alone
+# no longer says it - the prompt up, or pending - and the words are planner's target
+ui_state.speed_limit_mode = 3
+words = {}
+for name, kw in (("offered", dict(NOW_M4, now_key=(-1, 100, 100))), ("offered_plus", dict(NOW_M4, now_key=(1, 100, 105))),
+                 ("other_limit", dict(NOW_M4, now_key=(-1, 90, 90))), ("none", dict(NOW_M4)),
+                 ("pre_active", dict(NOW_M4, assist="preActive")), ("pending", dict(NOW_M4, assist="pending")),
+                 ("not_engaged", dict(NOW_M4, now_key=(-1, 100, 100), enabled=False))):
+  img = run(ON, [(M4, 100, f"words_{name}_0"), (kw, 40, f"words_{name}")])[-1]
+  c = phase_calls[-1]
+  words[name] = dict(text=c["approach_args"][2] if c["approach"] else None, green=count(img, CARD_BOX, "green"))
+ui_state.speed_limit_mode = 1
+armed_r["words"] = words
+out["armed"] = armed_r
+
 print("RESULT " + json.dumps(out), flush=True)
 '''
 
@@ -1421,3 +1527,61 @@ class TestHudRender(OpenpilotTestCase):
     assert held > 0 and s["rail_white"][4] > 250, f"kept a moment after the plan stops stopping: {s}"
     assert fade_out > 0 and s["rail_white"][5] == 0 and s["rail_grey"][5] > 20, f"then fades out: {s}"
     assert gone == 0, f"then gone, and the ball back exactly where the stock one is: {s}"
+
+  # ----------------------------------------------------------------------------------------- sla-flash: the armed card
+  def test_the_armed_number_flashes_and_nothing_else(self):
+    for tag in ("d3", "d1"):
+      r = self.r["armed"][tag]
+      assert r["style"] == ("split" if tag == "d3" else "plus"), r["style"]
+      assert all(r["armed"]) and set(r["value"]) == {100}, r
+      assert r["digits"] == [1.0] * 8 + [0.25] * 4 + [1.0] * 2, f"{tag}: lit 0.4 s, dim 0.2 s, from the first frame {r['digits']}"
+      assert set(r["text"]) == {"sets 100 at sign"}, r["text"]
+      assert r["lit_vs_dim"] > 0 and r["lit_vs_dim_outside"] == 0, \
+        f"{tag}: the frames differ, and only inside the number's ink box {r['box']}: {r}"
+      assert r["lit_vs_lit"] == 0 and r["dim_vs_dim"] == 0, f"{tag}: the rest of the card is solid {r}"
+      assert r["lit_digit_white"] > 200 and r["dim_digit_white"] == 0, f"{tag}: dim, not gone (25 %): {r}"
+      assert all(r["top_icons"]), "a top icon: the face makes way"
+
+  def test_the_armed_words_have_no_key(self):
+    for tag in ("d3", "d1"):
+      r = self.r["armed"][tag]
+      assert r["now_text"] == "now", r["now_text"]
+      assert all(g == 0 for g in r["green"]), f"{tag}: 'sets 100 at sign' - no green key {r['green']}"
+
+  def test_the_armed_card_outlives_the_look_ahead(self):
+    for tag in ("d3", "d1"):
+      g = self.r["armed"][tag]["gone"]
+      assert not g["approach_state"], f"{tag}: the look-ahead's hold has ended: {g}"
+      assert g["approach"] == 1 and g["approach_args"][:3] == [100, True, "sets 100 at sign"] and g["approach_armed"], g
+
+  def test_the_take_hands_over_to_the_stock_max(self):
+    for tag in ("d3", "d1"):
+      r = self.r["armed"][tag]
+      take = r["take"]
+      drawn = [t for t in take if t["approach"]]
+      assert drawn and all(t["text"] == "sets 100 at sign" and t["digits"] == 1.0 for t in drawn), \
+        f"{tag}: it fades with the armed words, the number solid: {take}"
+      alphas = [t["alpha"] for t in drawn]
+      assert alphas == sorted(alphas, reverse=True) and take[-1]["approach"] == 0, f"{tag}: a fade, then gone {take}"
+      assert all(t["top_icons"] for t in take), f"{tag}: no frame for the face at the hand-over {take}"
+      assert r["take_max_white"] > 2000, f"{tag}: the stock MAX number, the new set speed: {r['take_max_white']}"
+
+  def test_a_lapse_fades_with_the_armed_words(self):
+    for tag in ("d3", "d1"):
+      lapse = self.r["armed"][tag]["lapse"]
+      drawn = [t for t in lapse if t["approach"]]
+      assert drawn and all(t["text"] == "sets 100 at sign" and t["digits"] == 1.0 for t in drawn), lapse
+      assert [t["alpha"] for t in drawn] == sorted([t["alpha"] for t in drawn], reverse=True), lapse
+      assert lapse[-1]["approach"] == 0 and len(drawn) == len(lapse) - 1, f"never back to 'now' for its tail: {lapse}"
+
+  def test_the_other_key_is_the_now_card_again(self):
+    for tag in ("d3", "d1"):
+      o = self.r["armed"][tag]["other_key"]
+      assert o["approach"] == 1 and o["approach_args"][2] == "now" and not o["approach_armed"], o
+
+  def test_the_press_words_are_the_planners(self):
+    w = self.r["armed"]["words"]
+    assert w["offered"]["text"] == "press - to set 100" and w["offered"]["green"] > 0, w
+    assert w["offered_plus"]["text"] == "press + to set 105", "the planner's target, offset and all"
+    for name in ("other_limit", "none", "pre_active", "pending", "not_engaged"):
+      assert w[name]["text"] == "now" and w[name]["green"] == 0, f"{name}: no key the planner would not take {w}"

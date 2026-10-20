@@ -436,12 +436,16 @@ SP_KEY_FLOOR = 0.5      # the green key blinks 0.5..1, so 'press [-] to set 100'
 
 
 def approach_now(c: MaxCard) -> bool:
-  """A coming limit's card at 'now': the word, or (push9) the press it takes - 'press - to set 100' - in its place."""
-  return c.kind == CARD_APPROACH and (c.text == "now" or prompt_parts(c.text) is not None)
+  """A coming limit's card at 'now': the word, or (push9) the press it takes - 'press - to set 100' - in its place, or
+  (sla-flash) that press held: armed, 'sets 100 at sign'."""
+  return c.kind == CARD_APPROACH and (c.armed or c.text == "now" or prompt_parts(c.text) is not None)
 
 
 def _sp_row(c: MaxCard) -> list[tuple]:
   """The row under the digits: ('text', words, weight, alpha) | ('chev', down) | ('key', lower, alpha) | ('gap', px)."""
+  if c.kind == CARD_APPROACH and c.armed:
+    # sla-flash: the press held - the chevron and 'sets 100 at sign', no key (there is nothing more to press)
+    return [("chev", bool(c.lower)), ("gap", 8.0), ("text", c.text, FontWeight.BOLD, 240)]
   if c.kind == CARD_APPROACH:
     parts, key_lower = prompt_parts(c.text), confirm_lower(c.text)
     if parts is not None and key_lower is not None:
@@ -555,8 +559,9 @@ def stock_plus_card(c: MaxCard, x0: float, y0: float) -> tuple[float, float, flo
     _flash_outline(bx, by, bw, bh, SP_RADIUS, line, ca, SP_HALO)
   else:
     _solid_rrect(bx, by, bw, bh, SP_RADIUS, line, rl.Color(255, 255, 255, int(line_a * ca)))
+  # (sla-flash: an armed coming limit's digits flash - c.digits - and nothing else on the card)
   rl.draw_text_ex(gui_app.font(FontWeight.DISPLAY), txt, rl.Vector2(ink_x - ix0, ink_y - iy0), size, 0,
-                  rl.Color(255, 255, 255, int(255 * MAX_WHITE * a)))
+                  rl.Color(255, 255, 255, int(255 * MAX_WHITE * a * (c.digits if c.kind == CARD_APPROACH else 1.0))))
   _sp_draw_row(row, ink_x, row_cy, a * max(0.0, 1.0 - 2.0 * u), row_size, row_sx)
   if u > 0:
     rl.draw_text_ex(gui_app.font(FontWeight.SEMI_BOLD), tr("MAX"), rl.Vector2(x0 + MAX_LABEL_X, y0 + MAX_LABEL_Y),
@@ -661,7 +666,8 @@ def split_card(c: MaxCard, x0: float, y0: float) -> tuple[float, float, float, f
   u = max(0.0, min(1.0, c.done)) if c.kind == CARD_DONE else 0.0
   enter = max(0.0, min(1.0, c.enter)) if c.kind == CARD_APPROACH else 1.0
   if c.kind == CARD_APPROACH:
-    foot = SC_FOOT_H * enter if prompt_parts(c.text) is not None else 0.0   # push9: 'now' with its press
+    # push9: 'now' with its press; sla-flash: that press held ('sets 100 at sign')
+    foot = SC_FOOT_H * enter if (c.armed or prompt_parts(c.text) is not None) else 0.0
   elif c.kind == CARD_PENDING:
     foot = SC_FOOT_H * min(1.0, max(0.0, c.grow) / SC_FOOT_FRAC)
   else:
@@ -714,7 +720,9 @@ def split_card(c: MaxCard, x0: float, y0: float) -> tuple[float, float, float, f
     text_ink(val, size, left, bottom - ih / 2, rl.Color(255, 255, 255, int((255 + (255 * MAX_WHITE - 255) * u) * a)),
              sx=sx, w=FontWeight.DISPLAY, anchor="left")
   else:
-    text_ink(val, ts, rx0, base_y - SC_TARGET_CAP / 2, rl.Color(255, 255, 255, int(255 * ra)), sx=tsx,
+    # (sla-flash: an armed coming limit's number flashes - c.digits - and only it)
+    da = ra * (c.digits if c.kind == CARD_APPROACH else 1.0)
+    text_ink(val, ts, rx0, base_y - SC_TARGET_CAP / 2, rl.Color(255, 255, 255, int(255 * da)), sx=tsx,
              w=FontWeight.DISPLAY, anchor="left")
   _sc_caption(rx0, cap_cy, c.lower, cap_txt, chip, ra if u == 0 else a * max(0.0, 1.0 - 2.0 * u))
   if u > 0.5:
