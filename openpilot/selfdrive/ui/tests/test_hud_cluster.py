@@ -540,6 +540,41 @@ class TestBoxOutline(OpenpilotTestCase):
     assert HM.ease_in_out(0.5) == 0.5 and HM.ease_out(0.5) > 0.5
 
 
+# ------------------------------------------------------------------------------------------- sla-flash: the armed card
+class TestArmFlash(OpenpilotTestCase):
+  """FORK(SPEED-LIMIT): sla-flash. A press at 'now' held by the planner: the coming limit's number flashes at the Elesys
+  radar's own rhythm (lit 0.4 s, dim 0.2 s), the words say what happens and when."""
+  def test_the_rhythm(self):
+    assert (HM.ARM_FLASH_ON_S, HM.ARM_FLASH_OFF_S) == (0.4, 0.2)
+    assert all(HM.arm_flash(i / 1000) == 1.0 for i in range(400)), "lit on [0, 0.4)"
+    assert all(HM.arm_flash(i / 1000) == HM.ARM_FLASH_FLOOR for i in range(400, 600)), "dim on [0.4, 0.6)"
+    assert HM.arm_flash(0.6) == 1.0 and HM.arm_flash(1.0) == HM.ARM_FLASH_FLOOR and HM.arm_flash(1.2) == 1.0, "period 0.6"
+    assert HM.arm_flash(-1.0) == 1.0, "lit from the first frame"
+    assert 1.0 / (HM.ARM_FLASH_ON_S + HM.ARM_FLASH_OFF_S) < 3.0, "under the 3 Hz photosensitivity line"
+    assert 0.0 < HM.ARM_FLASH_FLOOR < 0.5, "dim, never gone"
+    # the cluster's: 4 sends lit, 2 blank at 10 Hz - the same 0.4 s / 0.2 s
+    from opendbc.car.honda import hondacan
+    assert hondacan.NOW_FLASH_ON / 10 == HM.ARM_FLASH_ON_S
+    assert (hondacan.NOW_FLASH_PERIOD - hondacan.NOW_FLASH_ON) / 10 == HM.ARM_FLASH_OFF_S
+    assert [hondacan.now_flash_speed(80, k) for k in range(7)] == [80] * 4 + [255] * 2 + [80]
+
+  def test_the_words(self):
+    assert HM.armed_text(80) == "sets 80 at sign"
+    assert HM.confirm_lower(HM.armed_text(80)) is None and HM.prompt_parts(HM.armed_text(80)) is None, \
+      "no key in the armed words: nothing more to press"
+    assert HM.press_words(True, 50) == "press - to set 50" and HM.press_words(False, 80) == "press + to set 80"
+    assert HM.press_words(True, 0) == ""
+    assert HM.now_prompt(50, 60, is_metric=True) == HM.press_words(True, 50)
+
+  def test_the_card_carries_it(self):
+    c = HM.MaxCard(HM.CARD_APPROACH, 80, False, "60")
+    assert c.armed is False and c.digits == 1.0, "a card that does not set them is today's"
+    from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_draw
+    armed = HM.MaxCard(HM.CARD_APPROACH, 80, False, "60", text=HM.armed_text(80), armed=True)
+    assert hud_draw.approach_now(armed), "drawn as at 'now': the full red bar, the chip, the white outline"
+    assert hud_draw._sp_row(armed) == [("chev", False), ("gap", 8.0), ("text", "sets 80 at sign", hud_draw.FontWeight.BOLD, 240)]
+
+
 # ------------------------------------------------------------------------------------------- the right rail's rules
 def stopping_plan(stop_m: float | None, v0: float = 8.0):
   """modelV2's 33-point plan (velocity.x, position.x at T_IDXS): a steady brake from v0 to a stop stop_m ahead, or

@@ -382,6 +382,75 @@ are in section 16.10 of the car document.
 
 ---
 
+## UNRELEASED — sla-flash: a press at 'now' holds, flashes, and sets the limit once
+
+The owner after the push9 drives (2026-10-19): "I don't like the speed limit how setting it changes it to one different
+of speed than it swaps once you past 50m if you press early". push9's press at 'now' was also its ordinary 1 km/h
+step, so the set speed changed twice - the step at the press, the limit at the sign: 7 of the 10 push9 'now' windows
+(13d-143), and in the 2 phantoms he undid the step by hand (13f 326.35, 141 236.62). He chose "Hold it and flash" and
+"Comma screen and dash":
+
+* **The press moves nothing.** card takes it - its first action (a short press's release, a long press's first 0.5 s
+  step) on the key the planner offers at 'now' (`longitudinalPlanSP.speedLimit.assist.nowKey`, with every Speed Limit
+  Assist guard push9's press had) - and reports it (`carStateSP.speedLimitNow`); the planner arms exactly what card
+  reports (never a limit already in force). The rest of that press and the same key again while armed are swallowed
+  too. When the limit comes into force the set speed changes once, straight to it. The other key is its ordinary step
+  and disarms; a walk begun before 'now' is left alone; a phantom lapses 2.5 s after 'now' with nothing to undo.
+* **The comma card flashes the coming limit's number** while the press is held - lit 0.4 s, dim (25 %) 0.2 s - with
+  'sets 100 at sign' and no key; everything else on the card is solid, both styles; drawn from the planner's arm even
+  after the look-ahead's hold has ended; it cross-fades into the stock MAX number at the take. The 'press - to set
+  100' words now come from the planner's offer, so they show exactly when card would take the press.
+* **The cluster flashes it too:** openpilot's own ACC_HUD `CRUISE_SPEED` = N for 4 frames, blank for 2 (the Elesys
+  radar's own flash for a speed it is building up to), solid at the take (`CarControlSP.speedLimitNowFlash`; opendbc
+  `CHANGELOG-elesys.md` 24). Only byte 3 and its checksum change; panda, carstate, the PCM, the board, the stand-down,
+  stock ACC mode and CMBS/AEB are untouched.
+* In 'now' the card's key no longer steps the set speed - a long press included, taken whole at its first 0.5 s step.
+  A press holds until the limit is in force (0.4-4.1 s in the replays) or, for a phantom, 3 s past the sign plus
+  2.5 s: about 8.5 s at 60 km/h, 11.5 s at 30 km/h, and never more than 12 s from the press (the cap, below). To slow
+  more before the sign: brake, the other key, or wait. Logged for the next drive: `assist.armSeq` / `armEnd` (taken,
+  lapsed, otherKey, walkedPast, off, cardOff, otherLimit, selfRaised, capped), `carControlSP.speedLimitNowFlash`,
+  `sendcan 0x30C` byte 3 (`scratchpad/slaflash/nowlog.py` lists them per route).
+
+Replays (card + selfdrived + plannerd closed loop on the logged inputs, NEW against the logged build; the old copy
+reproduces the logged set speed on 13d/142/143 frame for frame, on 141 but 8 frames, on 134/137 but 6 - prompt
+confirms a planner frame early or late, none at a 'now' press; `scratchpad/slaflash/REPLAYS.md`):
+
+| route | press | NEW (sla-flash) | logged build | |
+|---|---|---|---|---|
+| 134 (push8) | 313.56 + | 50 held, 315.51 50->80 | 50->51, prompt, 80 | one change |
+| 134 | 446.47 - | held, 447.54 ->60 | 79->78, prompt, 60 | one change |
+| 134 | 716.34 + 717.66 + | held, 719.53 ->80 | 60->61->62, prompt, 80 | one change |
+| 137 (push8) | 305.28 + | 61 held, 305.69 61->80 | 61->62, 305.73 80 | one change |
+| 13d | 211.34 + 214.22 + | 60 held, 214.76 60->80 | 60->61->62->80 | one change |
+| 13d | 601.91 - | 81 held, 602.83 81->80 | 81->80 at the press | one change, 0.9 s later |
+| 141 | 231.90 -, phantom | 80 held, lapsed 235.90 | 80->79, then his walk | nothing to undo |
+| 142 | 304.04 + / 479.00 - | held, 305.87 50->80 / 480.84 79->60 | a step, then the limit | one change each |
+| 143 | 496.71 + | 60 held, 500.79 60->80 | 60->61->80 | one change |
+| 13e, 13f (qlog) | 4 presses | listed: one change each; 13f's 326.35 - (his undo) is the other key | | listed |
+
+In every arm the predicted 0x30C flashes from the first send after the press (about 0.1 s) to the take in the exact
+4 / 2 pattern. Without a 'now' press NEW equals the logged build on every set speed, SLA state and 0x30C frame of all
+12 routes (unexplained differences: 0).
+
+Review fixes (two reviews; nothing on the wire changed):
+
+* **The planner arms a report only on the offer it published last** - that limit on that key, an arm's own key only
+  while that arm stands, never a limit in force. card's report is a frame or two behind the press, and three late
+  reports armed what they should not: after a hand-over to a different limit (the cluster flashing 50 for 2.6 s on the
+  prompt for a 70, or an arm for 50 under a 40 the press had confirmed), after a phantom's lapse (2.5 s more of
+  flashing), and after a plannerd restart (card's old tally). Each is now a press spent with nothing moved.
+* **An arm lasts at most 12 s from its press** (`ARM_MAX_S`, `armEnd` capped): at a crawl 'now' can open 15 s of
+  travel before the sign, and the cluster flash would run past anything stock shows (8.6 s at most in 13 stock drives).
+  'now' still open, the key is offered again; at the sign the prompt asks as before.
+* **Tests that run the real hops:** card's `state_update` writing the report, plannerd's loop reading it, the planner
+  publishing the arm (never the offer) as `armedSpeed`, controlsd flashing the arm only and only while the plan
+  arrives, disengaging disarming, and the cluster going solid at a take that lands in the flash's dark phase. A
+  mutation of each of those passed every test before.
+* Known: on the stock-plus card the held set speed shows on neither display while armed (the card takes the MAX
+  number's place and the cluster shows the target); the split card's MAX half shows it.
+
+---
+
 ## 2026-10-13 — push9: the update screen, a press at 'now' sets the limit, board `883a3cd1`
 
 After the first drives on push8 (routes 132-137) the owner asked for four things and chose each in chat:

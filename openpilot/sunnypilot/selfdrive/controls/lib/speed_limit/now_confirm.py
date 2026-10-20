@@ -35,12 +35,32 @@ THE GUARDS. Only a press:
 A press the other way disarms, and so do presses that take the set speed past the armed target (NowConfirm.track: armed
 100, '-' to 101 and again to 99 - the 100 must not raise it back). The arm lapses ARM_KEEP_S after the 'now' window closes (kept while change_hold is still
 holding a new limit back): a phantom 'now' (a limit mapd announced that never came - route 134 at 304.52 and 674.56)
-sets nothing. Nothing changes before the limit is in force: until then the press is the ordinary 1 km/h step it always
-was.
+sets nothing.
 
-WHAT IT DOES NOT KNOW. plannerd cannot see the screen. A press in 'now' counts while the card is drawn small or hidden by
-something drawn over it - the stock MAX number while SLA is inactive after the press's own step, a full-screen alert,
-the lane-block tile - exactly as it would with the card showing: the card, when it shows, says what the press does.
+ONE CHANGE (sla-flash, owner 2026-10-19: "The early press does NOT change your set speed at all. It just arms the new
+limit, and the new limit number flashes until you pass the sign; then the set speed changes once, straight to the
+limit. No double change."). push9's press was ALSO its ordinary 1 km/h step, and the limit then applied at the sign:
+two set-speed changes, in 7 of the 10 push9 'now' windows; the 2 phantoms left a step the driver undid by hand. Now card
+swallows the press - its first action (a short press's release, a long press's first 0.5 s step) on the key the plan
+offers (nowKey: NowConfirm.offer under SLA's guards) - and reports it (carStateSP.speedLimitNow); the planner arms what
+card reports (arm()), never on its own view of the releases (press() only disarms), so no press is swallowed and not
+armed, nor armed and also stepped. The rest of that press, and the same key again while armed, are swallowed too:
+nothing moves until the limit is in force, and then the set speed changes once. A press the other way is still its
+ordinary step, and disarms. A limit already in force is never armed (5.3 of the design: the hand-over beat the report
+by a frame - the prompt then takes the press's release, still one change).
+
+The report reaches the planner a frame or two after card took the press, so the planner arms it only on the offer it
+published last (SpeedLimitAssist._now_arm_ok, sla-flash review 1): that limit on that key and, when the offer was an
+arm's own key, that arm still standing. Otherwise the press is spent with nothing moved: a different limit that won the
+hand-over (no 50 flashing over the prompt for a 70), an arm that lapsed meanwhile (no fresh 2.5 s), a planner that has
+just restarted (card's old tally is no press). An arm never outlives ARM_MAX_S from its press (a crawl), and the key is
+then offered again while 'now' is open.
+
+WHAT IT DOES NOT KNOW. plannerd cannot see the screen. A press in 'now' counts while the card is hidden by something
+drawn over it - a full-screen alert, the lane-block tile - exactly as it would with the card showing: the card, when it
+shows, says what the press does, and the cluster's own set-speed number flashes the target while armed
+(CarControlSP.speedLimitNowFlash, honda carcontroller.py), which is the feedback when the card is hidden. The stock MAX
+number no longer hides the card after the press: the press moves no set speed.
 """
 from dataclasses import dataclass
 
@@ -57,6 +77,22 @@ NEXT_MAX_M = 500.0      # the coming limit shows from the earlier of 500 m ...
 NEXT_MAX_S = 15.0       # ... or 15 s of travel at the current speed
 NSW_NO_LOOKAHEAD = (4, 7)  # nswZone.state: dead reckoning in a tunnel, and GPS still lost after it - never announced
 ARM_KEEP_S = 2.5        # an armed press lapses this long after 'now' closes, if its limit has not come into force
+ARM_MAX_S = 12.0        # sla-flash: ... and is dropped this long after the press whatever 'now' does (a crawl: 'now' can
+#                         open 15 s of travel before the sign). The replays' arms were taken at most 4.1 s after the
+#                         press, their longest 'now' ran 10.3 s to the change; stock's longest flash was 8.6 s
+NOW_FLASH_HOLD_FRAMES = 2  # sla-flash: controlsd holds the cluster flash this many cycles after the arm drops (NowFlashHold)
+
+# FORK(SPEED-LIMIT): sla-flash - how the last arm ended (longitudinalPlanSP.speedLimit.assist.armEnd, for the logs)
+END_NONE = 0          # never armed this drive
+END_TAKEN = 1         # the armed limit came into force and was applied
+END_LAPSED = 2        # 'now' closed more than ARM_KEEP_S ago without it (a phantom)
+END_OTHER_KEY = 3     # a press the other way
+END_WALKED_PAST = 4   # the set speed went past the armed target
+END_OFF = 5           # disengaged, Speed Limit Assist off, PCM
+END_CARD_OFF = 6      # HudApproachingLimit off
+END_OTHER_LIMIT = 7   # a different limit came into force (the prompt)
+END_SELF_RAISED = 8   # SLA ACTIVE raised the set speed by itself (a higher limit >= 80 with the set speed >= 80)
+END_CAPPED = 9        # held ARM_MAX_S without the limit coming into force
 
 # the confirm's target, as cruise_ext stores it and the MAX number shows it (hud_model.target_speed / now_prompt)
 CRUISE_MIN_KPH = 8      # cruise_ext.V_CRUISE_MIN: the confirm's floor with pcmCruiseSpeed
@@ -216,8 +252,9 @@ class ComingLimit:
 
 
 class NowConfirm:
-  """The 'now' window and the press armed in it. update() once a plannerd frame, before Speed Limit Assist; press() for
-  each '+'/'-' release SLA sees while it may arm, then track() with the set speed; take() at a limit change."""
+  """The 'now' window and the press armed in it. update() once a plannerd frame, before Speed Limit Assist; arm() for a
+  press card took (sla-flash), press() for each '+'/'-' release SLA sees while it may disarm, then track() with the set
+  speed; take() at a limit change; offer() for the key card may take next."""
   def __init__(self):
     self.coming = ComingLimit()
     self.reset()
@@ -232,6 +269,8 @@ class NowConfirm:
     self._closed_t: float | None = None  # when 'now' last closed with a press armed
     self._is_metric = True
     self._offset = (0, 0.0, True)  # offset type, offset value, pcmCruiseSpeed: what confirm_target needs
+    self.arm_seq = 0               # sla-flash: arms so far (assist.armSeq)
+    self.last_end = END_NONE       # sla-flash: how the last arm ended (assist.armEnd); persists
 
   def update(self, now: float, *, map_ok: bool, map_frame: int, ahead_valid: bool, ahead_ms: float, ahead_dist: float,
              nsw_state: int, car_ok: bool, v_ego: float, standstill: bool, limit: int, is_metric: bool,
@@ -247,7 +286,7 @@ class NowConfirm:
     if not enabled:
       self.coming.reset()
       self.now_limit = 0
-      self.disarm()
+      self.disarm(END_CARD_OFF)
       return 0
     a = self.coming.update(now, map_frame=map_frame, limit=limit, map_ok=map_ok, car_ok=car_ok, standstill=standstill,
                            v_ego=v_ego, ahead_valid=ahead_valid, ahead_ms=ahead_ms, ahead_dist=ahead_dist,
@@ -256,12 +295,14 @@ class NowConfirm:
     self.now_limit = now_limit
 
     if self.armed:
-      if now_limit == self.armed or holding:
+      if now - self.armed_at > ARM_MAX_S:
+        self.disarm(END_CAPPED)   # sla-flash: never held (nor flashed) longer, 'now' or not
+      elif now_limit == self.armed or holding:
         self._closed_t = None
       elif self._closed_t is None:
         self._closed_t = now
       elif now - self._closed_t > ARM_KEEP_S:
-        self.disarm()
+        self.disarm(END_LAPSED)
     return now_limit
 
   def target(self, limit: int) -> int:
@@ -271,17 +312,39 @@ class NowConfirm:
                           pcm_cruise_speed=pcm_cruise_speed)
 
   def press(self, now: float, plus: bool, set_speed: int) -> None:
-    """A '+' (plus) or '-' release, with the set speed it was pressed at (display units). Arms the 'now' limit when the
-    set speed it gives is that way - the key the card shows (hud_model.now_prompt); a press the other way disarms."""
-    if self.armed and plus != (self.armed_target > set_speed):
-      self.disarm()
+    """A '+' (plus) or '-' release, with the set speed it was pressed at (display units). sla-flash: it only DISARMS -
+    a press the other way than the arm's key (card let it through as an ordinary step). Arming is arm()'s, on card's
+    report: push9 armed here, on the planner's own view of the release, after card had already stepped the set speed.
+    The key is the arm's (_armed_plus), the one card swallows (offer()), not the side of the target the set speed is on:
+    on the target exactly, the arm's key is still swallowed by card, so it must not disarm here either."""
+    if self.armed and plus != self._armed_plus:
+      self.disarm(END_OTHER_KEY)
+
+  def arm(self, now: float, limit: int, plus: bool) -> bool:
+    """FORK(SPEED-LIMIT): sla-flash. card took a press as the arm for `limit` (display units) on key `plus`
+    (carStateSP.speedLimitNow). The same arm reported again (the same key again while armed, the rest of a long press)
+    changes nothing - the lapse clock runs on. False: nothing to arm (no limit, or no set speed it gives)."""
+    target = self.target(limit) if limit > 0 else 0
+    if target <= 0:
+      return False
+    if self.armed == limit and self._armed_plus == plus:
+      return True
+    self.armed, self.armed_target, self._armed_plus, self.armed_at, self._closed_t = limit, target, plus, now, None
+    self.arm_seq += 1
+    return True
+
+  def offer(self, set_speed: int) -> tuple[int, int, int]:
+    """FORK(SPEED-LIMIT): sla-flash. (key, limit, target) card may take as an arm now: while armed, the arm's key (card
+    swallows it again - nothing moves until the sign); else at 'now', the key toward the set speed the coming limit
+    gives (+1 '+', -1 '-'), when it is not the set speed already; (0, 0, 0) otherwise. The caller (SLA) adds its own
+    guards: engaged, non-PCM, Speed Limit Assist in active or inactive. Display units."""
+    if self.armed:
+      return (1 if self._armed_plus else -1), self.armed, self.armed_target
     lim = self.now_limit
-    if not lim:
-      return
-    target = self.target(lim)
-    if target > 0 and target != set_speed and plus == (target > set_speed):
-      self.armed, self.armed_target, self.armed_at, self._closed_t = lim, target, now, None
-      self._armed_plus = plus
+    t = self.target(lim) if lim else 0
+    if t > 0 and set_speed > 0 and t != set_speed:
+      return (1 if t > set_speed else -1), lim, t
+    return 0, 0, 0
 
   def track(self, set_speed: int) -> None:
     """The set speed now (display units), once a frame after that frame's presses. Presses that have taken it PAST the
@@ -292,12 +355,18 @@ class NowConfirm:
 
     ON the target it stays armed: the confirm then writes the number the set speed already is - nothing moves - and
     takes SLA straight to active, where a disarm would flash the prompt for a frame (preActive, then confirmed by
-    target_set_speed_confirmed). A press away from it from there is press()'s 'the other way' or this rule."""
+    target_set_speed_confirmed). A press away from it from there is press()'s 'the other way' or this rule.
+
+    sla-flash: card swallows the arm's key, so only a press card let through can move the set speed while armed - a
+    walk begun before 'now' (its first step came first), a plan card did not have in time."""
     if self.armed and set_speed > 0 and \
        (set_speed > self.armed_target if self._armed_plus else set_speed < self.armed_target):
-      self.disarm()
+      self.disarm(END_WALKED_PAST)
 
-  def disarm(self) -> None:
+  def disarm(self, reason: int = END_OFF) -> None:
+    """Nothing armed any more; `reason` (END_*) is recorded as last_end when something was."""
+    if self.armed:
+      self.last_end = reason
     self.armed = 0
     self.armed_target = 0
     self._armed_plus = False
@@ -307,5 +376,29 @@ class NowConfirm:
     """A new limit has come into force (display units): True if a press armed exactly it. The arm is spent either way:
     a different limit is the ordinary prompt."""
     hit = self.armed > 0 and new_limit == self.armed
-    self.disarm()
+    self.disarm(END_TAKEN if hit else END_OTHER_LIMIT)
     return hit
+
+
+class NowFlashHold:
+  """FORK(SPEED-LIMIT): sla-flash, for controlsd (controlsd_ext.py): longitudinalPlanSP's armedSpeed (m/s, 0 = none)
+  as CarControlSP.speedLimitNowFlash, the last non-zero value held NOW_FLASH_HOLD_FRAMES cycles after it drops.
+
+  WHY. At the take controlsd can see the plan with armedSpeed 0 a cycle before card's carState carries the new set
+  speed (the plan arrived between card's poll and controlsd's in the same 10 ms). For that cycle hudControl.setSpeed is
+  still the OLD set speed and the flash 0: an ACC_HUD send landing on it (1-3 % of takes) would show the old number for
+  100 ms between the flash and the new one - the double change the owner did not want, on the cluster. Held 2 cycles,
+  the carcontroller's 'solid once the set speed is the flashed one' rule ends it cleanly; a lapse or a disarm only
+  flashes 20 ms longer."""
+  def __init__(self):
+    self.value = 0.0
+    self._left = 0
+
+  def update(self, armed_speed: float) -> float:
+    if armed_speed > 0:
+      self.value, self._left = float(armed_speed), NOW_FLASH_HOLD_FRAMES
+    elif self._left > 0:
+      self._left -= 1
+    else:
+      self.value = 0.0
+    return self.value

@@ -277,6 +277,19 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       active @2 :Bool;
       vTarget @3 :Float32;
       aTarget @4 :Float32;
+
+      # FORK(SPEED-LIMIT): sla-flash - a '+'/'-' press while the comma 4's card says 'now' arms the coming limit
+      # without moving the set speed (card swallows it); the limit is set once, when it comes into force
+      # (speed_limit/now_confirm.py). Every field 0 = nothing: no window, no press, today's values.
+      nowKey @5 :Int8;         # the key card would take as that press now: +1 '+', -1 '-', 0 none; while armed, its key
+      nowLimit @6 :UInt16;     # the limit that press arms (display units)
+      nowTarget @7 :UInt16;    # the set speed it gives (display units): the card's 'press - to set N'
+      armedLimit @8 :UInt16;   # the armed limit (display units), 0 none
+      armedTarget @9 :UInt16;  # ... and the set speed it gives (display units)
+      armedSpeed @10 :Float32; # ... in m/s (armedTarget in display units), 0 none: what the cluster flashes
+      armSeq @11 :UInt16;      # arms so far this drive (wraps): counts an arm shorter than a qlog sample
+      armEnd @12 :UInt8;       # how the last arm ended (now_confirm.END_*): 0 none, 1 taken, 2 lapsed, 3 otherKey,
+                               # 4 walkedPast, 5 off, 6 cardOff, 7 otherLimit, 8 selfRaised, 9 capped. Persists.
     }
 
     enum Source {
@@ -409,6 +422,11 @@ struct CarControlSP @0xa5cd762cd951a455 {
   leadTwo @3 :LeadData;
   intelligentCruiseButtonManagement @4 :IntelligentCruiseButtonManagement;
   lateralControl @5 :LateralControl;
+  # FORK(SPEED-LIMIT): sla-flash - the set speed the cluster flashes (openpilot's own ACC_HUD CRUISE_SPEED, 4 sends
+  # it, 2 blank) while Speed Limit Assist holds a press made at 'now', m/s; 0 = no flash. controlsd_ext.py from
+  # longitudinalPlanSP.speedLimit.assist.armedSpeed, held 2 cycles (now_confirm.NowFlashHold). Flat on purpose: it
+  # crosses convert_carControlSP by the top-level splat.
+  speedLimitNowFlash @6 :Float32;
 
   # Lateral controller state the car layer needs but cannot see: it lives in
   # controlsState, which the CarController does not subscribe to. Carried here so the
@@ -503,6 +521,17 @@ struct CarStateSP @0xb86e6369214c01c8 {
   # from an earlier key cycle (cleared on route 113 once the car passed 35 km/h), or a live one's lamps.
   vsaFault @3 :Bool;
   vsaStoredFault @4 :Bool;
+
+  # FORK(SPEED-LIMIT): sla-flash - the '+'/'-' presses card took as a 'now' arm (swallowed: no set-speed change),
+  # for plannerd to arm exactly those (speed_limit/now_confirm.py). card writes it on the builder after
+  # convert_to_capnp; opendbc's CarStateSP mirrors it with zeros.
+  speedLimitNow @5 :SpeedLimitNow;
+
+  struct SpeedLimitNow {
+    consumedSeq @0 :UInt32;    # presses card has taken so far (wraps); a new value = a new press
+    consumedLimit @1 :UInt16;  # the latest one's limit (display units)
+    consumedPlus @2 :Bool;     # ... and its key: '+' (true) or '-'
+  }
 
   # State of the aftermarket LIN-bus gateway that translates openpilot's steering
   # request to the EPS. Decoded from GW_ACTIVE (0x704). See docs/SP_HUD_STATUS.md.

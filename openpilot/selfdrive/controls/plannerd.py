@@ -36,6 +36,9 @@ def main():
     sm.update()
     # FORK(SPEED-LIMIT): buttonsPressed dates each press for the confirm prompt's grace (speed_limit_assist.py)
     longitudinal_planner.sla.update_buttons(sm['selfdriveStateSP'].buttonsReleaseToggle, sm['selfdriveStateSP'].buttonsPressed)
+    # FORK(SPEED-LIMIT): sla-flash - the presses card swallowed as a 'now' arm: the planner arms exactly those
+    now_sp = sm['carStateSP'].speedLimitNow
+    longitudinal_planner.sla.update_now_consumed(now_sp.consumedSeq, now_sp.consumedLimit, now_sp.consumedPlus)
     if sm.updated['modelV2']:
       longitudinal_planner.update(sm)
       longitudinal_planner.publish(sm, pm)

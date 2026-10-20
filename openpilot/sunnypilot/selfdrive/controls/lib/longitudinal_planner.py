@@ -170,6 +170,13 @@ class LongitudinalPlannerSP:
     assist.active = self.sla.is_active
     assist.vTarget = float(self.sla.output_v_target)
     assist.aTarget = float(self.sla.output_a_target)
+    # FORK(SPEED-LIMIT): sla-flash - the key card may take as a 'now' arm, and the arm held (speed_limit/now_confirm.py)
+    assist.nowKey, assist.nowLimit, assist.nowTarget = self.sla.now_offer
+    nc = self.sla.now_confirm
+    unit = CV.KPH_TO_MS if self.sla.is_metric else CV.MPH_TO_MS
+    assist.armedLimit, assist.armedTarget = nc.armed, nc.armed_target
+    assist.armedSpeed = float(nc.armed_target * unit) if nc.armed else 0.
+    assist.armSeq, assist.armEnd = nc.arm_seq & 0xFFFF, nc.last_end
 
     # E2E Alerts
     e2eAlerts = longitudinalPlanSP.e2eAlerts

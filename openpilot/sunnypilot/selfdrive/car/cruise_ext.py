@@ -27,6 +27,19 @@ CRUISE_BUTTON_TIMER = {ButtonType.decelCruise: 0, ButtonType.accelCruise: 0,
 V_CRUISE_MIN = 8
 V_CRUISE_MAX = 145
 V_CRUISE_UNSET = 255
+# FORK(SPEED-LIMIT): sla-flash - a press's first action: a short press's release (button timer <= this) or a long
+# press's first long-press step (== this). cruise.CRUISE_LONG_PRESS, which cruise.py cannot be imported for here (it
+# imports this module); test_speed_limit_now_confirm asserts the two are equal.
+NOW_FIRST_ACTION_FRAMES = 50
+
+
+def write_speed_limit_now(CS_SP, vch: 'VCruiseHelperSP') -> None:
+  """FORK(SPEED-LIMIT): sla-flash. card's report of the presses it took as a 'now' arm (VCruiseHelperSP.now_consumed_*)
+  onto the CarStateSP capnp builder card publishes (carStateSP.speedLimitNow), for plannerd to arm exactly those."""
+  n = CS_SP.speedLimitNow
+  n.consumedSeq = int(vch.now_consumed_seq) & 0xFFFFFFFF
+  n.consumedLimit = max(0, min(0xFFFF, int(vch.now_consumed_limit)))
+  n.consumedPlus = bool(vch.now_consumed_plus)
 
 
 def update_manual_button_timers(CS: car.CarState, button_timers: dict[car.CarState.ButtonEvent.Type, int]) -> None:
@@ -73,6 +86,14 @@ class VCruiseHelperSP:
     self._sla_grace_limit_kph = 0.
     self._sla_frame = 0                           # card frames, to tell one press from the next
     self._sla_grace_press: tuple | None = None    # (button, frame it went down) of the press that confirmed in the grace
+    # FORK(SPEED-LIMIT): sla-flash - a '+'/'-' press while the card says 'now' arms the coming limit and moves nothing
+    # (speed_limit/now_confirm.py). The plan's offer, and what card took, reported to the planner on carStateSP.
+    self._now_key = 0                             # the plan's nowKey: +1 '+', -1 '-', 0 none
+    self._now_limit = 0                           # ... the limit that press arms (display units)
+    self._sla_now_press: tuple | None = None      # (button, frame it went down) of the press taken as a 'now' arm
+    self.now_consumed_seq = 0                     # card -> planner (CarStateSP.speedLimitNow): presses taken so far ...
+    self.now_consumed_limit = 0                   # ... the latest one's limit (display units) ...
+    self.now_consumed_plus = False                # ... and its key
 
   def read_custom_set_speed_params(self) -> None:
     self.custom_acc_enabled = self.params.get_bool("CustomAccIncrementsEnabled")
@@ -117,7 +138,9 @@ class VCruiseHelperSP:
 
     return enabled
 
-  def update_speed_limit_assist(self, is_metric, LP_SP: custom.LongitudinalPlanSP) -> None:
+  def update_speed_limit_assist(self, is_metric, LP_SP: custom.LongitudinalPlanSP, plan_alive: bool = True) -> None:
+    """FORK(SPEED-LIMIT): `plan_alive` (card's sm.alive['longitudinalPlanSP']): a plan no longer arriving offers no
+    'now' arm (sla-flash)."""
     resolver = LP_SP.speedLimit.resolver
     self.has_speed_limit = resolver.speedLimitValid or resolver.speedLimitLastValid
     self.speed_limit_final_last = LP_SP.speedLimit.resolver.speedLimitFinalLast
@@ -136,6 +159,11 @@ class VCruiseHelperSP:
       self._sla_grace_frames = self._sla_grace_frames + 1 if same else -1
     self._sla_state_seen = self.sla_state
     self._sla_frame += 1
+    # FORK(SPEED-LIMIT): sla-flash - the key the planner offers as a 'now' arm, with every SLA guard applied
+    # (a plan without the fields - a test's stand-in - offers none)
+    assist = LP_SP.speedLimit.assist
+    self._now_key = int(getattr(assist, 'nowKey', 0) or 0) if plan_alive else 0
+    self._now_limit = int(getattr(assist, 'nowLimit', 0) or 0) if plan_alive else 0
 
   @property
   def update_speed_limit_final_last_changed(self) -> bool:
@@ -146,8 +174,9 @@ class VCruiseHelperSP:
     """FORK(SPEED-LIMIT): `held_frames` is how many frames ago the button went down (cruise.py's button timer), for the
     confirm grace below. cruise.py calls this on a short press's release and on each long-press step."""
     press = (button_type, self._sla_frame - max(held_frames, 0))
-    if press == self._sla_grace_press:
-      return True   # FORK(SPEED-LIMIT): the rest of a press that confirmed in the grace (its later long-press steps)
+    if press in (self._sla_grace_press, self._sla_now_press):
+      # FORK(SPEED-LIMIT): the rest of a press already taken - confirmed in the grace, or (sla-flash) a 'now' arm
+      return True
 
     in_prompt = self.sla_state == SpeedLimitAssistState.preActive or self.prev_sla_state == SpeedLimitAssistState.preActive
     in_grace = not in_prompt and self._sla_confirm_grace(held_frames)
@@ -157,7 +186,28 @@ class VCruiseHelperSP:
           self._sla_grace_confirm(press)
         return True
 
+    # FORK(SPEED-LIMIT): sla-flash - never inside the prompt: a press there is the prompt's own, either way
+    if not in_prompt and self._sla_now_consume(button_type, held_frames, press):
+      return True
+
     return False
+
+  def _sla_now_consume(self, button_type: car.CarState.ButtonEvent.Type, held_frames: int, press: tuple) -> bool:
+    """FORK(SPEED-LIMIT): sla-flash. The press 'now' takes: its first action (a short press's release, a long press's
+    first long-press step) on the key the plan offers (nowKey) while the plan is still arriving. It is swallowed - the
+    set speed does not move - and reported to the planner (now_consumed_*), which arms the coming limit; the limit is
+    then set once, when it comes into force. The rest of the press is swallowed with it (the first check above). A walk
+    whose first step came before 'now', a press the other way, and every press with nowKey 0 are ordinary. Non-PCM
+    cruise only (the planner never offers a key on a PCM car either)."""
+    if self.CP.pcmCruise or held_frames > NOW_FIRST_ACTION_FRAMES or self._now_limit <= 0:
+      return False
+    key = 1 if button_type == ButtonType.accelCruise else -1 if button_type == ButtonType.decelCruise else 0
+    if key == 0 or key != self._now_key:
+      return False
+    self._sla_now_press = press
+    self.now_consumed_seq = (self.now_consumed_seq + 1) & 0xFFFFFFFF
+    self.now_consumed_limit, self.now_consumed_plus = self._now_limit, key > 0
+    return True
 
   def _sla_confirm_grace(self, held_frames: int) -> bool:
     """FORK(SPEED-LIMIT): the prompt timed out, but this press went down no more than PRE_ACTIVE_CONFIRM_GRACE after
