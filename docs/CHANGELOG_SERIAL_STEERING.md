@@ -28,8 +28,12 @@ merged. **Not driven yet.**
 * **The board image does not change.** `eps_lkas_appslot.bin` is the same blob as push9's: board `883a3cd1`, 49,740
   bytes, SHA-256 `0753b9f6c4e18d1340ce0b5ce40f9ae5344ba8917caa7be557f18635a978de78`, so the gateway page has nothing to
   install. The panda stays `74a0adce` and is not reflashed. The BLR brake-lamp board (branch `blr`) is not part of it.
-* **Unchanged by all three:** the stock-ACC stand-down (`SCM_BUTTONS` `MAIN_ON = 0`) and stock ACC mode, CMBS/AEB and
-  panda safety (replayed below).
+* **Not edited by any of the three:** the stock-ACC stand-down (`SCM_BUTTONS` `MAIN_ON = 0`) and stock ACC mode,
+  CMBS/AEB and panda safety. KTuner is armed in both car modes (pandad's `ELESYS_PARAM_BITS` is bit 32 or bit 64, and
+  `diag_tool_guard.armed_for()` does not exclude stock ACC mode), so while a tool talks parked, or after a car-bus
+  bus-off, either mode (safety 36 or 68) is held at its start-up `elm327` or left for `noOutput`: by design, the car
+  fully stock (`docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 16.2). Replayed below on route 143, which has neither, in both
+  modes.
 
 ### What is in it
 
@@ -106,7 +110,8 @@ merged. **Not driven yet.**
   livestream session and logmessaged pass alone too, 65 + 4); each branch's own test files on the merge: round 8 115
   passed, KTuner 131 (with `test_native.py`'s 5: `test_car_bus_guard` and `test_pandad_stock` run, not skipped),
   sla-flash 280; opendbc's suite 10,321 tests OK (1,272 skipped); ruff clean on both; ty the same 4 diagnostics on
-  `openpilot` as `nsw-live`, at the same places (run with `PYTHONPATH` on each tree), and on opendbc the same 5 as
+  `openpilot` as `nsw-live`, in the same files and at the same lines except `card.py`'s, two lines lower (132 -> 134,
+  under KTuner's and sla-flash's imports; run with `PYTHONPATH` on each tree), and on opendbc the same 5 as
   `dc7f1e7d`; codespell no new hits (`scripts/lint/lint.sh`'s file set: 34 hits, the same 34 as `nsw-live`; the changed
   docs and opendbc files: none new); the repo's lint (`ruff`, indentation, files over 120 KB - none added, the largest
   added file 75,785 bytes -, shebangs, nomerge) passes; `compile_settings_ui --check` clean; no file mode changed; no
