@@ -9,3 +9,6 @@ if arch != "Darwin":
   if GetOption('extras'):
     env.Program('tests/test_pandad_canprotocol', ['tests/test_pandad_canprotocol.cc'], LIBS=[panda] + libs)
     env.Program('tests/test_car_bus_guard', ['tests/test_car_bus_guard.cc'], LIBS=libs)  # FORK(HONDA_ACCORD_9G_AU)
+    # FORK(HONDA_ACCORD_9G_AU): the real pandad.cc / panda_safety.cc against a fake panda (the test defines Panda's methods)
+    stock_objs = [env.Object(f'tests/test_pandad_stock_{f[:-3]}.o', f) for f in ('pandad.cc', 'panda_safety.cc', 'spi.cc')]
+    env.Program('tests/test_pandad_stock', ['tests/test_pandad_stock.cc'] + stock_objs, LIBS=libs)

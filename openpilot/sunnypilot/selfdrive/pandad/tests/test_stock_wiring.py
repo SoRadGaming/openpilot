@@ -5,17 +5,21 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 
 FORK(HONDA_ACCORD_9G_AU): the KTuner wiring in pandad (pandad.cc, panda_safety.cc, pandad.h) and its two params,
-checked on the source the way test_eps_lkas_hook.py checks pandad.py - pandad itself needs a panda to run.
+checked on the source the way test_eps_lkas_hook.py checks pandad.py. What the wiring DOES, poll by poll, is
+selfdrive/pandad/tests/test_pandad_stock.cc's: the real pandad.cc against a fake panda (native, run by test_native.py,
+which this file makes sure lists it and that it was built).
 
 What must hold:
   * stock is reached by LEAVING the car safety mode (NO_OUTPUT, the relay closed), never by changing its param: only a
     car mode is forced down, the start-up ELM327 is left alone, and the stand-down's bit 32 / stock ACC's bit 64 are
     only ever read;
   * configureSafetyMode() still runs the start-up ELM327 and the OBD multiplexing handshake card waits on, holds the car
-    mode back while stock, re-arms after leaving it, and on release runs the unchanged lines: setSafetyMode() and
-    fetchCarParams() are nsw-live's byte for byte, so the release sends the same 0xdf / 0xdc as every start;
-  * fix 2's sample is built from the car-side core, raw ignition and the ELESYS car mode, and its latch acts in the
-    same poll, is seeded from CarBusOffStock and clears it at ignition off;
+    mode back while stock, never sets it on a poll that read the ignition off, re-arms after leaving it, and on release
+    runs the unchanged lines: setSafetyMode() and fetchCarParams() are nsw-live's byte for byte, so the release sends
+    the same 0xdf / 0xdc as every start;
+  * fix 2's sample is built from the car-side core, raw ignition, onroad, the ELESYS car mode and fix 1's flag, its
+    rule is bus-off only (no TEC), and its latch acts in the same poll, is seeded from CarBusOffStock, keeps it set
+    while latched and removes it at key-off;
   * both params are registered with the flags the design needs, and the table has no duplicate.
 """
 import hashlib
@@ -62,7 +66,7 @@ class TestPandaSafety(OpenpilotTestCase):
     return PANDA_SAFETY_CC.read_text(encoding="utf-8")
 
   def configure(self) -> str:
-    return function(self.src(), "void PandaSafety::configureSafetyMode(bool is_onroad, bool stay_stock) {")
+    return function(self.src(), "void PandaSafety::configureSafetyMode(bool is_onroad, bool stay_stock, bool ignition) {")
 
   def test_the_hold_comes_after_the_start_up_elm327_and_before_the_car_params(self):
     body = self.configure()
@@ -70,8 +74,12 @@ class TestPandaSafety(OpenpilotTestCase):
     mux = body.index("updateMultiplexingMode();", first)
     hold = body.index("if (stay_stock) {", mux)
     ret = body.index("return;", hold)
+    ign = body.index("if (!ignition) {", ret)
+    ign_ret = body.index("return;", ign)
     fetch = body.index("auto car_params = fetchCarParams();")
-    assert first < mux < hold < ret < fetch, body
+    assert first < mux < hold < ret < ign < ign_ret < fetch, body
+    # the ignition refusal only returns: no re-arm, no stock_held_
+    assert re.fullmatch(r"if \(!ignition\) \{\s+return;", body[ign:ign_ret + len("return;")]), body[ign:ign_ret + 10]
 
   def test_the_original_block_is_there_verbatim(self):
     body = self.configure()
@@ -100,7 +108,7 @@ class TestPandaSafety(OpenpilotTestCase):
 
   def test_the_header(self):
     h = PANDAD_H.read_text(encoding="utf-8")
-    assert "void configureSafetyMode(bool is_onroad, bool stay_stock = false);" in h
+    assert "void configureSafetyMode(bool is_onroad, bool stay_stock = false, bool ignition = true);" in h
     assert "bool getDiagToolStock();" in h
     assert 'return params_.getBool("DiagToolStock");' in self.src()
 
@@ -136,42 +144,72 @@ class TestPandad(OpenpilotTestCase):
 
   def test_the_bus_guard_sample(self):
     fn = function(self.src(), "static void poll_car_bus_guard(")
+    assert "bool is_onroad, bool diag_stock) {" in fn
     assert "health.car_harness_status_pkt == (uint8_t)cereal::PandaState::HarnessStatus::FLIPPED) ? 2 : 0;" in fn
     assert "const can_health_t &c = can_health[core];" in fn
     assert "s.ignition = (health.flags_pkt & (HEALTH_FLAG_IGNITION_LINE | HEALTH_FLAG_IGNITION_CAN)) != 0U;" in fn
     assert "always_offroad" not in fn, "raw ignition: OffroadMode must not clear the latch"
     assert in_sequence(fn, "s.elesys_car_mode = health.safety_mode_pkt == (uint8_t)cereal::CarParams::SafetyModel::HONDA_NIDEC &&",
                        "(health.safety_param_pkt & ELESYS_PARAM_BITS) != 0U;")
-    for line in ("s.bus_off = c.bus_off != 0U;", "s.bus_off_cnt = c.bus_off_cnt;", "s.tec = c.transmit_error_cnt;",
-                 "s.onroad = is_onroad;"):
+    for line in ("s.bus_off = c.bus_off != 0U;", "s.bus_off_cnt = c.bus_off_cnt;", "s.onroad = is_onroad;",
+                 "s.diag_stock = diag_stock;"):
       assert line in fn, line
-    assert 'params.putBoolNonBlocking("CarBusOffStock", true);' in fn, "no fsync in the 100 Hz loop"
+    assert "s.tec" not in fn, "bus-off only: TEC is logged, never judged"
+    assert fn.count('params.putBoolNonBlocking("CarBusOffStock", true);') == 2, "no fsync in the 100 Hz loop"
     assert 'params.remove("CarBusOffStock");' in fn
-    assert fn.index("if (guard->update(s)) {") < fn.index("putBoolNonBlocking") < fn.index("if (guard->cleared_now()) {") < \
-      fn.index('params.remove("CarBusOffStock");')
+    assert fn.index("if (guard->update(s)) {") < fn.index("putBoolNonBlocking") < \
+      fn.index('} else if (guard->latched() && !params.getBool("CarBusOffStock")) {') < \
+      fn.index("if (guard->cleared_now()) {") < fn.index('params.remove("CarBusOffStock");')
 
   def test_the_guard_acts_in_the_poll_that_sees_it(self):
     """poll_car_bus_guard() runs before should_close_relay in the same send_panda_states(): a latch forces NO_OUTPUT in
     that very poll, whatever card and selfdrived are doing."""
     fn = function(self.src(), "std::optional<bool> send_panda_states(")
-    assert fn.index("poll_car_bus_guard(bus_guard, health, can_health, is_onroad);") < fn.index("bool should_close_relay =")
+    assert fn.index("poll_car_bus_guard(bus_guard, health, can_health, is_onroad, diag_stock);") < fn.index("bool should_close_relay =")
     assert fn.index("if (spoofing_started) {") < fn.index("poll_car_bus_guard(")
 
   def test_the_10hz_block(self):
+    """pandad_run() runs process_panda_safety() - the function test_pandad_stock.cc drives - and nothing else of ours."""
     src = self.src()
     block = src[src.index("// Process panda state at 10 Hz"):src.index("// Send out peripheralState at 2Hz")]
-    order = ["always_offroad = panda_safety.getOffroadMode();", "diag_stock = panda_safety.getDiagToolStock();",
-             "process_panda_state(panda, &pm, engaged, engaged_mads, is_onroad, spoofing_started, always_offroad, diag_stock, &bus_guard);",
-             "panda_safety.configureSafetyMode(is_onroad, diag_stock || bus_guard.latched());"]
+    order = ['is_onroad = sm["deviceState"].getDeviceState().getStarted();', "always_offroad = panda_safety.getOffroadMode();",
+             "process_panda_safety(panda, &pm, &panda_safety, &bus_guard, engaged, engaged_mads, is_onroad, spoofing_started, always_offroad);"]
     pos = [block.index(s) for s in order]
     assert pos == sorted(pos), block
+    code = "\n".join(line.split("//")[0] for line in block.splitlines())
+    for gone in ("process_panda_state(", "configureSafetyMode(", "getDiagToolStock("):
+      assert gone not in code, gone
+    fn = function(src, "void process_panda_safety(")
+    assert in_sequence(fn, "const bool diag_stock = panda_safety->getDiagToolStock();",
+                       "const std::optional<bool> ignition = process_panda_state(panda, pm, engaged, engaged_mads, is_onroad, spoofing_started,",
+                       "always_offroad, diag_stock, bus_guard);",
+                       "panda_safety->configureSafetyMode(is_onroad, diag_stock || bus_guard->latched(), ignition.value_or(false));"), fn
     assert 'CarBusGuard bus_guard(Params().getBool("CarBusOffStock"));' in src, "seeded across a pandad restart"
     assert '#include "selfdrive/pandad/car_bus_guard.h"' in src
 
   def test_the_guard_header_is_dependency_free(self):
     h = GUARD_H.read_text(encoding="utf-8")
     assert re.findall(r"#include <([\w/.]+)>", h) == ["cstdint"] and '#include "' not in h
-    assert "static constexpr uint8_t TEC_LIMIT = 128;" in h
+    sample = h[h.index("struct CarBusSample {"):h.index("};", h.index("struct CarBusSample {"))]
+    assert "tec" not in sample.lower() and "TEC_LIMIT" not in h, "bus-off only, as the owner chose"
+    assert "if (rose || s.bus_off) {" in h
+
+
+class TestNativeTests(OpenpilotTestCase):
+  NATIVE = ("openpilot/selfdrive/pandad/tests/test_car_bus_guard", "openpilot/selfdrive/pandad/tests/test_pandad_stock")
+
+  def test_listed_in_test_native(self):
+    from openpilot.test_native import NATIVE_TESTS
+    for t in self.NATIVE:
+      assert t in NATIVE_TESTS, t
+
+  def test_built_with_the_extras(self):
+    """test_native.py skips a test that was not built. Ours are extras like upstream's canprotocol test: when that one
+    was built, ours must have been too, or their skip would hide them."""
+    if not (REPO / "openpilot/selfdrive/pandad/tests/test_pandad_canprotocol").exists():
+      self.skipTest("built without --extras")
+    for t in self.NATIVE:
+      assert (REPO / t).exists(), t
 
 
 class TestParams(OpenpilotTestCase):

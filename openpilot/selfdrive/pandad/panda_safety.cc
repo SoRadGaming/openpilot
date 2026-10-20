@@ -2,7 +2,7 @@
 #include "openpilot/cereal/messaging/messaging.h"
 #include "common/swaglog.h"
 
-void PandaSafety::configureSafetyMode(bool is_onroad, bool stay_stock) {
+void PandaSafety::configureSafetyMode(bool is_onroad, bool stay_stock, bool ignition) {
   if (is_onroad && !safety_configured_) {
     updateMultiplexingMode();
     // FORK(HONDA_ACCORD_9G_AU): hold the car mode back while the car is to stay stock (KTuner, pandad.cc). Before the first
@@ -10,6 +10,11 @@ void PandaSafety::configureSafetyMode(bool is_onroad, bool stay_stock) {
     // below re-armed this one. When it ends, the unchanged lines below set the same CarParams' mode, as at every start.
     if (stay_stock) {
       stock_held_ = true;
+      return;
+    }
+    // FORK(HONDA_ACCORD_9G_AU): and never on a poll that read the ignition off: at key-off is_onroad is still true for
+    // one poll, and a re-armed (or not yet configured) pandad would set the car mode there. No re-arm, nothing else.
+    if (!ignition) {
       return;
     }
 

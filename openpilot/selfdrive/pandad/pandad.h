@@ -18,7 +18,7 @@ static const std::vector<cereal::PandaState::PandaType> SUPPORTED_PANDA_TYPES = 
 class PandaSafety {
 public:
   PandaSafety(Panda *panda) : panda_(panda) {}
-  void configureSafetyMode(bool is_onroad, bool stay_stock = false);  // FORK(HONDA_ACCORD_9G_AU): stay_stock
+  void configureSafetyMode(bool is_onroad, bool stay_stock = false, bool ignition = true);  // FORK(HONDA_ACCORD_9G_AU): stay_stock, ignition
   bool getOffroadMode();
   bool getDiagToolStock();  // FORK(HONDA_ACCORD_9G_AU)
 
@@ -35,3 +35,9 @@ private:
   Panda *panda_;
   Params params_;
 };
+
+// FORK(HONDA_ACCORD_9G_AU): pandad_run()'s 10 Hz panda-state pass (pandad.cc), driven by tests/test_pandad_stock.cc
+class PubMaster;
+class CarBusGuard;
+void process_panda_safety(Panda *panda, PubMaster *pm, PandaSafety *panda_safety, CarBusGuard *bus_guard, bool engaged,
+                          bool engaged_mads, bool is_onroad, bool spoofing_started, bool always_offroad);

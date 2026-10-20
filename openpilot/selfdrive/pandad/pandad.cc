@@ -191,7 +191,7 @@ static constexpr uint16_t ELESYS_PARAM_BITS = 32U | 64U;
 // itself is in memory, so it acts in this poll whatever card and selfdrived are doing; the param is for selfdrived's
 // text and for a pandad restart (the seed in pandad_run). Written non-blocking: no fsync in this loop.
 static void poll_car_bus_guard(CarBusGuard *guard, const health_t &health,
-                               const std::array<can_health_t, PANDA_CAN_CNT> &can_health, bool is_onroad) {
+                               const std::array<can_health_t, PANDA_CAN_CNT> &can_health, bool is_onroad, bool diag_stock) {
   static Params params;
   const int core = (health.car_harness_status_pkt == (uint8_t)cereal::PandaState::HarnessStatus::FLIPPED) ? 2 : 0;
   const can_health_t &c = can_health[core];
@@ -200,18 +200,22 @@ static void poll_car_bus_guard(CarBusGuard *guard, const health_t &health,
   s.onroad = is_onroad;
   s.elesys_car_mode = health.safety_mode_pkt == (uint8_t)cereal::CarParams::SafetyModel::HONDA_NIDEC &&
                       (health.safety_param_pkt & ELESYS_PARAM_BITS) != 0U;
+  s.diag_stock = diag_stock;
   s.bus_off = c.bus_off != 0U;
   s.bus_off_cnt = c.bus_off_cnt;
-  s.tec = c.transmit_error_cnt;
   const uint32_t prev = guard->prev_bus_off_cnt();
   if (guard->update(s)) {
     LOGE("FORK car bus off stock: core %d bus_off %d bus_off_cnt %u (prev %u) tec %u rec %u lec %d mode %d param %d onroad %d",
          core, (int)c.bus_off, c.bus_off_cnt, prev, (unsigned)c.transmit_error_cnt, (unsigned)c.receive_error_cnt,
          (int)c.last_stored_error, (int)health.safety_mode_pkt, (int)health.safety_param_pkt, (int)is_onroad);
     params.putBoolNonBlocking("CarBusOffStock", true);
+  } else if (guard->latched() && !params.getBool("CarBusOffStock")) {
+    // the manager clears it on every ignition-on edge; a dropout too short to be a key cycle keeps the latch, and with
+    // it selfdrived's reason and the restart seed
+    params.putBoolNonBlocking("CarBusOffStock", true);
   }
   if (guard->cleared_now()) {
-    LOGE("FORK car bus off stock: cleared at ignition off");
+    LOGE("FORK car bus off stock: cleared at key-off");
     params.remove("CarBusOffStock");
   }
 }
@@ -245,7 +249,7 @@ std::optional<bool> send_panda_states(PubMaster *pm, Panda *panda, bool is_onroa
 
   bool ignition_local = ((health.flags_pkt & (HEALTH_FLAG_IGNITION_LINE | HEALTH_FLAG_IGNITION_CAN)) != 0U) && !always_offroad;
 
-  poll_car_bus_guard(bus_guard, health, can_health, is_onroad);  // FORK(HONDA_ACCORD_9G_AU): KTuner fix 2
+  poll_car_bus_guard(bus_guard, health, can_health, is_onroad, diag_stock);  // FORK(HONDA_ACCORD_9G_AU): KTuner fix 2
 
   // Make sure CAN buses are live: safety_setter_thread does not work if Panda CAN are silent and there is only one other CAN node
   if (health.safety_mode_pkt == (uint8_t)(cereal::CarParams::SafetyModel::SILENT)) {
@@ -323,12 +327,13 @@ void send_peripheral_state(Panda *panda, PubMaster *pm) {
   pm->send("peripheralState", msg);
 }
 
-void process_panda_state(Panda *panda, PubMaster *pm, bool engaged, bool engaged_mads, bool is_onroad, bool spoofing_started, bool always_offroad,
-                         bool diag_stock, CarBusGuard *bus_guard) {
+// FORK(HONDA_ACCORD_9G_AU): returns the poll's ignition (nullopt: the panda's health was not read) for process_panda_safety()
+std::optional<bool> process_panda_state(Panda *panda, PubMaster *pm, bool engaged, bool engaged_mads, bool is_onroad, bool spoofing_started,
+                                        bool always_offroad, bool diag_stock, CarBusGuard *bus_guard) {
   auto ignition_opt = send_panda_states(pm, panda, is_onroad, spoofing_started, always_offroad, diag_stock, bus_guard);
   if (!ignition_opt) {
     LOGE("Failed to get ignition_opt");
-    return;
+    return std::nullopt;
   }
 
   // check if we should have pandad reconnect
@@ -340,6 +345,18 @@ void process_panda_state(Panda *panda, PubMaster *pm, bool engaged, bool engaged
   }
 
   panda->send_heartbeat(engaged, engaged_mads);
+  return ignition_opt;
+}
+
+// FORK(HONDA_ACCORD_9G_AU): pandad_run()'s 10 Hz panda-state pass with the KTuner stay-stock wiring - one function, so
+// tests/test_pandad_stock.cc drives exactly this sequence against a fake panda. configureSafetyMode() gets the poll's
+// ignition: it never sets a car mode on a poll that did not read the ignition on (is_onroad is a poll behind at key-off).
+void process_panda_safety(Panda *panda, PubMaster *pm, PandaSafety *panda_safety, CarBusGuard *bus_guard, bool engaged,
+                          bool engaged_mads, bool is_onroad, bool spoofing_started, bool always_offroad) {
+  const bool diag_stock = panda_safety->getDiagToolStock();
+  const std::optional<bool> ignition = process_panda_state(panda, pm, engaged, engaged_mads, is_onroad, spoofing_started,
+                                                           always_offroad, diag_stock, bus_guard);
+  panda_safety->configureSafetyMode(is_onroad, diag_stock || bus_guard->latched(), ignition.value_or(false));
 }
 
 void process_peripheral_state(Panda *panda, PubMaster *pm, bool no_fan_control, bool is_onroad) {
@@ -442,7 +459,6 @@ void pandad_run(Panda *panda) {
   // FORK(HONDA_ACCORD_9G_AU): the KTuner incident's two reasons to stay stock. The bus-off latch is seeded from its param,
   // so a pandad restart inside the key cycle does not put the car mode back into the same fault.
   CarBusGuard bus_guard(Params().getBool("CarBusOffStock"));
-  bool diag_stock = false;
 
   // Main loop: receive CAN first, then process lower priority panda and peripheral state.
   while (!do_exit && check_connected(panda)) {
@@ -462,9 +478,8 @@ void pandad_run(Panda *panda) {
       }
       engaged_mads = process_mads_heartbeat(&sm);
       always_offroad = panda_safety.getOffroadMode();
-      diag_stock = panda_safety.getDiagToolStock();  // FORK(HONDA_ACCORD_9G_AU)
-      process_panda_state(panda, &pm, engaged, engaged_mads, is_onroad, spoofing_started, always_offroad, diag_stock, &bus_guard);
-      panda_safety.configureSafetyMode(is_onroad, diag_stock || bus_guard.latched());  // FORK(HONDA_ACCORD_9G_AU)
+      // FORK(HONDA_ACCORD_9G_AU): process_panda_state() and configureSafetyMode(), with the KTuner stay-stock wiring
+      process_panda_safety(panda, &pm, &panda_safety, &bus_guard, engaged, engaged_mads, is_onroad, spoofing_started, always_offroad);
     }
 
     // Send out peripheralState at 2Hz
