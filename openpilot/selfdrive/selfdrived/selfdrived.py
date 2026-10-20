@@ -37,6 +37,7 @@ from openpilot.sunnypilot.selfdrive.selfdrived.eps_latch_alert import EpsLatchAl
 from openpilot.sunnypilot.selfdrive.selfdrived.vsa_fault_alert import VsaFaultAlert  # FORK(HONDA_ACCORD_9G_AU)
 from openpilot.sunnypilot.selfdrive.controls.lib.steer_saturated import SteerSaturatedAlert  # FORK(LKAS-GATEWAY)
 from openpilot.sunnypilot.selfdrive.selfdrived.lane_block_alert import LaneBlockAlert  # FORK(HUD)
+from openpilot.sunnypilot.selfdrive.selfdrived.car_stock_alert import CarStockAlert  # FORK(HONDA_ACCORD_9G_AU)
 
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
@@ -190,6 +191,7 @@ class SelfdriveD(CruiseHelper):
     self.eps_latch_alert = EpsLatchAlert()  # FORK(LKAS-GATEWAY): "restart the car" when the EPS latches until key-off
     self.vsa_fault_alert = VsaFaultAlert()  # FORK(HONDA_ACCORD_9G_AU): name the VSA's own fault; no engagement while it holds one
     self.lane_block_alert = LaneBlockAlert()  # FORK(HUD): the comma 4's lane-block tile: no block alerts, a refused nudge chimes
+    self.car_stock_alert = CarStockAlert(self.CP)  # FORK(HONDA_ACCORD_9G_AU): KTuner - stock on purpose is not a fault
 
     CruiseHelper.__init__(self, self.CP)
     self.button_state_tracker = ButtonStateTracker()
@@ -421,6 +423,12 @@ class SelfdriveD(CruiseHelper):
       if log.PandaState.FaultType.relayMalfunction in pandaState.faults:
         self.events.add(EventName.relayMalfunction)
 
+    # FORK(HONDA_ACCORD_9G_AU): the car left stock on purpose (KTuner; car_stock_alert.py): the expected controlsMismatch
+    # becomes carNotReady while nothing is engaged, and the SP events carry the words
+    for e in self.car_stock_alert.update(self.events, self.sm['pandaStates'], self.mismatch_counter, self.enabled or self.mads.active,
+                                         self.mads.enabled and not CS.standstill):
+      self.events_sp.add(e)
+
     # Handle HW and system malfunctions
     # Order is very intentional here. Be careful when modifying this.
     # All events here should at least have NO_ENTRY and SOFT_DISABLE.
@@ -608,6 +616,8 @@ class SelfdriveD(CruiseHelper):
     alerts_sp = self.events_sp.create_alerts(self.state_machine.current_alert_types, callback_args)
     # FORK(HONDA_ACCORD_9G_AU): the VSA's text, not "restart the car" - also when vsaFault arrives a frame after accFaulted
     alerts, alerts_sp = self.vsa_fault_alert.adjust_alerts(alerts, alerts_sp, self.AM, self.sm.frame, callback_args)
+    # FORK(HONDA_ACCORD_9G_AU): KTuner - our texts for stock on purpose, also when the reason arrives after the disengagement
+    alerts, alerts_sp = self.car_stock_alert.adjust_alerts(alerts, alerts_sp, self.AM, self.sm.frame, callback_args)
     alerts, alerts_sp = self.lane_block_alert.drop_block_alerts(alerts, alerts_sp)  # FORK(HUD): the tile shows the block
 
     self.AM.add_many(self.sm.frame, alerts + alerts_sp)
@@ -694,6 +704,7 @@ class SelfdriveD(CruiseHelper):
 
       self.mads.read_params()
       self.lane_block_alert.read_params(self.params)  # FORK(HUD)
+      self.car_stock_alert.read_params(self.params)  # FORK(HONDA_ACCORD_9G_AU)
       time.sleep(0.1)
 
   def run(self):

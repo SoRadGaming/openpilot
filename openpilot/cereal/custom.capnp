@@ -370,6 +370,15 @@ struct OnroadEventSP @0xda96579883444c35 {
     # FORK(HUD): one prompt chime for a lane-change nudge refused by a block, with the comma 4's lane-block tile on
     # (HudLaneBlock, lane_block_alert.py). Same rule as above if upstream takes this ordinal.
     laneChangeNudgeRefused @32;
+    # FORK(HONDA_ACCORD_9G_AU): the car is left stock on purpose (KTuner, 2026-10-19) - a diagnostic tool talking on the
+    # car bus while parked (diagnosticToolStock, card's diag_tool_guard.py), or the car bus went bus-off and openpilot
+    # stays off until the ignition is switched off (carBusOffStock; carBusOffAnnounce = its one chime; carBusOffDisengage
+    # = the disengagement text, raised only while something is engaged). See
+    # sunnypilot/selfdrive/selfdrived/car_stock_alert.py. Same rule as above if upstream takes these ordinals.
+    diagnosticToolStock @33;
+    carBusOffStock @34;
+    carBusOffAnnounce @35;
+    carBusOffDisengage @36;
   }
 }
 

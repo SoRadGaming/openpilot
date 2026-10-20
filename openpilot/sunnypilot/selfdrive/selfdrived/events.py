@@ -369,4 +369,43 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       AlertStatus.normal, AlertSize.mid,
       Priority.LOW, VisualAlert.none, AudibleAlert.none, 1.),
   },
+
+  # FORK(HONDA_ACCORD_9G_AU): the car left stock on purpose (KTuner, 2026-10-19), raised by car_stock_alert.py, which
+  # also puts upstream's carNotReady into `events` as the refusal and drops its "Car Not Ready". All static, so the
+  # comma 4's alert walk (test_hud_cluster.every_alert) checks them, and none is on its compact-banner list.
+  # A diagnostic tool on the car bus while parked: a silent note, LOW so the engine-off EPS's "LKAS Fault" (LOWER) does
+  # not cover it; every refusal, disengagement, FCW/AEB and DM alert still takes the screen over it.
+  EventNameSP.diagnosticToolStock: {
+    ET.PERMANENT: Alert(
+      "Diagnostic Tool Connected",
+      "openpilot paused, car is stock",
+      AlertStatus.normal, AlertSize.mid,
+      Priority.LOW, VisualAlert.none, AudibleAlert.none, .2),
+    ET.NO_ENTRY: NoEntryAlert("Diagnostic Tool Connected"),
+  },
+
+  # The car bus went bus-off: stock until the ignition is switched off. The vsaFault pattern - a silent LOWER banner,
+  # one prompt from carBusOffAnnounce (LOW, 3.5 s: shorter than a disengagement alert, which then covers it), and the
+  # disengagement text in its own event, raised only while something is engaged, so a paused MADS in P is not knocked
+  # to disabled with a critical alarm by an IMMEDIATE_DISABLE sitting in events_sp.
+  EventNameSP.carBusOffStock: {
+    ET.PERMANENT: Alert(
+      "Car Bus Error",
+      "car is stock, openpilot off until restart",
+      AlertStatus.normal, AlertSize.mid,
+      Priority.LOWER, VisualAlert.none, AudibleAlert.none, .2),
+    ET.NO_ENTRY: NoEntryAlert("Car Bus Error: Restart Car"),
+  },
+
+  EventNameSP.carBusOffAnnounce: {
+    ET.PERMANENT: Alert(
+      "Car Bus Error",
+      "car is stock, openpilot off until restart",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 3.5),
+  },
+
+  EventNameSP.carBusOffDisengage: {
+    ET.IMMEDIATE_DISABLE: ImmediateDisableAlert("Car Bus Error: Car Is Stock"),
+  },
 }

@@ -2,9 +2,21 @@
 #include "openpilot/cereal/messaging/messaging.h"
 #include "common/swaglog.h"
 
-void PandaSafety::configureSafetyMode(bool is_onroad) {
+void PandaSafety::configureSafetyMode(bool is_onroad, bool stay_stock, bool ignition) {
   if (is_onroad && !safety_configured_) {
     updateMultiplexingMode();
+    // FORK(HONDA_ACCORD_9G_AU): hold the car mode back while the car is to stay stock (KTuner, pandad.cc). Before the first
+    // car mode that is the start-up ELM327 just above; after one, send_panda_states() has forced NO_OUTPUT and the branch
+    // below re-armed this one. When it ends, the unchanged lines below set the same CarParams' mode, as at every start.
+    if (stay_stock) {
+      stock_held_ = true;
+      return;
+    }
+    // FORK(HONDA_ACCORD_9G_AU): and never on a poll that read the ignition off: at key-off is_onroad is still true for
+    // one poll, and a re-armed (or not yet configured) pandad would set the car mode there. No re-arm, nothing else.
+    if (!ignition) {
+      return;
+    }
 
     auto car_params = fetchCarParams();
     if (!car_params.empty()) {
@@ -12,11 +24,21 @@ void PandaSafety::configureSafetyMode(bool is_onroad) {
       LOGW("got %lu bytes CarParamsSP", car_params[1].size());
       setSafetyMode(car_params);
       safety_configured_ = true;
+      if (stock_held_) {  // FORK(HONDA_ACCORD_9G_AU): the end of a held start-up or of a mid-drive stock spell
+        LOGE("FORK leaving stock: car safety mode set");
+        stock_held_ = false;
+      }
     }
+  } else if (is_onroad && stay_stock) {
+    // FORK(HONDA_ACCORD_9G_AU): send_panda_states() forced NO_OUTPUT this pass. Re-arm, so the release re-sends 0xdf
+    // (accepted only outside a car mode) and 0xdc from the same CarParams: 36, or 68 in stock ACC mode.
+    safety_configured_ = false;
+    stock_held_ = true;
   } else if (!is_onroad) {
     initialized_ = false;
     safety_configured_ = false;
     log_once_ = false;
+    stock_held_ = false;  // FORK(HONDA_ACCORD_9G_AU)
   }
 }
 
@@ -81,4 +103,9 @@ void PandaSafety::setSafetyMode(const std::vector<std::string> &params_string) {
 bool PandaSafety::getOffroadMode() {
   auto offroad_mode = params_.getBool("OffroadMode");
   return offroad_mode;
+}
+
+// FORK(HONDA_ACCORD_9G_AU): KTuner fix 1 - card's diag_tool_guard.py holds the car stock while a diagnostic tool talks
+bool PandaSafety::getDiagToolStock() {
+  return params_.getBool("DiagToolStock");
 }

@@ -25,6 +25,7 @@ from openpilot.selfdrive.car.helpers import convert_carControlSP, convert_to_cap
 from openpilot.sunnypilot.mads.helpers import set_alternative_experience, set_car_specific_params
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
 from openpilot.sunnypilot.selfdrive.car.honda_stock_acc import LongSettingsRestore  # FORK(HONDA_ACCORD_9G_AU)
+from openpilot.sunnypilot.selfdrive.car.diag_tool_guard import DiagToolGuard  # FORK(HONDA_ACCORD_9G_AU)
 
 REPLAY = "REPLAY" in os.environ
 
@@ -189,6 +190,10 @@ class Car:
     # FORK(HONDA_ACCORD_9G_AU): stock ACC mode's settings, put back for good from params_thread once the UI has seen this
     # drive's CarParams
     self.long_settings_restore = LongSettingsRestore(self.CP, self.CP_SP, cp_bytes, self.params)
+    # FORK(HONDA_ACCORD_9G_AU): KTuner fix 1 - a diagnostic tool talking on the car bus while parked keeps the car stock
+    # (diag_tool_guard.py). It inherits DiagToolStock, so a card restart inside the drive keeps holding.
+    self._diag_written = self.params.get_bool("DiagToolStock")
+    self.diag_guard = DiagToolGuard(self.CP, self._diag_written)
 
     self.v_cruise_helper = VCruiseHelper(self.CP, self.CP_SP)
 
@@ -215,6 +220,11 @@ class Car:
     RD: structs.RadarDataT | None = self.RI.update(can_list)
 
     self.sm.update(0)
+
+    # FORK(HONDA_ACCORD_9G_AU): KTuner fix 1, decided on this step's frames; no Params I/O here (params_thread writes it)
+    diag = self.diag_guard.update(can_list, CS, self.sm['carControl'], self.sm.all_alive(['carControl']), self.initialized_prev)
+    if diag is not None:
+      cloudlog.event(diag[0], error=True, **diag[1])
 
     can_rcv_valid = len(can_strs) > 0
 
@@ -346,6 +356,14 @@ class Car:
       self._board_fw_seen_at = now
       self.params.put("EpsLkasBoardSeenAt", str(int(time.time())))  # noqa: TID251 - wall clock, kept across boots
 
+  def write_diag_stock(self) -> None:
+    """FORK(HONDA_ACCORD_9G_AU): DiagToolStock for pandad (which leaves or refuses the car mode on it) and selfdrived
+    (the note). Called from params_thread, on change only: a put fsyncs. card is its only writer."""
+    stock = self.diag_guard.stock
+    if stock != self._diag_written:
+      self.params.put_bool("DiagToolStock", stock)
+      self._diag_written = stock
+
   def log_flash_trace(self) -> None:
     """Emit the last flash's steering trace into this route, once.
 
@@ -399,6 +417,10 @@ class Car:
 
     initialized = (not any(e.name == EventName.selfdriveInitializing for e in self.sm['onroadEvents']) and
                    self.sm.seen['onroadEvents'])
+    # FORK(HONDA_ACCORD_9G_AU): KTuner fix 1 holds the FIRST controls_update only (no CI.init, no ControlsReady, no
+    # sendcan: the panda stays in its start-up ELM327, relay closed); the release runs it as a normal start. Once controls
+    # have started this is False for good - card never stops sendcan mid-drive (pandad leaves the car mode instead).
+    initialized = initialized and not (self.diag_guard.stock and not self.initialized_prev)
     if not self.CP.passive and initialized:
       self.controls_update(CS, self.sm['carControl'], self.sm['carControlSP'])
 
@@ -417,6 +439,7 @@ class Car:
       self.write_board_firmware()
       self.log_flash_trace()
       self.long_settings_restore.update()  # FORK(HONDA_ACCORD_9G_AU)
+      self.write_diag_stock()  # FORK(HONDA_ACCORD_9G_AU)
 
       time.sleep(0.1)
 

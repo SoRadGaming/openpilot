@@ -9,6 +9,8 @@ from openpilot.common.test import OpenpilotTestCase
 NATIVE_TESTS = (
   "openpilot/common/tests/test_swaglog",
   "openpilot/selfdrive/pandad/tests/test_pandad_canprotocol",
+  "openpilot/selfdrive/pandad/tests/test_car_bus_guard",  # FORK(HONDA_ACCORD_9G_AU)
+  "openpilot/selfdrive/pandad/tests/test_pandad_stock",  # FORK(HONDA_ACCORD_9G_AU)
   "openpilot/tools/cabana/tests/test_dbc_core",
 )
 

@@ -241,6 +241,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // the next drive for card to emit it into a route. CLEAR_ON_MANAGER_START
     // would throw it away at exactly the wrong moment.
     {"EpsLkasFlashTrace", {PERSISTENT, JSON}},
+    // FORK(HONDA_ACCORD_9G_AU): the KTuner incident's two "stay stock" reasons (2026-10-19). One writer each; never BACKUP.
+    // DiagToolStock: card (params_thread) -> pandad (10 Hz) + selfdrived. A diagnostic tool is holding the car stock.
+    // A new drive starts clean; card inherits it on a restart within the drive.
+    // CarBusOffStock: pandad -> selfdrived (and pandad's own seed after a pandad restart). Latched until ignition OFF:
+    // pandad removes it when it sees ignition off, the manager clears it on the next ignition-on edge.
+    {"DiagToolStock", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
+    {"CarBusOffStock", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, BOOL}},
     {"IsDevelopmentBranch", {CLEAR_ON_MANAGER_START, BOOL}},
     {"IsReleaseSpBranch", {CLEAR_ON_MANAGER_START, BOOL}},
     {"LastGPSPositionLLK", {PERSISTENT, STRING}},
