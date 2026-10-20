@@ -289,7 +289,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       armedSpeed @10 :Float32; # ... in m/s (armedTarget in display units), 0 none: what the cluster flashes
       armSeq @11 :UInt16;      # arms so far this drive (wraps): counts an arm shorter than a qlog sample
       armEnd @12 :UInt8;       # how the last arm ended (now_confirm.END_*): 0 none, 1 taken, 2 lapsed, 3 otherKey,
-                               # 4 walkedPast, 5 off, 6 cardOff, 7 otherLimit, 8 selfRaised. Persists.
+                               # 4 walkedPast, 5 off, 6 cardOff, 7 otherLimit, 8 selfRaised, 9 capped. Persists.
     }
 
     enum Source {

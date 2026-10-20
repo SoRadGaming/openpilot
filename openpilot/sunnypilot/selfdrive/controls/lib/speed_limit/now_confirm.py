@@ -49,6 +49,13 @@ nothing moves until the limit is in force, and then the set speed changes once. 
 ordinary step, and disarms. A limit already in force is never armed (5.3 of the design: the hand-over beat the report
 by a frame - the prompt then takes the press's release, still one change).
 
+The report reaches the planner a frame or two after card took the press, so the planner arms it only on the offer it
+published last (SpeedLimitAssist._now_arm_ok, sla-flash review 1): that limit on that key and, when the offer was an
+arm's own key, that arm still standing. Otherwise the press is spent with nothing moved: a different limit that won the
+hand-over (no 50 flashing over the prompt for a 70), an arm that lapsed meanwhile (no fresh 2.5 s), a planner that has
+just restarted (card's old tally is no press). An arm never outlives ARM_MAX_S from its press (a crawl), and the key is
+then offered again while 'now' is open.
+
 WHAT IT DOES NOT KNOW. plannerd cannot see the screen. A press in 'now' counts while the card is hidden by something
 drawn over it - a full-screen alert, the lane-block tile - exactly as it would with the card showing: the card, when it
 shows, says what the press does, and the cluster's own set-speed number flashes the target while armed
@@ -70,6 +77,9 @@ NEXT_MAX_M = 500.0      # the coming limit shows from the earlier of 500 m ...
 NEXT_MAX_S = 15.0       # ... or 15 s of travel at the current speed
 NSW_NO_LOOKAHEAD = (4, 7)  # nswZone.state: dead reckoning in a tunnel, and GPS still lost after it - never announced
 ARM_KEEP_S = 2.5        # an armed press lapses this long after 'now' closes, if its limit has not come into force
+ARM_MAX_S = 12.0        # sla-flash: ... and is dropped this long after the press whatever 'now' does (a crawl: 'now' can
+#                         open 15 s of travel before the sign). The replays' arms were taken at most 4.1 s after the
+#                         press, their longest 'now' ran 10.3 s to the change; stock's longest flash was 8.6 s
 NOW_FLASH_HOLD_FRAMES = 2  # sla-flash: controlsd holds the cluster flash this many cycles after the arm drops (NowFlashHold)
 
 # FORK(SPEED-LIMIT): sla-flash - how the last arm ended (longitudinalPlanSP.speedLimit.assist.armEnd, for the logs)
@@ -82,6 +92,7 @@ END_OFF = 5           # disengaged, Speed Limit Assist off, PCM
 END_CARD_OFF = 6      # HudApproachingLimit off
 END_OTHER_LIMIT = 7   # a different limit came into force (the prompt)
 END_SELF_RAISED = 8   # SLA ACTIVE raised the set speed by itself (a higher limit >= 80 with the set speed >= 80)
+END_CAPPED = 9        # held ARM_MAX_S without the limit coming into force
 
 # the confirm's target, as cruise_ext stores it and the MAX number shows it (hud_model.target_speed / now_prompt)
 CRUISE_MIN_KPH = 8      # cruise_ext.V_CRUISE_MIN: the confirm's floor with pcmCruiseSpeed
@@ -284,7 +295,9 @@ class NowConfirm:
     self.now_limit = now_limit
 
     if self.armed:
-      if now_limit == self.armed or holding:
+      if now - self.armed_at > ARM_MAX_S:
+        self.disarm(END_CAPPED)   # sla-flash: never held (nor flashed) longer, 'now' or not
+      elif now_limit == self.armed or holding:
         self._closed_t = None
       elif self._closed_t is None:
         self._closed_t = now

@@ -130,6 +130,7 @@ class SpeedLimitAssist:
     self._now_seq_prev = 0
     self._now_arm: tuple[int, bool] | None = None   # card's latest consumed press since the last update(): (limit, plus)
     self.now_offer = (0, 0, 0)                      # (key, limit, target): published as assist nowKey/nowLimit/nowTarget
+    self._now_offer_arm: int | None = None          # ... the arm (arm_seq) it was the key of; None: the window's own
 
     # TODO-SP: SLA's own output_a_target for planner
     # Solution functions mapped to respective states
@@ -408,25 +409,42 @@ class SpeedLimitAssist:
 
   def _now_confirm_presses(self) -> None:
     """FORK(SPEED-LIMIT): push9, sla-flash - first the press card swallowed as a 'now' arm since the last frame
-    (update_now_consumed): armed while engaged, non-PCM, Speed Limit Assist on - card only takes one on the key this
-    planner offered under every other guard (now_offer). Never for the limit already in force on the frame before: the
-    hand-over beat card's report by a frame, and the prompt then confirms on that press's own release (5.3 of the
-    design) - an arm for it would only flash for nothing. Then the '+'/'-' releases (NowConfirm.press, which only
-    disarms: a press the other way), only while long control was engaged on the frame before, in active or inactive.
-    The set speed is the frame before's. Then the set speed this frame (NowConfirm.track): a walk card let through
-    that took it past the armed target disarms."""
+    (update_now_consumed): armed while engaged, non-PCM, Speed Limit Assist on, and only on the offer this planner
+    still stands by (_now_arm_ok). Then the '+'/'-' releases (NowConfirm.press, which only disarms: a press the other
+    way), only while long control was engaged on the frame before, in active or inactive. The set speed is the frame
+    before's. Then the set speed this frame (NowConfirm.track): a walk card let through that took it past the armed
+    target disarms."""
     arm, self._now_arm = self._now_arm, None
     presses, self._now_presses = self._now_presses, []
     engaged = not self.pcm_op_long and self.long_enabled and self.enabled
-    if engaged and arm is not None:
-      speed_conv = CV.MS_TO_KPH if self.is_metric else CV.MS_TO_MPH
-      if arm[0] != round(self.speed_limit_prev * speed_conv):
-        self.now_confirm.arm(time.monotonic(), *arm)
+    if engaged and arm is not None and self._now_arm_ok(*arm):
+      self.now_confirm.arm(time.monotonic(), *arm)
     if engaged and self.long_enabled_prev and \
        self.state in (SpeedLimitAssistState.active, SpeedLimitAssistState.inactive):
       for plus in presses:
         self.now_confirm.press(time.monotonic(), plus, self.prev_v_cruise_cluster_conv)
     self.now_confirm.track(self.v_cruise_cluster_conv)
+
+  def _now_arm_ok(self, limit: int, plus: bool) -> bool:
+    """FORK(SPEED-LIMIT): sla-flash (review 1). card's report of a press it took for `limit` on key `plus` arms only on
+    the offer this planner published last - still self.now_offer here, before this frame's - which is the newest
+    card can have taken it on; the report is a frame or two behind the press:
+      - that limit on that key: a hand-over in between withdrew it - to the limit itself (the prompt then confirms on
+        the press's own release, 5.3 of the design), or to ANOTHER one: no 50 armed on the prompt for a 70, no 50
+        armed under a 40 the press confirmed; and a planner just restarted has offered nothing, so card's old tally is
+        not a press;
+      - if it was an arm's own key (the same key again while armed), that arm still standing: one that lapsed (or was
+        capped) since must not be armed afresh by a press made while it held - another 2.5 s of flashing;
+      - never the limit already in force on the frame before (the hand-over beat the report).
+    Refused, the press is spent: card swallowed it and nothing moves, as with a lapse."""
+    key, offered, _ = self.now_offer
+    if key == 0 or offered != limit or (key > 0) != plus:
+      return False
+    nc = self.now_confirm
+    if self._now_offer_arm is not None and not (nc.armed and nc.arm_seq == self._now_offer_arm):
+      return False
+    speed_conv = CV.MS_TO_KPH if self.is_metric else CV.MS_TO_MPH
+    return limit != round(self.speed_limit_prev * speed_conv)
 
   def _now_confirm_take(self) -> bool:
     """FORK(SPEED-LIMIT): push9 - a new limit has come into force: confirmed by a 'now' press for exactly it?"""
@@ -573,6 +591,7 @@ class SpeedLimitAssist:
     offer_ok = not self.pcm_op_long and self.long_enabled and self.long_enabled_prev and self.enabled and \
       self.state in (SpeedLimitAssistState.active, SpeedLimitAssistState.inactive)
     self.now_offer = self.now_confirm.offer(self.v_cruise_cluster_conv) if offer_ok else (0, 0, 0)
+    self._now_offer_arm = self.now_confirm.arm_seq if self.now_offer[0] and self.now_confirm.armed else None
 
     # Update change tracking variables
     # FORK(SPEED-LIMIT): after the state machine and events, so a change is visible for exactly one frame.

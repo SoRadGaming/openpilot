@@ -414,6 +414,18 @@ class TestNowConfirm(NowConfirmBase):
     rig.at(rig.t_force + 0.3)
     assert rig.changes(n) == [(50., 40.)]
 
+  def test_disengaging_disarms(self, mocker):
+    """rev2: braking or a cancel while armed disengages, and that ends the arm (armEnd off) on the planner's next
+    frame: the flash stops (armedSpeed 0), the key is no longer offered, nothing moved."""
+    rig = self.rig(mocker)
+    rig.tap(MINUS, rig.sign_t - 30. / V)
+    assert rig.armed == 50 and rig.assist.armedSpeed > 0.
+    rig.engaged = False
+    rig.run(0.06)
+    assert rig.armed == 0 and rig.sla.now_confirm.last_end == END_OFF
+    assert rig.assist.armedLimit == 0 and rig.assist.armedSpeed == 0. and rig.assist.nowKey == 0
+    assert set(rig.set_speeds) == {60.}
+
   def test_not_while_cruise_is_off(self, mocker):
     """With cruise off '-' engages (routes 137 88.47, 479.71): a press while not engaged arms nothing, and a report of
     one would arm nothing either."""
@@ -499,8 +511,9 @@ class TestTheHandOverRace(NowConfirmBase):
   have closed - the limit in force - in between. Every press from 0.3 s before the hand-over to 0.2 s after it, at every
   plan and button lag from 1 to 4 card frames: either card let it through (an ordinary step, or the prompt's own
   confirm) or card took it and the set speed changed exactly once, to the limit, by in-force + 0.3 s - and the prompt,
-  if the hand-over beat the report, for no more than 2 planner frames. Never a press taken and lost, never an arm for
-  the limit already in force."""
+  if the hand-over beat the report, for no more than 2 planner frames. Never a press taken and lost here (a report the
+  hand-over beat is refused, and the prompt takes the press's release), never an arm for the limit already in force.
+  The hand-over to a DIFFERENT limit is TestTheArmIsTheOffer's."""
   @parameterized.expand([(p, b) for p in (1, 2, 3, 4) for b in (1, 2, 3, 4)], names=["plan_lag", "button_lag"])
   def test_the_race(self, mocker, plan_lag, button_lag):
     outcomes = set()
@@ -534,6 +547,80 @@ class TestTheHandOverRace(NowConfirmBase):
       assert all(p.speedLimit.assist.armedLimit != int(p.speedLimit.resolver.speedLimitLast * CV.MS_TO_KPH + 0.5)
                  for _, p in rig.plans[1:]), where
     assert "taken" in outcomes and "prompt" in outcomes, outcomes
+
+
+class OtherLimitRig(NowRig):
+  """mapd announced `ahead_kph`, but what comes into force at t_force is `force_kph`, a different limit."""
+  def __init__(self, *a, force_kph: float, **kw):
+    super().__init__(*a, **kw)
+    self.force_kph = force_kph
+
+  def step(self, events=()):
+    if self.frame % PLANNER_EVERY == 0 and self.force_frame is None and self.frame * DT_CTRL >= self.t_force:
+      self.limit_kph = self.final_kph = self.force_kph
+      self.force_frame = self.frame
+      self.phantom = True   # NowRig must not switch to ahead_kph after this
+    super().step(events)
+
+
+class TestTheArmIsTheOffer(NowConfirmBase):
+  """rev1 (A2, A3, A6): card's report reaches the planner a frame or two after card took the press, and by then the
+  planner may have withdrawn the key it offered. The planner arms a report only on the offer it published last
+  (SpeedLimitAssist._now_arm_ok): that limit and that key, and - when the offer was the arm's own key - that arm still
+  standing. Nothing here moves the set speed more than once."""
+  @parameterized.expand([(f, p, b) for f in (70., 40.) for p, b in ((1, 1), (2, 4), (4, 4))],
+                        names=["force_kph", "plan_lag", "button_lag"])
+  def test_a_different_limit_winning_the_hand_over_arms_nothing(self, mocker, force_kph, plan_lag, button_lag):
+    """A2: '-' at 'now' for the 50 mapd announced, and 70 (or 40) comes into force inside the report's trip. The report
+    lands on the prompt for the other limit and must not arm the 50 there: the cluster would flash 50 while the comma
+    card asks for 70, and with the 40 confirmed, an arm for 50 under it."""
+    for k in range(-5, 3):
+      rig = OtherLimitRig(60., 60., 50., sign_m=60., plan_lag=plan_lag, button_lag=button_lag, force_kph=force_kph)
+      self.setup_clock(mocker, rig)
+      rig.engage_and_settle()
+      n = len(rig.set_speeds)
+      rig.tap(MINUS, rig.t_force + k * 0.01 - 0.12)
+      rig.at(rig.t_force + 4.0)
+      where = f"release {k * 10:+d} ms from the hand-over to {force_kph:.0f}: taken={rig.card.now_consumed_seq}"
+      assert rig.force_frame is not None
+      armed_after = [(f, int(p.speedLimit.assist.armedLimit), str(p.speedLimit.assist.state)) for f, p in rig.plans[1:]
+                     if f >= rig.force_frame and p.speedLimit.assist.armedLimit]
+      assert not armed_after, f"{where}: armed after the hand-over {armed_after[:2]} .. ({len(armed_after)} plans)"
+      assert len(rig.changes(n)) <= 1, f"{where}: {rig.changes(n)}"
+
+  @parameterized.expand([(1,), (4,)], names=["lag"])
+  def test_a_press_at_the_lapse_does_not_arm_again(self, mocker, lag):
+    """A3: a phantom's arm, and the card's key again in the last moments before it lapses. card takes it (the plan
+    still offers the arm's key) but the report arrives after the lapse: it must not arm afresh - another 2.5 s of
+    flashing for a limit that never came."""
+    base = NowRig(60., 60., 50., phantom=True, plan_lag=lag, button_lag=lag)
+    self.setup_clock(mocker, base)
+    base.engage_and_settle()
+    base.tap(MINUS, base.sign_t - 30. / V)
+    while base.armed:
+      base.step()
+    lapse_frame = base.frame
+    for k in range(-8, 2):
+      rig = NowRig(60., 60., 50., phantom=True, plan_lag=lag, button_lag=lag)
+      self.setup_clock(mocker, rig)
+      rig.engage_and_settle()
+      rig.tap(MINUS, rig.sign_t - 30. / V)
+      rig.tap(MINUS, lapse_frame * DT_CTRL + k * 0.01 - 0.12)
+      rig.run(3.0)
+      where = f"release {k * 10:+d} ms from the lapse: taken={rig.card.now_consumed_seq}"
+      assert rig.sla.now_confirm.arm_seq == 1 and rig.sla.now_confirm.last_end == END_LAPSED, where
+      assert not any(p.speedLimit.assist.armedLimit for f, p in rig.plans[1:] if f >= lapse_frame), where
+      assert min(rig.set_speeds) >= 59., where
+
+  def test_a_report_from_before_a_planner_restart_arms_nothing(self, mocker):
+    """A6: plannerd restarted while card ran on. The first report the new planner hears carries card's old seq, which
+    looks new to it: it must not arm that old limit (a flash for nothing) - it offered nothing yet."""
+    rig = NowRig(60., 60., 50.)
+    self.setup_clock(mocker, rig)
+    rig.card.now_consumed_seq, rig.card.now_consumed_limit = 7, 50   # card's tally from before the restart
+    rig.run(1.0)
+    assert rig.sla.now_confirm.arm_seq == 0 and rig.armed == 0
+    assert not any(p.speedLimit.assist.armedLimit for _, p in rig.plans[1:])
 
 
 class TestNowPressWithOffset(GraceTestBase):
@@ -661,17 +748,47 @@ class TestNowConfirmUnit(GraceTestBase):
 
   def test_an_arm_for_the_limit_in_force_is_refused(self, mocker):
     """The hand-over beat card's report: the limit card took the press for is already the one in force (the frame
-    before's) - no arm, or it would flash for 2.5 s after the prompt had confirmed it."""
+    before's) - no arm, or it would flash for 2.5 s after the prompt had confirmed it. (Each report is put on an offer
+    the planner made for it - rev1: only an offered press arms, TestTheArmIsTheOffer - so this is the in-force rule
+    alone.)"""
     rig = Rig(60., 50.)
     self.setup_clock(mocker, rig)
     rig.run(1.0)
     sla = rig.sla
+    sla.now_offer = (-1, 50, 50)
     sla.update_now_consumed(1, 50, False)
     rig.run(0.06)
     assert sla.now_confirm.armed == 0 and sla.now_confirm.arm_seq == 0
-    sla.update_now_consumed(2, 40, False)   # another limit: armed (target 40)
+    sla.now_offer = (-1, 40, 40)
+    sla.update_now_consumed(2, 40, True)    # the offered limit on the other key: not what was offered
+    rig.run(0.06)
+    assert sla.now_confirm.armed == 0 and sla.now_confirm.arm_seq == 0
+    sla.now_offer = (-1, 40, 40)
+    sla.update_now_consumed(3, 40, False)   # another limit, the offered key: armed (target 40)
     rig.run(0.06)
     assert sla.now_confirm.armed == 40
+
+  def test_an_arm_is_held_at_most_arm_max_s(self):
+    """rev1 A5: at a crawl 'now' (under 50 m) has no time bound, and the cluster would flash N / blank all that time -
+    the stock radar's longest flash in 13 stock drives was 8.6 s. An arm is dropped ARM_MAX_S after the press, 'now' or
+    not (armEnd capped): nothing was moved, and at the sign the prompt asks as before. 'now' still open, the key is
+    offered again."""
+    from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.now_confirm import ARM_MAX_S, END_CAPPED
+    assert ARM_MAX_S == 12.0, "longer than every arm the replays took (4.1 s) and the longest 'now' they offered (10.3 s)"
+    n = NowConfirm()
+
+    def update(t: float) -> int:   # crawling at 2.5 m/s (its window 37.5 m), the 50 30 m ahead: 'now' the whole time
+      return n.update(t, map_ok=True, map_frame=int(t) + 1, ahead_valid=True, ahead_ms=50 * CV.KPH_TO_MS, ahead_dist=30.,
+                      nsw_state=2, car_ok=True, v_ego=2.5, standstill=False, limit=60, is_metric=True)
+    assert update(0.) == 50 and n.arm(0., 50, False)
+    t = 0.05
+    while t < ARM_MAX_S - 0.01:
+      assert update(t) == 50 and n.armed == 50, t
+      t += 0.05
+    update(ARM_MAX_S + 0.05)
+    assert n.armed == 0 and n.last_end == END_CAPPED and n.now_limit == 50
+    assert n.offer(60) == (-1, 50, 50), "'now' still open: a new press arms again"
+    assert n.arm(ARM_MAX_S + 0.1, 50, False) and n.arm_seq == 2
 
 
 class TestCardTakes(GraceTestBase):
