@@ -2068,7 +2068,7 @@ port) and **dc, db** (2026-09-16; dc a scan tool, db no tool traffic on the bus 
 | START_STOCK | `elm327` p1 | closed | nothing | the first seconds of every start (unchanged) |
 | CAR | `hondaNidec` 36 (stand-down) or 68 (stock ACC mode) | open | per the TX list | normal (unchanged) |
 | STOCK_DIAG | `elm327` p1 held from start-up, or `noOutput` entered mid-drive | closed | nothing | fix 1 |
-| STOCK_BUSOFF | `noOutput` | closed | nothing | fix 2, until ignition off |
+| STOCK_BUSOFF | `noOutput` | closed | nothing | fix 2, until key-off |
 
 Both non-car modes release the relay and call `can_init_all()` (panda `main.c`), which also takes a stuck core out of
 bus-off. The stand-down (bit 32: `SCM_BUTTONS` re-sent with MAIN_ON=0, the car's own copy blocked by the forwarding
@@ -2092,6 +2092,11 @@ blocked), never `elm327` p0 (bus 1, the radar's own bus, taken over).
   is 0.181 s (KTuner) and 0.221 s (a scan tool). It never resumes while moving: resuming is entering the car mode, which
   stands down a stock ACC the driver may have engaged. A tool still talking when the car drives off keeps it stock while
   driving (KTuner and a stock car coexist), until the next time the car is in P with 10 s of quiet.
+* **Back-off (review fix 2026-10-20):** a tool that enters again within 2 min (`REENTRY_NS`) of a release is the same
+  tool polling slowly - every return to the car mode transmits into its bus - so that episode needs 30 s of quiet, the
+  next 60 s (`QUIET_STEPS_NS`); a tool back after more than 2 min starts at 10 s again, and so does a card restart.
+  With the reviewer's slow-polling tool (request + flow control every N s, 120 s parked): 11 s 21 -> 3 transitions,
+  15 s 16 -> 3, 30 s 8 -> 3, 61 s at most one return a minute.
 * **The action, two cases:**
   * before controls have first started, `card.step()`'s one FORK line holds the **first** `controls_update`
     (`initialized and not (self.diag_guard.stock and not self.initialized_prev)`): no `CI.init`, no `ControlsReady`, no
@@ -2103,8 +2108,8 @@ blocked), never `elm327` p0 (bus 1, the radar's own bus, taken over).
 * **Lifetime:** the guard lives in card; it inherits `DiagToolStock` in `__init__`, so a card restart inside the drive
   keeps holding. The manager clears the param at every onroad and offroad transition, before card starts.
 * **Logged:** `cloudlog.event("diag_tool_stock", on=..., ids=..., requests_1s=..., gear=..., v_ego=..., standstill=...,
-  can_valid=..., controls_started=..., error=True)` on each transition (`quiet_s`, `duration_s`, `inherited` on the
-  release), and once per episode `"diag_tool_seen"` for a tool heard while the car is known to be moving or engaged (not
+  can_valid=..., controls_started=..., quiet_needed_s=..., error=True)` on each transition (`quiet_s`, `duration_s`,
+  `inherited` on the release), and once per episode `"diag_tool_seen"` for a tool heard while the car is known to be moving or engaged (not
   while its CAN is still invalid at start-up). Both reach `errorLogMessage`, the qlog and the parquet.
 * Armed only when `CP.brand == 'honda' and CP.carFingerprint in HONDA_ELESYS and not CP.passive`.
 
@@ -2112,31 +2117,46 @@ blocked), never `elm327` p0 (bus 1, the radar's own bus, taken over).
 
 * **Per 10 Hz poll** in `send_panda_states()`, before the relay decision: the car-side core (`can_health[0]`, or 2 with
   `car_harness_status == FLIPPED`), raw ignition (line or CAN, after `STARTED` spoofing; not `OffroadMode`), onroad, and
-  the ELESYS car mode (`hondaNidec` with param bit 32 or 64). **Latch** when all hold and `busOffCnt` rose since the
-  previous poll, or `busOff`, or TEC >= 128.
+  the ELESYS car mode (`hondaNidec` with param bit 32 or 64), and whether fix 1 (`DiagToolStock`) is acting in the same
+  poll. **Latch** when the first three hold, fix 1 is not acting, and `busOffCnt` rose since the previous poll, or
+  `busOff` - **bus-off only**, the owner's words.
   * `busOffCnt` is cumulative since panda boot (145 started at 2982, 147 at 0 after a panda reboot): only an increase
     counts, a decrease re-baselines, and the baseline moves on every poll, car mode or not, so a bus-off inside the
     first 100 ms of the car mode is still caught (145).
-  * TEC >= 128 is error-passive by our own transmissions (REC is the other nodes' and is not read): the panda's
-    forwarded CMBS 0x1FA is already failing there. Normal routes never had a bus-0 TEC above 5. Dropping it for "bus-off
-    only" is one constant (`TEC_LIMIT`).
+  * No TEC (review fix 2026-10-20). The first build also latched at TEC >= 128 (error-passive by our own
+    transmissions). That is recoverable and still forwards; in stock ACC mode at speed it would switch the relay under a
+    live stock ACC on an error the panda could have recovered from; and on the five incident routes it was ahead of
+    the bus-off by 0.1 s on dc and 147 only, 0 on the rest. Normal routes never had a bus-0 TEC above 5. Putting it back
+    is a field and one term in `car_bus_guard.h`, and `test_stock_wiring.py` pins it out until someone decides that.
+  * Not while fix 1 acts in the same poll (review A F3): a tool plugged in mid-session while parked used to latch fix 2
+    when the storm and `DiagToolStock` reached pandad in the same poll, leaving openpilot off until restart after the
+    tool went quiet. Fix 1 owns that episode; fix 2 judges again once fix 1 has put the car mode back.
   * Buses 1 and 2 are never read: bus 2 goes error-passive at every ignition-off (102 routes), bus 1 during
     openpilot's own FW query (21 routes).
 * **Act in the same poll:** `stay_stock = DiagToolStock || latched`; `should_close_relay` gains
   `|| (stay_stock && is_car_safety_mode(mode))` - only a car mode is forced down, START_STOCK is left alone - so
-  upstream's own two lines set `noOutput`. `configureSafetyMode(is_onroad, stay_stock)` still runs the start-up
-  `elm327` and the OBD-multiplexing handshake card waits on, returns before `fetchCarParams()` while stock, and re-arms
-  (`safety_configured_ = false`) after leaving the car mode, so the release re-sends `0xdf` (accepted only outside a car
-  mode) and `0xdc` from the unchanged `setSafetyMode()`: 36, or 68 in stock ACC mode.
-* **The latch lasts until raw ignition goes off**, not until onroad drops: onroad can return without a key cycle
-  (overheat, `OffroadMode`), and db shows the storm comes back with no tool traffic, so a re-arm would cycle. The latch
-  poll writes `CarBusOffStock` with `putBoolNonBlocking` (no fsync in the loop), pandad seeds the latch from it at
-  start (a pandad restart stays out), removes it itself at ignition off, and the manager clears it on the next
-  ignition-on edge. A device reboot mid-cycle clears it (as upstream does on a reboot; it re-trips in one poll if the
-  fault persists).
+  upstream's own two lines set `noOutput`. `configureSafetyMode(is_onroad, stay_stock, ignition)` still runs the
+  start-up `elm327` and the OBD-multiplexing handshake card waits on, returns before `fetchCarParams()` while stock,
+  and re-arms (`safety_configured_ = false`) after leaving the car mode, so the release re-sends `0xdf` (accepted only
+  outside a car mode) and `0xdc` from the unchanged `setSafetyMode()`: 36, or 68 in stock ACC mode.
+* **Never a car mode on a poll that read the ignition off** (review fix 2026-10-20): `configureSafetyMode()` also
+  returns before `fetchCarParams()` when this poll's ignition is off or was not read - no re-arm, nothing else.
+  pandad's `is_onroad` (deviceState.started) is one poll behind the ignition at key-off, so a re-armed or not yet
+  configured pandad would otherwise send the car mode there: after a fix-2 latch at EVERY key-off (both reviews), after
+  fix 1 released on the key-off poll, and in upstream's own case of the key turned off on the poll ControlsReady
+  appears. The 10 Hz block is one function, `process_panda_safety()` (`getDiagToolStock()`, `process_panda_state()` -
+  which now returns the poll's ignition - and `configureSafetyMode()`), so the native test drives exactly it.
+* **The latch lasts until key-off: the ignition off AND pandad offroad** - not until onroad drops: onroad can return
+  without a key cycle (overheat, `OffroadMode`), and db shows the storm comes back with no tool traffic, so a re-arm
+  would cycle. The first build cleared it on the first ignition-off poll, while pandad was still onroad (above); a
+  one-poll ignition dropout cleared it too, and the next onroad session went back into the fault. The latch poll writes
+  `CarBusOffStock` with `putBoolNonBlocking` (no fsync in the loop), and so does any later poll that finds it missing
+  while latched (the manager clears it on every ignition-on edge, a dropout included); pandad seeds the latch from it at
+  start (a pandad restart stays out), removes it itself at key-off. A device reboot mid-cycle clears it (as upstream
+  does on a reboot; it re-trips in one poll if the fault persists).
 * **Logged (`LOGE`, so the qlog has them):** "FORK car bus off stock: core .. bus_off .. bus_off_cnt .. (prev ..) tec ..
   rec .. lec .. mode .. param .. onroad ..", "FORK stay stock: leaving car mode .. param .. (diag .., bus off ..)",
-  "FORK leaving stock: car safety mode set", "FORK car bus off stock: cleared at ignition off".
+  "FORK leaving stock: car safety mode set", "FORK car bus off stock: cleared at key-off".
 * **Fix 2 wins** over fix 1, and cannot fire in START_STOCK or STOCK_DIAG (it is armed in a car mode only). A tool that
   is plugged in but idle (db) gives fix 1 nothing; if the comma's frames then fail, fix 2 latches after one short storm
   and does not loop.
@@ -2154,14 +2174,18 @@ step). The helper replaces it with upstream's `carNotReady` (NO_ENTRY only: enga
 nothing is engaged, every panda is in `noOutput`/`elm327`, there is a reason (or the non-car mode is under 0.5 s old,
 or the reason cleared under 2 s ago), and neither `safetyRxChecksInvalid` nor `mismatch_counter >= 200` is present.
 Anything else - no reason past 0.5 s, a wrong param, anything engaged - is upstream's event, untouched; a bus-off at
-speed is disengaged by upstream's own `controlsMismatch`.
+speed is disengaged by upstream's own `controlsMismatch`. **"Engaged" includes a MADS paused while the car moves**
+(review fix 2026-10-20: on the brake in Pause mode, or the board's driver-override pause): it resumes by itself, so a
+bus-off there is the critical disengagement with our text (and `carBusOffDisengage`), not one chime and a refusal when
+the brake comes off. Not for a diagnostic tool: fix 1 only enters parked, and a MADS paused since then has been
+refused all along - driving off with the tool still talking stays a note.
 
 | event (`OnroadEventSP`) | types | text | priority, sound |
 |---|---|---|---|
 | `diagnosticToolStock @33` | PERMANENT, NO_ENTRY | "Diagnostic Tool Connected" / "openpilot paused, car is stock"; NO_ENTRY "Diagnostic Tool Connected" | LOW (above the engine-off EPS's LOWER "LKAS Fault"), silent; refuse per press |
 | `carBusOffStock @34` | PERMANENT, NO_ENTRY | "Car Bus Error" / "car is stock, openpilot off until restart"; NO_ENTRY "Car Bus Error: Restart Car" | LOWER, silent |
 | `carBusOffAnnounce @35` | PERMANENT | the same words | LOW, one prompt, 3.5 s, once per onroad session |
-| `carBusOffDisengage @36` | IMMEDIATE_DISABLE | "TAKE CONTROL IMMEDIATELY" / "Car Bus Error: Car Is Stock" | upstream's disengagement, raised only while something is engaged |
+| `carBusOffDisengage @36` | IMMEDIATE_DISABLE | "TAKE CONTROL IMMEDIATELY" / "Car Bus Error: Car Is Stock" | upstream's disengagement, raised only while something is engaged (a MADS paused while moving included) |
 
 The disengagement text has its own event because an IMMEDIATE_DISABLE in `events_sp` makes MADS's
 `check_contains(ET.IMMEDIATE_DISABLE)` true and would knock a paused MADS to disabled. `adjust_alerts()` drops, while
@@ -2177,7 +2201,7 @@ press can show the car's own "Gear not D" refusal instead of ours (equal priorit
 | key | flags | writer -> readers |
 |---|---|---|
 | `DiagToolStock` | CLEAR_ON_MANAGER_START, CLEAR_ON_ONROAD_TRANSITION, CLEAR_ON_OFFROAD_TRANSITION; BOOL | card (`params_thread`, on change) -> pandad (10 Hz), selfdrived (10 Hz), card itself on a restart |
-| `CarBusOffStock` | CLEAR_ON_MANAGER_START, CLEAR_ON_IGNITION_ON; BOOL | pandad (the latch poll, non-blocking; removed at ignition off) -> selfdrived, pandad's seed |
+| `CarBusOffStock` | CLEAR_ON_MANAGER_START, CLEAR_ON_IGNITION_ON; BOOL | pandad (the latch poll and any latched poll that finds it missing, non-blocking; removed at key-off) -> selfdrived, pandad's seed |
 
 Neither is BACKUP or PERSISTENT. Names avoid `HondaElesysStock...`, which would read as stock ACC mode.
 
@@ -2185,23 +2209,28 @@ Neither is BACKUP or PERSISTENT. Names avoid `HondaElesysStock...`, which would 
 
 | module | tests | what it pins |
 |---|---|---|
-| `sunnypilot/selfdrive/car/tests/test_diag_tool_guard.py` | 28 | the address table, src 0 only, 2 in 1 s, parked and idle, the quiet clock (capped gaps, a dead bus never quiet), never on another car or in dashcam, both ELESYS variants identical, the records |
+| `sunnypilot/selfdrive/car/tests/test_diag_tool_guard.py` | 38 | the address table, src 0 only, 2 in 1 s, parked and idle, the quiet clock (capped gaps, a dead bus never quiet - also with our echoes and the radar side still in `can`), the back-off, everything else on src 0 at its real rate (the board's and BLR's ids, the ECUs' answers, the car's traffic) and 11-bit OBD requests through `update()`, the constants written out, never on another car or in dashcam, both ELESYS variants identical, the records |
 | `sunnypilot/selfdrive/car/tests/test_card_diag_hook.py` | 10 | the hook sites in `card.py`, the exact hold line, no Params I/O on the 100 Hz path, `controls_update`'s AST hash = `nsw-live`'s, the hold and release on a bare `Car` |
-| `sunnypilot/selfdrive/car/tests/test_diag_tool_guard_replay.py` | 7 | the routes below, frame by frame |
-| `sunnypilot/selfdrive/pandad/tests/test_car_bus_guard.py` | 11 | the shipping header compiled with a small driver (skips without a C++ compiler), over every logged pandaState and synthetic cases, against a 10-line Python oracle |
-| `selfdrive/pandad/tests/test_car_bus_guard` (native, built by `scons`) | 1 program | the synthetic cases in C++ |
-| `sunnypilot/selfdrive/pandad/tests/test_stock_wiring.py` | 15 | the pandad wiring on the source; `setSafetyMode()` and `fetchCarParams()` hash-pinned to `nsw-live`; the ELESYS bits equal opendbc's; `is_car_safety_mode` equals the panda's; both keys registered with these flags, no duplicate |
-| `sunnypilot/selfdrive/selfdrived/tests/test_car_stock_alert.py` | 33 | selfdrived.step() in miniature with the real MADS: both edges, a 60 s start-up hold, genuine mismatches kept, bus-off parked / engaged / MADS-only / late reason, precedence, FCW and AEB, texts and the mici fit, the wiring |
+| `sunnypilot/selfdrive/car/tests/test_diag_tool_guard_replay.py` | 8 | the routes below, frame by frame; and that the fixtures hold what the detector must ignore |
+| `sunnypilot/selfdrive/pandad/tests/test_car_bus_guard.py` | 16 | the shipping header compiled with a small driver (skips only without a C++ compiler; a header that does not compile fails), over every logged pandaState and synthetic cases (key-off, the one-poll dropout, fix 1 in the same poll, bus-off only), against a Python oracle |
+| `selfdrive/pandad/tests/test_car_bus_guard` (native, `scons --extras`, run by `test_native.py`) | 1 program | the synthetic cases in C++ |
+| `selfdrive/pandad/tests/test_pandad_stock` (native, `scons --extras`, run by `test_native.py`) | 1 program, 11 scenarios | the REAL `pandad.cc` + `panda_safety.cc` + `car_bus_guard.h` against a fake panda, poll by poll through `process_panda_safety()`: no car mode set on or left in an ignition-off poll, stock = `noOutput` in the deciding poll, every car mode sent as `0xdf` then `0xdc` with CarParams' own model and param (36 / 68); a normal drive, a bus-off then key-off, a one-poll dropout and a new onroad session, a pandad restart, fix 1 held at start-up and mid-drive (36 and 68), fix 1 at key-off, fix 1 and a bus-off in one poll, stock ACC mode |
+| `sunnypilot/selfdrive/pandad/tests/test_stock_wiring.py` | 17 | the pandad wiring on the source; `setSafetyMode()` and `fetchCarParams()` hash-pinned to `nsw-live`; the ELESYS bits equal opendbc's; `is_car_safety_mode` equals the panda's; no TEC in the rule; both keys registered with these flags, no duplicate; both native tests listed in `test_native.py` and built with the extras |
+| `sunnypilot/selfdrive/selfdrived/tests/test_car_stock_alert.py` | 37 | selfdrived.step() in miniature with the real MADS: both edges, a 60 s start-up hold, genuine mismatches kept, bus-off parked / engaged / MADS-only / MADS paused while moving / stopped / late reason, driving off with the tool still talking, precedence, FCW and AEB, driver monitoring stage 2, texts and the mici fit, the wiring |
 
 Fixtures (`fixtures/ktuner/*.npz`, all under 120 KB) are built by `sunnypilot/tools/ktuner_fixtures.py` from the
-parquet exports (it needs pyarrow: run it with the Windows Python where the logs are).
+parquet exports (it needs pyarrow: run it with the Windows Python where the logs are). Fix 1's keep, besides every
+request and 1 in 10 responses, every src-0 frame in 0x600-0x7FF and every 29-bit frame on any src, two per (id, src)
+per second, chosen without the request rule (`broad_keep()`): 17,386 board frames on 143 alone.
 
 * **Fix 1** (full-rate rlogs, one card step per logged `can` message): 143 (whole route) and b5 (our own FW query)
   never stock; 144 (whole route), 145, 147 stock from the first parked carState (3.47, 3.18, 2.57 s), 5.5-5.9 s
   before the logged first `controls_update`, held to the end (on 145 also through its last second, when the car bus is
   heard again with KTuner still talking); dc stock 0.33 s before the logged first `controls_update`; db never.
 * **Fix 2** (every 10 Hz pandaState): 143 and 129 never latch; 144, 145, 147, db, dc latch on the first poll the rule
-  holds, within 0.3 s of the first car-mode poll, held until the route's key-off sample, which clears it.
+  holds, within 0.3 s of the first car-mode poll, and are held through the route's last poll - the key-off sample,
+  which pandad still polls onroad (145 has none: it ends with the ignition on) - and cleared on the first poll that is
+  offroad too. Over all 194 route exports (131 with car-mode polls, 38 h) only those five latch.
 * **Nothing changes where nothing triggers:** card's process replay over all of route 143 (90,314 `sendcan` messages)
   is byte-identical to `nsw-live` in the stand-down (safety 36) and in stock ACC mode (68), `sendcan` and `carState`.
 
@@ -2209,7 +2238,7 @@ parquet exports (it needs pyarrow: run it with the Windows Python where the logs
 
 1. `pandaStates`: the `safetyModel` / `safetyParam` timeline. A held start shows `elm327` for the whole tool session
    with `canState0` TEC/REC 0 and no `hondaNidec` until `diag_tool_stock on=False`; a bus-off fallback shows `noOutput`
-   from the latch poll on, `busOffCnt` flat after it.
+   from the latch poll on, `busOffCnt` flat after it, and no `hondaNidec` at the key-off poll.
 2. `errorLogMessage`: the JSON with `diag_tool_stock` / `diag_tool_seen`, and the `FORK car bus off stock`,
    `FORK stay stock`, `FORK leaving stock` lines.
 3. `selfdriveState.alertType`: `diagnosticToolStock/permanent`, `carBusOffStock/permanent`,
@@ -2224,8 +2253,12 @@ parquet exports (it needs pyarrow: run it with the Windows Python where the logs
 * **Whether the radar latches a fault** from fix 2's 0.1-0.2 s of isolation is unknown (the OBD-multiplexing precedent
   latched after about 1.5 s). A fault the storm already latched is not undone by the fallback.
 * **A tool plugged in mid-drive while parked:** fix 1 enters within about 20 ms, pandad acts up to 0.2 s later; if the
-  comma's frames fail inside that window fix 2 latches first and openpilot is off until restart (accepted in v1).
-* **A tool that goes quiet on the road** leaves openpilot paused until the car is next in P (safety over convenience).
+  comma's frames fail before `DiagToolStock` reaches pandad, fix 2 latches first and openpilot is off until restart.
+  Since the review fixes it no longer latches in the poll where both arrive together; the earlier window remains.
+* **For the owner to confirm** (design defaults, not his words): a tool that goes quiet on the road leaves openpilot
+  paused until the car is next in P at a standstill (resuming is entering the car mode, which would stand down a stock
+  ACC he engaged meanwhile); the back-off's 30 s / 60 s for a tool that keeps coming back; and bus-off only, without
+  TEC, as he worded it.
 * **A device reboot mid-cycle** after a latch puts the car mode back; it re-trips within one poll if the fault persists.
 * The root cause of the failed transmissions.
 
@@ -2234,8 +2267,11 @@ parquet exports (it needs pyarrow: run it with the Windows Python where the logs
 1. A normal start, no tool: `pandaStates` 36 (or 68), no new `errorLogMessage` lines.
 2. KTuner datalogging before key-on: the note appears, `elm327` for the whole session, no ACC/CMBS/SRS lamps, KTuner
    logs cleanly.
-3. Stop the datalog in P: 10 s later openpilot is available as after a normal start.
+3. Stop the datalog in P: 10 s later openpilot is available as after a normal start. (Start and stop it again within
+   2 minutes: 30 s this time - the back-off.)
 4. Plug KTuner in after the start, parked: stock within about 0.2 s (`noOutput`), or a fix-2 latch; both are logged.
 5. KTuner connected but idle (the db case): possibly a fix-2 latch with one chime; note whether ACC/CMBS still latch
    after the short isolation.
 6. Steps 1-3 again in stock ACC mode (68).
+7. After any fix-2 latch, the key-off: `pandaStates` stays `noOutput`/`elm327` to the end - no `hondaNidec` and no
+   "FORK leaving stock" at key-off - and the next start is normal.

@@ -773,11 +773,14 @@ fine on every route.
   paused, car is stock". The comma sends nothing and the radar stays on the car's own wiring, so ACC, CMBS and AEB are
   the car's own and KTuner logs undisturbed. Pressing an engage button says "Diagnostic Tool Connected" (in P it may
   say "Gear not D" - either way it is refused). About 10 s after the tool stops talking, in P, the note goes away and
-  openpilot is available as after any start. It never switches back while you are driving.
+  openpilot is available as after any start. It never switches back while you are driving. A tool that starts talking
+  again within 2 minutes needs 30 s of quiet the next time, then 60 s, so a tool that checks in every few seconds
+  cannot switch the comma on and off.
 * **The car bus going bus-off** (with or without a tool): one chime and "Car Bus Error / car is stock, openpilot off
-  until restart". If something was engaged: "TAKE CONTROL IMMEDIATELY / Car Bus Error: Car Is Stock" with one warning
-  sound. The car is stock at once (the radar back on the car's wiring) and stays that way until you switch the
-  ignition off and on.
+  until restart". If something was engaged - lane keeping paused on the brake while moving counts -: "TAKE CONTROL
+  IMMEDIATELY / Car Bus Error: Car Is Stock" with one warning sound. The car is stock at once (the radar back on the
+  car's wiring) and stays that way until you switch the ignition off and on; the key-off itself no longer puts the
+  comma back on the bus for a moment (fixed in review, 2026-10-20).
 * **After a car-bus error at speed the EPS board keeps steering manual until key-off** if it had already taken over
   (the board has no hand-back yet); ACC, CMBS and AEB are the car's own. With KTuner plugged in at key-on the board
   never takes over, so the car is fully stock, lane keeping included.
