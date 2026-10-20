@@ -64,6 +64,9 @@ class _SM(dict):
   def update(self, *_a, **_k):
     pass
 
+  def all_alive(self, services) -> bool:
+    return all(self.alive.get(s, False) for s in services)
+
 
 class TestCardWritesItsReport(GraceTestBase):
   """card.Car.state_update: the plan's key reaches VCruiseHelper (with sm.alive), and the press it takes reaches the
@@ -79,6 +82,11 @@ class TestCardWritesItsReport(GraceTestBase):
     c.v_cruise_helper = VCruiseHelper(car.CarParams(pcmCruise=False), custom.CarParamsSP(pcmCruiseSpeed=True))
     c.v_cruise_helper.v_cruise_kph = c.v_cruise_helper.v_cruise_cluster_kph = 60.
     c.CC_prev = SimpleNamespace(enabled=True)
+    # push10: state_update also runs KTuner fix 1's guard (card.py, diag_tool_guard.py) - the real one, armed for this
+    # car, engaged, and with no tester request on the (empty) CAN it never holds or logs anything here
+    from openpilot.sunnypilot.selfdrive.car.diag_tool_guard import DiagToolGuard
+    c.diag_guard = DiagToolGuard(_params()[0])
+    c.initialized_prev = True
     cc = messaging.new_message('carControl').carControl
     cc.enabled = True
     sm = _SM({'longitudinalPlanSP': alive, 'carControl': True}, longitudinalPlanSP=_plan(-1, 50), carControl=cc)
