@@ -89,7 +89,7 @@ class TestBlrBoundaries(unittest.TestCase):
     g = golden()
 
     def decode(version: bytes):
-      cp = CANParser(CAR_DBC, [("BLR_VERSION", math.nan), ("BLR_BUILD", math.nan), ("BLR_STATUS", math.nan)], 0)
+      cp = CANParser(CAR_DBC, [("BLR_VERSION", math.nan), ("BLR_BUILD", math.nan), ("BLR_STATUS", math.nan)], 0)  # ty: ignore[invalid-argument-type]
       frames = [(0x627, version, 0), (0x62F, bytes.fromhex(g["build"]["hex"]), 0),
                 (0x620, bytes.fromhex(g["status_active"]["hex"]), 0)]
       cp.update([(int(1e9), frames)])
