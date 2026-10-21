@@ -17,7 +17,7 @@ run_flash serves both - and an update of one must never reach the other. This fi
               update, every cancel point, the engine gate, the class check, pacing, NAK 5/8/9/10, lost frames, a
               resident bootloader taken at its ENTER ACK, a lost FINISH ACK asked again, INFO's slot size, the VARIANT
               read back after the install, a truncated image refused at FINISH, a boot that repaired an ECC page
-              (BOOT-2), and the trace
+              (BOOT-2), a lost HELLO knocked once more (push11 review) - and the EPS still knocking once - and the trace
   the board   the same run_flash against THE SHIPPING BOOTLOADER: blr_boot_main.c compiled for the host through the
               firmware's own blr_boot_bridge.c, whenever the firmware tree and gcc are reachable (review lens B) - so
               BlrSim cannot drift from the code the board runs unnoticed
@@ -142,8 +142,8 @@ class BlrSim:
   AROUND IT: 0x158 and 0x17C at 100 Hz, and the EPS board's 0x706 (1 Hz) and 0x70B (10 Hz).
 
   `cls` / `ack_cls` impersonate a board that is not a BLR, `slot_kb` a bootloader with another slot in INFO;
-  `drop_rx(id, data)` loses a host frame on the wire, `drop_tx(data)` one of the board's replies; `fail_copy` makes the
-  boot copy refuse."""
+  `drop_rx(id, data)` loses a host frame on the wire, `drop_tx(data)` one of the board's replies - its HELLO among them;
+  `fail_copy` makes the boot copy refuse."""
 
   CMD_LEN = {0x01: 8, 0x02: 1, 0x08: 1, 0x09: 1, 0x03: 5, 0x07: 5, 0x04: 3, 0x06: 5}
 
@@ -280,8 +280,10 @@ class BlrSim:
     if ecc:
       st |= 0x40                                       # BLR_BOOT_HELLO_ECC_FIXED
     g = git if st & 0x01 else 0
-    self.queue.append((self.tx_ok_at, 0x629, bytes([0x83, 1, st]) + g.to_bytes(4, "little") + bytes([self.cls]),
-                       self.mod.RX))
+    hello = bytes([0x83, 1, st]) + g.to_bytes(4, "little") + bytes([self.cls])
+    if self.drop_tx is not None and self.drop_tx(hello):
+      return                                           # said once, and lost on its way to the comma
+    self.queue.append((self.tx_ok_at, 0x629, hello, self.mod.RX))
 
   def _tick(self, now):
     if self.mode != "boot":
@@ -537,6 +539,7 @@ class TestBlrTarget(unittest.TestCase):
     # the host tool's session rules (review lens B): FINISH asked once more after 4 s of silence - twice that inside
     # the bootloader's 10 s session - INFO's slot compared, a resident bootloader's ENTER ACK to the knock taken
     assert (b.finish_retry_s, b.check_slot, b.knock_enters) == (4.0, True, True)
+    assert b.knock_again is True, "a knock no HELLO answers is sent once more (push11 review)"
     assert 2 * b.finish_retry_s < 10.0
     assert b.census_own == frozenset(range(0x620, 0x630))
     assert b.trace_ids == (0x17C, 0x1A6, 0x620, 0x706, 0x70B) and b.trace_dir == "/data/blr-trace"
@@ -572,6 +575,7 @@ class TestBlrTarget(unittest.TestCase):
     assert not e.refuse_dirty and not e.strict_image
     assert (e.finish_retry_s, e.check_slot, e.knock_enters) == (None, False, False), \
       "one FINISH and 20 s, INFO's slot not compared, only a HELLO answers the knock (test_eps_lkas_wire_errors.py)"
+    assert e.knock_again is False, "one knock and one wait, as the EPS has always done"
     # and it is the default everywhere a target is taken
     import inspect
     for fn in (mod.run_flash, mod.check_app_slot_image, mod.image_identity, mod.load_bundled_image,
@@ -692,6 +696,12 @@ class TestBlrTarget(unittest.TestCase):
     assert mod.EPS.words["title"] == "update" and mod.BLR.words["title"] == "lamp board"
     assert mod.BLR.words["click_line"] == "brake lamps are pedal-only" and mod.BLR.words["done_line"] == ""
     assert mod.EPS.words["done_line"] == "turn the car off, then on, before driving"
+    # push11 review: a BLR running an app has a bootloader under it, so its no-HELLO says what it can be instead
+    assert mod.EPS.words["no_hello"] == ("no HELLO. Either the board has no bootloader (it needs one SWD visit), " +
+                                         "or it never reset."), "the EPS's words are frozen"
+    blr = mod.BLR.words["no_hello"]
+    assert blr.startswith("no HELLO - nothing was written.") and "no bootloader" not in blr, blr
+    assert "powered and on the car bus" in blr and "console (SWD)" in blr, blr
 
 
 class TestBlrImages(unittest.TestCase):
@@ -1121,6 +1131,99 @@ class TestBlrUpdate(unittest.TestCase):
     assert not ok and msg == "no ACK for FINISH within 4.0s", msg
     assert [h[0] for h in _host(sim, mod)].count(mod.CMD_FINISH) == 2 and mod.CMD_REBOOT not in [h[0] for h in _host(sim, mod)]
 
+  def test_a_lost_hello_after_the_knock_is_knocked_once_more(self):
+    """push11 review: the bootloader says HELLO once per boot and is back in its app 800 ms later. One HELLO lost on
+    its way used to be 25 s of silence and then "the lamp board has no bootloader" - about a board that cannot run an
+    app without one. Now the knock goes once more, the app takes it, and the update goes on. Both HELLOs lost: a
+    failure in the lamp board's words after exactly two knocks, nothing sent but them, the board in its app with what
+    it had."""
+    old = make_image(git=0x1)
+    new = make_image(git=0x2, seed=21)
+    mod, clock, sim = _setup(old)
+    lost = {"n": 0}
+
+    def lose_first_hello(d):
+      if d[0] == 0x83 and lost["n"] == 0:
+        lost["n"] += 1
+        return True
+      return False
+
+    sim.drop_tx = lose_first_hello
+    ok, msg, phases, logs, traces = _run(mod, sim, new)
+    assert ok and msg == "00000002" and lost["n"] == 1, msg
+    assert bytes(sim.slot[:len(new)]) == new and sim.installs == 1 and sim.mode == "app"
+    assert sim.boots == 3, "the first knock (its HELLO lost, back to the app), the second, the REBOOT"
+    # the knock and ENTER are the same bytes: the second knock is the one 25 s after the first, before any HELLO
+    knocks = [t for t, a, d in sim.sent if a == mod.BLR_ID_HOST and d == KNOCK]
+    assert 25.0 <= knocks[1] - knocks[0] < 26.0, knocks
+    assert any("no HELLO 25 s after the knock - knocking once more" in x for x in logs), logs
+    assert [r["p"] for r in traces[0]["phases"]][:4] == ["pre", "reset", "reset", "enter"], traces[0]["phases"]
+    assert sim.naks == []
+
+    mod, clock, sim = _setup(old)
+    sim.drop_tx = lambda d: d[0] == 0x83
+    ok, msg, *_ = _run(mod, sim, new)
+    assert not ok and msg == mod.BLR.words["no_hello"], msg
+    assert _host(sim, mod) == [KNOCK, KNOCK] and not _data(sim, mod), [h.hex() for h in _host(sim, mod)]
+    assert sim.installs == 0 and sim.hdr is None and sim.mode == "app" and bytes(sim.slot[:len(old)]) == old
+
+    # a knock the app let pass (INIT, the model's first seconds): the second one lands
+    mod, clock, sim = _setup(old)
+    sim.app_since = clock.now - sim.app_init_s + mod.PRE_CAPTURE_S + 3.0   # INIT until just after the first knock
+    ok, msg, phases, logs, _ = _run(mod, sim, new)
+    assert ok and msg == "00000002" and sim.installs == 1, msg
+    assert sum("knocking once more" in x for x in logs) == 1, logs
+
+    # with a HELLO inside the first wait nothing changes - a resident bootloader whose ENTER ACK is lost times its
+    # session out, resets and says HELLO 10 s later - so there is no second knock
+    mod, clock, sim = _setup(None, resident=True)
+    lost = {"n": 0}
+
+    def lose_first_enter_ack(d):
+      if d[:2] == b"\x80\x01" and lost["n"] == 0:
+        lost["n"] += 1
+        return True
+      return False
+
+    sim.drop_tx = lose_first_enter_ack
+    ok, msg, phases, logs, _ = _run(mod, sim, new)
+    assert ok and msg == "00000002" and lost["n"] == 1, msg
+    assert not any("knocking once more" in x for x in logs), logs
+    knocks = [t for t, a, d in sim.sent if a == mod.BLR_ID_HOST and d == KNOCK]
+    assert knocks[1] - knocks[0] < 15.0, "the next ENTER-shaped frame is the ENTER after that HELLO"
+
+  def test_the_second_knock_reads_the_gate_first(self):
+    """The second knock comes 25 s after the first: an engine started, the ignition turned off or 0x17C gone in
+    that time is the gate's own answer, and there is no second knock. The board is in its app: nothing was sent to
+    its flash."""
+    for what in ("engine", "ignition", "no_0x17c"):
+      mod, clock, sim = _setup(make_image(git=0x1))
+      sim.drop_tx = lambda d: d[0] == 0x83
+
+      def change(d, s, what=what):
+        if d["p"] == "click":
+          if what == "engine":
+            s.rpm = 700
+          elif what == "ignition":
+            s.ignition = lambda: False
+          else:
+            s.rpm = None
+
+      ok, msg, *_ = _run(mod, sim, make_image(git=0x2), on_phase=change)
+      want = {"engine": mod.ENGINE_RUNNING, "ignition": mod.IGNITION_OFF, "no_0x17c": mod.NO_ENGINE_DATA}[what]
+      assert not ok and msg == want, (what, msg)
+      assert _host(sim, mod) == [KNOCK] and not _data(sim, mod), what
+
+  def test_the_eps_knocks_once(self):
+    """The EPS is unchanged (knock_again False): one knock, one 25 s wait, its own words - test_eps_lkas_wire_errors.py
+    and the frozen transcript hold the rest. The EPS target, on a bus where nothing answers 0x710."""
+    mod, clock, sim = _setup(make_image(git=0x1))
+    t0 = clock.now
+    ok, msg, *_ = _run(mod, sim, eps_image(), target=mod.EPS)
+    assert not ok and msg == mod.EPS.words["no_hello"], msg
+    assert [(a, d) for _, a, d in sim.sent] == [(mod.ID_HOST, bytes([mod.CMD_ENTER]) + mod.MAGIC)], sim.sent
+    assert clock.now - t0 < 1.0 + mod.PRE_CAPTURE_S + 25.0 + 1.0
+
   def test_info_must_say_this_boards_slot(self):
     """Review lens B, as blr_can_update.update(): a bootloader whose INFO reports another slot than 112 KB is not the
     one this image was checked for. ABORT, before the countdown and before BEGIN - the board goes back to its app."""
@@ -1436,6 +1539,36 @@ class TestBlrAgainstTheShippingBootloader(unittest.TestCase):
     assert ok and msg == "22222222" and lost["n"] == 1, msg
     finish_acks = [d for _, a, d in bus.replies if a == BLR_BOARD_ID and d[:2] == b"\x80\x07"]
     assert [h[0] for h in self._host(bus)].count(0x07) == 2 and len(finish_acks) == 2
+
+  def test_a_lost_hello_after_the_knock_against_the_shipping_bootloader(self):
+    """push11 review: the shipping bootloader says HELLO once per boot and jumps back to the app 800 ms later. Its
+    first HELLO after the knock lost: the comma knocks once more, the app takes it, and the update completes. Both
+    lost: nothing staged, the old app runs - and the failure no longer says the board has no bootloader."""
+    old = make_image(variant=2, git=0x11111111, seed=2)
+    new = make_image(variant=3, git=0x22222222, size=6 * 1024 + 4, seed=3)
+    lost = {"n": 0}
+
+    def lose_first_hello(d):
+      if d[0] == 0x83 and lost["n"] == 0:
+        lost["n"] += 1
+        return True
+      return False
+
+    ok, msg, logs, bus, stats = self._run("hello_lost", old, new, drop_tx=lose_first_hello)
+    assert ok and msg == "22222222" and lost["n"] == 1, msg
+    assert any("knocking once more" in x for x in logs), logs
+    knocks = [t for t, a, d in bus.sent if a == 0x628 and d == KNOCK]   # the knock and ENTER are the same bytes
+    assert 25.0 <= knocks[1] - knocks[0] < 26.0, knocks
+    hellos = [d for _, a, d in bus.replies if a == BLR_BOARD_ID and d[0] == 0x83]
+    # power-on, the lost one, the second knock's, the new image's
+    assert len(hellos) == 4 and hellos[-1][3:7] == (0x22222222).to_bytes(4, "little"), [h.hex() for h in hellos]
+    assert (hellos[-1][2] >> 4) & 3 == 3 and all(d[7] == 2 for d in hellos)
+
+    ok, msg, logs, bus, stats = self._run("hellos_lost", old, new, drop_tx=lambda d: d[0] == 0x83)
+    mod = _module()
+    assert not ok and msg == mod.BLR.words["no_hello"], msg
+    assert self._host(bus) == [KNOCK, KNOCK] and not any(a == 0x62A for _, a, _ in bus.sent)
+    assert stats["boots"] == 3 and stats["jumps"] == 3, stats   # power-on, then each knock - and back to the old app
 
 
 if __name__ == "__main__":

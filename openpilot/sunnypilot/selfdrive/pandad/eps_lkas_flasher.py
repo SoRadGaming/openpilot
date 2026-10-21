@@ -449,9 +449,10 @@ class Target:
   """One board's identity: everything that makes an update this board's and never the other's (DESIGN E.1).
 
   Frozen, and compared by identity - EPS is EPS. None in hello_class / allowed_variants / data_fps_max / retry_naks /
-  finish_retry_s, and False in check_slot / knock_enters, means "not checked / not paced / retried on anything / one
-  FINISH, 20 s / INFO's slot not compared / a HELLO and nothing else answers the knock", which is the EPS as proven in
-  the car (test_eps_lkas_wire_errors.py); the BLR sets all seven, as its own host tool blr_can_update.py does.
+  finish_retry_s, and False in check_slot / knock_enters / knock_again, means "not checked / not paced / retried on
+  anything / one FINISH, 20 s / INFO's slot not compared / a HELLO and nothing else answers the knock / one knock and
+  one wait", which is the EPS as proven in the car (test_eps_lkas_wire_errors.py); the BLR sets all eight - the first
+  seven as its own host tool blr_can_update.py does, knock_again beyond it (push11 review).
 
   words - what the log, the trace file and the update screen call things on this board:
     board, image      the board, and its images, in a sentence
@@ -486,6 +487,7 @@ class Target:
   finish_retry_s: float | None             # FINISH's ACK awaited this long, then FINISH once more; None = once, 20 s
   check_slot: bool                         # INFO's slot size must be slot_bytes, or ABORT before the countdown
   knock_enters: bool                       # an ENTER ACK to the knock is a resident bootloader's open session
+  knock_again: bool                        # no HELLO after the knock: the gate read again, one knock more, one wait
   errs: Mapping[int, str]                  # NAK texts
   words: Mapping[str, str]
 
@@ -515,8 +517,10 @@ BLR_WORDS = MappingProxyType({
   "image": "a BLR-v1 application image",
   "no_marker": "no BLR1 app-slot marker at {off:#x} (found {magic:#010x}) - not a BLR-v1 application image",
   "dirty": "  WARNING: built from an edited tree - 0x627 will report a commit it is not",
-  "no_hello": ("no HELLO. Either the lamp board has no bootloader (it needs one SWD " +
-               "visit), or it never reset."),
+  # push11 review: a BLR that runs an app has a bootloader under it, so "no bootloader" is never the likely reason
+  "no_hello": ("no HELLO - nothing was written. Its bootloader never answered: is the lamp board powered and on " +
+               "the car bus? It ignores a knock in its first second after power-up, and stays silent while its " +
+               "CAN cannot transmit - its console (SWD) says which."),
   "trace": "flash trace",
   "trace_header": ("# BLR-v1 flash trace.\n" +
                    "# t = seconds from the first frame captured.\n" +
@@ -534,7 +538,7 @@ EPS = Target(
   marker_magic=APP_ID_MAGIC, marker_origin=APP_ORIGIN, slot_bytes=APP_SLOT_BYTES,
   hello_class=None, allowed_variants=None, refuse_dirty=False, strict_image=False,
   image_path=EPS_LKAS_APPSLOT_BIN, census_own=CENSUS_OWN, trace_ids=TRACE_IDS, trace_dir=TRACE_DIR,
-  data_fps_max=None, retry_naks=None, finish_retry_s=None, check_slot=False, knock_enters=False,
+  data_fps_max=None, retry_naks=None, finish_retry_s=None, check_slot=False, knock_enters=False, knock_again=False,
   errs=MappingProxyType(ERRS), words=EPS_WORDS)
 
 # The census leaves out the BLR's own block (its telemetry stops at the knock and its bootloader answers on 0x629)
@@ -548,6 +552,10 @@ EPS = Target(
 # countdown - a bootloader with another slot is not the one this image was checked for; and a bootloader that was
 # already running - nothing valid in its slot, so it never jumps - takes the knock for what its bytes are, an ENTER,
 # and ACKs it: that ACK is the session ("entered"), where waiting for a HELLO meant its 10 s timeout and a reset.
+# And one rule is the comma's own (push11 review): the bootloader says HELLO once per boot and is back in its app
+# 800 ms later, so a HELLO lost on its way - or a knock the app let pass in its first second - is knocked once more
+# (knock_again), after the gate's own checks, rather than read as a board with no bootloader: no BLR runs an app
+# without one.
 BLR = Target(
   name="blr", id_host=BLR_ID_HOST, id_board=BLR_ID_BOARD, id_data=BLR_ID_DATA, magic=BLR_MAGIC,
   marker_magic=BLR_APP_ID_MAGIC, marker_origin=BLR_APP_ORIGIN, slot_bytes=BLR_APP_SLOT_BYTES,
@@ -556,7 +564,7 @@ BLR = Target(
   image_path=BLR_APPSLOT_BIN, census_own=BLR_ID_BLOCK,
   trace_ids=(ENGINE_RPM_ID, LOAD_ID, BLR_STATUS_ID, EPS_SPLIT_ID, GRANT_ID), trace_dir=BLR_TRACE_DIR,
   data_fps_max=BLR_DATA_FPS_MAX, retry_naks=frozenset({1, 3, 6}),
-  finish_retry_s=BLR_FINISH_ACK_S, check_slot=True, knock_enters=True,
+  finish_retry_s=BLR_FINISH_ACK_S, check_slot=True, knock_enters=True, knock_again=True,
   errs=MappingProxyType(BLR_ERRS), words=BLR_WORDS)
 
 TARGETS = {EPS.name: EPS, BLR.name: BLR}
@@ -1635,8 +1643,10 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
   the image's VARIANT as well as its commit (shadow and live of one commit
   share a hash). And, as its own host tool does: a resident bootloader's
   ENTER ACK to the knock is the session, INFO must say 112 KB (else ABORT),
-  and a lost FINISH ACK is asked about once more. The phases are the same
-  names; the screen words are the target's.
+  and a lost FINISH ACK is asked about once more. And, beyond it (push11
+  review): a knock no HELLO answers is sent once more - the gate's ignition
+  and engine-off rules read first - before it is "no HELLO". The phases are
+  the same names; the screen words are the target's.
   """
   f = None
   try:
@@ -1698,6 +1708,28 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
       f.knock()
 
     hello = f.wait_hello(hello_timeout, entered=target.knock_enters and knock)
+    if hello is None and knock and target.knock_again:
+      # THE BLR KNOCKS ONCE MORE (push11 review). Its bootloader says HELLO once per boot and is back in the app
+      # 800 ms later, so one HELLO lost on its way - or a knock the app let pass in its first second - was 25 s of
+      # silence and then "no bootloader", about a board that cannot run an app without one. By now that app runs
+      # again (or, resident, the bootloader takes the knock as ENTER), so the same knock goes once more, with the
+      # gate read first as at the end of the baseline. Nothing has reached its flash either way. The EPS waits once,
+      # as it always has (knock_again False).
+      now = time.monotonic()
+      if f.ignition_off(now_or_never=True):
+        log("  the ignition went off while the HELLO was awaited - no second knock")
+        return False, IGNITION_OFF
+      if (rpm := f.engine_rpm(now - 1.0)) is not None and rpm > ENGINE_OFF_MAX_RPM:
+        log(f"  engine started while the HELLO was awaited: {rpm} rpm - no second knock")
+        return False, ENGINE_RUNNING
+      if f.engine_seen and f.engine_rpm(now - ENGINE_LOST_S) is None:
+        log(f"  0x17C gone for {ENGINE_LOST_S:.1f} s while the HELLO was awaited, the engine-off gate is blind - " +
+            "no second knock")
+        return False, NO_ENGINE_DATA
+      log(f"  no HELLO {hello_timeout:g} s after the knock - knocking once more")
+      f.mark("knock")
+      f.knock()
+      hello = f.wait_hello(hello_timeout, entered=True)
     f.mark("hello")
     if hello is None:
       return False, target.words["no_hello"]
