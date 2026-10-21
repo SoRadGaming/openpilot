@@ -804,8 +804,8 @@ def bundled_offer(target: Target = EPS) -> tuple[str, str]:
   The image ships inside sunnypilot: there is no download, and no separate
   firmware channel. Updating the board's firmware IS updating sunnypilot.
 
-  The lamp board's (target.image_path, blr_appslot.bin) is not bundled until its
-  bench tests pass: no file is no offer, and the button says "no image". An
+  The lamp board's image is target.image_path, blr_appslot.bin (bundled since
+  push11): no file is no offer, and the button says "no image". An
   image the comma would never install is no offer either, rather than a press
   that fails, and for the lamp board that is a question about the WHOLE file: it
   goes through the flasher's own check_app_slot_image() - a bench VARIANT, a

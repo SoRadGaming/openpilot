@@ -20,6 +20,7 @@ IsOnroad (ad5151b38). FakeParams returns False for a key it was not given, which
 reads as ONROAD - so every FakeParams meant to be offroad says IsOffroad=True.
 """
 import ast
+import dataclasses
 import re
 import struct
 import sys
@@ -645,12 +646,14 @@ class TestTwoBoards(unittest.TestCase):
     assert params.get("BlrBoardBuild") == {"dirty": False, "variant": 3, "bootloader": True, "dualBank": True}
 
   def test_no_lamp_board_image_is_a_clean_failure(self):
-    """Nothing is bundled until the board's bench tests pass (the page offers nothing then). A request made anyway
-    - by hand - ends as a failure that names the file, before any transport is opened."""
+    """Without blr_appslot.bin the page offers nothing. A request made anyway - by hand - ends as a failure that names
+    the file, before any transport is opened. Since push11 bundles an image, the flasher's own load_bundled_image()
+    is pointed at a path that does not exist, so this runs either way."""
     params = FakeParams(BlrFlashRequested=True, IsOffroad=True)
     mod = _hook(self, params)
-    if Path(mod.BLR.image_path).exists():
-      self.skipTest("a BLR image is bundled")
+    real = mod.load_bundled_image
+    missing = str(Path(mod.BLR.image_path).parent / "nonexistent" / "blr_appslot.bin")
+    mod.load_bundled_image = lambda target: real(dataclasses.replace(target, image_path=missing))
     made = []
     assert mod.flash_if_requested("deadbeef", target=mod.BLR, transport_factory=lambda: made.append(1)) is True
     assert made == []

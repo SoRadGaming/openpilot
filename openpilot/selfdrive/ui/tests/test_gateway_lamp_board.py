@@ -170,11 +170,25 @@ class TestBundledOffer(unittest.TestCase):
     assert self._offer(_image(magic=BLR1), target=_board().EPS) == ("", "")
     assert self._offer(_image(magic=APL1, variant=0), target=_board().EPS) == ("9f8e7d6c", "")
 
-  def test_no_lamp_board_image_is_bundled_yet_and_that_is_no_offer(self):
+  def test_no_lamp_board_image_is_no_offer(self):
+    """No blr_appslot.bin is no offer. It used to run only while none was bundled; since push11 bundles one it runs on
+    a path that does not exist, so it never skips."""
+    assert self._offer(None) == ("", "")
+
+  def test_the_lamp_board_offer_is_the_bundled_images_commit_and_variant(self):
+    """The bundled image (push11: live) through the page's own function: the flasher's verdict, its hash and VARIANT."""
+    from openpilot.sunnypilot.selfdrive.pandad import eps_lkas_flasher as fl
     b = _board()
-    if os.path.exists(b.BLR.image_path):
-      self.skipTest("a BLR image is bundled")
-    assert b.bundled_offer(b.BLR) == ("", "")
+    if not os.path.exists(b.BLR.image_path):
+      self.skipTest("no blr_appslot.bin bundled")
+    image = Path(b.BLR.image_path).read_bytes()
+    assert fl.check_app_slot_image(image, fl.BLR) is None, fl.check_app_slot_image(image, fl.BLR)
+    ident = fl.image_identity(image, fl.BLR)
+    assert ident["variant"] in ("shadow", "live") and not ident["dirty"], ident
+    assert b.bundled_offer(b.BLR) == (ident["git"], ident["variant"])
+    assert b.bundled_firmware(b.BLR) == ident["git"]
+    # and the EPS board's offer is still its own image, never this one
+    assert b.bundled_offer(b.EPS)[0] != ident["git"]
 
   def test_the_eps_offer_is_the_bundled_images_commit(self):
     """The twin of test_bundled_hash_read_agrees_with_the_full_parse, through the page's own function."""
@@ -186,7 +200,7 @@ class TestBundledOffer(unittest.TestCase):
 
 
 CHILD = r'''
-import json, time
+import dataclasses, json, time
 import pyray as rl
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 gui_app.init_window("gateway-lamp-board-test")
@@ -283,7 +297,7 @@ out["both"] = {"lamp_visible": [page._lamp_info.is_visible, lamp.is_visible], "e
 out["titles_fit"] = {b.text: [measure_text_cached(gui_app.font(FontWeight.BOLD), b.text, 48).x, b._title_width_hint()]
                      for b in (eps, lamp)}
 
-# -- the lamp board's gate, with an image on offer (none is bundled in this round)
+# -- the lamp board's gate, with an image on offer (a stand-in: the bundled one is checked further down)
 real = B.bundled_offer
 offer = {"o": ("9f8e7d6c", "shadow")}
 B.bundled_offer = lambda target=B.EPS: offer["o"] if target is B.BLR else real(target)
@@ -365,12 +379,28 @@ P.v.update({"BlrFlashRequested": False, "BlrFlashCancel": False,
 asked_before = lamp._asked
 out["fast_fail"] = {"asked_before": asked_before, "lamp": btn(lamp), "asked": lamp._asked, "eps": btn(eps)}
 
-# -- no image bundled: the lamp board's button offers nothing, says why, and its press only explains
+# -- the image this build bundles (blr_appslot.bin, push11): offered by its own hash and variant, and "up to date" once
+# the board reports exactly that commit and variant. The real bundled_offer(), reading the real file.
 P.v.update({"BlrFlashRequested": False, "BlrFlashState": "", "BlrFlashCancel": False})
 lamp._asked = False
+bundled = list(real(B.BLR))
+out["bundled"] = {"offer": bundled, "btn": btn(lamp)}
+if bundled[0]:
+  P.v["BlrBoardVersion"] = bundled[0]
+  P.v["BlrBoardBuild"] = {**LAMP["BlrBoardBuild"], "variant": {"shadow": 2, "live": 3}[bundled[1]]}
+  out["bundled"]["running_it"] = btn(lamp)
+  page._lamp_info.refresh()
+  out["bundled"]["card"] = [ln.text for ln in page._lamp_info.lines]
+P.v.update(LAMP)
+
+# -- no image bundled: the lamp board's button offers nothing, says why, and its press only explains. The real
+# bundled_offer() on a path that does not exist, so this runs whether or not an image is bundled.
+B.bundled_offer = lambda target=B.EPS: (real(dataclasses.replace(target, image_path="/nonexistent/blr_appslot.bin"))
+                                        if target is B.BLR else real(target))
 out["no_image"] = btn(lamp)
 lamp._on_click()
 out["no_image_press"] = type(gui_app._nav_stack[-1]).__name__
+B.bundled_offer = real
 print("RESULT " + json.dumps(out), flush=True)
 '''
 
@@ -462,7 +492,16 @@ class TestGatewayPageWithTheLampBoard(unittest.TestCase):
     assert f["eps"][1] is True, "a finished lamp board run still holds the EPS button"
 
   def test_no_image_bundled_is_no_offer(self):
-    if os.path.exists(ROOT / "sunnypilot/selfdrive/pandad/blr_appslot.bin"):
-      self.skipTest("a BLR image is bundled")
     assert self.r["no_image"] == ["no image", False]
     assert self.r["no_image_press"] == "BigDialog", "a refused press must explain itself"
+
+  def test_the_bundled_image_is_offered_and_then_up_to_date(self):
+    """push11 bundles the live image: the button offers it by hash and variant, and stops once the board runs it."""
+    if not (ROOT / "sunnypilot/selfdrive/pandad/blr_appslot.bin").exists():
+      self.skipTest("no blr_appslot.bin bundled")
+    b = self.r["bundled"]
+    git, variant = b["offer"]
+    assert len(git) == 8 and variant in ("shadow", "live"), b["offer"]
+    assert b["btn"] == [f"to {git}\n({variant})", True], b["btn"]
+    assert b["running_it"] == ["up to date", False], b["running_it"]
+    assert b["card"] and b["card"][0].startswith(f"{git} • {variant} • "), b["card"]
