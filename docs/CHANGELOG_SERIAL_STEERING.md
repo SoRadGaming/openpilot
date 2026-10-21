@@ -59,22 +59,35 @@ merged. **Not driven yet.**
   one refresh tick, and the hook no longer lets a failing request clear or a transport's `close()` escape into
   pandad's loop (GATEWAY-UPDATE §11.2, §13.3).
 
-### On hardware so far (2026-10-21, the firmware's `blr/docs/BLR-HANDOFF.md`)
+### On hardware so far (2026-10-21: the firmware's `BLR-HANDOFF.md` to its output stage, then the board's console)
 
 * **Proven, on board #1 at the owner's desk, 12 V:** its identity over SWD (`BOARD: BLR`); the bootloader `BLB1
   6f9e2ec7` installed by SWD, the board's first install (the EMPTY latch cleared from software); the bench app and its
   console (HSE + PLL at 64 MHz, the watchdog, the ADC); the output stage switching J1-5 to ground on the owner's meter,
   1.7 Ohm on and 117 kOhm off; then the live app `42524898` by SWD, whose console reports `BLR-v1 LIVE app git
-  0x42524898` with its `BLR1` marker at `0x08004100` - the bundled image's commit and variant.
+  0x42524898` with its `BLR1` marker at `0x08004100` - the bundled image's commit and variant. `BLR-HANDOFF.md` at
+  `d4b974b` ends before this (its table still lists the bench image in the app slot): the live install and the sense
+  line below are from the board's console, and their rows are owed to that log (push11 review).
+* **The sense line, with the live app running:** LAMP_SNS (J1-6) followed 12 V on and off at the owner's hand, 12.1 V
+  high and under 0.1 V low; the output off throughout (`drv=0`, RELAY_SNS at most 0.31 V, no coil on J1-5); VBAT_SNS
+  11.7 V. When 12 V first went on J1-6 (16:14:02-16:14:15) the console's CAN went through a bus-off to transmit-off for
+  that power cycle; with no other node a bus goes error passive, not bus-off, so something on CAN_H/CAN_L disturbed it
+  then. A power cycle clears it; not looked into further.
 * **Not proven on hardware:** a CAN exchange with another node (that bench had none: TEC 128, nothing to ACK), and so
   the BLR's CAN bootloader path. **The first CAN update from the comma will be the first run of it on hardware**; so
   far it has run against the shipping bootloader compiled for the host (`TestBlrAgainstTheShippingBootloader`) and
   `BlrSim`. It does not come from this bundle: board #1 already runs `42524898` live, so its button reads `up to date`;
   it comes with the next BLR bundle.
-* **Skipped, the owner's call:** the bench's tests 1-14 (test 2, the output never blipping, among them) and B4 (the
-  CAN update, the EPS image refused, power lost mid-copy, the wrong board), and the parked C2 feedback test that the
-  firmware's own rule 5 asks for before a live image goes in the car. The stand-down is unchanged: the shadow image by
-  SWD (`blr-standdown.bat`), or a shadow bundle, which the button offers as `(shadow)` even for the same commit.
+* **Skipped, the owner's call:** B0.2 (+3V3 on a meter; the ST-LINK's 3.276 V stood in), B0.3 (RELAY_GATE on the
+  virgin chip) and **B2.2** (RELAY_GATE below 10 mV under the BLR bootloader, which the firmware's HANDOFF makes the
+  condition for putting J1-5 on a coil - the 117 kOhm off reading is U4 off under firmware, not that measurement); the
+  bench's tests 1-14 (test 2, the output never blipping, among them) and B4 (the CAN update, the EPS image refused,
+  power lost mid-copy, the wrong board); and the parked C2 feedback test that the firmware's own rule 5 asks for before
+  a live image goes in the car. **Before J1-5 goes on the brake-lamp relay coil:** meter RELAY_GATE (U4 pin 1) to
+  ground, below 10 mV, through a power-up and with the app running. The stand-down is unchanged: the shadow image by
+  SWD (`blr-standdown.bat`), or a shadow bundle, which the button offers as `(shadow)` even for the same commit. The
+  other way round, while live is bundled any board reporting shadow - stood down by SWD, or a second board installed
+  shadow-first - is offered `to 42524898 (live)`, one slide from live without its C2 test: the owner's call.
 
 ### push11: the merge, the bundle and the gates
 
@@ -111,8 +124,28 @@ merged. **Not driven yet.**
   push10's; the board seen on shadow `6f9e2ec7` with the bundle offered (`to 42524898 (live)`); the press, the
   countdown and `done`; the board on `42524898` live: `up to date`.
 
-Commits: sunnypilot `12da2b2f4` (the merge), `d50dc1ddc` (the bundle), `b691c0f4b` (ty) and this docs commit;
-opendbc `b44473bf`.
+### The push11 review
+
+No blocking defect; the BLR update was re-proven against the firmware (constants, the knock, the real bundled image
+through the shipping bootloader over shadow, over an empty slot and over itself, with injected faults), the EPS path
+unchanged (push10's and push11's flasher give the same transcript on all 16 + 22 frozen scenarios), nothing lost in the
+merge and the lamp board's data diagnostics-only. Four small findings:
+
+* **A lost HELLO after the knock** (fixed, `7d24b8d5e`): the BLR bootloader says HELLO once per boot and is back
+  in its app 800 ms later, so one HELLO lost on its way was 25 s of silence and then "the lamp board has no bootloader
+  (it needs one SWD visit)" - about a board that cannot run an app without one. Now the gate's ignition and engine-off
+  rules are read again and the knock goes once more (`Target.knock_again`, off for the EPS); with both unanswered the
+  lamp board's `no HELLO` says what it can be instead (not powered or not on the bus, a knock in its first second, its
+  CAN not transmitting). Reproduced before the fix and passing after it on `BlrSim` and against the shipping
+  bootloader, with the real bundled image too. `test_blr_flasher.py` 41 (4 new); the EPS's frozen tests unmodified.
+* **The hardware record** (docs): this entry and GATEWAY-UPDATE §13 cited the firmware's `BLR-HANDOFF.md` for the live
+  install, which it does not have at `d4b974b`; they now say where each line comes from, and add the sense line.
+* **B0.2, B0.3 and B2.2** (docs) were missing from the skipped list; B2.2 is the firmware's condition for a coil on
+  J1-5 (above).
+* **Live offered over shadow** (no change, the owner's call): stated above and in GATEWAY-UPDATE §13.
+
+Commits: sunnypilot `12da2b2f4` (the merge), `d50dc1ddc` (the bundle), `b691c0f4b` (ty), `3c5ca856b` (docs), and
+from the review `7d24b8d5e` (the second knock) and its docs commit; opendbc `b44473bf`.
 `blr`'s own: `3e059dd8d` (the EPS wire transcript frozen first), `12825fedf`, `e1c4c4365`, `1809869ec`, `62ea8c6cc`
 and the integration and review commits up to `3fc431b05`; opendbc `f0a5284a`, `8d6546be`.
 

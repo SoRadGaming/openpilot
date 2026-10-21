@@ -1421,19 +1421,37 @@ round 2's (`6f9e2ec`): the path-scoped hash moved to `4252489` for one OpenOCD l
 nothing else. `eps_lkas_appslot.bin` is push10's blob (`883a3cd1`), and the EPS update is unchanged on the wire
 (`test_eps_wire_transcript_is_frozen` and `test_eps_lkas_wire_errors.py`, both unmodified, pass).
 
-**What has run on hardware, and what has not** (the firmware's `blr/docs/BLR-HANDOFF.md` log). BLR-v1 #1's first install
-was by SWD, on 2026-10-21 at the owner's desk on 12 V: the identity (`BOARD: BLR`), the bootloader `BLB1 6f9e2ec7` (the
-EMPTY latch cleared from software), the bench app and its console (HSE + PLL at 64 MHz, the watchdog, the ADC), the
-output stage on the owner's meter (J1-5 to ground 1.7 Ohm on, 117 kOhm off), then the live app `42524898`, whose console
-reports `BLR-v1 LIVE app git 0x42524898` with its `BLR1` marker at `0x08004100`. That bench had no other CAN node (the
-console's TEC 128: nothing to ACK), so **the first CAN update from the comma will be the first run of the BLR's CAN
-bootloader path on hardware**; until then that path has run against the shipping bootloader compiled for the host
-(`TestBlrAgainstTheShippingBootloader`) and `BlrSim` only. It will not come from this bundle: board #1 already runs
-`42524898` live, so its button reads `up to date` (render D below). It comes with the next BLR bundle. Not run: the
-bench's tests 1-14, B4 (the CAN update, the EPS image refused, power lost mid-copy, the wrong board) and the parked C2
-feedback test that the firmware's rule 5 asks for before a live image goes in the car - the owner stopped bench testing
-there (`docs/CHANGELOG_SERIAL_STEERING.md`, push11). The stand-down is unchanged: the shadow image by SWD
-(`blr-standdown.bat`), or a shadow bundle, which the button offers as `(shadow)` even for the same commit.
+**What has run on hardware, and what has not.** The firmware's `blr/docs/BLR-HANDOFF.md` is the record of what is
+flashed, but at `d4b974b` its log ends with the output-stage row and its table still lists the bench image in the app
+slot: the live install and the sense-line check below come from the board's own console (2026-10-21, 16:12-16:19), and
+their rows are owed to that log (a `blr/docs/` commit, which moves no BLR hash). BLR-v1 #1's first install was by SWD,
+on 2026-10-21 at the owner's desk on 12 V: the identity (`BOARD: BLR`), the bootloader `BLB1 6f9e2ec7` (the EMPTY
+latch cleared from software), the bench app and its console (HSE + PLL at 64 MHz, the watchdog, the ADC), the output
+stage on the owner's meter (J1-5 to ground 1.7 Ohm on, 117 kOhm off), then the live app `42524898`, whose console
+reports `BLR-v1 LIVE app git 0x42524898` with its `BLR1` marker at `0x08004100`, flags `0x30`. With it running, the
+sense line: LAMP_SNS (J1-6) followed 12 V on and off at the owner's hand, 12.1 V high and under 0.1 V low, the output
+off throughout (`drv=0`, RELAY_SNS at most 0.31 V with no coil on J1-5), VBAT_SNS 11.7 V. Between 16:14:02 and
+16:14:15, when 12 V first went on J1-6, the console's CAN went from normal (`N`) through a bus-off (`R`) to `X`,
+transmit off for the rest of that power cycle. A bus with no other node goes error passive (TEC 128) rather than
+bus-off, so something on CAN_H/CAN_L disturbed it then; a power cycle clears it, and it was not looked into further.
+That bench had no other CAN node (the console's TEC 128: nothing to ACK), so **the first CAN update from the comma
+will be the first run of the BLR's CAN bootloader path on hardware**; until then that path has run against the
+shipping bootloader compiled for the host (`TestBlrAgainstTheShippingBootloader`) and `BlrSim` only. It will not
+come from this bundle: board #1 already runs
+`42524898` live, so its button reads `up to date` (render D below). It comes with the next BLR bundle. Not run: B0.2
+(+3V3 metered before the ST-LINK; the ST-LINK's own 3.276 V stood in), B0.3 (RELAY_GATE on the virgin chip), **B2.2**
+(RELAY_GATE, U4 pin 1, below 10 mV under the BLR bootloader: the firmware's HANDOFF says not to put J1-5 on a coil
+until it has been metered, and the 117 kOhm off reading shows U4 off with firmware running, which is not that
+measurement), the bench's tests 1-14, B4 (the CAN update, the EPS image refused, power lost mid-copy, the wrong board)
+and the parked C2 feedback test that the firmware's rule 5 asks for before a live image goes in the car - the owner
+stopped bench testing there (`docs/CHANGELOG_SERIAL_STEERING.md`, push11). **Before J1-5 goes on the car's brake-lamp
+relay coil, B2.2 is one meter reading:** RELAY_GATE (U4 pin 1) to ground, below 10 mV, through a power-up (the
+bootloader's first second) and with the app running. The stand-down is unchanged: the shadow image by SWD
+(`blr-standdown.bat`), or a shadow bundle, which the button offers as `(shadow)` even for the same commit. **The
+other way is the owner's call, and is what the page does (push11 review):** while live is bundled, any lamp board that
+reports shadow - one stood down by SWD, or a second board installed shadow-first under rule 5 - is offered `to
+42524898 (live)`, and one slide puts live on it without its C2 test. To keep a board on shadow, do not slide it (or
+bundle shadow).
 
 ### 13.1 How the two updates are kept apart
 
@@ -1483,6 +1501,7 @@ resolve string annotations.
 | `finish_retry_s` | none: one FINISH, its ACK given 20 s | 4 s, then FINISH once more (`BLR_FINISH_ACK_S`; review lens B). The header is written when FINISH is ACKed, so a lost ACK used to read `no ACK for FINISH` after 20 s - by when the 10 s session had timed out and the board had installed the image anyway. The bootloader ACKs a repeated FINISH again and writes nothing twice; twice 4 s is inside its session. A NAK is never asked again. |
 | `check_slot` | no | INFO must say 112 KB, or ABORT before the countdown, `the board reports a <n> KB app slot, not 112 KB` (as `blr_can_update.update()`) |
 | `knock_enters` | no: only a HELLO answers the knock | a bootloader that was already running (nothing valid in its slot, so it never jumps) takes the knock for the ENTER its bytes are and ACKs it, class 2: that ACK is the session - no second ENTER, and no waiting out its 10 s timeout and a reset for a HELLO (`blr_can_update.py`'s "entered"). The log says `took the knock as ENTER`; a dry run there says `installed unknown`. |
+| `knock_again` | no: one knock, one 25 s wait, then `no HELLO. Either the board has no bootloader ...` | no HELLO 25 s after the knock: the gate's ignition and engine-off rules read again (`IGNITION_OFF`, `ENGINE_RUNNING`, `NO_ENGINE_DATA`: no second knock), then the same knock once more and the same wait (push11 review, `7d24b8d5e`). Its bootloader says HELLO once per boot and is back in its app 800 ms later, so one HELLO lost on its way, or a knock the app let pass in its first second, was 25 s of silence and then "the lamp board has no bootloader" - which a board running an app cannot be. Both unanswered: `no HELLO - nothing was written. Its bootloader never answered: is the lamp board powered and on the car bus? ...`. The log says `knocking once more`; the trace has two `reset` rows. Nothing reaches its flash before a HELLO either way. |
 | NAK texts | `ERRS` 0-7 | plus 8 `image is not for this board`, 9 `board flash is not dual-bank`, 10 `lamp output is on` |
 | bundled image | `eps_lkas_appslot.bin` | `blr_appslot.bin` (push11: live `42524898`) |
 | census own | `0x700`-`0x70F`, `0x711` | `0x620`-`0x62F` (the EPS board's `0x70x` stay in: a lamp update that starves the EPS board is news) |
@@ -1641,7 +1660,7 @@ board #1 is: `up to date`.
 |---|---|---|
 | `test_eps_lkas_flasher.py` | 42 | `test_eps_wire_transcript_is_frozen` (H1): 16 EPS scenarios on the fake clock - a full update, the dry run, each cancel point, the engine gate - every frame sent, every phase and every log line hashed against literals captured **before** the refactor. Unmodified since. |
 | `test_eps_lkas_wire_errors.py` | 3 | H1's second half (review lens A): 22 EPS **error paths**, hashed the same way against literals captured on `nsw-live`'s flasher with H1's own `SimBoard` - a CEND NAK 3/6/1/8/10 and the chunk sent again, a lost CEND ACK asked again (x1, x2, x4), NAKs at BEGIN and ENTER, a lost FINISH ACK (one FINISH, 20 s) and a FINISH NAK, HELLO byte 7 = 2 or 0xFF, an ENTER ACK before the HELLO, INFO saying 96 KB, the wrong commit after the install, dirty / read-only / even-PC / standalone images - and every run's **trace file** (header and rows) and its `steering trace: N frames -> ...` log line, which H1 stubs. The scenarios are spot-checked to take the path their names say; a BLR1/BLB1 image on the EPS (the one intended difference from `nsw-live`) is pinned by hand. 14 flasher mutations of the EPS side (seven H1 cannot see, the reviewer's survivors among them - the chunk retry, the NAK texts, the warnings, the trace header and word, the lost-ACK re-ask - and seven of the BLR's session rules leaking onto the EPS) are all caught. |
-| `test_blr_flasher.py` | 37 | the BLR target's literals, and against the firmware's headers when the tree is reachable (IDs, magic, class, NAK codes, marker, VARIANT, the trailer and ECC_FIXED); the trailer against the firmware's own `blr_hostlib`; APL1/BLR1/BLB1 refused by name; bench, dirty, VARIANT 0, the vector rules and every trailer fault refused; `BlrSim` (the bootloader and the app's knock on a fake clock): a full update, pacing <= 400/s, the class check before ENTER and before a byte, every cancel point, the engine gate, NAK 5/8/9/10, lost frames, a resident bootloader taken at its ENTER ACK (and, that ACK lost, at its next HELLO), a lost FINISH ACK or frame asked again, INFO's slot size, the VARIANT read back, a truncated image refused at FINISH, an ECC repair, the trace. **And the same `run_flash` against the shipping bootloader** (`TestBlrAgainstTheShippingBootloader`, review lens B): `blr_boot_main.c` compiled with gcc through the firmware's own `blr_boot_bridge.c`, whenever the firmware tree and gcc are reachable (skipped elsewhere; a reachable tree that does not build fails) - a full update, a resident bootloader, a dry run, a Cancel, a truncated and an EPS image (the comma's check bypassed), a lost FINISH ACK - with the bridge's invariants (no transmit outside NORMAL, the bootloader never written, the slot only by the copy). Two bootloader changes `BlrSim` does not model (a repeated FINISH rewriting the header, padded commands refused) fail it and nothing else. The 3 bundled-image twins have run since push11 bundles `blr_appslot.bin` (without it they skip). |
+| `test_blr_flasher.py` | 41 | the BLR target's literals, and against the firmware's headers when the tree is reachable (IDs, magic, class, NAK codes, marker, VARIANT, the trailer and ECC_FIXED); the trailer against the firmware's own `blr_hostlib`; APL1/BLR1/BLB1 refused by name; bench, dirty, VARIANT 0, the vector rules and every trailer fault refused; `BlrSim` (the bootloader and the app's knock on a fake clock): a full update, pacing <= 400/s, the class check before ENTER and before a byte, every cancel point, the engine gate, NAK 5/8/9/10, lost frames, a resident bootloader taken at its ENTER ACK (and, that ACK lost, at its next HELLO), a lost FINISH ACK or frame asked again, INFO's slot size, the VARIANT read back, a truncated image refused at FINISH, an ECC repair, the trace; since the push11 review a lost HELLO after the knock knocked once more (both lost: `no HELLO` after two knocks, nothing written; a knock in INIT; no second knock when the HELLO comes inside the first wait), the gate read before that second knock, and the EPS still knocking once. **And the same `run_flash` against the shipping bootloader** (`TestBlrAgainstTheShippingBootloader`, review lens B): `blr_boot_main.c` compiled with gcc through the firmware's own `blr_boot_bridge.c`, whenever the firmware tree and gcc are reachable (skipped elsewhere; a reachable tree that does not build fails) - a full update, a resident bootloader, a dry run, a Cancel, a truncated and an EPS image (the comma's check bypassed), a lost FINISH ACK, and (push11 review) a lost HELLO after the knock, and both lost - with the bridge's invariants (no transmit outside NORMAL, the bootloader never written, the slot only by the copy). Two bootloader changes `BlrSim` does not model (a repeated FINISH rewriting the header, padded commands refused) fail it and nothing else. The 3 bundled-image twins have run since push11 bundles `blr_appslot.bin` (without it they skip). |
 | `test_eps_lkas_hook.py` (`TestTwoBoards`, 12 of 25) | | **one session per window**, run from `pandad.py`'s own statement; a cancelled EPS request leaves the window free; each board clears only its own request; the watcher on the lamp board's params (offroad, onroad, cancelled, both pending: one SIGINT); the Cancel read before it is cleared; the identity written after an install (with and without `0x62F`); no image is a clean failure (since push11 on a path that does not exist, so it runs with an image bundled); never raising; the page's and the hook's tables name the same params; the `Blr*` params have their `EpsLkas*` twins' lifetimes |
 | `test_gateway_lamp_board.py` | 20 | `flash_view()` in the lamp board's words and never "relay" or "turn the car off"; the card; the last drive; `bundled_offer()` as the flasher's verdict on the whole file (a truncated copy, a bare `.bin`, a changed byte, an even reset vector: no offer); and the page driven in a headless raylib window (child process): the pair hidden until the board has spoken, the EPS pair unchanged with the lamp board present, titles that fit, the gate, `_busy()` across both, the confirm writing only its own params, the screen's Cancel, a run over inside one tick, `no image`. Since push11: the real bundled image through `bundled_offer()` (its hash and variant, never the EPS's), on the page offered and then `up to date` once the board reports that commit and variant; `no image` on a path that does not exist (it used to run only while nothing was bundled) |
 | `test_blr_board.py`, opendbc `test_blr.py` | 19, 15 | the data side and E.7 ([BRAKE-LAMP-RELAY.md](BRAKE-LAMP-RELAY.md)); with the firmware tree reachable, the DBC copy line for line and the golden vector byte for byte against the firmware's own files (review lens B) |
@@ -1682,6 +1701,8 @@ opendbc, built on `dc7f1e7d`, merged into opendbc push11 `b44473bf` (on push10's
 | `d50dc1ddc` | push11: `blr_appslot.bin` bundled (live `42524898`); the `no image` tests on a missing path, the bundled image's two page-level twins |
 | `b691c0f4b` | push11: `test_blr_board.py`'s `CANParser` twin carries a `ty: ignore` (ty = push10's) |
 | push11 docs | this section's push11 state, the README rows, the changelog entry |
+| `7d24b8d5e` | push11 review: a knock no HELLO answers is sent once more on the BLR (`knock_again`; off for the EPS), its `no HELLO` words, 4 tests |
+| push11 review docs | the hardware record's sources and the sense line, B0.2/B0.3/B2.2 listed as not run, the live-over-shadow offer, `knock_again` |
 
 To find the BLR hunks after a merge, grep for `FORK(BRAKE-LAMP-RELAY)`, `Blr`, `blr_`, `BLR_`, `brakeLampRelay`,
 `_update_blr` and `lamp board`.
