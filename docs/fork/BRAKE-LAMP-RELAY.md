@@ -8,6 +8,9 @@ This file covers how the board's telemetry reaches the comma and the Settings > 
 cereal, card and the `Blr*` params. Updating the board from the comma (flasher, hook, page) is described with the
 EPS-LKAS board's update in [GATEWAY-UPDATE.md](GATEWAY-UPDATE.md). Markers `FORK(BRAKE-LAMP-RELAY)`.
 
+In push11 (2026-10-21), with the board's live image `42524898` bundled (`blr_appslot.bin`, GATEWAY-UPDATE.md §13);
+`brakeLampRelay` is `CarStateSP @6`.
+
 ## The one rule
 
 **Nothing the board sends feeds `brakePressed`, `brakeLights`, any controls decision or panda safety** (board design
