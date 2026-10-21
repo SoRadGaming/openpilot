@@ -21,6 +21,7 @@ reads as ONROAD - so every FakeParams meant to be offroad says IsOffroad=True.
 """
 import ast
 import re
+import struct
 import sys
 import types
 import unittest
@@ -131,6 +132,39 @@ def _hook(test: unittest.TestCase, params: FakeParams):
   return mod
 
 
+def _module_consts(tree: ast.Module) -> dict[str, str]:
+  """The module-level string constants: REQUEST_PARAM = "EpsLkasFlashRequested"."""
+  consts = {}
+  for node in tree.body:
+    if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+      for target in node.targets:
+        if isinstance(target, ast.Name):
+          consts[target.id] = node.value.value
+  return consts
+
+
+def _key_tables(tree: ast.Module) -> dict[str, dict[str, str]]:
+  """The module-level key tables - EPS_KEYS = FlashKeys(request=REQUEST_PARAM, ...) - as {table: {field: key}}, each
+  value a string literal or a module-level string constant."""
+  consts = _module_consts(tree)
+  tables: dict[str, dict[str, str]] = {}
+  for node in tree.body:
+    if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) and node.value.keywords:
+      fields = {}
+      for kw in node.value.keywords:
+        v = kw.value
+        if kw.arg is None:
+          continue
+        if isinstance(v, ast.Constant) and isinstance(v.value, str):
+          fields[kw.arg] = v.value
+        elif isinstance(v, ast.Name) and v.id in consts:
+          fields[kw.arg] = consts[v.id]
+      for target in node.targets:
+        if isinstance(target, ast.Name) and fields:
+          tables[target.id] = fields
+  return tables
+
+
 def _param_keys_used(path: Path) -> set[str]:
   """Every params key a module reads or writes.
 
@@ -138,14 +172,18 @@ def _param_keys_used(path: Path) -> set[str]:
   `<anything>.params` (ui_state.params), either as a string literal or as a
   module-level string constant such as REQUEST_PARAM. A key this cannot resolve
   fails the test rather than being skipped, so nothing escapes the check.
+
+  Since the second board (BLR-v1) a key can also be a field of a module-level
+  key table (_key_tables): `k.request`, `self._keys.request` and
+  `EPS_KEYS.version` resolve to EVERY key any table gives that field - all of
+  which must then be registered.
   """
   tree = ast.parse(path.read_text())
-  consts = {}
-  for node in tree.body:
-    if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-      for target in node.targets:
-        if isinstance(target, ast.Name):
-          consts[target.id] = node.value.value
+  consts = _module_consts(tree)
+  fields: dict[str, set[str]] = {}
+  for table in _key_tables(tree).values():
+    for field, key in table.items():
+      fields.setdefault(field, set()).add(key)
 
   keys, unresolved = set(), []
   for node in ast.walk(tree):
@@ -161,6 +199,8 @@ def _param_keys_used(path: Path) -> set[str]:
       keys.add(arg.value)
     elif isinstance(arg, ast.Name) and arg.id in consts:
       keys.add(consts[arg.id])
+    elif isinstance(arg, ast.Attribute) and arg.attr in fields:
+      keys |= fields[arg.attr]
     else:
       unresolved.append(f"{path.name}:{node.lineno}")
   assert not unresolved, f"params keys this test cannot resolve: {unresolved}"
@@ -323,6 +363,11 @@ class TestEpsLkasHook(unittest.TestCase):
             "EpsLkasFlashPhase", "EpsLkasFlashCancel"} <= hook_keys, hook_keys
     assert {"EpsLkasBoardVersion", "EpsLkasFlashRequested", "EpsLkasFlashState", "EpsLkasFlashPhase",
             "EpsLkasFlashCancel"} <= board_keys, board_keys
+    # and the lamp board's (BLR-v1), through the key tables
+    assert {"BlrFlashRequested", "BlrFlashState", "BlrFlashProgress", "BlrFlashTrace", "BlrFlashPhase",
+            "BlrFlashCancel", "BlrBoardVersion", "BlrBoardBuild", "BlrBoardSeenAt"} <= hook_keys, hook_keys
+    assert {"BlrBoardVersion", "BlrBoardBuild", "BlrBoardSeenAt", "BlrLastDrive", "BlrFlashRequested",
+            "BlrFlashState", "BlrFlashPhase", "BlrFlashCancel", "BlrFlashProgress"} <= board_keys, board_keys
     missing = sorted((hook_keys | board_keys) - registered)
     assert not missing, f"{missing} are not in params_keys.h; Params would raise UnknownKeyName"
 
@@ -378,3 +423,298 @@ class TestFlashScreenHook(unittest.TestCase):
     mod.flash_if_requested("deadbeef", transport_factory=lambda: types.SimpleNamespace(close=lambda: None))
     assert params.get("EpsLkasFlashState") == "ok abcd1234"
     assert params.get("EpsLkasFlashPhase") == {"p": "ok", "cancel": False}
+
+
+# ---------------------------------------------------------------------------
+# FORK(BRAKE-LAMP-RELAY): the second board. BLR-v1 DESIGN E.2 / E.6.
+
+BLR1_MAGIC = 0x31524C42
+
+
+def _blr_image(git=0x9F8E7D6C, variant=2, dirty=0) -> bytes:
+  """Enough of a BLR-v1 app-slot image for the hook: the marker at 0x100 (image_identity reads nothing else)."""
+  head = bytearray(0x110)
+  struct.pack_into("<4I", head, 0x100, BLR1_MAGIC, 0x08004000, git, (dirty & 1) | (variant << 4))
+  return bytes(head)
+
+
+class _Transport:
+  def __init__(self, made: list):
+    made.append(self)
+    self.closed = False
+
+  def close(self):
+    self.closed = True
+
+
+def _pandad_window(mod) -> None:
+  """ONE pass of pandad.py's window, run from pandad.py's own source: the statement that asks each board. Taken out
+  of the file rather than typed in again here, so this tests what pandad actually does."""
+  tree = ast.parse(PANDAD.read_text())
+  found = [n for n in ast.walk(tree) if isinstance(n, ast.If) and isinstance(n.test, ast.UnaryOp)
+           and isinstance(n.test.op, ast.Not) and isinstance(n.test.operand, ast.Call)
+           and getattr(n.test.operand.func, "id", "") == "flash_if_requested"]
+  assert len(found) == 1, "pandad.py no longer asks the boards in one `if not flash_if_requested(...)`"
+  calls = [c for c in ast.walk(found[0]) if isinstance(c, ast.Call) and getattr(c.func, "id", "") == "flash_if_requested"]
+  assert len(calls) == 2, "pandad.py's window statement should ask exactly two boards"
+  module = ast.fix_missing_locations(ast.Module(body=[found[0]], type_ignores=[]))
+  exec(compile(module, str(PANDAD), "exec"),
+       {"flash_if_requested": mod.flash_if_requested, "panda_serials": ["deadbeef"], "BLR": mod.BLR})
+
+
+def _fake_flash(mod, result=(False, "no HELLO")):
+  """Stand in for the flasher: the bundled image per board, the transport, and run_flash, which records whose
+  update it was asked to run."""
+  runs, made = [], []
+  mod.load_bundled_image = lambda target: (_blr_image() if target is mod.BLR else b"\x00" * 0x110, "")
+  mod.PandaTransport = lambda bus, serial: _Transport(made)
+
+  def fake_run(transport, image, **kw):
+    runs.append(kw["target"])
+    return result
+
+  mod.run_flash = fake_run
+  return runs, made
+
+
+class TestTwoBoards(unittest.TestCase):
+  """The lamp board through the same hook: its own params, one session per window, everything else per board."""
+
+  def test_one_session_per_window_when_both_are_requested(self):
+    """The page makes both pending at once unreachable (_busy() is both boards'); if it ever happens anyway the
+    window still holds ONE update, the EPS's, and the lamp board's request waits for the next window - which the
+    watcher opens once ./pandad is back."""
+    params = FakeParams(EpsLkasFlashRequested=True, BlrFlashRequested=True, IsOffroad=True)
+    mod = _hook(self, params)
+    runs, made = _fake_flash(mod)
+
+    _pandad_window(mod)
+    assert runs == [mod.EPS], f"one window ran {[t.name for t in runs]}"
+    assert params.get_bool("EpsLkasFlashRequested") is False
+    assert params.get_bool("BlrFlashRequested") is True, "the lamp board's request was spent without a session"
+    assert not any(k.startswith("Blr") for k, _ in params.writes), "the EPS's session wrote the lamp board's params"
+    assert len(made) == 1 and made[0].closed
+
+    # the next window: the lamp board's turn, and nothing of the EPS's is touched
+    params.writes.clear()
+    _pandad_window(mod)
+    assert runs == [mod.EPS, mod.BLR], [t.name for t in runs]
+    assert params.get_bool("BlrFlashRequested") is False
+    assert params.get("BlrFlashState") == "failed: no HELLO"
+    assert not any(k.startswith("EpsLkas") for k, _ in params.writes), "the lamp board's session wrote the EPS's"
+
+    # and a window with nothing pending runs nothing
+    _pandad_window(mod)
+    assert runs == [mod.EPS, mod.BLR]
+
+  def test_the_lamp_board_alone_runs_in_the_first_window(self):
+    params = FakeParams(BlrFlashRequested=True, IsOffroad=True)
+    mod = _hook(self, params)
+    runs, _ = _fake_flash(mod)
+    _pandad_window(mod)
+    assert runs == [mod.BLR]
+    assert params.writes[0] == ("BlrFlashRequested", False), "the lamp board's request is not cleared first"
+
+  def test_a_cancelled_eps_request_does_not_cost_the_lamp_board_its_window(self):
+    """A Cancel read before anything ran is no session: the window is still free."""
+    params = FakeParams(EpsLkasFlashRequested=True, EpsLkasFlashCancel=True, BlrFlashRequested=True, IsOffroad=True)
+    mod = _hook(self, params)
+    runs, _ = _fake_flash(mod)
+    _pandad_window(mod)
+    assert params.get("EpsLkasFlashState") == "cancelled"
+    assert runs == [mod.BLR]
+
+  def test_each_board_clears_only_its_own_request(self):
+    params = FakeParams(BlrFlashRequested=True, IsOffroad=True)
+    mod = _hook(self, params)
+    runs, _ = _fake_flash(mod)
+    assert mod.flash_if_requested("deadbeef") is False, "the EPS ran on the lamp board's request"
+    assert params.writes == [], "asking the EPS wrote something"
+    assert mod.flash_if_requested("deadbeef", target=mod.BLR) is True
+    assert runs == [mod.BLR]
+    assert {k for k, _ in params.writes} <= {"BlrFlashRequested", "BlrFlashState", "BlrFlashProgress",
+                                             "BlrFlashPhase", "BlrFlashCancel"}, params.writes
+
+    # onroad: dropped, by its own params
+    params = FakeParams(BlrFlashRequested=True, EpsLkasFlashRequested=False, IsOffroad=False)
+    mod = _hook(self, params)
+    runs, _ = _fake_flash(mod)
+    assert mod.flash_if_requested("deadbeef", target=mod.BLR) is False
+    assert params.get("BlrFlashState") == "failed: not while driving" and params.get_bool("BlrFlashRequested") is False
+    assert runs == [] and not any(k.startswith("EpsLkas") for k, _ in params.writes)
+
+  def test_a_lamp_board_cancel_is_read_before_it_is_cleared(self):
+    params = FakeParams(BlrFlashRequested=True, IsOffroad=True, BlrFlashCancel=True)
+    mod = _hook(self, params)
+    runs, made = _fake_flash(mod)
+    assert mod.flash_if_requested("deadbeef", target=mod.BLR) is False
+    assert params.get("BlrFlashState") == "cancelled"
+    assert params.get_bool("BlrFlashCancel") is False, "the Cancel must be spent"
+    assert params.get("BlrFlashPhase") == {"p": "cancelled", "cancel": False}
+    assert runs == [] and made == [], "the update was started anyway"
+    assert params.writes[0] == ("BlrFlashRequested", False)
+
+  def test_the_watcher_watches_the_lamp_board_too(self):
+    import signal as sig
+    # offroad: it stops ./pandad for the lamp board's request, skip armed first
+    params = FakeParams(BlrFlashRequested=True, IsOffroad=True)
+    mod = _hook(self, params)
+    mod.WATCH_PERIOD_S = 0.01
+    proc, skipped = FakeProcess(), []
+    t = mod.watch_for_request(proc, lambda: skipped.append(True), params=params)
+    self.addCleanup(_stop_watcher, proc, t)
+    t.join(timeout=2.0)
+    assert proc.signals == [sig.SIGINT] and skipped == [True]
+    assert params.get_bool("BlrFlashRequested") is True, "the watcher must leave the request for the hook"
+
+    # onroad: refused, and only the lamp board's request is dropped
+    params = FakeParams(BlrFlashRequested=True, EpsLkasFlashRequested=False, IsOffroad=False)
+    mod = _hook(self, params)
+    mod.WATCH_PERIOD_S = 0.01
+    proc = FakeProcess()
+    t = mod.watch_for_request(proc, lambda: None, params=params)
+    self.addCleanup(_stop_watcher, proc, t)
+    t.join(timeout=0.3)
+    assert proc.signals == []
+    assert params.get_bool("BlrFlashRequested") is False and params.get("BlrFlashState") == "failed: not while driving"
+    assert not any(k.startswith("EpsLkas") for k, _ in params.writes), params.writes
+
+    # cancelled before pandad was asked: dropped, the car link untouched
+    params = FakeParams(BlrFlashRequested=True, IsOffroad=True, BlrFlashCancel=True)
+    mod = _hook(self, params)
+    mod.WATCH_PERIOD_S = 0.01
+    proc = FakeProcess()
+    t = mod.watch_for_request(proc, lambda: None, params=params)
+    self.addCleanup(_stop_watcher, proc, t)
+    t.join(timeout=0.3)
+    assert proc.signals == [] and params.get("BlrFlashState") == "cancelled"
+
+  def test_with_both_requested_the_watcher_stops_pandad_once(self):
+    import signal as sig
+    params = FakeParams(EpsLkasFlashRequested=True, BlrFlashRequested=True, IsOffroad=True)
+    mod = _hook(self, params)
+    mod.WATCH_PERIOD_S = 0.01
+    proc = FakeProcess()
+    t = mod.watch_for_request(proc, lambda: None, params=params)
+    self.addCleanup(_stop_watcher, proc, t)
+    t.join(timeout=2.0)
+    assert proc.signals == [sig.SIGINT]
+
+  def test_a_lamp_board_update_writes_its_own_identity(self):
+    """The flags move with the hash, as for the EPS - in the lamp board's terms: VARIANT as card writes it (the
+    number), a bootloader, and dual-bank flash (its bootloader NAKs BEGIN on single-bank). What card read off the
+    board - uid, bootGit, borEn - stays."""
+    params = FakeParams(BlrFlashRequested=True, IsOffroad=True,
+                        BlrBoardVersion="1a2b3c4d",
+                        BlrBoardBuild={"dirty": False, "variant": 2, "bootloader": True, "bootGit": "b28113",
+                                       "uid": "a5c3e1", "borEn": True, "dualBank": True},
+                        BlrLastDrive={"faults": 0, "latch": 0})
+    mod = _hook(self, params)
+    image = _blr_image(git=0x9F8E7D6C, variant=3)
+    mod.load_bundled_image = lambda target: (image, "") if target is mod.BLR else (None, "not this one")
+    seen = {}
+
+    def fake_run(transport, img, **kw):
+      seen.update(kw, image=img)
+      kw["trace_out"]({"n": 1})
+      kw["phase"]({"p": "write", "cancel": False, "pct": 50})
+      kw["progress"](50)
+      return True, "9f8e7d6c"
+
+    mod.run_flash = fake_run
+    assert mod.flash_if_requested("deadbeef", target=mod.BLR,
+                                  transport_factory=lambda: types.SimpleNamespace(close=lambda: None)) is True
+    assert seen["target"] is mod.BLR and seen["image"] == image
+    assert params.get("BlrFlashState") == "ok 9f8e7d6c"
+    assert params.get("BlrFlashPhase") == {"p": "ok", "cancel": False}
+    assert params.get("BlrBoardVersion") == "9f8e7d6c"
+    assert params.get("BlrBoardBuild") == {"dirty": False, "variant": 3, "bootloader": True, "bootGit": "b28113",
+                                           "uid": "a5c3e1", "borEn": True, "dualBank": True}
+    assert int(params.get("BlrBoardSeenAt")) > 0
+    assert params.get("BlrFlashTrace") == {"n": 1} and params.get("BlrFlashProgress") == "50"
+    assert params.get("BlrLastDrive") == {"faults": 0, "latch": 0}, "the last drive's record is the drive's, not ours"
+    assert not any(k.startswith("EpsLkas") for k, _ in params.writes), params.writes
+
+    # a board whose 0x62F card never heard: the update itself proved a bootloader and dual-bank flash, and without
+    # them the page would refuse the next update ("drive once", or "not dual-bank" beside a bootloader)
+    params = FakeParams(BlrFlashRequested=True, IsOffroad=True, BlrBoardBuild={"dirty": False, "variant": 2})
+    mod = _hook(self, params)
+    mod.load_bundled_image = lambda target: (image, "")
+    mod.run_flash = lambda transport, img, **kw: (True, "9f8e7d6c")
+    mod.flash_if_requested("deadbeef", target=mod.BLR, transport_factory=lambda: types.SimpleNamespace(close=lambda: None))
+    assert params.get("BlrBoardBuild") == {"dirty": False, "variant": 3, "bootloader": True, "dualBank": True}
+
+  def test_no_lamp_board_image_is_a_clean_failure(self):
+    """Nothing is bundled until the board's bench tests pass (the page offers nothing then). A request made anyway
+    - by hand - ends as a failure that names the file, before any transport is opened."""
+    params = FakeParams(BlrFlashRequested=True, IsOffroad=True)
+    mod = _hook(self, params)
+    if Path(mod.BLR.image_path).exists():
+      self.skipTest("a BLR image is bundled")
+    made = []
+    assert mod.flash_if_requested("deadbeef", target=mod.BLR, transport_factory=lambda: made.append(1)) is True
+    assert made == []
+    state = params.get("BlrFlashState")
+    assert state.startswith("failed: no bundled image at ") and state.endswith("blr_appslot.bin"), state
+
+  def test_the_hook_never_raises_for_the_lamp_board(self):
+    class Exploding(FakeParams):
+      def get_bool(self, k):
+        raise RuntimeError("params exploded")
+
+    mod = _hook(self, Exploding())
+    assert mod.flash_if_requested("deadbeef", target=mod.BLR) is False
+
+    class ExplodingPut(FakeParams):
+      def put_bool(self, k, v, block=False):
+        raise RuntimeError("params exploded")
+
+    params = ExplodingPut(BlrFlashRequested=True, IsOffroad=True)
+    mod = _hook(self, params)
+    assert mod.flash_if_requested("deadbeef", target=mod.BLR) is False   # could not even clear it: nothing ran
+
+    params = FakeParams(BlrFlashRequested=True, IsOffroad=True)
+    mod = _hook(self, params)
+    _fake_flash(mod)
+
+    def bad_close():
+      raise OSError("usb gone")
+
+    assert mod.flash_if_requested("deadbeef", target=mod.BLR,
+                                  transport_factory=lambda: types.SimpleNamespace(close=bad_close)) is True
+    assert params.get("BlrFlashState") == "failed: no HELLO"
+    # and a board the hook has no params for is nobody's request
+    assert mod.flash_if_requested("deadbeef", target=object()) is False
+    assert mod.flash_if_requested("deadbeef", target=[]) is False
+
+  def test_the_page_and_the_hook_name_the_same_params(self):
+    """The page writes the request the hook watches, and reads the state the hook writes. Two tables, one per
+    module (board.py BOARD_KEYS, the hook's KEYS), held to the same names here."""
+    hook = _key_tables(ast.parse(HOOK.read_text()))
+    page = _key_tables(ast.parse(BOARD_PANEL.read_text()))
+    for table in ("EPS_KEYS", "BLR_KEYS"):
+      assert table in hook and table in page, (table, sorted(hook), sorted(page))
+      common = set(hook[table]) & set(page[table])
+      assert common >= {"request", "progress", "state", "phase", "cancel", "version", "build", "seen"}, common
+      for field in common:
+        assert hook[table][field] == page[table][field], f"{table}.{field}: hook {hook[table][field]} != page {page[table][field]}"
+    assert hook["EPS_KEYS"]["request"] == "EpsLkasFlashRequested" and hook["BLR_KEYS"]["request"] == "BlrFlashRequested"
+    # and each board's names are its own: no key is in both tables
+    eps, blr = set(hook["EPS_KEYS"].values()), set(hook["BLR_KEYS"].values())
+    assert not (eps & blr), eps & blr
+
+  def test_the_lamp_board_params_have_the_eps_twins_lifetimes(self):
+    """A request or a Cancel that survived a restart would be one nobody made; a trace that did not would be lost."""
+    keys = PARAMS_KEYS.read_text()
+
+    def entry(key):
+      m = re.search(r'\{"' + key + r'",\s*\{([^}]*)\}', keys)
+      assert m, f"{key} is not in params_keys.h"
+      return m.group(1).replace(" ", "")
+
+    for eps, blr in (("EpsLkasFlashRequested", "BlrFlashRequested"), ("EpsLkasFlashProgress", "BlrFlashProgress"),
+                     ("EpsLkasFlashState", "BlrFlashState"), ("EpsLkasFlashPhase", "BlrFlashPhase"),
+                     ("EpsLkasFlashCancel", "BlrFlashCancel"), ("EpsLkasFlashTrace", "BlrFlashTrace"),
+                     ("EpsLkasBoardVersion", "BlrBoardVersion"), ("EpsLkasBoardBuild", "BlrBoardBuild"),
+                     ("EpsLkasBoardSeenAt", "BlrBoardSeenAt")):
+      assert entry(eps) == entry(blr), f"{blr} is {entry(blr)}, its twin {eps} is {entry(eps)}"

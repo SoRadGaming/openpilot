@@ -13,6 +13,7 @@ from openpilot.common.hardware import HARDWARE
 from openpilot.common.swaglog import cloudlog
 
 from openpilot.sunnypilot.selfdrive.pandad.rivian_long_flasher import flash_rivian_long
+from openpilot.sunnypilot.selfdrive.pandad.eps_lkas_flasher import BLR
 from openpilot.sunnypilot.selfdrive.pandad.eps_lkas_hook import flash_if_requested, watch_for_request
 
 
@@ -147,7 +148,11 @@ def main() -> None:
         # yet, and the flash_panda() above has just repaired anything that was
         # in bootstub. Returns normally whatever happens - an exception here
         # would mean ./pandad never starts and the car has no CAN at all.
-        flash_if_requested(panda_serials[0])
+        # FORK(BRAKE-LAMP-RELAY): then the BLR-v1 lamp board, the same way - but
+        # ONE update session per window: the lamp board is asked only if the
+        # EPS ran none, and a second request waits for the next window.
+        if not flash_if_requested(panda_serials[0]):
+          flash_if_requested(panda_serials[0], target=BLR)
 
         # run real pandad
         os.environ['MANAGER_DAEMON'] = 'pandad'
@@ -155,7 +160,8 @@ def main() -> None:
         # FORK(GATEWAY-UPDATE): EPS-LKAS board update watcher.
         # A later request arrives while we are blocked below, so something has
         # to reopen the window. The watcher asks ./pandad to exit; the loop then
-        # comes back round to flash_if_requested() above. Offroad only.
+        # comes back round to flash_if_requested() above. Offroad only. It
+        # watches the BLR-v1 lamp board's request too (FORK(BRAKE-LAMP-RELAY)).
         watch_for_request(process, request_skip_panda_reset)
         process.wait()
     # TODO: wrap all panda exceptions in a base panda exception

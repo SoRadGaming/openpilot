@@ -248,6 +248,21 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // pandad removes it when it sees ignition off, the manager clears it on the next ignition-on edge.
     {"DiagToolStock", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"CarBusOffStock", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, BOOL}},
+    // FORK(BRAKE-LAMP-RELAY): the BLR-v1 brake-lamp board, the EpsLkas* set's twin, one key per key and the same
+    // lifetimes for the same reasons. Its OWN request param, never a shared one with a "which board" field: the
+    // request itself names the board, so an update of one can never be started as an update of the other.
+    // card writes the first four from params_thread (BlrBoardBuild and BlrLastDrive are dicts, never json.dumps);
+    // BlrLastDrive is this drive's fault/latch summary, kept for the offroad page like the identity.
+    {"BlrBoardVersion", {PERSISTENT, STRING}},
+    {"BlrBoardBuild", {PERSISTENT, JSON}},
+    {"BlrBoardSeenAt", {PERSISTENT, STRING}},
+    {"BlrLastDrive", {PERSISTENT, JSON}},
+    {"BlrFlashRequested", {CLEAR_ON_MANAGER_START, BOOL}},
+    {"BlrFlashProgress", {CLEAR_ON_MANAGER_START, STRING}},
+    {"BlrFlashState", {CLEAR_ON_MANAGER_START, STRING}},
+    {"BlrFlashPhase", {CLEAR_ON_MANAGER_START, JSON}},
+    {"BlrFlashCancel", {CLEAR_ON_MANAGER_START, BOOL}},
+    {"BlrFlashTrace", {PERSISTENT, JSON}},
     {"IsDevelopmentBranch", {CLEAR_ON_MANAGER_START, BOOL}},
     {"IsReleaseSpBranch", {CLEAR_ON_MANAGER_START, BOOL}},
     {"LastGPSPositionLLK", {PERSISTENT, STRING}},

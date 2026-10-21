@@ -21,6 +21,7 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).parents[3]      # openpilot/
 REPO = Path(__file__).parents[4]      # the repo root, which holds opendbc_repo/
@@ -914,3 +915,123 @@ class TestFlashScreen(unittest.TestCase):
     mod = _module()
     assert 0x711 in mod.CENSUS_OWN and 0x70B in mod.CENSUS_OWN
     assert 0x71A not in mod.CENSUS_OWN and 0x718 not in mod.CENSUS_OWN
+
+
+# ---------------------------------------------------------------------------
+# BLR-v1 (DESIGN E.1, commit H1): the EPS update path is proven in the car, and the flasher is about to be refactored to
+# serve a second board. This pins what the EPS side puts on the wire, byte for byte and on the fake clock, BEFORE the
+# refactor - captured on the unmodified code - so the refactor cannot change it without this test saying so.
+
+def _golden_image() -> bytes:
+  """An APL1 app-slot image built here, not the bundled .bin: the transcript pins the CODE, and must not change every
+  time a new EPS image is bundled. 10 chunks and 4 bytes, so the last chunk is short and so is its last DATA frame -
+  as in the real images (49,740 bytes)."""
+  n = 10 * 256 + 4
+  img = bytearray((i * 37 + 11) & 0xFF for i in range(n))
+  struct.pack_into("<II", img, 0, 0x20024000, APP_ORIGIN + 0x201)
+  struct.pack_into("<4I", img, APP_ID_OFFSET, APP_ID_MAGIC, APP_ORIGIN, 0x5EED1234, 0)
+  return bytes(img)
+
+
+def _wire_transcript(scenario: str) -> list[str]:
+  """One run_flash against the SimBoard on the fake clock, as text: every frame the flasher hands the transport (with
+  the fake time it was handed over, the id and the bytes), every phase_cb dict, every log line, every progress
+  callback, the trace summary and the result - in the order they happened."""
+  mod = _module()
+  clock = FakeTime()
+  mod.time = clock
+  mod.Flasher.save_trace = lambda self, directory=None: None   # never /data from a test
+  lines: list[str] = []
+
+  class Board(SimBoard):
+    def send(self, can_id, data):
+      lines.append(f"tx {self.clock.now:.6f} {can_id:03x} {bytes(data).hex()}")
+      super().send(can_id, data)
+
+  sc: dict[str, Any] = {"rpm": 0, "speed": 0, "ignition": True, "dry_run": False, "knock": True, "cancel": None,
+                        "at_stock_3": None}
+  sc.update({
+    "full": {},
+    "bench": {"ignition": None, "rpm": None},
+    "dry_run": {"dry_run": True},
+    "no_knock": {"knock": False},
+    "cancel_check": {"cancel": "check"},
+    "cancel_baseline": {"cancel": "baseline"},
+    "cancel_stock": {"cancel": "stock"},
+    "cancel_last_instant": {"cancel": 4.95},
+    "cancel_write_ignored": {"cancel": "write"},
+    "engine_at_gate": {"rpm": 695},
+    "engine_in_countdown": {"at_stock_3": lambda b: setattr(b, "rpm", 700)},
+    "engine_lost_in_countdown": {"at_stock_3": lambda b: setattr(b, "rpm", None)},
+    "ignition_off_in_countdown": {"at_stock_3": lambda b: (setattr(b, "ignition", lambda: False), setattr(b, "rpm", None))},
+    "ignition_off_at_gate": {"ignition": False},
+    "no_engine_data": {"rpm": None},
+    "moving": {"speed": 500},
+  }[scenario])
+
+  board = Board(mod, clock, 0x5EED1234, rpm=sc["rpm"], speed_cph=sc["speed"])
+  if sc["ignition"] is not None:
+    board.ignition = lambda: sc["ignition"]
+  phases: list[dict] = []
+  stock_t: list[float] = []
+
+  def phase(d):
+    phases.append(d)
+    lines.append("ph " + json.dumps(d, sort_keys=True))
+    if d["p"] == "stock":
+      stock_t.append(clock.now)
+      if d.get("left") == 3 and sc["at_stock_3"] is not None and len([p for p in phases if p.get("left") == 3]) == 1:
+        sc["at_stock_3"](board)
+
+  def cancel():
+    c = sc["cancel"]
+    if isinstance(c, float):
+      return bool(stock_t) and clock.now >= stock_t[0] + c
+    return bool(c) and bool(phases) and phases[-1]["p"] == c
+
+  ok, msg = mod.run_flash(board, _golden_image(), log=lambda s: lines.append("log " + s),
+                          progress=lambda p: lines.append(f"pct {p}"), dry_run=sc["dry_run"], knock=sc["knock"],
+                          trace_out=lambda d: lines.append("trace " + json.dumps(d, sort_keys=True)),
+                          phase=phase, should_cancel=cancel)
+  lines.append(f"= {ok} {msg}")
+  return lines
+
+
+# sha256 of each scenario's transcript, captured on the unmodified flasher (sunnypilot nsw-live 55d9562b6).
+# cancel_write_ignored is the same run as full on purpose: a Cancel after BEGIN is never even read.
+EPS_WIRE_GOLDEN = {
+  "full": "b41a17f4d77cfc6d25609523596963239d9d7dc2fe07edda5cdfc0009842e1ef",                       # 351 frames
+  "bench": "e93e66901dc43b6b974e216bb41f60885e9e5c3f65eb40551122404b6913d2fe",                      # 351 frames
+  "dry_run": "41f39bebc53fba65c2b890f7d3b60d63db4772fb0179acecdab960facc692707",                    # 6, ends in ABORT
+  "no_knock": "0079de1e39a01aff583d8f56917479b7040cc38f26103f3b05bf7c32e22b5ede",                   # 0, no HELLO
+  "cancel_check": "75928f3b8ccc2ba347af88e734927ce5921a394847179817f13fb26a398500b0",               # 0
+  "cancel_baseline": "60ff36cb09eea548e7e738a26b4573152e88298f0d13a6cd9d000a891f173a75",            # 0
+  "cancel_stock": "e3d274bd7370f9a557dc6eeffb0998025d23d2074f55e719356503dea85661af",               # 4, ABORT
+  "cancel_last_instant": "323864dfba08889dbc31ec31d8891cb313e3f65d27b574514d3d28252a1ca677",        # 6, ABORT
+  "cancel_write_ignored": "b41a17f4d77cfc6d25609523596963239d9d7dc2fe07edda5cdfc0009842e1ef",       # = full
+  "engine_at_gate": "7519ed11b625c35aad4553ea93187c86d111f1ec3054a5e67697e5ed05fa27b8",             # 0
+  "engine_in_countdown": "79d42537baa8f35739b6e7f3fda3939ad37c36f005ab7c56d052524cf7e51a1b",        # 5, ABORT
+  "engine_lost_in_countdown": "c060c95be8116e17420c799828d81a94d90b207c259e1297303eebb1804a2271",   # 5, ABORT
+  "ignition_off_in_countdown": "9ff53134c575a1a096f5b3447223e378e24104569a5baaa2b127490acac11e55",  # 5, ABORT
+  "ignition_off_at_gate": "56ca02824c93d048d9286605cfb10ceb38d55ec7572d07f3abf2239663df7a3d",       # 0
+  "no_engine_data": "9f39ca94f7cab0ce6f3a5e71b2e36e4323b70fc1ebb5bd34c798d720970c7af2",             # 0
+  "moving": "14030b9f62ea65d604b4c239dc3686e6f293cc414530efbd0e1a8a00059a1391",                     # 0
+}
+
+
+class TestEpsWireTranscript(unittest.TestCase):
+  def test_eps_wire_transcript_is_frozen(self):
+    """THE EPS UPDATE PATH IS PROVEN IN THE CAR. What it puts on the wire - which frames, which bytes, in which order,
+    at which (fake) time - and what it tells the screen and the log must stay exactly as they were captured, through
+    the BLR refactor and after it. A mismatch here is not a test to re-capture: it is the EPS update changing, which
+    needs a bench run (spare board, candleLight, A to B to A) before it may reach the car."""
+    import hashlib
+    assert set(EPS_WIRE_GOLDEN) == {"full", "bench", "dry_run", "no_knock", "cancel_check", "cancel_baseline",
+                                    "cancel_stock", "cancel_last_instant", "cancel_write_ignored", "engine_at_gate",
+                                    "engine_in_countdown", "engine_lost_in_countdown", "ignition_off_in_countdown",
+                                    "ignition_off_at_gate", "no_engine_data", "moving"}
+    for name, want in EPS_WIRE_GOLDEN.items():
+      lines = _wire_transcript(name)
+      got = hashlib.sha256("\n".join(lines).encode()).hexdigest()
+      tx = sum(1 for ln in lines if ln.startswith("tx "))
+      assert got == want, f"{name}: the EPS wire transcript changed ({len(lines)} lines, {tx} frames, last: {lines[-1]!r})"

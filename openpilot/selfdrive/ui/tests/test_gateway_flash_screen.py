@@ -81,7 +81,8 @@ class TestFlashView(unittest.TestCase):
     tree = ast.parse(src)
     confirm = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "confirm")
     seg = ast.get_source_segment(src, confirm) or ""
-    assert "GatewayFlashDialog()" in seg
-    assert seg.index("put_bool(CANCEL_PARAM, False)") < seg.index("put_bool(REQUEST_PARAM, True)"), \
+    # the button's own board (BLR-v1): its screen, and its params (keys = self._keys, BOARD_KEYS[target])
+    assert "GatewayFlashDialog(self._target)" in seg
+    assert seg.index("put_bool(keys.cancel, False)") < seg.index("put_bool(keys.request, True)"), \
       "a Cancel left from an earlier run would cancel this one"
     assert 'tr("engine off\\nslide to update")' in src, "the slider does not say engine off"

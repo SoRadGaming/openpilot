@@ -533,6 +533,11 @@ struct CarStateSP @0xb86e6369214c01c8 {
     consumedPlus @2 :Bool;     # ... and its key: '+' (true) or '-'
   }
 
+  # FORK(BRAKE-LAMP-RELAY): the BLR-v1 brake-lamp board, which lights the brake lamps from openpilot's own 0x1FA
+  # BRAKE_LIGHTS bit. Decoded from its 0x620-0x62F telemetry (opendbc _sunnypilot_blr.dbc) by carstate_ext.py
+  # _update_blr(). DIAGNOSTICS ONLY: nothing may read this to decide anything about braking, the lamps or control.
+  brakeLampRelay @6 :BrakeLampRelay;
+
   # State of the aftermarket LIN-bus gateway that translates openpilot's steering
   # request to the EPS. Decoded from GW_ACTIVE (0x704). See docs/SP_HUD_STATUS.md.
   struct LinbusGateway {
@@ -627,6 +632,44 @@ struct CarStateSP @0xb86e6369214c01c8 {
     # Logged only. The reported torque is deliberately not clipped to it: that would make the ceiling
     # steer_limited_by_safety and stop steerSaturated for as long as the blinker is on (carcontroller.py).
     blinkerCapped @28 :Bool;
+  }
+
+  # FORK(BRAKE-LAMP-RELAY): field names and order mirror opendbc structs.py CarStateSP.BrakeLampRelay (card splats
+  # it into new_message). Every field is something the board sends; the bit layouts are the firmware's
+  # blr/dbc/blr.dbc, copied verbatim into opendbc.
+  struct BrakeLampRelay {
+    # --- BLR_STATUS (0x620), 10 Hz plus on change. Everything in this block is 0/false unless `valid`. ---
+    valid @0 :Bool;            # a BLR_STATUS arrived less than 1 s ago
+    state @1 :UInt8;           # 0 init, 1 idle, 2 active (in shadow: would light), 3 fault, 4 latched, 7 knock
+    outDrive @2 :Bool;         # the relay output as applied; always false on a shadow image
+    wouldOn @3 :Bool;          # the board's decided output (on a shadow image, what it WOULD do)
+    request @4 :Bool;          # openpilot's last valid 0x1FA asked for lamps (BRAKE_LIGHTS, request, brake > 0)
+    cmdFresh @5 :Bool;         # a valid 0x1FA within 150 ms
+    # --- BLR_VERSION (0x627) VARIANT, latched with the hash below: 1 bench, 2 shadow, 3 live; 0 never heard ---
+    variant @6 :UInt8;
+    # --- BLR_STATUS again ---
+    # 0x620 bits 16-23 as one byte, bit 0 first: F_U4_NOT_SINKING, F_U4_LIMITING, D_LAMP_DARK, D_COIL_OPEN,
+    # D_LAMP_WITHOUT_US, D_SENSE_MID, D_EXT_SINK_HELD, F_FEEDBACK (carstate_ext.py BLR_FAULT_SIGNALS)
+    faults @7 :UInt8;
+    latchReason @8 :UInt8;     # 0 none, 1 U4, 2 feedback, 3 clock, 4 pin stuck high; latched until power-off
+    driverBraking @9 :Bool;    # the board's view: output off, relay line low, lamps high
+    extSink @10 :Bool;         # something other than the pedal sinks the relay coil (e.g. the ACC unit)
+    # --- BLR_ANALOG (0x621), 5 Hz, mV at the board's connector; 0 unless one arrived less than 1 s ago ---
+    relaySnsMv @11 :UInt16;
+    lampSnsMv @12 :UInt16;
+    vbatSnsMv @13 :UInt16;     # after the board's reverse-polarity diode, uncorrected
+    # --- BLR_VERSION (0x627) + BLR_BUILD (0x62F), 1 Hz identity, LATCHED on first sight like linbusGateway.fw* ---
+    fwValid @14 :Bool;         # 0x627 heard since card started
+    fwGitHash @15 :UInt32;     # the BLR's path-scoped commit, as %08x
+    fwDirty @16 :Bool;         # built from an edited tree: fwGitHash names a commit it is NOT
+    bootPresent @17 :Bool;     # a BLR bootloader is at 0x08000000 -- gates any CAN update
+    bootGitLo24 @18 :UInt32;   # the bootloader's commit, low 24 bits
+    boardUid24 @19 :UInt32;    # 24-bit folded MCU UID: which physical board
+    optBorEn @20 :Bool;        # brown-out reset enabled in the option bytes
+    # 0x62F actually received. Without it "the board said it has no bootloader" and "0x62F has not arrived yet"
+    # are the same reading (the lesson of linbusGateway.fwBuildValid).
+    buildValid @21 :Bool;
+    optDualBank @22 :Bool;     # dual-bank flash: without it the bootloader refuses an update (NAK 9)
   }
 }
 

@@ -26,19 +26,34 @@ board fitted. The steering is plain copper. That is why erasing its flash
 mid-session is uneventful, and why the worst outcome of a failure here is a
 board sitting in its bootloader with stock LKAS working.
 
+TWO BOARDS, ONE PROTOCOL (BLR-v1, 2026-10-14). The brake-lamp relay board
+(the EPS-LKAS repo's blr/) runs the same v1 bootloader protocol with every
+identity value changed. A Target carries one board's identity - see TARGETS
+below - and every function here takes one, EPS by default: with EPS this
+module puts on the wire exactly what it always has. The BLR's app forces its
+lamp output off before it resets on the knock, and its bootloader never drives
+it, so for the lamp board the worst outcome is the same in kind: a board in its
+bootloader, and brake lamps that work from the pedal exactly as stock.
+
 Run it by hand, from the repo root:
 
     python -m openpilot.sunnypilot.selfdrive.pandad.eps_lkas_flasher --dry-run
     python -m openpilot.sunnypilot.selfdrive.pandad.eps_lkas_flasher --bench   # candleLight
+    python -m openpilot.sunnypilot.selfdrive.pandad.eps_lkas_flasher --target blr --dry-run
 """
-from __future__ import annotations
-
+# NO `from __future__ import annotations` (removed for BLR-v1). The tests load
+# this file with spec_from_file_location and never register it in sys.modules,
+# and dataclasses resolves a STRING annotation through sys.modules[__module__]
+# - so with postponed annotations the Target dataclass below raises
+# AttributeError at import there. Every annotation here is valid at runtime.
 import os
 import struct
 import time
 import zlib
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
 
 # ---- inc/boot_proto.h. Change a number there, change it here. ---------------
 PROTO_VERSION = 1
@@ -378,6 +393,186 @@ EPS_LKAS_APPSLOT_BIN = os.path.join(os.path.dirname(__file__), "eps_lkas_appslot
 
 RX, ECHO, REJECTED = "rx", "echo", "rejected"
 
+# ---- BLR-v1: blr/inc/blr_boot_proto.h, blr_app_id.h, blr_proto.h (the EPS-LKAS repo). -------------------------
+# Change a number there, change it here: test_blr_flasher.py compares these with the headers whenever the firmware
+# tree is reachable, and with the design's literals always.
+BLR_ID_HOST = 0x628
+BLR_ID_BOARD = 0x629
+BLR_ID_DATA = 0x62A
+BLR_MAGIC = b"BLRBOOT"
+BLR_BOARD_CLASS = 2                # HELLO byte 7 and ENTER-ACK byte 7; the EPS bootloader sends 0 there
+BLR_APP_ID_MAGIC = 0x31524C42      # "BLR1", at APP_ID_OFFSET like APL1
+BLR_BOOT_ID_MAGIC = 0x31424C42     # "BLB1": the BLR's BOOTLOADER record - an image carrying it is never an app
+BLR_APP_ORIGIN = 0x08004000        # the same die and flash map as the EPS board
+BLR_APP_SLOT_BYTES = 112 * 1024
+BLR_APP_ID_RESERVED = 0x0E         # flags bits 3:1 - READONLY/TEST on the EPS marker, never set by a BLR build
+BLR_VARIANT_SHIFT = 4              # flags bits 5:4 = VARIANT, and HELLO status bits 5:4 the installed one's
+BLR_VARIANT_MASK = 0x30
+BLR_VARIANT_BENCH, BLR_VARIANT_SHADOW, BLR_VARIANT_LIVE = 1, 2, 3
+BLR_VARIANT_NAMES = {0: "invalid", BLR_VARIANT_BENCH: "bench", BLR_VARIANT_SHADOW: "shadow", BLR_VARIANT_LIVE: "live"}
+BLR_ERR_WRONG_IMAGE, BLR_ERR_NOT_DUAL_BANK, BLR_ERR_OUTPUT_ON = 8, 9, 10
+# HELLO status bit 6: this boot erased a flash page that read back with an ECC error (an erase or a write a power cut
+# interrupted) before anything else read flash - and a staged image was cancelled with it (review round 1, BOOT-2).
+BLR_HELLO_ECC_FIXED = 0x40
+# The post-build trailer, the last 12 bytes of every BLR app .bin (review round 1, BOOT-6): {"BLRT", the length of the
+# whole file including these 12 bytes, CRC-32 of every byte before them}, 0xFF-padded in front to a double word. The
+# marker and the vectors do not say how long an image is, so without it any prefix of a real image that still holds
+# its reset handler passed every check. The bootloader checks it at FINISH and again before the copy; the comma checks
+# it before a frame is sent (check_app_slot_image) and before an image is offered (board.py bundled_offer).
+BLR_TRAILER_MAGIC = 0x54524C42     # "BLRT" little-endian
+BLR_TRAILER_BYTES = 12
+BLR_ERRS = {**ERRS, BLR_ERR_WRONG_IMAGE: "image is not for this board",
+            BLR_ERR_NOT_DUAL_BANK: "board flash is not dual-bank",
+            BLR_ERR_OUTPUT_ON: "lamp output is on"}
+# The BLR's own block, 0x620-0x62F: telemetry, and its bootloader's 0x628-0x62A.
+BLR_ID_BLOCK = frozenset(range(0x620, 0x630))
+BLR_STATUS_ID = 0x620              # BLR_STATUS, 10 Hz: STATE bits 2:0, OUT_DRIVE bit 3 (blr.dbc)
+# <= 400 DATA frames/s (DESIGN B.1/R5): a BLR update shares bus 0 with the EPS board, which forwards it.
+BLR_DATA_FPS_MAX = 400.0
+DATA_PACE_MARGIN_S = 10e-6         # 2.51 ms, not 2.50: no rounding of a clock can fit a 401st frame in a second
+BLR_APPSLOT_BIN = os.path.join(os.path.dirname(__file__), "blr_appslot.bin")
+BLR_TRACE_DIR = "/data/blr-trace"
+# A LOST FINISH ACK IS NOT A FAILED INSTALL (BLR-v1 review, lens B). The BLR bootloader's FINISH is two CRC-32 passes
+# over at most 112 KB of bank 2 and one header write - well under a second - and it ACKs a repeated FINISH again
+# without writing twice (blr_boot_main.c: the header is already exactly this one). So its ACK is awaited this long,
+# and on silence FINISH is sent once more: twice this is still inside the session's 10 s, which any frame restarts.
+# The EPS's 20 s single wait would outlast that session: the board resets and installs the image (its header is
+# written) while the page reports "no ACK for FINISH".
+BLR_FINISH_ACK_S = 4.0
+# The EPS board's GW_SPLIT_STATUS (its dbc): forwarding-ring peak byte 0, drop/overflow flags byte 4 bits 4:0,
+# FAULT byte 4 bits 7:5. Its K1 forwards a BLR update's burst from the car side to the camera side.
+EPS_SPLIT_ID = 0x706
+
+
+@dataclass(frozen=True, eq=False)
+class Target:
+  """One board's identity: everything that makes an update this board's and never the other's (DESIGN E.1).
+
+  Frozen, and compared by identity - EPS is EPS. None in hello_class / allowed_variants / data_fps_max / retry_naks /
+  finish_retry_s, and False in check_slot / knock_enters, means "not checked / not paced / retried on anything / one
+  FINISH, 20 s / INFO's slot not compared / a HELLO and nothing else answers the knock", which is the EPS as proven in
+  the car (test_eps_lkas_wire_errors.py); the BLR sets all seven, as its own host tool blr_can_update.py does.
+
+  words - what the log, the trace file and the update screen call things on this board:
+    board, image      the board, and its images, in a sentence
+    no_marker         the refusal when 0x100 holds no marker this module knows ({off}, {magic})
+    dirty             the log's warning for an image built from an edited tree (the EPS installs one; the BLR refuses)
+    no_hello          the result when nothing says HELLO
+    trace             the log's name for the raw trace file
+    trace_header      its first lines
+    title, click, click_line, stock, done_line
+                      the update screen (board.py): button title (<= 10 characters), the knock phase's title and
+                      line, the countdown's title, and the line after "done" ("" = none). The EPS's are today's.
+  """
+  name: str                                # "eps" | "blr"
+  id_host: int                             # host -> board: knock, commands
+  id_board: int                            # board -> host: ACK/NAK/INFO/HELLO
+  id_data: int                             # host -> board: 8 image bytes
+  magic: bytes                             # ENTER bytes 1..7, and the knock
+  marker_magic: int                        # the app marker at APP_ID_OFFSET
+  marker_origin: int                       # ... and the address it must say the image was linked for
+  slot_bytes: int
+  hello_class: int | None                  # HELLO[7] and ENTER-ACK[7]; None = not checked
+  allowed_variants: frozenset[int] | None  # marker VARIANTs the comma installs; None = no VARIANT field
+  refuse_dirty: bool                       # refuse an image built from an edited tree
+  strict_image: bool                       # the bootloader's full image rules here too: odd PC inside the image,
+                                           # reserved flag bits zero, the image's own length/CRC-32 trailer (BLRT)
+  image_path: str                          # the bundled image
+  census_own: frozenset[int]               # IDs the census never reports as lost or new
+  trace_ids: tuple[int, ...]               # traced raw - and kept out of _rx, so never the board's reply ID
+  trace_dir: str
+  data_fps_max: float | None               # DATA frame ceiling; None = the echo's pace
+  retry_naks: frozenset[int] | None        # NAKs to CEND a chunk is sent again after; None = any (the EPS)
+  finish_retry_s: float | None             # FINISH's ACK awaited this long, then FINISH once more; None = once, 20 s
+  check_slot: bool                         # INFO's slot size must be slot_bytes, or ABORT before the countdown
+  knock_enters: bool                       # an ENTER ACK to the knock is a resident bootloader's open session
+  errs: Mapping[int, str]                  # NAK texts
+  words: Mapping[str, str]
+
+
+EPS_WORDS = MappingProxyType({
+  "board": "EPS-LKAS board",
+  "image": "an EPS-LKAS application image",
+  "no_marker": ("no app-slot marker at {off:#x} (found {magic:#010x}) - this looks " +
+                "like a STANDALONE image linked for 0x08000000 and must not be installed"),
+  "dirty": "  WARNING: built from an edited tree - 0x707 will report a commit it is not",
+  "no_hello": ("no HELLO. Either the board has no bootloader (it needs one SWD " +
+               "visit), or it never reset."),
+  "trace": "steering trace",
+  "trace_header": ("# EPS-LKAS flash steering trace.\n" +
+                   "# t = seconds from the first frame captured.\n" +
+                   "# 0x156 STEERING_SENSORS, 0x18F STEER_STATUS - decode with\n" +
+                   "# opendbc honda _steering_sensors_c / _steering_control_e.\n"),
+  "title": "update",
+  "click": "relays to stock",
+  "click_line": "the car is on stock wiring",
+  "stock": "relays in stock",
+  "done_line": "turn the car off, then on, before driving",
+})
+
+BLR_WORDS = MappingProxyType({
+  "board": "BLR-v1 lamp board",
+  "image": "a BLR-v1 application image",
+  "no_marker": "no BLR1 app-slot marker at {off:#x} (found {magic:#010x}) - not a BLR-v1 application image",
+  "dirty": "  WARNING: built from an edited tree - 0x627 will report a commit it is not",
+  "no_hello": ("no HELLO. Either the lamp board has no bootloader (it needs one SWD " +
+               "visit), or it never reset."),
+  "trace": "flash trace",
+  "trace_header": ("# BLR-v1 flash trace.\n" +
+                   "# t = seconds from the first frame captured.\n" +
+                   "# 0x17C POWERTRAIN_DATA, 0x1A6, 0x620 BLR_STATUS (blr.dbc), and the EPS board's\n" +
+                   "# 0x706 GW_SPLIT_STATUS / 0x70B GW_STEER_GRANT (eps-lkas-gw.dbc).\n"),
+  "title": "lamp board",
+  "click": "lamp output off",
+  "click_line": "brake lamps are pedal-only",
+  "stock": "lamp output off",
+  "done_line": "",
+})
+
+EPS = Target(
+  name="eps", id_host=ID_HOST, id_board=ID_BOARD, id_data=ID_DATA, magic=MAGIC,
+  marker_magic=APP_ID_MAGIC, marker_origin=APP_ORIGIN, slot_bytes=APP_SLOT_BYTES,
+  hello_class=None, allowed_variants=None, refuse_dirty=False, strict_image=False,
+  image_path=EPS_LKAS_APPSLOT_BIN, census_own=CENSUS_OWN, trace_ids=TRACE_IDS, trace_dir=TRACE_DIR,
+  data_fps_max=None, retry_naks=None, finish_retry_s=None, check_slot=False, knock_enters=False,
+  errs=MappingProxyType(ERRS), words=EPS_WORDS)
+
+# The census leaves out the BLR's own block (its telemetry stops at the knock and its bootloader answers on 0x629)
+# and keeps the EPS board's 0x700-0x70F in: if a BLR update's burst starves the EPS board, that is news. The trace is
+# the engine gate's 0x17C and the load bit, the BLR's own status, and the EPS board under the burst: its forwarding
+# ring (0x706) and its state (0x70B). A chunk is sent again only after a lost ACK or a NAK that a lost frame explains
+# - sequence, CRC, short (blr_can_update.py RETRY_NAKS): after NAK 8 the board has already closed the session, and
+# a retry would only bury "image is not for this board" under "command out of sequence".
+# Three session rules are the BLR host tool's too (blr_can_update.py, BLR-v1 review lens B): a FINISH whose ACK went
+# missing is asked once more (BLR_FINISH_ACK_S); INFO must report this board's 112 KB slot, or it is ABORT before the
+# countdown - a bootloader with another slot is not the one this image was checked for; and a bootloader that was
+# already running - nothing valid in its slot, so it never jumps - takes the knock for what its bytes are, an ENTER,
+# and ACKs it: that ACK is the session ("entered"), where waiting for a HELLO meant its 10 s timeout and a reset.
+BLR = Target(
+  name="blr", id_host=BLR_ID_HOST, id_board=BLR_ID_BOARD, id_data=BLR_ID_DATA, magic=BLR_MAGIC,
+  marker_magic=BLR_APP_ID_MAGIC, marker_origin=BLR_APP_ORIGIN, slot_bytes=BLR_APP_SLOT_BYTES,
+  hello_class=BLR_BOARD_CLASS, allowed_variants=frozenset({BLR_VARIANT_SHADOW, BLR_VARIANT_LIVE}),
+  refuse_dirty=True, strict_image=True,
+  image_path=BLR_APPSLOT_BIN, census_own=BLR_ID_BLOCK,
+  trace_ids=(ENGINE_RPM_ID, LOAD_ID, BLR_STATUS_ID, EPS_SPLIT_ID, GRANT_ID), trace_dir=BLR_TRACE_DIR,
+  data_fps_max=BLR_DATA_FPS_MAX, retry_naks=frozenset({1, 3, 6}),
+  finish_retry_s=BLR_FINISH_ACK_S, check_slot=True, knock_enters=True,
+  errs=MappingProxyType(BLR_ERRS), words=BLR_WORDS)
+
+TARGETS = {EPS.name: EPS, BLR.name: BLR}
+
+# What a marker at APP_ID_OFFSET says an image is, for the refusal when it is not the target's.
+MARKER_NAMES = {
+  APP_ID_MAGIC: "an EPS-LKAS image (APL1 marker)",
+  BLR_APP_ID_MAGIC: "a BLR-v1 lamp-board image (BLR1 marker)",
+  BLR_BOOT_ID_MAGIC: "the BLR-v1 BOOTLOADER (BLB1 record), which goes on over SWD only,",
+}
+
+
+def marker_variant(flags: int) -> int:
+  """The BLR marker's VARIANT (flags bits 5:4): 1 bench, 2 shadow, 3 live, 0 invalid."""
+  return (flags & BLR_VARIANT_MASK) >> BLR_VARIANT_SHIFT
+
 
 def crc16_ccitt(data: bytes) -> int:
   """CRC-16/CCITT-FALSE, matching crc16() in the bootloader's boot_main.c."""
@@ -389,17 +584,17 @@ def crc16_ccitt(data: bytes) -> int:
   return c
 
 
-def describe_nak(d: bytes) -> str:
+def describe_nak(d: bytes, errs: Mapping[int, str] = ERRS) -> str:
   err = d[2] if len(d) > 2 else 0
-  text = ERRS.get(err, str(err))
+  text = errs.get(err, str(err))
   if err == 4 and len(d) >= 8:
     sr = int.from_bytes(d[4:8], "little")
     text += f" [driver code {d[3]}, FLASH_SR={sr:#010x}]"
   return text
 
 
-def check_app_slot_image(image: bytes) -> str | None:
-  """None if this image may be installed, otherwise why not.
+def check_app_slot_image(image: bytes, target: Target = EPS) -> str | None:
+  """None if this image may be installed on `target`'s board, otherwise why not.
 
   RETURNS A STRING, NEVER RAISES, and that is not a style preference. The
   firmware repo's version of this check raises SystemExit, which inherits
@@ -413,32 +608,86 @@ def check_app_slot_image(image: bytes) -> str | None:
   bootloader can apply to the raw vector table, and then gets branched into
   16 KB away from its real reset handler. So an app-slot image says what it was
   linked for, in its own bytes, and that is what gets compared.
+
+  AND WHICH BOARD IT IS FOR (BLR-v1). The marker's magic says that too: APL1 is
+  the EPS board's, BLR1 the lamp board's. Each is refused on the other board by
+  name - an EPS image on a BLR would drive PB10 high, its UART idle level, which
+  on the BLR is the brake lamps on. For the BLR this applies its bootloader's
+  full rules (check_blr_image.py --for-car): an odd reset vector inside the
+  image's own bytes, reserved flag bits zero, a shadow or live VARIANT - never
+  bench - and a clean tree; and the image's own trailer, the post-build {BLRT,
+  length, CRC-32} in its last 12 bytes, so a truncated or partial file is refused
+  here and not at FINISH (blr_trailer_problem()).
   """
+  t = target
   if len(image) < APP_ID_OFFSET + 16:
     return f"only {len(image)} bytes - not a firmware image"
-  if len(image) > APP_SLOT_BYTES:
-    return f"{len(image)} bytes will not fit the {APP_SLOT_BYTES} byte slot"
+  if len(image) > t.slot_bytes:
+    return f"{len(image)} bytes will not fit the {t.slot_bytes} byte slot"
 
   sp, pc = struct.unpack("<II", image[0:8])
-  magic, origin, _git, _flags = struct.unpack("<4I", image[APP_ID_OFFSET:APP_ID_OFFSET + 16])
+  magic, origin, git, flags = struct.unpack("<4I", image[APP_ID_OFFSET:APP_ID_OFFSET + 16])
 
-  if magic != APP_ID_MAGIC:
-    return (f"no app-slot marker at {APP_ID_OFFSET:#x} (found {magic:#010x}) - this looks " +
-            "like a STANDALONE image linked for 0x08000000 and must not be installed")
-  if origin != APP_ORIGIN:
-    return f"linked for {origin:#010x}, not {APP_ORIGIN:#010x}"
+  if magic != t.marker_magic:
+    if magic in MARKER_NAMES:
+      return f"this is {MARKER_NAMES[magic]}, not {t.words['image']} - it must never be installed on the {t.words['board']}"
+    return t.words["no_marker"].format(off=APP_ID_OFFSET, magic=magic)
+  if origin != t.marker_origin:
+    return f"linked for {origin:#010x}, not {t.marker_origin:#010x}"
   if not 0x20000000 <= sp <= 0x20024000:
     return f"initial stack pointer {sp:#010x} is not in SRAM"
-  if not APP_ORIGIN < pc < APP_ORIGIN + APP_SLOT_BYTES:
+  if not t.marker_origin < pc < t.marker_origin + t.slot_bytes:
     return f"reset vector {pc:#010x} is outside the application slot"
+  if t.strict_image:
+    if not pc & 1:
+      return f"reset vector {pc:#010x} is not a Thumb address"
+    if (pc & ~1) - t.marker_origin >= len(image):
+      return f"reset vector {pc:#010x} points past the end of the image ({len(image)} bytes)"
+    if flags & BLR_APP_ID_RESERVED:
+      return f"marker flags {flags:#x} set bits 1-3, which no {t.words['board']} build sets"
+  if t.allowed_variants is not None:
+    v = marker_variant(flags)
+    if v == BLR_VARIANT_BENCH:
+      return "bench image - never installed from the comma"
+    if v not in t.allowed_variants:
+      return f"the marker's VARIANT is {v} ({BLR_VARIANT_NAMES.get(v, '?')}): only shadow or live is installed"
+  if t.refuse_dirty and flags & APP_ID_DIRTY:
+    return f"built from a dirty tree: the board would report {git:08x}, a commit this image was not built from"
+  if t.strict_image and (why := blr_trailer_problem(image)):
+    return why
   return None
 
 
-def image_identity(image: bytes) -> dict:
-  """The marker's contents. Only meaningful once check_app_slot_image passed."""
+def blr_trailer_problem(image: bytes) -> str:
+  """Empty if `image` ends with its own valid BLRT trailer, else why not - in the
+  BLR bootloader's order (img_trailer_ok(): the length, the magic, the length
+  field, the CRC-32), and in blr_hostlib.trailer_problem()'s sense. Never raises."""
+  n = len(image)
+  if n < APP_ID_OFFSET + 16 + BLR_TRAILER_BYTES:
+    return f"{n} bytes cannot hold the marker and the {BLR_TRAILER_BYTES}-byte trailer"
+  magic, length, crc = struct.unpack_from("<III", image, n - BLR_TRAILER_BYTES)
+  if magic != BLR_TRAILER_MAGIC:
+    return (f"no image trailer (BLRT) in its last {BLR_TRAILER_BYTES} bytes: a truncated or partial copy of an " +
+            "image, or a .bin the BLR post-build did not make")
+  if length != n:
+    return f"the trailer says the image is {length} bytes, but it is {n}: a truncated, padded or concatenated file"
+  if zlib.crc32(image[:n - BLR_TRAILER_BYTES]) & 0xFFFFFFFF != crc:
+    return "the image does not match its own trailer's CRC-32: the file was changed after the build"
+  return ""
+
+
+def image_identity(image: bytes, target: Target = EPS) -> dict:
+  """The marker's contents. Only meaningful once check_app_slot_image passed.
+
+  Reads the 16 bytes at APP_ID_OFFSET only, so the first 0x110 bytes of a file
+  are enough. A target whose marker carries a VARIANT (the BLR) adds it by name:
+  "shadow" / "live" - two images of one commit differ only there."""
   _magic, _origin, git, flags = struct.unpack("<4I", image[APP_ID_OFFSET:APP_ID_OFFSET + 16])
-  return {"git": f"{git:08x}", "dirty": bool(flags & APP_ID_DIRTY),
-          "readOnly": bool(flags & APP_ID_READONLY), "test": bool(flags & APP_ID_TEST)}
+  ident = {"git": f"{git:08x}", "dirty": bool(flags & APP_ID_DIRTY),
+           "readOnly": bool(flags & APP_ID_READONLY), "test": bool(flags & APP_ID_TEST)}
+  if target.allowed_variants is not None:
+    ident["variant"] = BLR_VARIANT_NAMES.get(marker_variant(flags), "invalid")
+  return ident
 
 
 # ---------------------------------------------------------------------------
@@ -592,13 +841,24 @@ class BenchTransport:
 
 # ---------------------------------------------------------------------------
 class Flasher:
-  """The protocol. Transport-agnostic on purpose - see the module docstring."""
+  """The protocol. Transport-agnostic on purpose - see the module docstring.
+
+  One board per Flasher: `target` (EPS by default) says which IDs, which magic,
+  which board class and which pace. The protocol methods are written in v1's
+  own channel names, ID_HOST and ID_DATA, and _wire_id is the one place those
+  become the target's identifiers."""
 
   def __init__(self, transport, log: Callable[[str], None] = print,
                progress: Callable[[int], None] | None = None,
                phase: Callable[[dict], None] | None = None,
-               should_cancel: Callable[[], bool] | None = None):
+               should_cancel: Callable[[], bool] | None = None,
+               target: Target = EPS):
     self.t = transport
+    self.target = target
+    # DATA pacing (BLR: <= data_fps_max). 0 = none: the EPS goes at the echo's pace.
+    self._data_gap = 1.0 / target.data_fps_max + DATA_PACE_MARGIN_S if target.data_fps_max else 0.0
+    self._t_data = -1e9
+    self._nak: int | None = None       # the last _expect_ack's NAK code, if it was one
     self.log = log
     self.progress = progress
     # What the screen shows (push9): {"p": phase, "cancel": the Cancel button is
@@ -648,20 +908,30 @@ class Flasher:
         continue
       if kind == RX:
         self._census[addr] = self._census.get(addr, 0) + 1
-      if kind != ECHO and addr in TRACE_IDS:
+      if kind != ECHO and addr in self.target.trace_ids:
         # Timestamp and raw bytes only. No decoding in the receive path, and
         # no opendbc import in a module that must load on a bench.
         self._trace.append((time.monotonic(), addr, data))
         continue
-      if kind != ECHO and addr not in (ID_BOARD, ENGINE_DATA_ID):
+      if kind != ECHO and addr not in (self.target.id_board, ENGINE_DATA_ID):
         continue                      # ordinary car traffic; see __init__
       self._rx.append((addr, data, kind))
+
+  def _wire_id(self, can_id: int) -> int:
+    """v1's channel name -> this target's identifier: ID_HOST and ID_DATA are
+    themselves for the EPS, 0x628/0x62A for the BLR. Nothing else is ever sent
+    from here, and anything else is refused (run_flash turns it into a string)."""
+    if can_id == ID_HOST:
+      return self.target.id_host
+    if can_id == ID_DATA:
+      return self.target.id_data
+    raise ValueError(f"{can_id:#05x} is not a bootloader channel")
 
   def _send_raw(self, can_id: int, payload: bytes) -> None:
     """Fire and forget. For ENTER (racing the 800 ms boot window) and the knock
     (after which the board resets and may stop ACKing), waiting for an echo
     costs more than the flow control is worth."""
-    self.t.send(can_id, payload)
+    self.t.send(self._wire_id(can_id), payload)
 
   def _send(self, can_id: int, payload: bytes, echo_timeout: float = 1.5) -> str | None:
     """Send, then wait for one frame to come back.
@@ -673,6 +943,7 @@ class Flasher:
     stops accepting them when they are full. Firing a 34-frame chunk at one puts
     two frames on the wire and discards the rest, with no error anywhere.
     """
+    can_id = self._wire_id(can_id)
     self.t.send(can_id, payload)
     end = time.monotonic() + echo_timeout
     while True:
@@ -684,12 +955,22 @@ class Flasher:
         return f"frame {can_id:#05x} was never transmitted (no echo in {echo_timeout}s)"
       self._pump(0.02)
 
+  def _send_data(self, payload: bytes) -> str | None:
+    """One DATA frame. A paced target (the BLR) first waits out the gap since
+    the previous one, receiving - and so tracing - while it waits, on top of the
+    echo wait. Unpaced (the EPS) it is exactly _send, at the echo's pace."""
+    if self._data_gap > 0:
+      while (left := self._t_data + self._data_gap - time.monotonic()) > 0:
+        self._pump(left)
+      self._t_data = time.monotonic()
+    return self._send(ID_DATA, payload)
+
   def _recv(self, timeout: float, want: int | None = None) -> bytes | None:
     end = time.monotonic() + timeout
     while True:
       for item in list(self._rx):
         addr, data, kind = item
-        if kind == ECHO or addr != ID_BOARD:
+        if kind == ECHO or addr != self.target.id_board:
           continue
         if want is not None and data[0] != want and data[0] != RSP_NAK:
           continue
@@ -705,10 +986,11 @@ class Flasher:
 
   def _expect_ack(self, cmd: int, timeout: float = 3.0) -> str | None:
     d = self._recv(timeout, want=RSP_ACK)
+    self._nak = d[2] if d is not None and d[0] == RSP_NAK and len(d) > 2 else None
     if d is None:
       return f"no ACK for {CMD_NAMES.get(cmd, cmd)} within {timeout}s"
     if d[0] == RSP_NAK:
-      return f"board refused {CMD_NAMES.get(d[1], d[1])}: {describe_nak(d)}"
+      return f"board refused {CMD_NAMES.get(d[1], d[1])}: {describe_nak(d, self.target.errs)}"
     if d[1] != cmd:
       return f"ACK for {CMD_NAMES.get(d[1], d[1])}, expected {CMD_NAMES.get(cmd, cmd)}"
     return None
@@ -734,20 +1016,41 @@ class Flasher:
   # -- session --------------------------------------------------------------
   def knock(self) -> None:
     """Ask a running application to reset itself into its bootloader."""
-    self._send_raw(ID_HOST, bytes([CMD_ENTER]) + MAGIC)
+    self._send_raw(ID_HOST, bytes([CMD_ENTER]) + self.target.magic)
 
-  def wait_hello(self, timeout: float) -> bytes | None:
+  def wrong_board(self, d: bytes, what: str) -> str | None:
+    """None, unless this target checks the board class (the BLR: HELLO[7] and
+    the ENTER ACK's [7]) and `d` - a HELLO or that ACK - carries another. Then
+    whatever answered is not this board, and the caller ABORTs before a byte of
+    image is sent. The EPS bootloader sends 0 there and is not checked."""
+    want = self.target.hello_class
+    if want is None:
+      return None
+    got = d[7] if len(d) > 7 else None
+    if got == want:
+      return None
+    return (f"wrong board answered on {self.target.id_board:#05x}: {what} byte 7 is {got}, " +
+            f"the {self.target.words['board']} says {want} - nothing was written")
+
+  def wait_hello(self, timeout: float, entered: bool = False) -> bytes | None:
     """The post-reset HELLO, or None.
 
     A NAK seen here is returned too, and run_flash reports it. The board NAKs a
     knock it refuses - "the car is not stationary" - and swallowing that meant
     waiting the full timeout and then blaming the board for having no
     bootloader, which is the single most misleading thing this tool could say.
+
+    entered (the BLR, on its knock only - Target.knock_enters): an ENTER ACK is
+    returned too. A bootloader that was already running took the knock as the
+    ENTER it is, and its session is open; there will be no HELLO until that
+    session times out 10 s later. The EPS never passes it: it waits for the
+    HELLO, exactly as it always has.
     """
     end = time.monotonic() + timeout
     while time.monotonic() < end:
       d = self._recv(0.2)
-      if d is not None and d[0] in (RSP_HELLO, RSP_NAK):
+      if d is not None and (d[0] in (RSP_HELLO, RSP_NAK) or
+                            (entered and d[0] == RSP_ACK and len(d) > 2 and d[1] == CMD_ENTER)):
         return d
     return None
 
@@ -759,12 +1062,15 @@ class Flasher:
     """
     end = time.monotonic() + timeout
     while time.monotonic() < end:
-      self._send_raw(ID_HOST, bytes([CMD_ENTER]) + MAGIC)
+      self._send_raw(ID_HOST, bytes([CMD_ENTER]) + self.target.magic)
       d = self._recv(0.05, want=RSP_ACK)
       if d is not None:
         if d[0] == RSP_NAK:
-          return f"refused: {describe_nak(d)}"
+          return f"refused: {describe_nak(d, self.target.errs)}"
         if d[1] == CMD_ENTER:
+          if (e := self.wrong_board(d, "ENTER ACK")):
+            self.abort()                # a session is open on whatever that was: close it
+            return e
           if d[2] != PROTO_VERSION:
             return f"board speaks protocol v{d[2]}, this speaks v{PROTO_VERSION}"
           return None
@@ -980,13 +1286,16 @@ class Flasher:
         if (e := self._send(ID_HOST, bytes([CMD_CHUNK]) + struct.pack("<H", idx))):
           return e
         for off in range(0, len(body), DATA_PER_FRAME):
-          if (e := self._send(ID_DATA, body[off:off + DATA_PER_FRAME])):
+          if (e := self._send_data(body[off:off + DATA_PER_FRAME])):
             return e
         if (e := self._send(ID_HOST, bytes([CMD_CEND]) + struct.pack("<HH", idx, crc16_ccitt(body)))):
           return e
         err = self._expect_ack(CMD_CEND, timeout=3.0)
         if err is None:
           break
+        retry = self.target.retry_naks
+        if retry is not None and self._nak is not None and self._nak not in retry:
+          return f"chunk {idx}: {err}"          # the board said why, and it is not a lost frame (BLR NAK 8...)
         # A LOST ACK IS NOT A LOST CHUNK. If the board programmed the chunk and
         # only the reply went missing, resending the whole chunk writes into
         # flash that is no longer erased and fails with PROGERR - turning a
@@ -1008,10 +1317,21 @@ class Flasher:
     self.mark("finish")
     self.report("install")
     crc = zlib.crc32(image) & 0xFFFFFFFF
+    finish = bytes([CMD_FINISH]) + struct.pack("<I", crc)
     self._drain()
-    if (e := self._send(ID_HOST, bytes([CMD_FINISH]) + struct.pack("<I", crc))):
+    if (e := self._send(ID_HOST, finish)):
       return e
-    return self._expect_ack(CMD_FINISH, timeout=20.0)
+    wait = self.target.finish_retry_s
+    if wait is None:
+      return self._expect_ack(CMD_FINISH, timeout=20.0)      # the EPS: one FINISH, as proven in the car
+    # The BLR (BLR_FINISH_ACK_S): silence is asked about once more, inside the session. Not drained first, so an
+    # ACK that arrives late still counts; a NAK is the board's answer and is never asked again.
+    if (e := self._expect_ack(CMD_FINISH, timeout=wait)) is None or "no ACK" not in e:
+      return e
+    self.log(f"  {e} - FINISH again (the board ACKs a repeated FINISH and writes nothing twice)")
+    if (e := self._send(ID_HOST, finish)):
+      return e
+    return self._expect_ack(CMD_FINISH, timeout=wait)
 
   def reboot(self) -> None:
     self._drain()
@@ -1032,7 +1352,13 @@ class Flasher:
     phase tracked from rpm, beside an off-order reference, the rpm, the load
     state and the panda's CAN error counts. Whichever phase the o3 column
     steps up in is the trigger.
+
+    A target that does not trace the steering (the BLR) gets _summarise_blr()
+    instead: the same phase table, with the lamp board's own state and the EPS
+    board's forwarding ring under the update's burst.
     """
+    if 0x156 not in self.target.trace_ids:
+      return self._summarise_blr()
     ang: list[tuple[float, float, float]] = []
     tq: list[tuple[float, int, bytes]] = []
     rpm: list[tuple[float, int]] = []
@@ -1102,6 +1428,50 @@ class Flasher:
       "series": series,
     }
 
+  def _summarise_blr(self) -> dict:
+    """The summary of a BLR update, which traces no steering: what each phase did
+    to the car bus and to both boards. Per phase, beside rpm, the load bit, the
+    census and the error deltas: the lamp board's last 0x620 STATE `bst` (1 idle,
+    7 knock; none while its bootloader runs) and `bout`, whether its output drove
+    at all; the EPS board's 0x70B `st`/`eer`/`cam`, and from its 0x706 the
+    forwarding-ring peak `ring`, any drop/overflow flag `sdrop` and its FAULT
+    `sflt` (non-zero: it fell back to bypass under the burst). "verdict" is the
+    line that matters for the lamps: was the output ever on during the update.
+    {} when nothing was traced, as for the EPS."""
+    if not self._trace:
+      return {}
+    rpm: list[tuple[float, int]] = []
+    load: list[tuple[float, int]] = []
+    grant: list[tuple[float, tuple[int, int, int, int]]] = []
+    lamp: list[tuple[float, int, int]] = []
+    split: list[tuple[float, int, int, int]] = []
+    for t, addr, data in self._trace:
+      if addr == GRANT_ID:
+        if (g := decode_grant(data)) is not None:
+          grant.append((t, g))
+      elif addr == ENGINE_RPM_ID:
+        if (v := decode_engine_rpm(data)) is not None:
+          rpm.append((t, v))
+      elif addr == LOAD_ID:
+        if (v := decode_load_bit(data)) is not None:
+          load.append((t, v))
+      elif addr == BLR_STATUS_ID and len(data) >= 1:
+        lamp.append((t, data[0] & 0x7, (data[0] >> 3) & 1))
+      elif addr == EPS_SPLIT_ID and len(data) >= 5:
+        split.append((t, data[0], data[4] & 0x1F, (data[4] >> 5) & 0x7))
+    if not lamp:
+      verdict = "no lamp-board status seen"
+    elif any(out for _, _, out in lamp):
+      verdict = "LAMP OUTPUT ON DURING THE UPDATE"
+    else:
+      verdict = "lamp output off throughout"
+    return {
+      "n": len(self._trace),
+      "d": round(self._trace[-1][0] - self._trace[0][0], 2),       # seconds traced, as a phase row's "d"
+      "verdict": verdict,
+      "phases": self._phase_table([], rpm, load, [], grant, lamp, split),
+    }
+
   def _census_row(self, row: dict, start: float, dur: float, pre_start: float) -> None:
     """Add "lost" and "new" to a phase row, relative to the pre-knock phase."""
     if dur < CENSUS_MIN_PHASE_S or start == pre_start:
@@ -1114,25 +1484,28 @@ class Flasher:
     pre_dur = pre_marks[1][0] - pre_marks[0][0] if len(pre_marks) > 1 else 0.0
     if pre_dur < CENSUS_MIN_PHASE_S:
       return
+    own = self.target.census_own
     lost = {}
     for addr, n in pre.items():
-      if addr in CENSUS_OWN or n / pre_dur < CENSUS_MIN_HZ:
+      if addr in own or n / pre_dur < CENSUS_MIN_HZ:
         continue
       ratio = (here.get(addr, 0) / dur) / (n / pre_dur)
       if ratio < CENSUS_LOST:
         lost[f"{addr:x}"] = round(ratio, 2)
     new = sorted(f"{addr:x}" for addr, n in here.items()
-                 if addr not in pre and addr not in CENSUS_OWN and n >= 3)
+                 if addr not in pre and addr not in own and n >= 3)
     if lost:
       row["lost"] = dict(sorted(lost.items(), key=lambda kv: kv[1])[:8])
     if new:
       row["new"] = new[:8]
 
-  def _phase_table(self, grid, rpm, load, ang, grant=()) -> list[dict]:
+  def _phase_table(self, grid, rpm, load, ang, grant=(), lamp=(), split=()) -> list[dict]:
     """One row per phase. With the board's 0x70B in the phase (its firmware is
     running: `pre`, `post`): `st` its last STATE/REASON ("8/16" = K2 at stock
     waiting for the comma, "0/7" = split, standstill), `eer` the highest
-    EPS_ERROR_STATE and `cam` whether the camera's LKAS_ON was ever set."""
+    EPS_ERROR_STATE and `cam` whether the camera's LKAS_ON was ever set.
+    A BLR update adds the lamp board's 0x620 and the EPS board's 0x706
+    (_summarise_blr); an EPS update has neither, and its rows are unchanged."""
     marks = sorted(self._marks)
     if len(marks) < 2:
       return []
@@ -1164,6 +1537,15 @@ class Flasher:
         row["st"] = f"{gr[-1][0]}/{gr[-1][1]}"
         row["eer"] = max(g[2] for g in gr)
         row["cam"] = int(any(g[3] for g in gr))
+      lp = [(s, o) for t, s, o in lamp if a <= t < b]
+      if lp:
+        row["bst"] = lp[-1][0]
+        row["bout"] = int(any(o for _, o in lp))
+      sp = [x for x in split if a <= x[0] < b]
+      if sp:
+        row["ring"] = max(x[1] for x in sp)
+        row["sdrop"] = int(any(x[2] for x in sp))
+        row["sflt"] = max(x[3] for x in sp)
       self._census_row(row, a, b - a, marks[0][0])
       ha, hb = health.get(a) or {}, health.get(b) or {}
       for bus in (0, 1, 2):
@@ -1174,8 +1556,9 @@ class Flasher:
       out.append(row)
     return out
 
-  def save_trace(self, directory: str = TRACE_DIR) -> str | None:
-    """Write the steering trace out. Returns the path, or None.
+  def save_trace(self, directory: str | None = None) -> str | None:
+    """Write the trace out - to the target's trace_dir unless told otherwise
+    (TRACE_DIR for the EPS). Returns the path, or None.
 
     Best effort in the strongest sense: this runs inside pandad's wrapper, so
     a full disk or a read-only mount must cost nothing but the trace itself.
@@ -1183,14 +1566,13 @@ class Flasher:
     if not self._trace:
       return None
     try:
+      if directory is None:
+        directory = self.target.trace_dir
       os.makedirs(directory, exist_ok=True)
       path = os.path.join(directory, f"flash-{int(time.time())}.csv")  # noqa: TID251 - wall clock: a file name kept across boots
       t0 = self._trace[0][0]
       with open(path, "w") as fh:
-        fh.write("# EPS-LKAS flash steering trace.\n" +
-                 "# t = seconds from the first frame captured.\n" +
-                 "# 0x156 STEERING_SENSORS, 0x18F STEER_STATUS - decode with\n" +
-                 "# opendbc honda _steering_sensors_c / _steering_control_e.\n")
+        fh.write(self.target.words["trace_header"])
         fh.write("t,addr,data\n")
         for t, addr, data in self._trace:
           fh.write(f"{t - t0:.4f},{addr:#05x},{data.hex()}\n")
@@ -1199,12 +1581,20 @@ class Flasher:
       return None
 
 
-def describe_hello(d: bytes) -> dict:
-  """HELLO is the only frame a board with an empty slot ever sends."""
-  return {"proto": d[1], "appOk": bool(d[2] & HELLO_APP_OK),
-          "appId": bool(d[2] & HELLO_APP_ID), "dirty": bool(d[2] & HELLO_APP_DIRTY),
-          "staged": bool(d[2] & HELLO_STAGED),
-          "git": f"{int.from_bytes(d[3:7], 'little'):08x}"}
+def describe_hello(d: bytes, target: Target = EPS) -> dict:
+  """HELLO is the only frame a board with an empty slot ever sends. A BLR's also
+  says which VARIANT is installed (status bits 5:4), its board class (byte 7),
+  and whether this boot repaired a flash page that failed ECC (bit 6), which
+  cancels a staged image."""
+  h = {"proto": d[1], "appOk": bool(d[2] & HELLO_APP_OK),
+       "appId": bool(d[2] & HELLO_APP_ID), "dirty": bool(d[2] & HELLO_APP_DIRTY),
+       "staged": bool(d[2] & HELLO_STAGED),
+       "git": f"{int.from_bytes(d[3:7], 'little'):08x}"}
+  if target.hello_class is not None:
+    h["variant"] = BLR_VARIANT_NAMES.get(marker_variant(d[2]), "invalid")
+    h["cls"] = d[7] if len(d) > 7 else None
+    h["eccFixed"] = bool(d[2] & BLR_HELLO_ECC_FIXED)
+  return h
 
 
 def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
@@ -1214,8 +1604,9 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
               trace_out: Callable[[dict], None] | None = None,
               phase: Callable[[dict], None] | None = None,
               should_cancel: Callable[[], bool] | None = None,
-              require_engine_data: bool | None = None) -> tuple[bool, str]:
-  """Do the whole thing. Returns (ok, message). NEVER RAISES.
+              require_engine_data: bool | None = None,
+              target: Target = EPS) -> tuple[bool, str]:
+  """Do the whole thing, on `target`'s board. Returns (ok, message). NEVER RAISES.
 
   phase / should_cancel (push9) drive the screen: the phases in order are
   check, baseline, click, stock (the countdown), erase, write, install,
@@ -1235,20 +1626,32 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
   NOTHING NEW REACHES THE BOARD. The gate, the countdown and the cancel are all
   on this side; the frames on the wire are the ones every board since the
   first bootloader understands, so an old board updates exactly as before.
+
+  THE BLR (target=BLR) runs this same sequence - the gate, the countdown, the
+  cancel points and the engine-off rule unchanged - on its own IDs and magic,
+  with these additions: HELLO and the ENTER ACK must carry its board class
+  (anything else is ABORT, "wrong board answered", before a byte of image),
+  DATA is paced to <= 400 frames/s, and the post-install HELLO must report
+  the image's VARIANT as well as its commit (shadow and live of one commit
+  share a hash). And, as its own host tool does: a resident bootloader's
+  ENTER ACK to the knock is the session, INFO must say 112 KB (else ABORT),
+  and a lost FINISH ACK is asked about once more. The phases are the same
+  names; the screen words are the target's.
   """
   f = None
   try:
-    if (why := check_app_slot_image(image)):
+    if (why := check_app_slot_image(image, target)):
       return False, f"refusing this image: {why}"
 
-    ident = image_identity(image)
+    ident = image_identity(image, target)
     marks = [k for k in ("dirty", "readOnly") if ident[k]]
     log(f"  image {len(image)} bytes, commit {ident['git']}"
+        + (f" ({ident['variant']})" if "variant" in ident else "")
         + (f" [{', '.join(marks)}]" if marks else ""))
     if ident["dirty"]:
-      log("  WARNING: built from an edited tree - 0x707 will report a commit it is not")
+      log(target.words["dirty"])
 
-    f = Flasher(transport, log=log, progress=progress, phase=phase, should_cancel=should_cancel)
+    f = Flasher(transport, log=log, progress=progress, phase=phase, should_cancel=should_cancel, target=target)
     log(f"  {transport.describe()}")
     f.mark("start")
     f.report("check", cancel=True)
@@ -1294,23 +1697,42 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
       f.mark("knock")
       f.knock()
 
-    hello = f.wait_hello(hello_timeout)
+    hello = f.wait_hello(hello_timeout, entered=target.knock_enters and knock)
     f.mark("hello")
     if hello is None:
-      return False, ("no HELLO. Either the board has no bootloader (it needs one SWD " +
-                     "visit), or it never reset.")
+      return False, target.words["no_hello"]
     if hello[0] == RSP_NAK:
-      return False, f"refused: {describe_nak(hello)}"
-    h = describe_hello(hello)
-    log(f"  HELLO v{h['proto']}: installed {h['git']}, appOk={h['appOk']}")
-
-    if (e := f.enter()):
+      return False, f"refused: {describe_nak(hello, target.errs)}"
+    # the BLR only (knock_enters): a bootloader already running took the knock as ENTER - its session is open
+    entered = hello[0] == RSP_ACK
+    if (e := f.wrong_board(hello, "ENTER ACK" if entered else "HELLO")):
+      f.abort()                         # its 800 ms window ends, whatever it was goes back to its app
       return False, e
+    if entered:
+      if hello[2] != PROTO_VERSION:
+        f.abort()
+        return False, f"board speaks protocol v{hello[2]}, this speaks v{PROTO_VERSION}"
+      # no HELLO to read: a bootloader that never jumped has nothing valid installed, or it reset just now
+      h = {"git": "unknown"}
+      log("  the bootloader was already running and took the knock as ENTER: in session, no HELLO to read")
+    else:
+      h = describe_hello(hello, target)
+      log(f"  HELLO v{h['proto']}: installed {h['git']}, appOk={h['appOk']}"
+          + (f", {h['variant']}" if "variant" in h else "")
+          + (", ECC page repaired this boot" if h.get("eccFixed") else ""))
+
+      if (e := f.enter()):
+        return False, e
 
     slot = f.info()
     if slot is None:
       return False, "no INFO reply"
     log(f"  app slot {slot[0]} KB, current contents CRC32 {slot[1]:#010x}")
+    if target.check_slot and slot[0] * 1024 != target.slot_bytes:
+      # blr_can_update.py: another slot size is another bootloader than the one this image was checked for
+      f.abort()
+      return False, (f"the board reports a {slot[0]} KB app slot, not {target.slot_bytes // 1024} KB - " +
+                     "not the bootloader this image is for; nothing was written")
 
     # The countdown starts on the INFO reply: HELLO already proved the board
     # reset with its relays de-energised (the bootloader drives PA0/PA1 low at
@@ -1350,13 +1772,19 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
       log("  no confirming HELLO seen - the image was accepted but not witnessed")
       return True, ident["git"]
     if after[0] == RSP_NAK:
-      return False, f"refused: {describe_nak(after)}"
-    a = describe_hello(after)
+      return False, f"refused: {describe_nak(after, target.errs)}"
+    if (e := f.wrong_board(after, "HELLO")):
+      return False, e
+    a = describe_hello(after, target)
+    # a BLR bootloader that repaired an ECC page on this boot cancelled the staged image with it (BOOT-2)
+    ecc = " - its bootloader repaired a flash page this boot, which cancels a staged image" if a.get("eccFixed") else ""
     if not a["appOk"]:
       return False, ("installed, but the board refuses to run it " +
-                     f"(HELLO appOk=0, appId={a['appId']})")
+                     f"(HELLO appOk=0, appId={a['appId']})" + ecc)
     if a["git"] != ident["git"]:
-      return False, f"board reports {a['git']} after installing {ident['git']}"
+      return False, f"board reports {a['git']} after installing {ident['git']}" + ecc
+    if "variant" in ident and a.get("variant") != ident["variant"]:
+      return False, f"board reports a {a.get('variant')} image after installing {ident['variant']}" + ecc
     return True, a["git"]
   except Exception as e:
     # NEVER let this reach pandad. An exception escaping here would take the
@@ -1372,7 +1800,7 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
       except Exception:
         pass
       if (p := f.save_trace()):
-        log(f"  steering trace: {len(f._trace)} frames -> {p}")
+        log(f"  {target.words['trace']}: {len(f._trace)} frames -> {p}")
       # The caller decides where this goes. The hook puts it in a param,
       # because a file on /data needs SSH and the answer has to reach someone
       # who does not have it.
@@ -1383,23 +1811,31 @@ def run_flash(transport, image: bytes, log: Callable[[str], None] = print,
           pass
 
 
-def load_bundled_image() -> tuple[bytes | None, str]:
-  if not os.path.exists(EPS_LKAS_APPSLOT_BIN):
-    return None, f"no bundled image at {EPS_LKAS_APPSLOT_BIN}"
-  with open(EPS_LKAS_APPSLOT_BIN, "rb") as fh:
+def load_bundled_image(target: Target = EPS) -> tuple[bytes | None, str]:
+  """(image, "") - or (None, why) when `target` has no bundled image, which for
+  the BLR is the normal state until one is bundled: nothing to offer, no update."""
+  if not os.path.exists(target.image_path):
+    return None, f"no bundled image at {target.image_path}"
+  with open(target.image_path, "rb") as fh:
     return fh.read(), ""
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
   import argparse
   ap = argparse.ArgumentParser(description=__doc__)
-  ap.add_argument("--bin", default=None, help="image to install (default: the bundled one)")
+  ap.add_argument("--target", choices=sorted(TARGETS), default=EPS.name,
+                  help="eps: the EPS-LKAS gateway (default); blr: the BLR-v1 brake-lamp board")
+  ap.add_argument("--bin", default=None, help="image to install (default: the target's bundled one)")
   ap.add_argument("--bench", action="store_true", help="candleLight adapter instead of the panda")
-  ap.add_argument("--bus", type=int, default=0, help="0 car, 2 camera. NEVER 1.")
+  ap.add_argument("--bus", type=int, default=0, help="0 car, 2 camera (EPS only). NEVER 1.")
   ap.add_argument("--dry-run", action="store_true", help="reach the bootloader and stop")
   ap.add_argument("--no-knock", action="store_true", help="wait for a manual reset instead")
-  a = ap.parse_args()
+  a = ap.parse_args(argv)
+  target = TARGETS[a.target]
 
+  if target is BLR and a.bus != 0:
+    print("the BLR-v1 lamp board is on bus 0 only")
+    return 2
   if a.bus == 1:
     print("bus 1 has no transceiver on this board - use 0 (car) or 2 (camera)")
     return 2
@@ -1408,14 +1844,14 @@ def main() -> int:
     with open(a.bin, "rb") as fh:
       image = fh.read()
   else:
-    image, err = load_bundled_image()
+    image, err = load_bundled_image(target)
     if image is None:
       print(err)
       return 2
 
   transport = BenchTransport() if a.bench else PandaTransport(bus=a.bus)
   try:
-    ok, msg = run_flash(transport, image, dry_run=a.dry_run, knock=not a.no_knock,
+    ok, msg = run_flash(transport, image, dry_run=a.dry_run, knock=not a.no_knock, target=target,
                         progress=lambda p: print(f"\r  {p:3d}%", end="", flush=True))
   finally:
     transport.close()

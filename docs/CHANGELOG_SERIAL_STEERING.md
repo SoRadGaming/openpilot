@@ -15,6 +15,59 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## UNRELEASED — BLR-v1 brake-lamp board: its telemetry, and its own update from Settings > gateway (branch `blr`, not pushed)
+
+**Not released, not pushed, and no BLR image is bundled.** The branch waits for the board's bench tests and a shadow
+drive; the owner decides when it lands. `eps_lkas_appslot.bin` is byte-identical to `nsw-live`'s and the EPS
+board's update is unchanged on the wire.
+
+The owner's second board, BLR-v1, lights the brake lamps from openpilot's `0x1FA BRAKE_LIGHTS` bit, which the car
+ignores. The owner asked for its firmware to be done "similar to how we did eps, with bootloader etc", for the
+gateway page to update the two boards separately, and for some diagnostic data out of it. Firmware: the EPS-LKAS
+repo, branch `blr-v1`, `blr/` (checked against `de2f2d1`, after the firmware review's round 1, GATEWAY-UPDATE §13.7).
+
+* **Its diagnostics reach the routes and the comma** (`docs/fork/BRAKE-LAMP-RELAY.md`, opendbc `f0a5284a`): the
+  board's `0x620`-`0x62F` decoded into `carStateSP.brakeLampRelay` (diagnostics only, liveness-exempt, `HONDA_ELESYS`
+  only), and card keeps its identity and each drive's fault/latch summary in `BlrBoardVersion`, `BlrBoardBuild`,
+  `BlrBoardSeenAt` and `BlrLastDrive` for the offroad page.
+* **Nothing it sends feeds a brake or controls decision.** No BLR signal reaches `brakePressed`, `brakeLights`,
+  selfdrived, controls, MADS or panda safety (board design E.7); tests hold it on what `CarState` does and on the
+  source.
+* **Updated separately** (`docs/fork/GATEWAY-UPDATE.md` §13): its own button, `lamp board`, beside the EPS's on
+  Settings > gateway, shown once the board has spoken, with its own card (`<hash> • shadow|live • <age>`, `board id
+  <uid> • boot <git>`, `last drive: ok | <faults> | LATCHED <reason>`); its own params (`BlrFlash*`); its own target
+  in the one flasher (IDs `0x628`-`0x62A`, `BLRBOOT`, board class 2 on HELLO and the ENTER ACK, marker `BLR1` - each
+  board's image refused on the other by name - shadow or live only, never dirty, DATA paced to 400 frames/s); its own
+  screen words (lamp output off - brake lamps pedal-only; no relays, no "turn the car off, then on"). The one link:
+  only one update can ever be in flight - the other board's button says `busy` - and pandad runs at most one session
+  per window, the lamp board's only if the EPS ran none.
+* **"Up to date" is the hash and the variant**: a shadow and a live image of one commit share a hash.
+* **The firmware review's round 1**, on the comma: every BLR app image now ends with a 12-byte `BLRT` length/CRC-32
+  trailer, and the comma refuses - and never offers - an image without a valid one, as the board's bootloader does at
+  `FINISH`; and a HELLO saying the bootloader repaired a flash page that failed ECC (which cancels a staged image) is
+  logged and named in the failure it explains. The review also found that the EPS board's bootloader would install a
+  BLR image (erasing the EPS app) and only refuse to run it: the comma's refusal by name is the only barrier there.
+* **With no image bundled** the button says `no image` and offers nothing; with the board never seen the page is
+  pixel-identical to today's.
+* **Shared fixes**: the update button no longer sticks at `requested` when a run ends inside one refresh tick
+  (GATEWAY-UPDATE §11.2), and the hook no longer lets a failing request clear or transport `close()` escape into
+  pandad's loop.
+* **The two reviews' fixes** (GATEWAY-UPDATE §13.2, §13.5, §13.7). The EPS update's **error paths** are frozen now as
+  its happy path was - 22 of them, NAKs and lost ACKs, refusals, a lost FINISH ACK, odd HELLOs and images, each with
+  its trace file - captured on `nsw-live`'s flasher; nothing on the EPS wire changed. On the lamp board, as its own host
+  tool does: a FINISH whose ACK is lost is asked again inside the session (it used to report a failure while the board
+  installed the image anyway), INFO must say its 112 KB slot, and a bootloader already sitting resident is taken at the
+  knock's ENTER ACK instead of after a 10 s timeout. With the firmware tree reachable the comma's update now also runs
+  against the **shipping bootloader** compiled for the host, and the DBC and golden-frame copies are held to the
+  firmware's own files. A stuck lamp-board `running` holding the EPS button at `busy` until a reboot is accepted and
+  written down.
+
+Commits: sunnypilot `3e059dd8d` (the EPS wire transcript frozen first), `12825fedf`, `e1c4c4365`, `1809869ec`,
+`62ea8c6cc` and the integration commits; opendbc `f0a5284a`. Before landing: the bench tests, the shadow drive, then
+WP-H5 bundles `blr_appslot.bin` and the three skipped bundled-image tests bind.
+
+---
+
 ## 2026-10-20 — push10: round 8, KTuner coexistence and the 'now' flash in one update (board `883a3cd1` unchanged)
 
 The owner, 2026-10-20: "Keep it all in main btw I don't want to bother installing and testing. Different branches", and,
