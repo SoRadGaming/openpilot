@@ -17,8 +17,11 @@ The parent stamps each deviceState as it arrives, runs cereal's own SubMaster on
 (alive and freq_ok, which selfdrived.py turns into commIssue and commIssueAvgFreq), and replays the receive times
 through vf_model.py's copy of the same logic (d1024). fscount.c records every fsync and flock(LOCK_EX) with its thread.
 
+The child also records the diagnostics' cloudlog lines ("params writer slow write", "hardwared slow loop section").
+
 PASS: unpatched shows the stall and the alert in every fault; patched keeps every gap under 0.75 s, predicts no
-alert, and its publishing thread (hardware_thread) makes no flock() and no fsync() after its first loop.
+alert, its publishing thread (hardware_thread) makes no flock() and no fsync() after its first loop, and the stall
+still reaches the log: a "params writer slow write" line, inside the window, for a write that waited >= 1 s.
 
 Needs gcc and git. About four minutes, so it is not a unit test (test_hardwared_comm_issue.py is). From the repo root:
   python openpilot/system/hardware/tests/comm_issue/fault_injection.py [--baseline REV] [--only F1,F3] [--json OUT]
@@ -45,6 +48,9 @@ ROOT = HERE.parents[3].parent  # the repo: openpilot/system/hardware/tests/comm_
 FAULT_S = 8.0
 WARMUP_S = 5.0          # selfdrived starts with a full window; the checks are read from here on
 MAX_GAP_PATCHED_S = 0.75
+SLOW_WRITE_EVENT = "params writer slow write"
+SLOW_SECTION_EVENT = "hardwared slow loop section"
+MIN_TRACE_OP_S = 1.0    # the writer's line for the stall: a write that waited at least this long, logged in the window
 
 
 @dataclass(frozen=True)
@@ -122,6 +128,19 @@ def child_main(variant: str, baseline: str, out: str) -> None:
   for name in ("put", "put_bool", "remove", "get", "get_bool"):
     wrap(name)
 
+  # the diagnostics' lines, as the routes would get them: hardwared's slow loop sections and the writer's slow writes
+  from openpilot.common.swaglog import cloudlog
+  log_events: list = []
+  orig_event = cloudlog.event
+
+  def event(name, *a, **kw):
+    if name in (SLOW_WRITE_EVENT, SLOW_SECTION_EVENT):
+      log_events.append({"t": time.monotonic(), "event": name,
+                         **{k: kw[k] for k in ("writer", "key", "op", "op_s", "since_request_s", "slowest", "slowest_s",
+                                               "suppressed", "disk") if k in kw}})
+    return orig_event(name, *a, **kw)
+  setattr(cloudlog, "event", event)  # noqa: B010 - the one logger every module shares
+
   orig_if_changed = hw.set_offroad_alert_if_changed
 
   def if_changed(alert, show_alert, extra_text=None, **kw):
@@ -145,6 +164,7 @@ def child_main(variant: str, baseline: str, out: str) -> None:
     info["temp_alert_calls"] = len(temp)
     info["temp_text_changes"] = sum(1 for a, b in zip(temp, temp[1:], strict=False) if a[2] != b[2])
     info["calls"] = calls
+    info["log_events"] = log_events
     with open(out, "w") as f:
       json.dump(info, f)
     # leave without interpreter shutdown, which can hang for 30 s in statsd's zmq term(); the shim's record first
@@ -366,6 +386,15 @@ def analyze(variant, fault, spec: Fault, recv, live, window, t_first, shimlog, p
   nonblocking = [c for c in pub_calls if c[1] in ("put", "put_bool") and not c[3]]
   uptime_writes = [round(c[4] - t_first, 2) for c in calls if c[1] == "put" and c[2] == "UptimeOnroad"]
   engaged_writes = [round(c[4] - t_first, 2) for c in calls if c[1] == "put_bool" and c[2] == "IsEngaged"]
+  log_events = child.get("log_events", [])
+  slow_writes = [{"t": round(e["t"] - t_first, 2), **{k: e.get(k) for k in ("writer", "key", "op", "op_s", "since_request_s",
+                                                                             "suppressed", "disk")}}
+                 for e in log_events if e["event"] == SLOW_WRITE_EVENT]
+  slow_sections = [{"t": round(e["t"] - t_first, 2), "slowest": e.get("slowest"), "slowest_s": e.get("slowest_s")}
+                   for e in log_events if e["event"] == SLOW_SECTION_EVENT]
+  # the stall's trace in the routes: a writer line for a write that waited it out, logged inside the window (or as it ends)
+  w0r, w1r = w0 - t_first, w1 - t_first
+  trace = [e for e in slow_writes if w0r <= e["t"] <= w1r + 2. and (e["op_s"] or 0.) >= MIN_TRACE_OP_S]
 
   r = {
     "variant": variant, "fault": fault, "window_s": [round(w0 - t_first, 2), round(w1 - t_first, 2)],
@@ -381,11 +410,12 @@ def analyze(variant, fault, spec: Fault, recv, live, window, t_first, shimlog, p
     "temp_alert_writes": sum(1 for c in calls if c[2] == "Offroad_TemperatureTooHigh" and c[1] in ("put", "remove")),
     "tici_alert_writes": sum(1 for c in calls if c[2] == "Offroad_TiciSupport" and c[1] in ("put", "remove")),
     "uptime_writes_t": uptime_writes, "is_engaged_writes_t": engaged_writes,
+    "slow_write_lines": slow_writes, "slow_section_lines": slow_sections, "stall_trace_lines": len(trace),
   }
   pub = r["pub_after_first_loop"]
   if variant == "patched":
     r["pass"] = (max_gap < MAX_GAP_PATCHED_S and not live and not replay and pub["flock_ex"]["n"] == 0
-                 and pub["fsync_dir"]["n"] == 0 and pub["fsync"]["n"] == 0 and not blocking)
+                 and pub["fsync_dir"]["n"] == 0 and pub["fsync"]["n"] == 0 and not blocking and bool(trace))
   else:
     r["pass"] = (r["max_gap_in_window_s"] or 0.) >= FAULT_S - 1.5 and any(s == "commIssue" for _, s in live)
   return r
@@ -421,7 +451,9 @@ def main() -> int:
         f"other threads: flock max {oth['flock_ex']['max_s']} s, dir fsync max {oth['fsync_dir']['max_s']} s;",
         f"temp text changes {r['temp_text_changes']}/{r['temp_alert_calls']} loops, temp alert writes",
         f"{r['temp_alert_writes']}, tici alert writes {r['tici_alert_writes']};",
-        f"IsEngaged at {r['is_engaged_writes_t']}, UptimeOnroad at {r['uptime_writes_t']} ->",
+        f"IsEngaged at {r['is_engaged_writes_t']}, UptimeOnroad at {r['uptime_writes_t']};",
+        f"slow-write lines {[(e['t'], e['key'], e['op_s']) for e in r['slow_write_lines']]},",
+        f"slow-section lines {[(e['t'], e['slowest'], e['slowest_s']) for e in r['slow_section_lines']]} ->",
         "PASS" if r["pass"] else "FAIL"]), flush=True)
   if args.json:
     Path(args.json).write_text(json.dumps({"baseline": args.baseline, "results": results}, indent=1))
