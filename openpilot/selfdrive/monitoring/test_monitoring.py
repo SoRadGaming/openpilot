@@ -1,5 +1,11 @@
+import fcntl
+import os
+import threading
+import time
+
 from openpilot.common.parameterized import parameterized
 
+from openpilot.common.params import Params
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.cereal import log
 from opendbc.car.structs import car
@@ -278,3 +284,46 @@ class TestRunStepEngagement(OpenpilotTestCase):
     dm.run_step(sm, demo=False)
     assert captured['op_engaged'] == expected_op_engaged
     assert captured['driver_engaged'] == expected_driver_engaged
+
+
+# FORK(COMM-ISSUE): the lockout's DriverLockoutCount write must not hold dmonitoringd's loop (driverMonitoringState is
+# checked for liveness by selfdrived). docs/fork/COMM-ISSUE.md
+class TestLockoutWriteDoesNotWait(OpenpilotTestCase):
+  @staticmethod
+  def _hold_params_lock(held: threading.Event, release: threading.Event):
+    fd = os.open(os.path.join(os.path.dirname(Params().get_param_path()), ".lock"), os.O_CREAT | os.O_RDONLY, 0o775)
+    try:
+      fcntl.flock(fd, fcntl.LOCK_EX)  # a put stuck in a slow journal commit, as everyone else sees it
+      held.set()
+      release.wait(10.)
+    finally:
+      fcntl.flock(fd, fcntl.LOCK_UN)
+      os.close(fd)
+
+  def _with_lock_held(self, fn, hold_s):
+    held, release = threading.Event(), threading.Event()
+    holder = threading.Thread(target=self._hold_params_lock, args=(held, release), daemon=True)
+    holder.start()
+    assert held.wait(5.)
+    threading.Timer(hold_s, release.set).start()
+    t = time.monotonic()
+    fn()
+    dt = time.monotonic() - t
+    release.set()
+    holder.join(5.)
+    return dt
+
+  def test_a_temporary_handle_waits_for_the_lock(self):
+    """Why the policy keeps a handle: put() on a temporary returns only when its async write has, lock and fsync included."""
+    assert self._with_lock_held(lambda: Params().put("DriverLockoutCount", 1), 1.0) > 0.7
+
+  def test_the_lockout_does_not_wait(self):
+    dm = DriverMonitoring()
+    dm.alert_3_cnt = dm.settings._MAX_ALERT_3
+    dt = self._with_lock_held(lambda: dm._update_events(False, True, False, False), 1.0)
+    assert dm.lockout_active and dm.lockout_count == 1
+    assert dt < 0.2, f"the lockout's write held the loop for {dt:.2f} s"
+    deadline = time.monotonic() + 5.
+    while Params().get("DriverLockoutCount") != 1 and time.monotonic() < deadline:
+      time.sleep(0.05)
+    assert Params().get("DriverLockoutCount") == 1

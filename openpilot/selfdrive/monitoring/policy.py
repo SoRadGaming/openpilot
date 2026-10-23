@@ -152,8 +152,12 @@ class DriverMonitoring:
     self.cnt_since_alert_3 = 0
     self.no_response_timeout = int(self.settings._NO_RESPONSE_TIMEOUT / DT_DMON)
     self.no_response_cnt = 0
-    self.lockout_active = Params().get_bool("DriverTooDistracted")
-    self.lockout_count = Params().get("DriverLockoutCount") or 0
+    # FORK(COMM-ISSUE): one handle for the life of the policy. Params().put() on a temporary is not non-blocking: the
+    # temporary's destructor waits for its async write, an fsync under <params>/.lock, so the lockout's put held
+    # driverMonitoringState (which selfdrived checks for liveness) for as long as /data took to commit.
+    self._params = Params()
+    self.lockout_active = self._params.get_bool("DriverTooDistracted")
+    self.lockout_count = self._params.get("DriverLockoutCount") or 0
     self.lockout_duration = self.settings._LOCKOUT_TIMES[min(max(self.lockout_count - 1, 0), len(self.settings._LOCKOUT_TIMES) - 1)]
     self.lockout_time_elapsed = 0
     self.step_change = 0.
@@ -315,7 +319,7 @@ class DriverMonitoring:
       if not self.lockout_active:
         self.lockout_count += 1
         self.lockout_duration = self.settings._LOCKOUT_TIMES[min(self.lockout_count - 1, len(self.settings._LOCKOUT_TIMES) - 1)]
-        Params().put("DriverLockoutCount", self.lockout_count)
+        self._params.put("DriverLockoutCount", self.lockout_count)  # FORK(COMM-ISSUE): non-blocking for real
       self.lockout_active = True
 
     if self.lockout_active:

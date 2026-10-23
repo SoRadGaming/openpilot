@@ -38,6 +38,7 @@ from openpilot.sunnypilot.selfdrive.selfdrived.vsa_fault_alert import VsaFaultAl
 from openpilot.sunnypilot.selfdrive.controls.lib.steer_saturated import SteerSaturatedAlert  # FORK(LKAS-GATEWAY)
 from openpilot.sunnypilot.selfdrive.selfdrived.lane_block_alert import LaneBlockAlert  # FORK(HUD)
 from openpilot.sunnypilot.selfdrive.selfdrived.car_stock_alert import CarStockAlert  # FORK(HONDA_ACCORD_9G_AU)
+from openpilot.sunnypilot.system.params_writer import ParamsWriter  # FORK(COMM-ISSUE)
 
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
@@ -63,6 +64,10 @@ IGNORED_SAFETY_MODES = (SafetyModel.silent, SafetyModel.noOutput)
 class SelfdriveD(CruiseHelper):
   def __init__(self, CP=None, CP_SP=None):
     self.params = Params()
+    # FORK(COMM-ISSUE): the 100 Hz loop's blocking Params writes (the offroad alerts it raises mid-drive, the DM lockout
+    # flag's remove) go through this writer's thread: each takes <params>/.lock and fsyncs, and a stuck /data journal
+    # commit would hold selfdriveState for as long - a delayed excessiveActuation disable among them. docs/fork/COMM-ISSUE.md
+    self.params_writer = ParamsWriter("selfdrived_params")
 
     # Ensure the current branch is cached, otherwise the first cycle lags
     build_metadata = get_build_metadata()
@@ -262,10 +267,10 @@ class SelfdriveD(CruiseHelper):
     if not self.CP.notCar:
       # Block engaging until lockout times out or ignition reset
       if self.sm['driverMonitoringState'].lockout and not self.dm_lockout_set:
-        self.params.put_bool("DriverTooDistracted", True)
+        self.params_writer.put_bool("DriverTooDistracted", True)  # FORK(COMM-ISSUE): with the remove below, in order
         self.dm_lockout_set = True
       elif not self.sm['driverMonitoringState'].lockout and self.dm_lockout_set:
-        self.params.remove("DriverTooDistracted")
+        self.params_writer.remove("DriverTooDistracted")  # FORK(COMM-ISSUE): was a remove() on this thread
         self.dm_lockout_set = False
       # No entry conditions
       if self.sm['driverMonitoringState'].lockout or self.sm['driverMonitoringState'].alwaysOnLockout:
@@ -280,7 +285,7 @@ class SelfdriveD(CruiseHelper):
         self.events.add(EventName.driverDistracted3 if vision_dm else EventName.driverUnresponsive3)
       # Warn consistent DM uncertainty
       if self.sm['driverMonitoringState'].visionPolicyState.uncertainOffroadAlertPercent >= 100 and not self.dm_uncertain_alerted:
-        set_offroad_alert("Offroad_DriverMonitoringUncertain", True)
+        self.params_writer.offroad_alert("Offroad_DriverMonitoringUncertain", True)  # FORK(COMM-ISSUE)
         self.dm_uncertain_alerted = True
       self.events_sp.add_from_msg(self.sm['longitudinalPlanSP'].events)
 
@@ -345,7 +350,7 @@ class SelfdriveD(CruiseHelper):
         self.events.add(EventName.calibrationIncomplete)
       elif cal_status == log.ExtrinsicsCalibration.Status.recalibrating:
         if not self.recalibrating_seen:
-          set_offroad_alert("Offroad_Recalibration", True)
+          self.params_writer.offroad_alert("Offroad_Recalibration", True)  # FORK(COMM-ISSUE)
         self.recalibrating_seen = True
         self.events.add(EventName.calibrationRecalibrating)
       else:
@@ -369,7 +374,8 @@ class SelfdriveD(CruiseHelper):
     if self.calibrated_pose is not None and not self.CP.notCar:
       excessive_actuation = self.excessive_actuation_check.update(self.sm, CS, self.calibrated_pose)
       if not self.excessive_actuation and excessive_actuation is not None:
-        set_offroad_alert("Offroad_ExcessiveActuation", True, extra_text=str(excessive_actuation))
+        # FORK(COMM-ISSUE): off this thread, so a slow /data cannot hold back the excessiveActuation event added below
+        self.params_writer.offroad_alert("Offroad_ExcessiveActuation", True, extra_text=str(excessive_actuation))
         self.excessive_actuation = True
 
     if self.excessive_actuation:
