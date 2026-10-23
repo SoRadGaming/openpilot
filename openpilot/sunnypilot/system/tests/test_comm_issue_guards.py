@@ -59,6 +59,17 @@ class TestCommIssueGuards(OpenpilotTestCase):
     found = blocking_writes(_function(tree, "", cls="SelfdriveD"), skip_methods=("__init__",))
     assert not found, f"selfdrived's loop (selfdriveState) waits on /data: {found}"
 
+  def test_selfdrived_flushes_its_writer_when_it_ends(self):
+    """manager starts selfdrived with multiprocessing (fork), so it leaves through os._exit: what its loop handed the
+    writer - Offroad_ExcessiveActuation (PERSISTENT) among it - is flushed in run()'s finally. The writer's own exit
+    flush, a multiprocessing finalizer, is test_params_writer's TestParamsWriterAtExit."""
+    tree = ast.parse((OP / "selfdrive/selfdrived/selfdrived.py").read_text())
+    cls = _function(tree, "", cls="SelfdriveD")
+    run = next(n for n in ast.walk(cls) if isinstance(n, ast.FunctionDef) and n.name == "run")
+    finally_calls = [ast.unparse(c.func) for t in ast.walk(run) if isinstance(t, ast.Try)
+                     for s in t.finalbody for c in ast.walk(s) if isinstance(c, ast.Call)]
+    assert "self.params_writer.flush" in finally_calls, finally_calls
+
   def test_driver_monitoring_policy(self):
     tree = ast.parse((OP / "selfdrive/monitoring/policy.py").read_text())
     found = blocking_writes(_function(tree, "", cls="DriverMonitoring"))

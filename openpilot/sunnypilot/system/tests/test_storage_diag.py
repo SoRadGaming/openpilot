@@ -64,6 +64,7 @@ class TestStorageDiag(OpenpilotTestCase):
     for path in ("/", self.tmp, "/no/such/path"):
       r = storage_diag.storage_report(path)
       assert r["path"] == path and "vm" in r and "fstrim" in r
+      assert isinstance(storage_diag.disk_devices(path), list)
 
   def test_loop_timer_logs_a_slow_section_at_most_once_per_interval(self):
     clock = [100.]

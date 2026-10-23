@@ -17,38 +17,64 @@ ParamsWriter's methods return at once. One daemon thread applies what they were 
 so what lands on disk is what upstream writes, a little later; a stall now holds that thread instead of the loop.
 
 * Per key the newest request wins: a key asked for again before it was written is written once, with the newer
-  value, in the place of its first request. Different keys are written in the order they were first asked for.
+  value, in the place of its first request (it does not move behind keys asked for since). Different keys are
+  written in the order they were first asked for.
 * An unknown key or a value of the wrong type raises on the caller, as Params.put does.
 * Unlike Params.put(block=False) it also covers remove() and the offroad alerts, and nothing it is given stays in a
   queue: Params::putNonBlocking can leave a value queued until the next put on the same handle when it arrives just
   as that handle's writer thread is finishing, which a write made only on change would never repair.
-* At interpreter exit it waits up to FLUSH_AT_EXIT_S for what is pending.
+* When the process ends it waits up to FLUSH_AT_EXIT_S for what is pending. That is a multiprocessing finalizer, not
+  an atexit handler: manager starts every PythonProcess with multiprocessing (fork), and such a child leaves through
+  os._exit, which skips atexit; multiprocessing runs its finalizers both there and at a normal interpreter exit.
+* A write that takes longer than slow_write_s (SLOW_WRITE_S) is logged at error level, so the qlogs keep it: "params
+  writer slow write", with the key, how long the write took and how long since it was asked for, and the disk's
+  /proc/diskstats delta over the write. The loops no longer wait in a /data stall, so this thread is where one shows.
+  At most one line per min_log_interval s; the slow writes in between are counted into the next line.
 """
-import atexit
 import threading
+import time
+import weakref
 from collections import OrderedDict
 from collections.abc import Callable
+from multiprocessing import util as mp_util
 
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
+from openpilot.sunnypilot.system.storage_diag import MIN_LOG_INTERVAL_S, SLOW_SECTION_S, disk_devices, diskstats_delta, read_diskstats
 
-FLUSH_AT_EXIT_S = 3.0
+FLUSH_AT_EXIT_S = 3.0  # manager SIGKILLs a daemon 5 s after its SIGINT
+SLOW_WRITE_S = SLOW_SECTION_S
+EXIT_FLUSH_PRIORITY = 10  # multiprocessing runs finalizers with a priority >= 0 first, highest first
+
+
+def _flush_at_exit(ref: "weakref.ref[ParamsWriter]") -> None:
+  writer = ref()
+  if writer is not None:
+    writer.flush(FLUSH_AT_EXIT_S)
 
 
 class ParamsWriter:
-  def __init__(self, name: str = "params_writer"):
+  def __init__(self, name: str = "params_writer", slow_write_s: float = SLOW_WRITE_S,
+               min_log_interval: float = MIN_LOG_INTERVAL_S):
     self.name = name
+    self.slow_write_s = slow_write_s
+    self.min_log_interval = min_log_interval
     self._params = Params()
+    self._devices = disk_devices(self._params.get_param_path())  # procfs and sysfs only
     self._cv = threading.Condition()
-    self._pending: OrderedDict[str, Callable[[], None]] = OrderedDict()
+    self._pending: OrderedDict[str, tuple[str, Callable[[], None]]] = OrderedDict()
+    self._queued_at: dict[str, float] = {}  # when each pending key was first asked for
     self._last: dict[str, tuple] = {}
     self._busy = False
     self._stop = False
     self.written = 0  # writes applied, for tests and the logs
+    self.slow_writes = 0
+    self._suppressed = 0
+    self._last_log = -1e9
     self._thread = threading.Thread(target=self._run, name=name, daemon=True)
     self._thread.start()
-    atexit.register(self.flush, FLUSH_AT_EXIT_S)
+    self._exit_flush = mp_util.Finalize(None, _flush_at_exit, args=(weakref.ref(self),), exitpriority=EXIT_FLUSH_PRIORITY)
 
   @property
   def native_id(self) -> int | None:
@@ -84,6 +110,7 @@ class ParamsWriter:
   def stop(self, timeout: float | None = None) -> bool:
     """Flush, then end the thread. Requests after stop() are dropped."""
     ok = self.flush(timeout)
+    self._exit_flush.cancel()
     with self._cv:
       self._stop = True
       self._cv.notify_all()
@@ -95,7 +122,9 @@ class ParamsWriter:
       if self._stop or (if_changed and self._last.get(key) == state):
         return
       self._last[key] = state
-      self._pending[key] = op  # an existing key keeps its place, with the newer op
+      if key not in self._pending:
+        self._queued_at[key] = time.monotonic()
+      self._pending[key] = (state[0], op)  # an existing key keeps its place, with the newer op
       self._cv.notify_all()
 
   def _run(self) -> None:
@@ -107,10 +136,34 @@ class ParamsWriter:
           if self._stop:
             return
           self._cv.wait()
-        key, op = self._pending.popitem(last=False)
+        key, (kind, op) = self._pending.popitem(last=False)
+        queued_at = self._queued_at.pop(key)
         self._busy = True
+      t = time.monotonic()
+      disk = read_diskstats(self._devices)
       try:
         op()
         self.written += 1
       except Exception:
         cloudlog.exception(f"{self.name}: writing {key} failed")
+      op_s = time.monotonic() - t
+      if op_s > self.slow_write_s:
+        self._log_slow(key, kind, op_s, queued_at, disk)
+
+  def _log_slow(self, key: str, kind: str, op_s: float, queued_at: float, disk_before: dict) -> None:
+    self.slow_writes += 1
+    now = time.monotonic()
+    if now - self._last_log < self.min_log_interval:
+      self._suppressed += 1
+      return
+    with self._cv:
+      pending = list(self._pending)
+    try:
+      cloudlog.event("params writer slow write", error=True, writer=self.name, key=key, op=kind, op_s=round(op_s, 3),
+                     since_request_s=round(now - queued_at, 3), pending=pending,
+                     disk=diskstats_delta(disk_before, read_diskstats(self._devices)), slow_writes=self.slow_writes,
+                     suppressed=self._suppressed)
+    except Exception:
+      cloudlog.exception("params writer slow write log failed")
+    self._last_log = now
+    self._suppressed = 0

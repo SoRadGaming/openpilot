@@ -19,6 +19,7 @@ from openpilot.common.hardware.base import ThermalConfig, ThermalZone
 from openpilot.common.params import Params
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.common.version import terms_version, terms_version_sp, training_version
+from openpilot.sunnypilot.system import storage_diag
 from openpilot.system.hardware import hardwared
 
 
@@ -74,7 +75,7 @@ class TestHardwareThreadNeverWaits(OpenpilotTestCase):
   def test_device_state_keeps_coming_while_the_params_lock_is_held(self):
     """The real hardware_thread, the params lock held by someone else for 4 s and an engage edge inside that: deviceState
     keeps its 2 Hz (push11 stopped for the whole hold, and selfdrived raised commIssue past 5 s), and the thread
-    itself makes no blocking Params write."""
+    itself makes no blocking Params write. The storage report is made to take 3 s, which must not show either."""
     params = Params()
     params.put("HasAcceptedTerms", terms_version, block=True)
     params.put("HasAcceptedTermsSP", terms_version_sp, block=True)
@@ -93,7 +94,7 @@ class TestHardwareThreadNeverWaits(OpenpilotTestCase):
 
     cfg = ThermalConfig(cpu=[Drift(55.)], gpu=[Drift(50.)], memory=Drift(48.), pmic=[Drift(45.)])
 
-    writes: list = []  # (thread ident, method, key, block)
+    writes: list = []  # (thread ident, method, key, block, value)
     originals = {name: getattr(Params, name) for name in ("put", "put_bool", "remove")}
 
     def wrap(name):
@@ -101,7 +102,7 @@ class TestHardwareThreadNeverWaits(OpenpilotTestCase):
 
       def w(self, key, *a, **kw):
         block = True if name == "remove" else kw.get("block", a[1] if len(a) > 1 else False)
-        writes.append((threading.get_ident(), name, key, bool(block)))
+        writes.append((threading.get_ident(), name, key, bool(block), a[0] if a else None))
         return orig(self, key, *a, **kw)
       return w
 
@@ -135,7 +136,15 @@ class TestHardwareThreadNeverWaits(OpenpilotTestCase):
         k += 1
         time.sleep(0.01)
 
-    with mock.patch.object(hardwared.HARDWARE, "get_thermal_config", return_value=cfg):
+    report_threads: list[int] = []
+
+    def slow_report(path):  # a storage report stuck in systemctl or statvfs(/data) must not hold the loop
+      report_threads.append(threading.get_ident())
+      time.sleep(3.)
+      return {}
+
+    with mock.patch.object(hardwared.HARDWARE, "get_thermal_config", return_value=cfg), \
+         mock.patch.object(storage_diag, "storage_report", side_effect=slow_report):
       feed = threading.Thread(target=feeder, daemon=True)
       feed.start()
       hw = threading.Thread(target=hardwared.hardware_thread, args=(end_event, queue.Queue(maxsize=1)), daemon=True)
@@ -169,8 +178,8 @@ class TestHardwareThreadNeverWaits(OpenpilotTestCase):
     assert hold_done.is_set()
     assert not hw.is_alive()
     gaps = [b - a for a, b in zip(recv, recv[1:], strict=False)]
+    assert gaps and max(gaps) < 1.5, f"deviceState stopped for {max(gaps):.2f} s while the params lock was held"
     assert len(recv) >= 15, recv
-    assert max(gaps) < 1.5, f"deviceState stopped for {max(gaps):.2f} s while the params lock was held"
 
     loop_writes = [w for w in writes if w[0] == hw.ident]
     assert not [w for w in loop_writes if w[3]], f"blocking Params writes from the deviceState loop: {loop_writes}"
@@ -182,3 +191,8 @@ class TestHardwareThreadNeverWaits(OpenpilotTestCase):
     assert len(tici) <= 1, tici  # was one remove() every loop
     metered = [w for w in writes if w[2] == "NetworkMetered"]
     assert len(metered) <= 1, metered  # on change (and once a minute), was every loop
+    # the same for GithubRunnerSufficientVoltage: False until the first peripheralState can be the one change
+    runner = [w[4] for w in writes if w[2] == "GithubRunnerSufficientVoltage"]
+    assert len(runner) <= 2 and all(a != b for a, b in zip(runner, runner[1:], strict=False)), runner
+    # the storage report ran - on a thread of its own: its 3 s are not in the gaps above
+    assert report_threads and hw.ident not in report_threads, report_threads

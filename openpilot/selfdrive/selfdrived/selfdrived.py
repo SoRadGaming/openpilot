@@ -38,7 +38,7 @@ from openpilot.sunnypilot.selfdrive.selfdrived.vsa_fault_alert import VsaFaultAl
 from openpilot.sunnypilot.selfdrive.controls.lib.steer_saturated import SteerSaturatedAlert  # FORK(LKAS-GATEWAY)
 from openpilot.sunnypilot.selfdrive.selfdrived.lane_block_alert import LaneBlockAlert  # FORK(HUD)
 from openpilot.sunnypilot.selfdrive.selfdrived.car_stock_alert import CarStockAlert  # FORK(HONDA_ACCORD_9G_AU)
-from openpilot.sunnypilot.system.params_writer import ParamsWriter  # FORK(COMM-ISSUE)
+from openpilot.sunnypilot.system.params_writer import FLUSH_AT_EXIT_S, ParamsWriter  # FORK(COMM-ISSUE)
 
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
@@ -723,6 +723,10 @@ class SelfdriveD(CruiseHelper):
         self.rk.monitor_time()
     finally:
       e.set()
+      # FORK(COMM-ISSUE): what the loop handed its writer lands before the process goes - Offroad_ExcessiveActuation,
+      # PERSISTENT and what keeps the car from going onroad again, among it. Under manager this process leaves through
+      # multiprocessing's os._exit; manager SIGKILLs 5 s after its SIGINT. docs/fork/COMM-ISSUE.md 3.3
+      self.params_writer.flush(FLUSH_AT_EXIT_S)
       t.join()
 
 

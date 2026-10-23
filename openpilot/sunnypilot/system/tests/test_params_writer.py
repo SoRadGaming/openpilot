@@ -2,13 +2,41 @@
 import contextlib
 import fcntl
 import os
+import subprocess
+import sys
+import threading
 import time
 from unittest import mock
 
+from openpilot.common.basedir import BASEDIR
 from openpilot.common.params import Params, UnknownKeyName
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
+from openpilot.sunnypilot.system import params_writer
 from openpilot.sunnypilot.system.params_writer import ParamsWriter
+
+SLOW_WRITE = "params writer slow write"
+
+# A process that hands its writer a put and ends while <params>/.lock is held: started the way manager starts a
+# PythonProcess (multiprocessing, fork - main() returns into multiprocessing's bootstrap, which leaves through
+# os._exit), or as a plain interpreter (out through atexit).
+EXIT_CHILD = """
+import multiprocessing, sys
+
+def main(key, value):
+  from openpilot.sunnypilot.system.params_writer import ParamsWriter
+  writer = ParamsWriter("exit_test")
+  writer.put(key, value)  # returns at once; the lock is held
+  print("put", flush=True)
+
+how, key, value = sys.argv[1], sys.argv[2], float(sys.argv[3])
+if how == "manager":
+  p = multiprocessing.get_context("fork").Process(target=main, args=(key, value))
+  p.start()
+  p.join()
+  sys.exit(p.exitcode)
+main(key, value)
+"""
 
 
 def params_lock_path() -> str:
@@ -17,15 +45,30 @@ def params_lock_path() -> str:
 
 
 @contextlib.contextmanager
-def held_params_lock():
-  """What a put stuck in a slow journal commit looks like to everyone else: <params>/.lock taken and not let go."""
-  fd = os.open(params_lock_path(), os.O_CREAT | os.O_RDONLY, 0o775)
+def held_params_lock(max_hold: float = 5.):
+  """What a put stuck in a slow journal commit looks like to everyone else: <params>/.lock taken and not let go. Held
+  by a thread of its own and let go after max_hold s at the latest, so a writer that wrongly wrote on its caller's
+  thread fails a test instead of deadlocking it."""
+  held, release = threading.Event(), threading.Event()
+
+  def holder():
+    fd = os.open(params_lock_path(), os.O_CREAT | os.O_RDONLY, 0o775)
+    try:
+      fcntl.flock(fd, fcntl.LOCK_EX)
+      held.set()
+      release.wait(max_hold)
+    finally:
+      fcntl.flock(fd, fcntl.LOCK_UN)
+      os.close(fd)
+
+  t = threading.Thread(target=holder, daemon=True)
+  t.start()
+  assert held.wait(5.)
   try:
-    fcntl.flock(fd, fcntl.LOCK_EX)
     yield
   finally:
-    fcntl.flock(fd, fcntl.LOCK_UN)
-    os.close(fd)
+    release.set()
+    t.join(5.)
 
 
 class TestParamsWriter(OpenpilotTestCase):
@@ -97,6 +140,18 @@ class TestParamsWriter(OpenpilotTestCase):
     assert self.params.get("UptimeOnroad") == 2.0
     assert not self.params.get_bool("IsEngaged")
 
+  def test_a_key_asked_for_again_keeps_its_first_place(self):
+    """'in the place of its first request': the newer value does not move its key behind the keys asked for since."""
+    order = self.record_writes()
+    with held_params_lock():
+      self.writer.put("UptimeOffroad", 1.0)  # taken by the writer, which then waits on the lock
+      time.sleep(0.3)
+      self.writer.put("UptimeOnroad", 1.0)
+      self.writer.put_bool("IsEngaged", True)
+      self.writer.put("UptimeOnroad", 2.0)
+    assert self.writer.flush(5.)
+    assert order == [("put", "UptimeOffroad", 1.0), ("put", "UptimeOnroad", 2.0), ("put_bool", "IsEngaged", True)]
+
   def test_put_then_remove_of_one_key_is_the_remove(self):
     order = self.record_writes()
     with held_params_lock():
@@ -157,3 +212,90 @@ class TestParamsWriter(OpenpilotTestCase):
     assert self.writer.flush(5.)
     assert calls == ["UptimeOffroad", "UptimeOnroad"]
     assert self.params.get("UptimeOnroad") == 4.0
+
+
+class TestParamsWriterSlowWriteLog(OpenpilotTestCase):
+  """After the fix a /data stall holds the writer's thread, not the loop: the writer's line is the stall's trace in the
+  routes (the loop's 'slow loop section' no longer fires for it)."""
+
+  def setUp(self):
+    super().setUp()
+    patcher = mock.patch.object(params_writer, "cloudlog")
+    self.log = patcher.start()
+    self.addCleanup(patcher.stop)
+
+  def writer(self, **kw) -> ParamsWriter:
+    w = ParamsWriter("test_slow_write", **kw)
+    self.addCleanup(w.stop, 5.)
+    return w
+
+  def slow_put(self, writer: ParamsWriter, key: str, value: float, hold: float = 0.6) -> None:
+    with held_params_lock():
+      writer.put(key, value)
+      time.sleep(hold)
+    assert writer.flush(5.)
+
+  def lines(self) -> list[dict]:
+    return [c.kwargs for c in self.log.event.call_args_list if c.args == (SLOW_WRITE,)]
+
+  def test_a_slow_write_is_logged_with_the_disk_counters(self):
+    w = self.writer()
+    self.slow_put(w, "UptimeOnroad", 5.0)
+    assert Params().get("UptimeOnroad") == 5.0
+    lines = self.lines()
+    assert len(lines) == 1, self.log.event.call_args_list
+    kw = lines[0]
+    assert kw["error"] is True  # errorLogMessage: the qlogs keep it
+    assert (kw["writer"], kw["key"], kw["op"]) == ("test_slow_write", "UptimeOnroad", "put")
+    assert 0.4 < kw["op_s"] < 5. and kw["since_request_s"] >= kw["op_s"]
+    assert isinstance(kw["disk"], dict) and kw["pending"] == []
+    assert (kw["slow_writes"], kw["suppressed"]) == (1, 0)
+    assert not self.log.exception.called
+
+  def test_a_write_under_the_threshold_is_not_logged(self):
+    w = self.writer(slow_write_s=5.)
+    self.slow_put(w, "UptimeOnroad", 1.0)
+    assert self.lines() == [] and w.slow_writes == 0
+
+  def test_at_most_one_line_per_interval(self):
+    w = self.writer(min_log_interval=1.5)
+    self.slow_put(w, "UptimeOnroad", 1.0)   # logged
+    self.slow_put(w, "UptimeOffroad", 1.0)  # inside 1.5 s of it: counted
+    time.sleep(1.0)
+    self.slow_put(w, "UptimeOnroad", 2.0)   # logged, with the one in between
+    assert [(k["key"], k["slow_writes"], k["suppressed"]) for k in self.lines()] == [("UptimeOnroad", 1, 0), ("UptimeOnroad", 3, 1)]
+
+
+class TestParamsWriterAtExit(OpenpilotTestCase):
+  def exit_with_a_write_pending(self, how: str):
+    """The child puts and ends while the lock is held; the lock goes 0.5 s later. What is on disk afterwards?"""
+    proc = None
+    try:
+      with held_params_lock(max_hold=20.):
+        proc = subprocess.Popen([sys.executable, "-c", EXIT_CHILD, how, "UptimeOnroad", "42.0"], cwd=BASEDIR,
+                                stdout=subprocess.PIPE, text=True)
+        assert proc.stdout is not None
+        assert proc.stdout.readline().strip() == "put"
+        time.sleep(0.5)  # the child is on its way out, its write still waiting on the lock
+      assert proc.wait(30) == 0
+    finally:
+      if proc is not None:
+        if proc.poll() is None:
+          proc.kill()
+          proc.wait()
+        if proc.stdout is not None:
+          proc.stdout.close()
+    return Params().get("UptimeOnroad")
+
+  def test_a_pending_write_lands_when_a_process_manager_started_ends(self):
+    """manager's PythonProcess: multiprocessing with fork, out through os._exit, which skips atexit - selfdrived at
+    key-off with Offroad_ExcessiveActuation still pending was the case."""
+    assert self.exit_with_a_write_pending("manager") == 42.0
+
+  def test_a_pending_write_lands_when_a_plain_interpreter_ends(self):
+    assert self.exit_with_a_write_pending("plain") == 42.0
+
+  def test_stop_cancels_the_exit_flush(self):
+    w = ParamsWriter("test_stop")
+    assert w.stop(5.)
+    assert not w._exit_flush.still_active()

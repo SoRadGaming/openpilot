@@ -80,6 +80,13 @@ def block_names(device: str) -> tuple[str | None, str | None]:
   return name, disk
 
 
+def disk_devices(path: str) -> list[str]:
+  """The partition and the disk that hold path (['sda12', 'sda']), for read_diskstats; [] off a block device."""
+  m = mount_for(path)
+  part, disk = block_names(m["device"]) if m else (None, None)
+  return [n for n in dict.fromkeys((part, disk)) if n]
+
+
 def read_diskstats(names: list[str], diskstats_file: str = "/proc/diskstats") -> dict[str, dict[str, int]]:
   out: dict[str, dict[str, int]] = {}
   if not names:
@@ -187,9 +194,7 @@ class LoopTimer:
     self.name = name
     self.threshold = threshold
     self.min_interval = min_interval
-    m = mount_for(path)
-    part, disk = block_names(m["device"]) if m else (None, None)
-    self.devices = [n for n in dict.fromkeys((part, disk)) if n]
+    self.devices = disk_devices(path)
     self.loops = 0
     self.slow_loops = 0
     self.suppressed = 0
