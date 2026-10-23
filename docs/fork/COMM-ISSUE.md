@@ -307,7 +307,7 @@ flapping, two lines with 4 slow writes counted in between - and there was no `sl
 | `selfdrive/monitoring/test_monitoring.py` (+2) | a temporary handle's put waits out a held lock; the lockout's does not |
 | `sunnypilot/system/tests/test_comm_issue_guards.py` (5) | hardware_thread, selfdrived's loop methods and the DM policy contain no blocking Params write (DoShutdown excepted), the guard flags push11's calls, and selfdrived's `run()` flushes its writer in its `finally` |
 
-Every behaviour above is held by a test that fails when it is broken: the second review's mutations (a synchronous
+Everything above is held by a test that fails when it is broken: the second review's mutations (a synchronous
 writer, a writer that moves a re-requested key to the end, IsEngaged / Uptime / LastOffroadStatusPacket /
 OnroadCycleRequested back to blocking, NetworkMetered or GithubRunnerSufficientVoltage every loop, the temperature or
 TiciSupport change reverted, the alerts without the writer, the DM policy on a temporary handle, a synchronous storage
