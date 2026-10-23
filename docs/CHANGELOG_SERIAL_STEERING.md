@@ -15,6 +15,96 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-24 — push12: the communication alert that was the storage
+
+The owner, 2026-10-24, on the mid-drive "TAKE CONTROL IMMEDIATELY / (Low) Communication ... Between Processes"
+alerts: "the only critical bug" - "the stupid alert at random of low communication speed"; and, as for every push,
+updates on main, pushed when ready. push12 is push11 (`39cbb01be`) plus the fix, its diagnostics, its proof and these
+docs. **opendbc (`b44473bf`), the panda (`74a0adce`), the EPS board (`883a3cd1`) and the bundled board images do not
+change.** Not car-specific, not gated. **Not driven yet.** All of it is in `docs/fork/COMM-ISSUE.md`.
+
+### What it was
+
+* **The alert was hardwared's deviceState stopping**, not the car, the boards or the new build. On 14d (Thu 22 Oct
+  20:50) it stopped 6 times for 4.4-8.0 s (7 alerts on screen; disengaged at 21:20:53.8 and 21:26:53.0, at 94 and 102
+  km/h); on 152 (Sat 24 Oct 00:20) once, 4.9 s. selfdrived calls a deviceState gap over ~3 s "Low Communication Rate"
+  and over 5 s "Communication Issue"; both soft-disable, which sets the cruise target to 0 - so the car braked with the
+  alert, -1.1 to -1.5 m/s² at 95-110 km/h. cereal's own check, fed only 14d's deviceState receive times, puts every
+  onset within 0.02 s of what the car showed.
+* **What hardwared waited on: the params file lock.** Its loop took `<params>/.lock` every 0.5 s (removing an absent
+  offroad alert takes it), and again on 26-30 % of loops whenever the temperature's 0.1 °C text changed, while its own
+  background writer held that lock inside an fsync about 4 times a second. When /data's ext4 journal stalled, that
+  fsync stalled, and deviceState with it.
+* **Why /data stalled is not known yet.** The journal thread `jbd2/sda12-8` was in D state and a core's iowait reached
+  21-51 % in every alerting stall - on 14d only, among 160 routes with full procLog. /data is 90 % full (8.9 GB free).
+  mapd, logmessaged and the deleter were caught by the same stalls.
+* **Not the build**: nothing on that path changed since push9, and the same build drove clean on 14c, 14f, 150, 151.
+  managerState's slow-down was hardwared's (manager waits for deviceState); gpsLocationExternal never gapped (max
+  0.27 s) and is ignored by the check anyway.
+
+### What is in it
+
+* **No loop selfdrived checks waits on /data any more.** hardwared hands every write of its deviceState loop to a
+  `ParamsWriter` (`openpilot/sunnypilot/system/params_writer.py`), whose own thread does the waiting: the alerts on
+  change only, a hidden alert's text no longer counts as a change, two flags on change (and once a minute) instead of
+  every loop, and the engage, uptime, onroad-packet and cycle-request writes off the loop. The same for selfdrived's
+  four mid-drive writes (the excessive-actuation alert among them, which a slow write would have delayed) and the
+  driver-monitoring lockout count. What is published is unchanged; **selfdrived's checks are not loosened**; mapd is
+  untouched, so its liveMapDataSP gaps still witness a stall. Every other checked publisher was audited and needed
+  nothing (COMM-ISSUE.md section 4).
+* **The storage's side, in every route** (errorLogMessage, so the qlogs carry it): a `storage report` 30 s into each
+  drive - /data's mount and ext4 options, writeback settings, whether TRIM ever runs (the fstrim timer and its last
+  run) and the device takes it, free space, the journal's statistics - and a `hardwared slow loop section` line
+  whenever part of hardwared's loop takes over 0.3 s, naming it, with the disk's counters over that loop (at most one
+  line per 10 s).
+
+### The proof
+
+The real hardwared, push11's against push12's, with 8 s faults injected (`comm_issue/fault_injection.py`, recorded
+in `comm_issue/RESULT.json`): F1 another process holding the params lock, F2 one slow journal commit (every
+directory fsync held to the window's end), F3 both with two engage edges and the 60 s uptime write inside.
+
+| | F1 | F2 | F3 |
+|---|---|---|---|
+| push11: deviceState's longest gap / alerts | 8.05 s / commIssue, AvgFreq | 7.55 s / commIssue, AvgFreq | 8.04 s / commIssue, AvgFreq |
+| push12: deviceState's longest gap / alerts | **0.50 s / none** | **0.50 s / none** | **0.50 s / none** |
+| push12: flock / fsync / blocking writes on hardware_thread | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+
+The alerts come both from cereal's SubMaster run on the received stream at selfdrived's rate and from the d1024
+`vf_model` replay; the two agree to 0.01 s. In the suite: the real `hardware_thread` with the lock held 4 s keeps
+deviceState under 1.5 s (push11's stops 4.1 s under the same test), the writer's 8 tests, the DM lockout, the
+diagnostics, and a source guard that fails if a merge brings a blocking write back into those loops.
+
+### What to look for in the next drives
+
+* No mid-drive "Communication Issue" or "Low Communication Rate", and in particular none on a drive where mapd's
+  liveMapDataSP gaps by more than 2 s or a `hardwared slow loop section` line appears: those are the stalls, and
+  deviceState must stay under 1 s through them. Stalls hit 2 of the last ~110 routes, so this takes weeks.
+* The first route's `storage report`: is /data `discard` or `noatime`, does `fstrim` ever run, does the UFS take
+  discards (`discard_max_bytes`)? That decides whether to free space or trim next - not this push.
+* A `slow loop section` naming a read (`startup_params`, `athena_ping`) rather than a write would mean reads can stall
+  too (COMM-ISSUE.md section 7).
+
+### Gates
+
+On the code tip `4ec3db74c` in `~/sp-merge` (WSL Ubuntu-24.04):
+
+* `scons -j16`: rc 0 (push12 changes no C++).
+* The full suite (`RAYLIB_BACKEND=headless python tools/test_runner.py -j 12`): **3001 passed, 47 skipped, 1 xfailed,
+  0 failed** in 533 s; the same on `ab7d00788`. push12 adds 23 tests (8 writer, 5 diagnostics, 4 hardwared, 4 guards,
+  2 DM). locationd's `test_params_gps`, which fails on this PC on older trees too, passed in both runs.
+* `ruff check openpilot` and opendbc: clean. `ty check openpilot`: 4 diagnostics, push11's same 4 in the same files
+  (the first pass found 22 in the new tests and harness, none in shipped code; fixed in `4ec3db74c`).
+* codespell: no new hits in the 13 changed code files (the harness's "analyse" and "dur" renamed) or the three
+  documents. `compile_settings_ui --check`: matches. check_indentation, large files, shebangs, nomerge, conflict
+  markers: pass.
+* File modes: no mode change against push11 (hardwared.py and selfdrived.py stay 755); every new file 644, none with a
+  shebang.
+* The fault injection: ALL PASS (above). A negative control run in scratch - `test_hardwared_comm_issue.py` against
+  push11's hardwared - fails, with a 4.1 s gap.
+
+---
+
 ## 2026-10-21 — push11: the lamp board on Settings > Gateway (BLR-v1 live `42524898` bundled; board `883a3cd1` unchanged)
 
 The owner, 2026-10-21, with the second board on his desk: "program it to work, make sure we support updating on comma
