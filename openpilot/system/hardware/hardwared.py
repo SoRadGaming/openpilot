@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import fcntl
+import functools
 import os
 import queue
 import struct
@@ -29,6 +30,7 @@ from openpilot.system.hardware.power_monitoring import PowerMonitoring
 from openpilot.system.hardware.fan_controller import FanController
 from openpilot.system.hardware.chestnut.status import ChestnutStatus
 from openpilot.common.version import terms_version, training_version, get_build_metadata, terms_version_sp
+from openpilot.sunnypilot.system.params_writer import ParamsWriter  # FORK(COMM-ISSUE)
 
 ThermalStatus = log.DeviceState.ThermalStatus
 NetworkType = log.DeviceState.NetworkType
@@ -108,11 +110,20 @@ prev_offroad_states: dict[str, tuple[bool, str | None]] = {}
 
 
 
-def set_offroad_alert_if_changed(offroad_alert: str, show_alert: bool, extra_text: str | None=None):
+def set_offroad_alert_if_changed(offroad_alert: str, show_alert: bool, extra_text: str | None=None,
+                                 writer: ParamsWriter | None = None):
+  # FORK(COMM-ISSUE): a hidden alert has no text (set_offroad_alert drops it), so a hidden alert's text moving is not a
+  # change. Offroad_TemperatureTooHigh's text moved with every 0.1 C of the filtered temperature - 26-30 % of loops in
+  # the car, each a Params remove() under <params>/.lock on the deviceState loop. Shown alerts still follow their text.
+  if not show_alert:
+    extra_text = None
   if prev_offroad_states.get(offroad_alert, None) == (show_alert, extra_text):
     return
   prev_offroad_states[offroad_alert] = (show_alert, extra_text)
-  set_offroad_alert(offroad_alert, show_alert, extra_text)
+  if writer is not None:  # FORK(COMM-ISSUE): written on the writer's thread, never the publishing one
+    writer.offroad_alert(offroad_alert, show_alert, extra_text)
+  else:
+    set_offroad_alert(offroad_alert, show_alert, extra_text)
 
 def touch_thread(end_event):
   count = 0
@@ -234,6 +245,13 @@ def hardware_thread(end_event, hw_queue) -> None:
 
   params = Params()
   power_monitor = PowerMonitoring()
+  # FORK(COMM-ISSUE): nothing this loop writes waits on /data. A Params put or remove takes <params>/.lock and fsyncs the
+  # params directory, and a stuck ext4 journal commit held deviceState for 4-8 s in routes 14d and 152 (selfdrived's
+  # commIssue / commIssueAvgFreq: a soft disable and the car braking at 95-110 km/h). Every write goes through
+  # params_writer, whose own thread waits instead; the loop still reads params, and reads take no lock.
+  # docs/fork/COMM-ISSUE.md
+  params_writer = ParamsWriter("hardwared_params")
+  set_alert = functools.partial(set_offroad_alert_if_changed, writer=params_writer)
 
   uptime_offroad: float = params.get("UptimeOffroad", return_default=True)
   uptime_onroad: float = params.get("UptimeOnroad", return_default=True)
@@ -255,7 +273,7 @@ def hardware_thread(end_event, hw_queue) -> None:
 
     # handle requests to cycle system started state
     if params.get_bool("OnroadCycleRequested"):
-      params.put_bool("OnroadCycleRequested", False, block=True)
+      params_writer.put_bool("OnroadCycleRequested", False)  # FORK(COMM-ISSUE): was put_bool(block=True) here
       offroad_cycle_count = sm.frame
     onroad_conditions["not_onroad_cycle"] = (sm.frame - offroad_cycle_count) >= ONROAD_CYCLE_TIME * SERVICE_LIST['pandaStates'].frequency
 
@@ -311,7 +329,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     chestnut_valid = sm.alive["chestnutState"] and sm.valid["chestnutState"]
     chestnut_status.update(started_ts is None, branch, last_hw_state.usb_state, chestnut.failed,
                            params.get_bool("ChestnutLoading"), params.get("ChestnutActive"),
-                           chestnut_state if chestnut_valid else None, set_offroad_alert_if_changed)
+                           chestnut_state if chestnut_valid else None, set_alert)  # FORK(COMM-ISSUE): set_alert
     # this subset is only used for offroad
     temp_sources = [
       msg.deviceState.memoryTempC,
@@ -372,13 +390,16 @@ def hardware_thread(end_event, hw_queue) -> None:
     is_unsupported_combo = COMMA_HARDWARE and HARDWARE.get_device_type() == "tici" and build_metadata.channel_type != "tici"
     startup_conditions["not_tici"] = not is_unsupported_combo
     onroad_conditions["not_tici"] = not is_unsupported_combo
-    set_offroad_alert("Offroad_TiciSupport", is_unsupported_combo, extra_text=build_metadata.channel)
+    # FORK(COMM-ISSUE): on change, off this thread. set_offroad_alert(..., False) is a Params remove(), which takes
+    # <params>/.lock even when the key is absent - every loop, the wait in the 14d/152 stalls
+    set_alert("Offroad_TiciSupport", is_unsupported_combo, extra_text=build_metadata.channel)
 
     # if the temperature enters the danger zone, go offroad to cool down
     onroad_conditions["device_temp_good"] = thermal_status < ThermalStatus.critical
     extra_text = f"{offroad_comp_temp:.1f}C"
     show_alert = (not onroad_conditions["device_temp_good"] or not startup_conditions["device_temp_engageable"]) and onroad_conditions["ignition"]
-    set_offroad_alert_if_changed("Offroad_TemperatureTooHigh", show_alert, extra_text=extra_text)
+    # FORK(COMM-ISSUE): set_alert drops the text of a hidden alert, so the temperature moving is no longer a write
+    set_alert("Offroad_TemperatureTooHigh", show_alert, extra_text=extra_text)
 
     if show_alert:
       msg.deviceState.fanSpeedPercentDesired = 100
@@ -389,13 +410,13 @@ def hardware_thread(end_event, hw_queue) -> None:
       should_start = should_start and all(startup_conditions.values())
 
     if should_start != should_start_prev or (count == 0):
-      params.put_bool("IsEngaged", False, block=True)
+      params_writer.put_bool("IsEngaged", False)  # FORK(COMM-ISSUE): was put_bool(block=True) here
       engaged_prev = False
 
     if sm.updated['selfdriveState']:
       engaged = sm['selfdriveState'].enabled
       if engaged != engaged_prev:
-        params.put_bool("IsEngaged", engaged, block=True)
+        params_writer.put_bool("IsEngaged", engaged)  # FORK(COMM-ISSUE): was put_bool(block=True) here
         engaged_prev = engaged
 
       try:
@@ -434,7 +455,11 @@ def hardware_thread(end_event, hw_queue) -> None:
 
     # GitHub runner auto off: 9V is used as the threshold because most desktop runners
     # will rarely exceed 5V so 9V is set as our buffer between desk use and car use.
-    params.put_bool("GithubRunnerSufficientVoltage", ((voltage or 0) and voltage > 9000))
+    # FORK(COMM-ISSUE): on change, and once a minute in case something else rewrote it (NetworkMetered is a BACKUP
+    # key), instead of a put every loop: those puts were this loop's own async writer holding <params>/.lock 4 times a
+    # second inside an fsync
+    params_rewrite = (count % int(60. / DT_HW)) == 0
+    params_writer.put_bool("GithubRunnerSufficientVoltage", ((voltage or 0) and voltage > 9000), if_changed=not params_rewrite)
 
     power_monitor.calculate(voltage, onroad_conditions["ignition"])
     msg.deviceState.offroadPowerUsageUwh = power_monitor.get_power_used()
@@ -495,11 +520,11 @@ def hardware_thread(end_event, hw_queue) -> None:
       # save last one before going onroad
       if rising_edge_started:
         try:
-          params.put("LastOffroadStatusPacket", dat, block=True)
+          params_writer.put("LastOffroadStatusPacket", dat)  # FORK(COMM-ISSUE): was put(block=True) here
         except Exception:
           cloudlog.exception("failed to save offroad status")
 
-    params.put_bool("NetworkMetered", msg.deviceState.networkMetered)
+    params_writer.put_bool("NetworkMetered", msg.deviceState.networkMetered, if_changed=not params_rewrite)  # FORK(COMM-ISSUE)
 
     now_ts = time.monotonic()
     if off_ts:
@@ -509,11 +534,14 @@ def hardware_thread(end_event, hw_queue) -> None:
     last_uptime_ts = now_ts
 
     if (count % int(60. / DT_HW)) == 0:
-      params.put("UptimeOffroad", uptime_offroad, block=True)
-      params.put("UptimeOnroad", uptime_onroad, block=True)
+      # FORK(COMM-ISSUE): were put(block=True) here, two fsyncs on this thread every minute
+      params_writer.put("UptimeOffroad", uptime_offroad)
+      params_writer.put("UptimeOnroad", uptime_onroad)
 
     count += 1
     should_start_prev = should_start
+
+  params_writer.flush(5.)  # FORK(COMM-ISSUE): what the loop asked for is on disk when it ends, as with blocking puts
 
 
 def main():
