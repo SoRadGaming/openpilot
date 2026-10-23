@@ -36,6 +36,7 @@ import tempfile
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -44,12 +45,23 @@ ROOT = HERE.parents[3].parent  # the repo: openpilot/system/hardware/tests/comm_
 FAULT_S = 8.0
 WARMUP_S = 5.0          # selfdrived starts with a full window; the checks are read from here on
 MAX_GAP_PATCHED_S = 0.75
-# at: fault start, s after the first deviceState; edges: selfdriveState.enabled toggles (s after the first deviceState)
+
+
+@dataclass(frozen=True)
+class Fault:
+  at: float                   # the window opens, s after the first deviceState
+  lock: bool                  # another process holds <params>/.lock through it
+  fsync: bool                 # directory fsyncs started inside it return at its end
+  edges: tuple[float, ...]    # selfdriveState.enabled toggles at these times
+  run: float                  # the run ends here
+  enabled: bool               # selfdriveState.enabled before the first edge
+
+
 FAULTS = {
-  "F1": {"at": 10.0, "lock": True, "fsync": False, "edges": (12.0,), "run": 25.0, "enabled": True},
-  "F2": {"at": 10.0, "lock": False, "fsync": True, "edges": (12.0,), "run": 25.0, "enabled": True},
+  "F1": Fault(at=10.0, lock=True, fsync=False, edges=(12.0,), run=25.0, enabled=True),
+  "F2": Fault(at=10.0, lock=False, fsync=True, edges=(12.0,), run=25.0, enabled=True),
   # hardwared's count reaches 120 (its second Uptime write) about 59.5 s after its first loop
-  "F3": {"at": 55.5, "lock": True, "fsync": True, "edges": (57.5, 61.0), "run": 75.0, "enabled": False},
+  "F3": Fault(at=55.5, lock=True, fsync=True, edges=(57.5, 61.0), run=75.0, enabled=False),
 }
 
 
@@ -59,7 +71,7 @@ def child_main(variant: str, baseline: str, out: str) -> None:
   signal.signal(signal.SIGINT, signal.default_int_handler)
   import importlib.util
   from openpilot.common import params as params_mod
-  from openpilot.common.hardware.base import ThermalConfig
+  from openpilot.common.hardware.base import ThermalConfig, ThermalZone
 
   if variant == "patched":
     import openpilot.system.hardware.hardwared as hw
@@ -74,8 +86,9 @@ def child_main(variant: str, baseline: str, out: str) -> None:
   rng = random.Random(1234)
   t0 = time.monotonic()
 
-  class Drift:
+  class Drift(ThermalZone):
     def __init__(self, base: float):
+      super().__init__(name="drift")
       self.base = base
 
     def read(self) -> float:
@@ -225,9 +238,9 @@ def run_one(variant: str, fault: str, baseline: Path, shim: Path, workdir: Path)
       t_first: list[float] = []
 
       def enabled_at(now: float) -> bool:
-        e = spec["enabled"]
+        e = spec.enabled
         if t_first:
-          for edge in spec["edges"]:
+          for edge in spec.edges:
             if now - t_first[0] >= edge:
               e = not e
         return e
@@ -259,11 +272,11 @@ def run_one(variant: str, fault: str, baseline: Path, shim: Path, workdir: Path)
       def start_fault():
         a = time.monotonic()
         window[:] = [a, a + FAULT_S]
-        if spec["fsync"]:
+        if spec.fsync:
           tmp = ctl.with_suffix(".tmp")
           tmp.write_text(f"{int(a * 1e9)} {int((a + FAULT_S) * 1e9)}")
           os.replace(tmp, ctl)
-        if spec["lock"]:
+        if spec.lock:
           fd = os.open(lock_path, os.O_CREAT | os.O_RDONLY, 0o775)
           fcntl.flock(fd, fcntl.LOCK_EX)
           threading.Timer(max(0., a + FAULT_S - time.monotonic()), lambda: (fcntl.flock(fd, fcntl.LOCK_UN), os.close(fd))).start()
@@ -281,7 +294,7 @@ def run_one(variant: str, fault: str, baseline: Path, shim: Path, workdir: Path)
           recv.append(now)
           if not t_first:
             t_first.append(now)
-            threading.Timer(spec["at"], start_fault).start()
+            threading.Timer(spec.at, start_fault).start()
         if t_first and now - t_first[0] > WARMUP_S:
           if sm.all_checks(["deviceState"]):
             s = None
@@ -294,7 +307,7 @@ def run_one(variant: str, fault: str, baseline: Path, shim: Path, workdir: Path)
           if s != state and s is not None:
             live.append((round(now - t_first[0], 2), s))
           state = s
-        if t_first and now - t_first[0] > spec["run"]:
+        if t_first and now - t_first[0] > spec.run:
           break
         if not t_first and now > deadline:
           raise RuntimeError(f"{variant} {fault}: no deviceState in 60 s")
@@ -316,7 +329,7 @@ def run_one(variant: str, fault: str, baseline: Path, shim: Path, workdir: Path)
   return analyze(variant, fault, spec, recv, live, window, t_first[0], shimlog, proc.pid, child_json)
 
 
-def analyze(variant, fault, spec, recv, live, window, t_first, shimlog, pid, child_json) -> dict:
+def analyze(variant, fault, spec: Fault, recv, live, window, t_first, shimlog, pid, child_json) -> dict:
   child = json.loads(child_json.read_text())
   tid = child["publishing_tid"]
   first_loop_done = recv[1]  # the second deviceState: the first loop's tail (its puts after pm.send) is behind it

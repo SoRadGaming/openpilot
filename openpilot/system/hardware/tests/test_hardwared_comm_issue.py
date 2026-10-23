@@ -15,7 +15,7 @@ from unittest import mock
 
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log
-from openpilot.common.hardware.base import ThermalConfig
+from openpilot.common.hardware.base import ThermalConfig, ThermalZone
 from openpilot.common.params import Params
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.common.version import terms_version, terms_version_sp, training_version
@@ -83,11 +83,12 @@ class TestHardwareThreadNeverWaits(OpenpilotTestCase):
     rng = random.Random(7)
     t0 = time.monotonic()
 
-    class Drift:  # a moving temperature, so :381's text changes as in the car
+    class Drift(ThermalZone):  # a moving temperature, so :381's text changes as in the car
       def __init__(self, base):
+        super().__init__(name="drift")
         self.base = base
 
-      def read(self):
+      def read(self) -> float:
         return self.base + 0.3 * math.sin((time.monotonic() - t0) / 3.) + rng.uniform(-0.6, 0.6)
 
     cfg = ThermalConfig(cpu=[Drift(55.)], gpu=[Drift(50.)], memory=Drift(48.), pmic=[Drift(45.)])

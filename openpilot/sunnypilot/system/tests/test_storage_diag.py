@@ -34,12 +34,19 @@ class TestStorageDiag(OpenpilotTestCase):
 
   def test_mount_for_is_the_longest_mount_point(self):
     mounts = self.write("mounts", MOUNTS)
+
+    def mnt(path: str) -> dict:
+      m = mount_for(path, mounts)
+      assert m is not None
+      return m
+
     with mock.patch("os.path.realpath", side_effect=lambda p: p):
-      assert mount_for("/data/params/d", mounts)["device"] == "/dev/sda12"
-      assert mount_for("/data/safe_staging/merged/x", mounts)["fstype"] == "overlay"
-      assert mount_for("/var/tmp/power_watchdog", mounts)["fstype"] == "tmpfs"
-      assert mount_for("/dataX/y", mounts)["mountpoint"] == "/"
-      assert mount_for("/data", mounts)["options"] == "rw,relatime,discard,data=ordered"
+      assert mnt("/data/params/d")["device"] == "/dev/sda12"
+      assert mnt("/data/safe_staging/merged/x")["fstype"] == "overlay"
+      assert mnt("/var/tmp/power_watchdog")["fstype"] == "tmpfs"
+      assert mnt("/dataX/y")["mountpoint"] == "/"
+      assert mnt("/data")["options"] == "rw,relatime,discard,data=ordered"
+    assert mount_for("/data", os.path.join(self.tmp, "no_such_mounts")) is None
 
   def test_diskstats_and_their_delta(self):
     path = self.write("diskstats", DISKSTATS)
@@ -93,8 +100,10 @@ class TestStorageDiag(OpenpilotTestCase):
 
   def test_storage_reporter_once_at_start_and_once_per_onroad_start(self):
     r = StorageReporter(self.tmp, onroad_delay=30.)
-    spawned = []
-    r._spawn = spawned.append
+    spawned: list[str] = []
+    patcher = mock.patch.object(r, "_spawn", side_effect=spawned.append)
+    patcher.start()
+    self.addCleanup(patcher.stop)
     now = time.monotonic()
     r.update(None, now)
     r.update(None, now + 1)

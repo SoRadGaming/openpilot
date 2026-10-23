@@ -3,6 +3,7 @@ import contextlib
 import fcntl
 import os
 import time
+from unittest import mock
 
 from openpilot.common.params import Params, UnknownKeyName
 from openpilot.common.test import OpenpilotTestCase
@@ -34,25 +35,23 @@ class TestParamsWriter(OpenpilotTestCase):
     self.writer = ParamsWriter("test_params_writer")
     self.addCleanup(self.writer.stop, 5.)
 
+  def patch_params(self, name: str, side_effect) -> None:
+    patcher = mock.patch.object(self.writer._params, name, side_effect=side_effect)
+    patcher.start()
+    self.addCleanup(patcher.stop)
+
   def record_writes(self) -> list:
-    """The writer's Params writes, in the order it makes them."""
+    """The writer's Params writes, in the order it makes them: (method, key[, value])."""
     order: list = []
-    p = self.writer._params
-    put, put_bool, remove = p.put, p.put_bool, p.remove
 
-    def rec_put(key, value, block=False):
-      order.append(("put", key, value))
-      put(key, value, block=block)
+    def recorder(name, orig):
+      def rec(key, *args, **kwargs):
+        order.append((name, key, *args[:1]))
+        return orig(key, *args, **kwargs)
+      return rec
 
-    def rec_put_bool(key, value, block=False):
-      order.append(("put_bool", key, value))
-      put_bool(key, value, block=block)
-
-    def rec_remove(key):
-      order.append(("remove", key))
-      remove(key)
-
-    p.put, p.put_bool, p.remove = rec_put, rec_put_bool, rec_remove
+    for name in ("put", "put_bool", "remove"):
+      self.patch_params(name, recorder(name, getattr(self.writer._params, name)))
     return order
 
   def test_writes_land(self):
@@ -143,8 +142,7 @@ class TestParamsWriter(OpenpilotTestCase):
     assert self.writer.written == 0
 
   def test_a_failed_write_does_not_stop_the_writer(self):
-    p = self.writer._params
-    put = p.put
+    put = self.writer._params.put
     calls = []
 
     def flaky(key, value, block=False):
@@ -153,7 +151,7 @@ class TestParamsWriter(OpenpilotTestCase):
         raise OSError("disk said no")
       put(key, value, block=block)
 
-    p.put = flaky
+    self.patch_params("put", flaky)
     self.writer.put("UptimeOffroad", 3.0)
     self.writer.put("UptimeOnroad", 4.0)
     assert self.writer.flush(5.)
