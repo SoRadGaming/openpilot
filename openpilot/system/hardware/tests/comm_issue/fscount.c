@@ -42,10 +42,10 @@ static long now_ns(void) {
   return t.tv_sec * 1000000000L + t.tv_nsec;
 }
 
-static void record(int kind, long start, long dur) {
+static void record(int kind, long start, long duration) {
   long i = atomic_fetch_add(&n_events, 1);
   if (i < MAX_EVENTS) {
-    events[i] = (event_t){kind, (int)syscall(SYS_gettid), start, dur};
+    events[i] = (event_t){kind, (int)syscall(SYS_gettid), start, duration};
   }
 }
 

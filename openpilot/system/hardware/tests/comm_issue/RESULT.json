@@ -1,0 +1,600 @@
+{
+ "baseline": "39cbb01be",
+ "results": [
+  {
+   "variant": "unpatched",
+   "fault": "F1",
+   "window_s": [
+    10.0,
+    18.0
+   ],
+   "deviceState": 36,
+   "max_gap_s": 8.05,
+   "max_gap_in_window_s": 8.05,
+   "gaps_over_1s": 1,
+   "alerts_live": [
+    [
+     14.97,
+     "commIssue"
+    ],
+    [
+     18.01,
+     "commIssueAvgFreq"
+    ]
+   ],
+   "alerts_replay": [
+    [
+     14.97,
+     "commIssue"
+    ],
+    [
+     18.02,
+     "commIssueAvgFreq"
+    ]
+   ],
+   "pub_after_first_loop": {
+    "flock_ex": {
+     "n": 44,
+     "max_s": 7.55,
+     "total_s": 7.552
+    },
+    "fsync_dir": {
+     "n": 4,
+     "max_s": 0.002,
+     "total_s": 0.009
+    },
+    "fsync": {
+     "n": 4,
+     "max_s": 0.004,
+     "total_s": 0.011
+    }
+   },
+   "pub_all": {
+    "flock_ex": {
+     "n": 59,
+     "max_s": 7.55,
+     "total_s": 7.556
+    },
+    "fsync_dir": {
+     "n": 8,
+     "max_s": 0.002,
+     "total_s": 0.017
+    },
+    "fsync": {
+     "n": 8,
+     "max_s": 0.004,
+     "total_s": 0.024
+    }
+   },
+   "other_threads": {
+    "flock_ex": {
+     "n": 74,
+     "max_s": 0.002,
+     "total_s": 0.005
+    },
+    "fsync_dir": {
+     "n": 74,
+     "max_s": 0.004,
+     "total_s": 0.172
+    },
+    "fsync": {
+     "n": 74,
+     "max_s": 0.005,
+     "total_s": 0.192
+    }
+   },
+   "pub_blocking_writes_after_first_loop": 44,
+   "pub_blocking_write_keys": [
+    "IsEngaged",
+    "LastOffroadStatusPacket",
+    "Offroad_TemperatureTooHigh",
+    "Offroad_TiciSupport"
+   ],
+   "pub_nonblocking_puts_after_first_loop": [
+    "CarBatteryCapacity",
+    "GithubRunnerSufficientVoltage",
+    "NetworkMetered"
+   ],
+   "pub_params_reads_after_first_loop": 545,
+   "pub_slowest_params_call_s": 7.55,
+   "temp_alert_calls": 36,
+   "temp_text_changes": 7,
+   "temp_alert_writes": 8,
+   "tici_alert_writes": 36,
+   "uptime_writes_t": [
+    0.01
+   ],
+   "is_engaged_writes_t": [
+    -0.01,
+    -0.01,
+    0.95,
+    0.96,
+    18.35
+   ],
+   "pass": true
+  },
+  {
+   "variant": "patched",
+   "fault": "F1",
+   "window_s": [
+    10.0,
+    18.0
+   ],
+   "deviceState": 51,
+   "max_gap_s": 0.5,
+   "max_gap_in_window_s": 0.5,
+   "gaps_over_1s": 0,
+   "alerts_live": [],
+   "alerts_replay": [],
+   "pub_after_first_loop": {
+    "flock_ex": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    },
+    "fsync_dir": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    },
+    "fsync": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    }
+   },
+   "pub_all": {
+    "flock_ex": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    },
+    "fsync_dir": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    },
+    "fsync": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    }
+   },
+   "other_threads": {
+    "flock_ex": {
+     "n": 21,
+     "max_s": 7.035,
+     "total_s": 12.577
+    },
+    "fsync_dir": {
+     "n": 12,
+     "max_s": 0.003,
+     "total_s": 0.028
+    },
+    "fsync": {
+     "n": 12,
+     "max_s": 0.003,
+     "total_s": 0.03
+    }
+   },
+   "pub_blocking_writes_after_first_loop": 0,
+   "pub_blocking_write_keys": [],
+   "pub_nonblocking_puts_after_first_loop": [
+    "CarBatteryCapacity"
+   ],
+   "pub_params_reads_after_first_loop": 784,
+   "pub_slowest_params_call_s": 0.0,
+   "temp_alert_calls": 51,
+   "temp_text_changes": 11,
+   "temp_alert_writes": 1,
+   "tici_alert_writes": 1,
+   "uptime_writes_t": [
+    0.02
+   ],
+   "is_engaged_writes_t": [
+    -0.0,
+    0.96,
+    12.46
+   ],
+   "pass": true
+  },
+  {
+   "variant": "unpatched",
+   "fault": "F2",
+   "window_s": [
+    10.0,
+    18.0
+   ],
+   "deviceState": 37,
+   "max_gap_s": 7.55,
+   "max_gap_in_window_s": 7.55,
+   "gaps_over_1s": 1,
+   "alerts_live": [
+    [
+     15.46,
+     "commIssue"
+    ],
+    [
+     18.01,
+     "commIssueAvgFreq"
+    ]
+   ],
+   "alerts_replay": [
+    [
+     15.46,
+     "commIssue"
+    ],
+    [
+     18.01,
+     "commIssueAvgFreq"
+    ]
+   ],
+   "pub_after_first_loop": {
+    "flock_ex": {
+     "n": 45,
+     "max_s": 7.052,
+     "total_s": 7.054
+    },
+    "fsync_dir": {
+     "n": 4,
+     "max_s": 0.002,
+     "total_s": 0.009
+    },
+    "fsync": {
+     "n": 4,
+     "max_s": 0.004,
+     "total_s": 0.012
+    }
+   },
+   "pub_all": {
+    "flock_ex": {
+     "n": 60,
+     "max_s": 7.052,
+     "total_s": 7.059
+    },
+    "fsync_dir": {
+     "n": 8,
+     "max_s": 0.002,
+     "total_s": 0.018
+    },
+    "fsync": {
+     "n": 8,
+     "max_s": 0.004,
+     "total_s": 0.025
+    }
+   },
+   "other_threads": {
+    "flock_ex": {
+     "n": 76,
+     "max_s": 0.002,
+     "total_s": 0.005
+    },
+    "fsync_dir": {
+     "n": 76,
+     "max_s": 7.549,
+     "total_s": 7.726
+    },
+    "fsync": {
+     "n": 76,
+     "max_s": 0.004,
+     "total_s": 0.197
+    }
+   },
+   "pub_blocking_writes_after_first_loop": 45,
+   "pub_blocking_write_keys": [
+    "IsEngaged",
+    "LastOffroadStatusPacket",
+    "Offroad_TemperatureTooHigh",
+    "Offroad_TiciSupport"
+   ],
+   "pub_nonblocking_puts_after_first_loop": [
+    "CarBatteryCapacity",
+    "GithubRunnerSufficientVoltage",
+    "NetworkMetered"
+   ],
+   "pub_params_reads_after_first_loop": 561,
+   "pub_slowest_params_call_s": 7.052,
+   "temp_alert_calls": 37,
+   "temp_text_changes": 7,
+   "temp_alert_writes": 8,
+   "tici_alert_writes": 37,
+   "uptime_writes_t": [
+    0.0
+   ],
+   "is_engaged_writes_t": [
+    -0.02,
+    -0.01,
+    0.95,
+    0.96,
+    18.35
+   ],
+   "pass": true
+  },
+  {
+   "variant": "patched",
+   "fault": "F2",
+   "window_s": [
+    10.0,
+    18.0
+   ],
+   "deviceState": 51,
+   "max_gap_s": 0.5,
+   "max_gap_in_window_s": 0.5,
+   "gaps_over_1s": 0,
+   "alerts_live": [],
+   "alerts_replay": [],
+   "pub_after_first_loop": {
+    "flock_ex": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    },
+    "fsync_dir": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    },
+    "fsync": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    }
+   },
+   "pub_all": {
+    "flock_ex": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    },
+    "fsync_dir": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    },
+    "fsync": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    }
+   },
+   "other_threads": {
+    "flock_ex": {
+     "n": 21,
+     "max_s": 5.542,
+     "total_s": 5.545
+    },
+    "fsync_dir": {
+     "n": 12,
+     "max_s": 7.043,
+     "total_s": 7.067
+    },
+    "fsync": {
+     "n": 12,
+     "max_s": 0.003,
+     "total_s": 0.03
+    }
+   },
+   "pub_blocking_writes_after_first_loop": 0,
+   "pub_blocking_write_keys": [],
+   "pub_nonblocking_puts_after_first_loop": [
+    "CarBatteryCapacity"
+   ],
+   "pub_params_reads_after_first_loop": 784,
+   "pub_slowest_params_call_s": 0.0,
+   "temp_alert_calls": 51,
+   "temp_text_changes": 11,
+   "temp_alert_writes": 1,
+   "tici_alert_writes": 1,
+   "uptime_writes_t": [
+    0.02
+   ],
+   "is_engaged_writes_t": [
+    -0.0,
+    0.96,
+    12.46
+   ],
+   "pass": true
+  },
+  {
+   "variant": "unpatched",
+   "fault": "F3",
+   "window_s": [
+    55.5,
+    63.5
+   ],
+   "deviceState": 136,
+   "max_gap_s": 8.04,
+   "max_gap_in_window_s": 8.04,
+   "gaps_over_1s": 1,
+   "alerts_live": [
+    [
+     60.47,
+     "commIssue"
+    ],
+    [
+     63.51,
+     "commIssueAvgFreq"
+    ]
+   ],
+   "alerts_replay": [
+    [
+     60.47,
+     "commIssue"
+    ],
+    [
+     63.52,
+     "commIssueAvgFreq"
+    ]
+   ],
+   "pub_after_first_loop": {
+    "flock_ex": {
+     "n": 166,
+     "max_s": 7.539,
+     "total_s": 7.546
+    },
+    "fsync_dir": {
+     "n": 4,
+     "max_s": 0.002,
+     "total_s": 0.009
+    },
+    "fsync": {
+     "n": 4,
+     "max_s": 0.004,
+     "total_s": 0.014
+    }
+   },
+   "pub_all": {
+    "flock_ex": {
+     "n": 180,
+     "max_s": 7.539,
+     "total_s": 7.55
+    },
+    "fsync_dir": {
+     "n": 7,
+     "max_s": 0.002,
+     "total_s": 0.015
+    },
+    "fsync": {
+     "n": 7,
+     "max_s": 0.004,
+     "total_s": 0.024
+    }
+   },
+   "other_threads": {
+    "flock_ex": {
+     "n": 280,
+     "max_s": 0.002,
+     "total_s": 0.019
+    },
+    "fsync_dir": {
+     "n": 280,
+     "max_s": 0.004,
+     "total_s": 0.633
+    },
+    "fsync": {
+     "n": 280,
+     "max_s": 0.008,
+     "total_s": 0.722
+    }
+   },
+   "pub_blocking_writes_after_first_loop": 166,
+   "pub_blocking_write_keys": [
+    "IsEngaged",
+    "LastOffroadStatusPacket",
+    "Offroad_TemperatureTooHigh",
+    "Offroad_TiciSupport",
+    "UptimeOffroad",
+    "UptimeOnroad"
+   ],
+   "pub_nonblocking_puts_after_first_loop": [
+    "CarBatteryCapacity",
+    "GithubRunnerSufficientVoltage",
+    "NetworkMetered"
+   ],
+   "pub_params_reads_after_first_loop": 2145,
+   "pub_slowest_params_call_s": 7.539,
+   "temp_alert_calls": 136,
+   "temp_text_changes": 29,
+   "temp_alert_writes": 30,
+   "tici_alert_writes": 136,
+   "uptime_writes_t": [
+    0.01,
+    67.37
+   ],
+   "is_engaged_writes_t": [
+    -0.01,
+    0.96
+   ],
+   "pass": true
+  },
+  {
+   "variant": "patched",
+   "fault": "F3",
+   "window_s": [
+    55.5,
+    63.5
+   ],
+   "deviceState": 151,
+   "max_gap_s": 0.5,
+   "max_gap_in_window_s": 0.5,
+   "gaps_over_1s": 0,
+   "alerts_live": [],
+   "alerts_replay": [],
+   "pub_after_first_loop": {
+    "flock_ex": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    },
+    "fsync_dir": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    },
+    "fsync": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    }
+   },
+   "pub_all": {
+    "flock_ex": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    },
+    "fsync_dir": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    },
+    "fsync": {
+     "n": 0,
+     "max_s": 0.0,
+     "total_s": 0
+    }
+   },
+   "other_threads": {
+    "flock_ex": {
+     "n": 31,
+     "max_s": 5.536,
+     "total_s": 7.577
+    },
+    "fsync_dir": {
+     "n": 22,
+     "max_s": 0.003,
+     "total_s": 0.049
+    },
+    "fsync": {
+     "n": 22,
+     "max_s": 0.005,
+     "total_s": 0.058
+    }
+   },
+   "pub_blocking_writes_after_first_loop": 0,
+   "pub_blocking_write_keys": [],
+   "pub_nonblocking_puts_after_first_loop": [
+    "CarBatteryCapacity"
+   ],
+   "pub_params_reads_after_first_loop": 2384,
+   "pub_slowest_params_call_s": 0.0,
+   "temp_alert_calls": 151,
+   "temp_text_changes": 25,
+   "temp_alert_writes": 1,
+   "tici_alert_writes": 1,
+   "uptime_writes_t": [
+    0.02,
+    63.52
+   ],
+   "is_engaged_writes_t": [
+    -0.0,
+    0.96,
+    57.96,
+    63.52
+   ],
+   "pass": true
+  }
+ ],
+ "tree": "ab7d00788 (push12 code; docs not yet committed)",
+ "run": "2026-10-24 03:29-03:33 AEDT, WSL2 Ubuntu-24.04 ext4, python openpilot/system/hardware/tests/comm_issue/fault_injection.py --json"
+}

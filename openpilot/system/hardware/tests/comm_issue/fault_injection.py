@@ -85,7 +85,7 @@ def child_main(variant: str, baseline: str, out: str) -> None:
   hw.HARDWARE.get_thermal_config = lambda: cfg
 
   info: dict = {"variant": variant, "pid": os.getpid()}
-  calls: list = []     # Params calls: (tid, method, key, block, start, dur)
+  calls: list = []     # Params calls: (tid, method, key, block, start, duration)
   alert_calls: list = []  # set_offroad_alert_if_changed(alert, show, extra), as the loop made them
 
   def wrap(name: str):
@@ -313,10 +313,10 @@ def run_one(variant: str, fault: str, baseline: Path, shim: Path, workdir: Path)
     finally:
       os.environ.pop("PARAMS_ROOT", None)
 
-  return analyse(variant, fault, spec, recv, live, window, t_first[0], shimlog, proc.pid, child_json)
+  return analyze(variant, fault, spec, recv, live, window, t_first[0], shimlog, proc.pid, child_json)
 
 
-def analyse(variant, fault, spec, recv, live, window, t_first, shimlog, pid, child_json) -> dict:
+def analyze(variant, fault, spec, recv, live, window, t_first, shimlog, pid, child_json) -> dict:
   child = json.loads(child_json.read_text())
   tid = child["publishing_tid"]
   first_loop_done = recv[1]  # the second deviceState: the first loop's tail (its puts after pm.send) is behind it
@@ -331,8 +331,8 @@ def analyse(variant, fault, spec, recv, live, window, t_first, shimlog, pid, chi
   log_file = Path(f"{shimlog}.{pid}")
   if log_file.exists():
     for line in log_file.read_text().splitlines():
-      kind, etid, start, dur = line.split()
-      events.append((kind, int(etid), int(start) / 1e9, int(dur) / 1e9))
+      kind, etid, start, duration = line.split()
+      events.append((kind, int(etid), int(start) / 1e9, int(duration) / 1e9))
 
   def ev_summary(sel):
     out = {}
