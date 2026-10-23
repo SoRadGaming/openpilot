@@ -14,7 +14,7 @@
    "gaps_over_1s": 1,
    "alerts_live": [
     [
-     14.97,
+     14.96,
      "commIssue"
     ],
     [
@@ -24,11 +24,11 @@
    ],
    "alerts_replay": [
     [
-     14.97,
+     14.96,
      "commIssue"
     ],
     [
-     18.02,
+     18.01,
      "commIssueAvgFreq"
     ]
    ],
@@ -41,7 +41,7 @@
     "fsync_dir": {
      "n": 4,
      "max_s": 0.002,
-     "total_s": 0.009
+     "total_s": 0.008
     },
     "fsync": {
      "n": 4,
@@ -74,13 +74,13 @@
     },
     "fsync_dir": {
      "n": 74,
-     "max_s": 0.004,
-     "total_s": 0.172
+     "max_s": 0.008,
+     "total_s": 0.175
     },
     "fsync": {
      "n": 74,
-     "max_s": 0.005,
-     "total_s": 0.192
+     "max_s": 0.004,
+     "total_s": 0.183
     }
    },
    "pub_blocking_writes_after_first_loop": 44,
@@ -102,15 +102,18 @@
    "temp_alert_writes": 8,
    "tici_alert_writes": 36,
    "uptime_writes_t": [
-    0.01
+    0.0
    ],
    "is_engaged_writes_t": [
-    -0.01,
+    -0.02,
     -0.01,
     0.95,
     0.96,
     18.35
    ],
+   "slow_write_lines": [],
+   "slow_section_lines": [],
+   "stall_trace_lines": 0,
    "pass": true
   },
   {
@@ -163,17 +166,17 @@
    "other_threads": {
     "flock_ex": {
      "n": 21,
-     "max_s": 7.035,
-     "total_s": 12.577
+     "max_s": 7.037,
+     "total_s": 12.578
     },
     "fsync_dir": {
      "n": 12,
-     "max_s": 0.003,
-     "total_s": 0.028
+     "max_s": 0.004,
+     "total_s": 0.027
     },
     "fsync": {
      "n": 12,
-     "max_s": 0.003,
+     "max_s": 0.004,
      "total_s": 0.03
     }
    },
@@ -189,13 +192,41 @@
    "temp_alert_writes": 1,
    "tici_alert_writes": 1,
    "uptime_writes_t": [
-    0.02
+    0.01
    ],
    "is_engaged_writes_t": [
     -0.0,
     0.96,
     12.46
    ],
+   "slow_write_lines": [
+    {
+     "t": 18.01,
+     "writer": "hardwared_params",
+     "key": "IsEngaged",
+     "op": "put_bool",
+     "op_s": 5.544,
+     "since_request_s": 5.544,
+     "suppressed": 0,
+     "disk": {
+      "sdd": {
+       "reads": 0,
+       "reads_merged": 0,
+       "sectors_read": 0,
+       "read_ms": 0,
+       "writes": 7,
+       "writes_merged": 26,
+       "sectors_written": 264,
+       "write_ms": 7,
+       "in_flight": 0,
+       "io_ms": 8,
+       "weighted_ms": 13
+      }
+     }
+    }
+   ],
+   "slow_section_lines": [],
+   "stall_trace_lines": 1,
    "pass": true
   },
   {
@@ -206,8 +237,8 @@
     18.0
    ],
    "deviceState": 37,
-   "max_gap_s": 7.55,
-   "max_gap_in_window_s": 7.55,
+   "max_gap_s": 7.551,
+   "max_gap_in_window_s": 7.551,
    "gaps_over_1s": 1,
    "alerts_live": [
     [
@@ -221,63 +252,63 @@
    ],
    "alerts_replay": [
     [
-     15.46,
+     15.47,
      "commIssue"
     ],
     [
-     18.01,
+     18.02,
      "commIssueAvgFreq"
     ]
    ],
    "pub_after_first_loop": {
     "flock_ex": {
      "n": 45,
-     "max_s": 7.052,
-     "total_s": 7.054
+     "max_s": 7.049,
+     "total_s": 7.051
     },
     "fsync_dir": {
      "n": 4,
      "max_s": 0.002,
-     "total_s": 0.009
+     "total_s": 0.008
     },
     "fsync": {
      "n": 4,
      "max_s": 0.004,
-     "total_s": 0.012
+     "total_s": 0.011
     }
    },
    "pub_all": {
     "flock_ex": {
      "n": 60,
-     "max_s": 7.052,
-     "total_s": 7.059
+     "max_s": 7.049,
+     "total_s": 7.056
     },
     "fsync_dir": {
      "n": 8,
      "max_s": 0.002,
-     "total_s": 0.018
+     "total_s": 0.017
     },
     "fsync": {
      "n": 8,
      "max_s": 0.004,
-     "total_s": 0.025
+     "total_s": 0.024
     }
    },
    "other_threads": {
     "flock_ex": {
      "n": 76,
-     "max_s": 0.002,
-     "total_s": 0.005
+     "max_s": 0.003,
+     "total_s": 0.006
     },
     "fsync_dir": {
      "n": 76,
-     "max_s": 7.549,
-     "total_s": 7.726
+     "max_s": 7.547,
+     "total_s": 7.749
     },
     "fsync": {
      "n": 76,
-     "max_s": 0.004,
-     "total_s": 0.197
+     "max_s": 0.008,
+     "total_s": 0.224
     }
    },
    "pub_blocking_writes_after_first_loop": 45,
@@ -293,7 +324,7 @@
     "NetworkMetered"
    ],
    "pub_params_reads_after_first_loop": 561,
-   "pub_slowest_params_call_s": 7.052,
+   "pub_slowest_params_call_s": 7.049,
    "temp_alert_calls": 37,
    "temp_text_changes": 7,
    "temp_alert_writes": 8,
@@ -302,12 +333,15 @@
     0.0
    ],
    "is_engaged_writes_t": [
-    -0.02,
+    -0.01,
     -0.01,
     0.95,
     0.96,
     18.35
    ],
+   "slow_write_lines": [],
+   "slow_section_lines": [],
+   "stall_trace_lines": 0,
    "pass": true
   },
   {
@@ -318,8 +352,8 @@
     18.0
    ],
    "deviceState": 51,
-   "max_gap_s": 0.5,
-   "max_gap_in_window_s": 0.5,
+   "max_gap_s": 0.501,
+   "max_gap_in_window_s": 0.501,
    "gaps_over_1s": 0,
    "alerts_live": [],
    "alerts_replay": [],
@@ -360,18 +394,18 @@
    "other_threads": {
     "flock_ex": {
      "n": 21,
-     "max_s": 5.542,
-     "total_s": 5.545
+     "max_s": 5.538,
+     "total_s": 5.541
     },
     "fsync_dir": {
      "n": 12,
-     "max_s": 7.043,
-     "total_s": 7.067
+     "max_s": 7.539,
+     "total_s": 7.566
     },
     "fsync": {
      "n": 12,
-     "max_s": 0.003,
-     "total_s": 0.03
+     "max_s": 0.004,
+     "total_s": 0.035
     }
    },
    "pub_blocking_writes_after_first_loop": 0,
@@ -393,6 +427,34 @@
     0.96,
     12.46
    ],
+   "slow_write_lines": [
+    {
+     "t": 18.01,
+     "writer": "hardwared_params",
+     "key": "IsEngaged",
+     "op": "put_bool",
+     "op_s": 5.545,
+     "since_request_s": 5.545,
+     "suppressed": 0,
+     "disk": {
+      "sdd": {
+       "reads": 0,
+       "reads_merged": 0,
+       "sectors_read": 0,
+       "read_ms": 0,
+       "writes": 8,
+       "writes_merged": 24,
+       "sectors_written": 256,
+       "write_ms": 8,
+       "in_flight": 0,
+       "io_ms": 8,
+       "weighted_ms": 15
+      }
+     }
+    }
+   ],
+   "slow_section_lines": [],
+   "stall_trace_lines": 1,
    "pass": true
   },
   {
@@ -403,12 +465,12 @@
     63.5
    ],
    "deviceState": 136,
-   "max_gap_s": 8.04,
-   "max_gap_in_window_s": 8.04,
+   "max_gap_s": 8.05,
+   "max_gap_in_window_s": 8.05,
    "gaps_over_1s": 1,
    "alerts_live": [
     [
-     60.47,
+     60.46,
      "commIssue"
     ],
     [
@@ -418,7 +480,7 @@
    ],
    "alerts_replay": [
     [
-     60.47,
+     60.46,
      "commIssue"
     ],
     [
@@ -428,56 +490,56 @@
    ],
    "pub_after_first_loop": {
     "flock_ex": {
-     "n": 166,
-     "max_s": 7.539,
-     "total_s": 7.546
+     "n": 164,
+     "max_s": 7.55,
+     "total_s": 7.557
     },
     "fsync_dir": {
      "n": 4,
-     "max_s": 0.002,
-     "total_s": 0.009
+     "max_s": 0.005,
+     "total_s": 0.012
     },
     "fsync": {
      "n": 4,
-     "max_s": 0.004,
-     "total_s": 0.014
+     "max_s": 0.006,
+     "total_s": 0.017
     }
    },
    "pub_all": {
     "flock_ex": {
-     "n": 180,
-     "max_s": 7.539,
-     "total_s": 7.55
+     "n": 178,
+     "max_s": 7.55,
+     "total_s": 7.562
     },
     "fsync_dir": {
      "n": 7,
-     "max_s": 0.002,
-     "total_s": 0.015
+     "max_s": 0.011,
+     "total_s": 0.03
     },
     "fsync": {
      "n": 7,
-     "max_s": 0.004,
-     "total_s": 0.024
+     "max_s": 0.006,
+     "total_s": 0.028
     }
    },
    "other_threads": {
     "flock_ex": {
      "n": 280,
-     "max_s": 0.002,
-     "total_s": 0.019
+     "max_s": 0.007,
+     "total_s": 0.026
     },
     "fsync_dir": {
      "n": 280,
-     "max_s": 0.004,
-     "total_s": 0.633
+     "max_s": 0.018,
+     "total_s": 0.78
     },
     "fsync": {
      "n": 280,
-     "max_s": 0.008,
-     "total_s": 0.722
+     "max_s": 0.013,
+     "total_s": 0.843
     }
    },
-   "pub_blocking_writes_after_first_loop": 166,
+   "pub_blocking_writes_after_first_loop": 164,
    "pub_blocking_write_keys": [
     "IsEngaged",
     "LastOffroadStatusPacket",
@@ -492,19 +554,22 @@
     "NetworkMetered"
    ],
    "pub_params_reads_after_first_loop": 2145,
-   "pub_slowest_params_call_s": 7.539,
+   "pub_slowest_params_call_s": 7.55,
    "temp_alert_calls": 136,
-   "temp_text_changes": 29,
-   "temp_alert_writes": 30,
+   "temp_text_changes": 27,
+   "temp_alert_writes": 28,
    "tici_alert_writes": 136,
    "uptime_writes_t": [
-    0.01,
-    67.37
+    0.02,
+    67.36
    ],
    "is_engaged_writes_t": [
     -0.01,
-    0.96
+    0.95
    ],
+   "slow_write_lines": [],
+   "slow_section_lines": [],
+   "stall_trace_lines": 0,
    "pass": true
   },
   {
@@ -515,7 +580,7 @@
     63.5
    ],
    "deviceState": 151,
-   "max_gap_s": 0.5,
+   "max_gap_s": 0.502,
    "max_gap_in_window_s": 0.5,
    "gaps_over_1s": 0,
    "alerts_live": [],
@@ -557,18 +622,18 @@
    "other_threads": {
     "flock_ex": {
      "n": 31,
-     "max_s": 5.536,
-     "total_s": 7.577
+     "max_s": 5.535,
+     "total_s": 7.077
     },
     "fsync_dir": {
      "n": 22,
      "max_s": 0.003,
-     "total_s": 0.049
+     "total_s": 0.052
     },
     "fsync": {
      "n": 22,
-     "max_s": 0.005,
-     "total_s": 0.058
+     "max_s": 0.003,
+     "total_s": 0.06
     }
    },
    "pub_blocking_writes_after_first_loop": 0,
@@ -587,14 +652,40 @@
     63.52
    ],
    "is_engaged_writes_t": [
-    -0.0,
+    0.0,
     0.96,
     57.96,
-    63.52
+    63.53
    ],
+   "slow_write_lines": [
+    {
+     "t": 63.5,
+     "writer": "hardwared_params",
+     "key": "IsEngaged",
+     "op": "put_bool",
+     "op_s": 5.543,
+     "since_request_s": 5.543,
+     "suppressed": 0,
+     "disk": {
+      "sdd": {
+       "reads": 0,
+       "reads_merged": 0,
+       "sectors_read": 0,
+       "read_ms": 0,
+       "writes": 31,
+       "writes_merged": 38,
+       "sectors_written": 552,
+       "write_ms": 16,
+       "in_flight": 0,
+       "io_ms": 8,
+       "weighted_ms": 23
+      }
+     }
+    }
+   ],
+   "slow_section_lines": [],
+   "stall_trace_lines": 1,
    "pass": true
   }
- ],
- "tree": "ab7d00788 (push12 code; docs not yet committed)",
- "run": "2026-10-24 03:29-03:33 AEDT, WSL2 Ubuntu-24.04 ext4, python openpilot/system/hardware/tests/comm_issue/fault_injection.py --json"
+ ]
 }

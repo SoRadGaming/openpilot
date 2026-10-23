@@ -72,16 +72,25 @@ same blocking calls upstream made, so what lands on disk is what upstream writes
 when the stall ends - the writer waits instead of the loop).
 
 * Per key the **newest request wins**: a key asked for again before it was written is written once, with the newer
-  value, in the place of its first request; different keys are written in the order first asked for. So a put then a
-  remove of one key is the remove, and IsEngaged True then False is False.
+  value, in the place of its first request (it does not move behind the keys asked for since); different keys are
+  written in the order first asked for. So a put then a remove of one key is the remove, and IsEngaged True then
+  False is False.
 * `if_changed=True` skips a put identical to the last one requested through this writer.
 * An unknown key or a value of the wrong type **raises on the caller**, as `Params.put` does.
 * Nothing is left in a queue. `Params.put(block=False)` was not used for the on-change writes because
   `Params::putNonBlocking` can strand a value until the next put on the same handle when it arrives just as that
   handle's writer thread finishes - harmless when the same key is rewritten every loop, never repaired when it is
   written only on change.
-* At interpreter exit it waits up to 3 s (`FLUSH_AT_EXIT_S`) for what is pending; hardwared's loop flushes for up to
-  5 s when it ends.
+* **When the process ends** it waits up to 3 s (`FLUSH_AT_EXIT_S`) for what is pending. That is a
+  `multiprocessing.util.Finalize` (priority 10), not an `atexit` handler: manager starts every `PythonProcess` with
+  multiprocessing (fork), and such a child leaves through `os._exit` once its `main()` returns (`popen_fork`), which
+  skips atexit - multiprocessing's `_bootstrap` runs its finalizers instead, and a plain interpreter runs them from
+  atexit. The first review of push12 caught it: with atexit, a manager-style child that put while another process held
+  the lock and was then SIGINTed exited at 0.81 s with nothing on disk (a plain interpreter flushed and exited at 2.04
+  s). `stop()` cancels the finalizer. On top of it, hardwared's loop flushes for up to 5 s when it ends and selfdrived
+  flushes in `run()`'s `finally` (3.3); manager SIGKILLs a daemon 5 s after its SIGINT.
+* **A slow write is logged** (section 5): over 0.3 s, `params writer slow write`. After the fix a /data stall holds
+  this thread, not the loop, so this is where the stall shows in the routes.
 
 ### 3.2 hardwared (`openpilot/system/hardware/hardwared.py`)
 
@@ -109,6 +118,15 @@ blocking writes mid-drive: `remove("DriverTooDistracted")` when a driver-monitor
 commit would have **delayed that disable**. All four, and the lockout flag's put, go through `self.params_writer`.
 `__init__`'s writes (before the first selfdriveState) and the non-blocking puts on its long-lived handle
 (`LongitudinalPersonality`, CruiseHelper's `ExperimentalMode`) are unchanged.
+
+**The trade, stated:** upstream had `Offroad_ExcessiveActuation` on disk *before* `self.excessive_actuation = True`.
+Now the in-process latch and the `excessiveActuation` event come at once - which is what matters while driving - and
+the param lands when the writer gets the lock: milliseconds normally, up to the length of a stall otherwise. That
+param is PERSISTENT and is what blocks re-engaging after a selfdrived restart (`selfdrived.py:94`) and going onroad
+again (`hardwared.py:376`). `run()`'s `finally` flushes the writer for up to 3 s (`FLUSH_AT_EXIT_S`), and the writer's
+own exit finalizer does the same, so a normal stop (manager's SIGINT at key-off) writes it; only a crash or SIGKILL of
+selfdrived while a stall still holds the writer can lose it. The same holds for `Offroad_Recalibration`,
+`Offroad_DriverMonitoringUncertain` and `DriverTooDistracted`.
 
 ### 3.4 dmonitoringd's policy (`openpilot/selfdrive/monitoring/policy.py`)
 
@@ -165,8 +183,9 @@ blocking write back fails a test.
 
 ## 5. Diagnostics in the routes (`openpilot/sunnypilot/system/storage_diag.py`)
 
-The owner has no SSH, so the storage's side has to arrive in the routes. Both are `cloudlog.event(..., error=True)`:
-they go to `errorLogMessage`, which the qlogs keep.
+The owner has no SSH, so the storage's side has to arrive in the routes. All three lines below are
+`cloudlog.event(..., error=True)`: they go to `errorLogMessage`, which the qlogs keep. cloudlog sends with
+`zmq.NOBLOCK`, so logging never waits either.
 
 **`storage report`**, once when hardwared starts and once per onroad start, 30 s in (loggerd is recording by then),
 collected on a thread of its own, for the filesystem holding the params (`/data`):
@@ -191,9 +210,21 @@ disk since the loop's start (reads, writes, sectors written, write ms, in flight
 most one line per 10 s; the loops in between are counted (`suppressed`) and the count goes out with the next line.
 The first two loops (the cached git calls) are skipped.
 
-To read them: `errorLogMessage` in any route's qlog, events `storage report` and `hardwared slow loop section`. A
-slow section that is **not** a params write - `startup_params` or `athena_ping` (reads), `free_space` (statvfs) -
-means the residual risk of section 7 is real.
+**`params writer slow write`**, when one of a `ParamsWriter`'s writes takes over 0.3 s (`params_writer.py`; added
+after the first review of push12). The fix took the waiting out of the loop, so a params stall no longer makes a
+loop section slow: in 82.5 s of injected stalls the reviewer saw no `slow loop section` line at all. The stall now
+sits in the writer's thread, and this line is its trace: `writer` (`hardwared_params` or `selfdrived_params`), `key`,
+`op` (`put`, `put_bool`, `remove`, `alert`), `op_s` (the write itself), `since_request_s` (from the first request for
+that key), `pending` (the keys queued behind it), `disk` (the partition's and the disk's `/proc/diskstats` delta over
+the write) and `slow_writes` / `suppressed`. At most one line per 10 s per writer; the slow writes in between are
+counted into the next line. In the bench run (6.1) each patched fault produced exactly one, for the IsEngaged write
+that waited the window out (5.54 s).
+
+To read them: `errorLogMessage` in any route's qlog, events `storage report`, `params writer slow write` and
+`hardwared slow loop section`. A `params writer slow write` with `disk.<part>.write_ms` or `weighted_ms` near its
+`op_s` is the UFS itself being slow; one with small disk counters is a wait on someone else's lock or journal commit.
+A `hardwared slow loop section` that is **not** a params write - `startup_params` or `athena_ping` (reads),
+`free_space` (statvfs) - means the residual risk of section 7 is real.
 
 ## 6. The proof
 
@@ -215,19 +246,24 @@ The engage edges are there so the patched hardwared has writes to make inside ev
 deviceState on arrival, runs **cereal's own SubMaster** on the stream at selfdrived's 100 Hz (alive and freq_ok, as
 `selfdrived.py:472-478` turns them into commIssue / commIssueAvgFreq), and replays the receive times through
 `vf_model.py`'s copy of that logic. `fscount.c` records every fsync and flock(LOCK_EX) with its thread id; the child
-records every Params call with its thread.
+records every Params call with its thread, and the diagnostics' cloudlog lines.
 
-The recorded run (2026-10-24 03:29-03:33 AEDT, push12 `ab7d00788`, WSL2 ext4; times in s after the first deviceState,
-every window 8 s: F1 and F2 10.0-18.0, F3 55.5-63.5):
+The recorded run (2026-10-24 04:49-04:54 AEDT, push12 `2e36bee6d`, WSL2 ext4; times in s after the first deviceState,
+every window 8 s: F1 and F2 10.0-18.0, F3 55.5-63.5). The first recorded run (`ab7d00788`, 03:29) gave the same
+figures to within 0.02 s; this one adds the last column:
 
-| fault | variant | deviceState max gap | alerts, cereal SubMaster live | alerts, vf_model replay | hardware_thread after its first loop: flock(LOCK_EX) / fsync / blocking Params writes | its longest wait | writer threads' longest flock / dir fsync | temperature alert writes / text changes / loops |
-|---|---|---|---|---|---|---|---|---|
-| F1 | unpatched | **8.05 s** | commIssue 14.97, commIssueAvgFreq 18.01 | commIssue 14.97, commIssueAvgFreq 18.02 | 44 / 8 / 44 | 7.55 s | 0.00 / 0.00 s | 8 / 7 / 36 |
-| F1 | patched | **0.50 s** | none | none | **0 / 0 / 0** | 0 | 7.04 / 0.00 s | 1 / 11 / 51 |
-| F2 | unpatched | **7.55 s** | commIssue 15.46, commIssueAvgFreq 18.01 | commIssue 15.46, commIssueAvgFreq 18.01 | 45 / 8 / 45 | 7.05 s | 0.00 / 7.55 s | 8 / 7 / 37 |
-| F2 | patched | **0.50 s** | none | none | **0 / 0 / 0** | 0 | 5.54 / 7.04 s | 1 / 11 / 51 |
-| F3 | unpatched | **8.04 s** | commIssue 60.47, commIssueAvgFreq 63.51 | commIssue 60.47, commIssueAvgFreq 63.52 | 166 / 8 / 166 | 7.54 s | 0.00 / 0.00 s | 30 / 29 / 136 |
-| F3 | patched | **0.50 s** | none | none | **0 / 0 / 0** | 0 | 5.54 / 0.00 s | 1 / 25 / 151 |
+| fault | variant | deviceState max gap | alerts, cereal SubMaster live | alerts, vf_model replay | hardware_thread after its first loop: flock(LOCK_EX) / fsync / blocking Params writes | its longest wait | writer threads' longest flock / dir fsync | temperature alert writes / text changes / loops | `params writer slow write` lines |
+|---|---|---|---|---|---|---|---|---|---|
+| F1 | unpatched | **8.05 s** | commIssue 14.96, commIssueAvgFreq 18.01 | commIssue 14.96, commIssueAvgFreq 18.01 | 44 / 8 / 44 | 7.55 s | 0.00 / 0.01 s | 8 / 7 / 36 | (no writer) |
+| F1 | patched | **0.50 s** | none | none | **0 / 0 / 0** | 0 | 7.04 / 0.00 s | 1 / 11 / 51 | 1: 18.01, IsEngaged, 5.54 s |
+| F2 | unpatched | **7.55 s** | commIssue 15.46, commIssueAvgFreq 18.01 | commIssue 15.47, commIssueAvgFreq 18.02 | 45 / 8 / 45 | 7.05 s | 0.00 / 7.55 s | 8 / 7 / 37 | (no writer) |
+| F2 | patched | **0.50 s** | none | none | **0 / 0 / 0** | 0 | 5.54 / 7.54 s | 1 / 11 / 51 | 1: 18.01, IsEngaged, 5.55 s |
+| F3 | unpatched | **8.05 s** | commIssue 60.46, commIssueAvgFreq 63.51 | commIssue 60.46, commIssueAvgFreq 63.52 | 164 / 8 / 164 | 7.55 s | 0.01 / 0.02 s | 28 / 27 / 136 | (no writer) |
+| F3 | patched | **0.50 s** | none | none | **0 / 0 / 0** | 0 | 5.54 / 0.00 s | 1 / 25 / 151 | 1: 63.50, IsEngaged, 5.54 s |
+
+The slow-write lines' disk deltas are small (7-31 writes, 7-16 write ms) because the bench's stall is injected, not
+the disk's; in the car a UFS stall would show in `write_ms` and `weighted_ms`. No `hardwared slow loop section` line
+appeared in any run: the loop never waited.
 
 * **Unpatched**, every fault: one gap of 7.5-8 s, commIssue 5 s after the last deviceState and commIssueAvgFreq when
   the late one lands - the 14d pattern (6.8-8.0 s, commIssue then AvgFreq). In F1 the loop waited 7.55 s in one
@@ -237,45 +273,70 @@ every window 8 s: F1 and F2 10.0-18.0, F3 55.5-63.5):
   engage edges and the Uptime boundary came, so it saw neither edge and made its 60 s Uptime write at 67.4 s.
 * **Patched**, every fault: the gaps stay 0.50 s and nothing is predicted. hardware_thread made **no flock and no fsync
   in the whole run** - its first loop included - and no blocking Params write; it made only reads (about 31 a second)
-  and PowerMonitoring's non-blocking put. The stall moved to the writer threads: ParamsWriter waited up to 7.04 s on
-  the lock (F1) and in the fsync (F2); in F3 it took the engage edge's put at 57.96, waited 5.54 s, then wrote the
-  coalesced IsEngaged (the second edge's False) and the Uptime pair requested at the 60 s boundary, both at 63.52. The
-  temperature alert was written once, on the first loop, though its text moved on 17-22 % of the loops. unpatched shows the stall and the alert in every fault; patched keeps every gap under 0.75 s, predicts no alert,
-and its publishing thread makes no flock(), no fsync() and no blocking Params write after its first loop. The raw
-result is `comm_issue/RESULT.json`; rerun it from the repo root (gcc and git needed, about 5 minutes):
+  and PowerMonitoring's non-blocking put. The stall moved to the other threads - ParamsWriter's and the C++ writer
+  thread of PowerMonitoring's long-lived handle, up to 7.04 s on the lock (F1) and 7.54 s in the fsync (F2).
+  ParamsWriter's own longest write was the engage edge's IsEngaged, 5.54 s, and that is its one `params writer slow
+  write` line per fault; in F3 it took that put at 57.96, waited 5.54 s, then wrote the coalesced IsEngaged (the
+  second edge's False) and the Uptime pair requested at the 60 s boundary, both at 63.52. The temperature alert was
+  written once, on the first loop, though its text moved on 17-22 % of the loops.
+
+PASS (all six): unpatched shows the stall and the alert in every fault; patched keeps every gap under 0.75 s, predicts
+no alert, its publishing thread makes no flock(), no fsync() and no blocking Params write after its first loop, and a
+`params writer slow write` line for a write of at least 1 s is logged inside the window. The raw result is
+`comm_issue/RESULT.json`; rerun it from the repo root (gcc and git needed, about 5 minutes):
 
 ```
 python openpilot/system/hardware/tests/comm_issue/fault_injection.py --json /tmp/fi.json
 ```
 
+**Harder stalls (the first review's harness, re-run on `2e36bee6d`, patched; its push11 runs alerted in all three).**
+S1, three 12 s lock+fsync windows 2 s apart with the 120-loop Uptime write and 7 engage edges inside; S2, a 12 s
+fsync-only window across the 240-loop Uptime write, then a 12 s lock-only one; S3, fifteen 1.5 s stalls every 2 s
+with 15 engage edges. deviceState's longest gap **0.501 / 0.501 / 0.500 s**, no alert from either check, no flock,
+fsync or blocking Params call on hardware_thread, and IsEngaged / Uptime on disk as expected afterwards. The writer
+logged **3 / 2 / 2** `params writer slow write` lines - one per long window (IsEngaged, 9.65-11.36 s) and, for S3's
+flapping, two lines with 4 slow writes counted in between - and there was no `slow loop section` line.
+
 ### 6.2 Unit tests (in the suite)
 
 | test | holds |
 |---|---|
-| `sunnypilot/system/tests/test_params_writer.py` (8) | writes land; with `<params>/.lock` held every call returns in < 0.1 s and the writer waits; newest wins in first-request order; put-then-remove is the remove; `if_changed`; `offroad_alert` stores exactly what `set_offroad_alert` stores; caller mistakes raise on the caller; a failed write does not stop the writer |
-| `system/hardware/tests/test_hardwared_comm_issue.py` (4) | a hidden alert's text is not a change, a shown one follows it, no writer is upstream; **the real `hardware_thread`, the params lock held 4 s with an engage edge inside: deviceState max gap < 1.5 s, no blocking Params write from the loop**, TiciSupport / TemperatureTooHigh / NetworkMetered written at most once. Run against push11's hardwared (a scratch negative control) it fails: a 4.1 s gap |
+| `sunnypilot/system/tests/test_params_writer.py` (15) | writes land; with `<params>/.lock` held every call returns in < 0.1 s and the writer waits; newest wins in first-request order; a key asked for again keeps its first place; put-then-remove is the remove; `if_changed`; `offroad_alert` stores exactly what `set_offroad_alert` stores; caller mistakes raise on the caller; a failed write does not stop the writer; **a slow write is logged** with its key, times and disk delta, not under the threshold, at most once per interval with the rest counted; **a pending write lands when a manager-style (fork) child ends** and when a plain interpreter ends; `stop()` cancels the exit flush. The lock is held from a helper thread with a timed release (5 s), so a writer that wrote on its caller's thread fails these tests instead of hanging the suite |
+| `system/hardware/tests/test_hardwared_comm_issue.py` (4) | a hidden alert's text is not a change, a shown one follows it, no writer is upstream; **the real `hardware_thread`, the params lock held 4 s with an engage edge inside and a storage report made to take 3 s: deviceState max gap < 1.5 s, no blocking Params write from the loop, the report on a thread of its own**, TiciSupport / TemperatureTooHigh / NetworkMetered written at most once, GithubRunnerSufficientVoltage only on change. Run against push11's hardwared (a scratch negative control) it fails: a 4.1 s gap |
 | `sunnypilot/system/tests/test_storage_diag.py` (5) | the mount lookup (longest mount point), the diskstats delta (in_flight as the end value), the slow-section line at most once per 10 s with the loops in between counted, the report once at start and once per onroad start, and the report never raising |
 | `selfdrive/monitoring/test_monitoring.py` (+2) | a temporary handle's put waits out a held lock; the lockout's does not |
-| `sunnypilot/system/tests/test_comm_issue_guards.py` (4) | hardware_thread, selfdrived's loop methods and the DM policy contain no blocking Params write (DoShutdown excepted), and the guard flags push11's calls |
+| `sunnypilot/system/tests/test_comm_issue_guards.py` (5) | hardware_thread, selfdrived's loop methods and the DM policy contain no blocking Params write (DoShutdown excepted), the guard flags push11's calls, and selfdrived's `run()` flushes its writer in its `finally` |
+
+Every behaviour above is held by a test that fails when it is broken: the second review's mutations (a synchronous
+writer, a writer that moves a re-requested key to the end, IsEngaged / Uptime / LastOffroadStatusPacket /
+OnroadCycleRequested back to blocking, NetworkMetered or GithubRunnerSufficientVoltage every loop, the temperature or
+TiciSupport change reverted, the alerts without the writer, the DM policy on a temporary handle, a synchronous storage
+report, the slow-section rate limit or threshold removed) and the fix round's (no slow-write line, its rate limit or
+threshold removed, selfdrived without its flush) are all caught; the atexit-only exit flush fails the fork test.
 
 ### 6.3 In the car (after shipping)
 
-On any route where liveMapDataSP gaps by more than 2 s, or a `hardwared slow loop section` line appears, deviceState
-must keep every gap under 1 s and there must be no commIssue or commIssueAvgFreq. Stalls hit 2 of the last ~110
-routes, so this takes weeks of driving; until then 6.1 is the proof.
+On any route where liveMapDataSP gaps by more than 2 s, or a `params writer slow write` (the stall, now that the
+loops do not wait for it) or `hardwared slow loop section` line appears, deviceState must keep every gap under 1 s
+and there must be no commIssue or commIssueAvgFreq. Stalls hit 2 of the last ~110 routes, so this takes weeks of
+driving; until then 6.1 is the proof.
 
 ## 7. What is still open
 
 * **Why sda12 stalls.** Candidates the logs could test are ruled out (write volume, deletions, uptime, temperature,
   network, AGNOS). The leading hypothesis is write-latency spikes on a 90 %-full UFS with no TRIM reaching it; the
   `storage report` answers the TRIM, mount and writeback questions. Raise the free-space floor or schedule fstrim only
-  after it has.
+  after it has. A second lead, from the first review: AGNOS's fstab (agnos-builder master,
+  `userspace/root/etc/fstab`) mounts /data `discard,noatime,nodiratime,nosuid,nodev,nofail`. With online `discard`,
+  ext4 issues the freed blocks' discards from the journal commit, and on a near-full flash device those can take
+  seconds - a known cause of long commits. The report's `mount`, `ext4_options` and `queue.discard_max_bytes` say
+  whether this device has it. Not acted on here.
 * **Reads on the loop.** hardwared still reads about 14 params a loop, and `get_build_metadata()` reads two files under
-  `/data/openpilot` twice a loop on a git install. Reads take no lock, and the files are in the page cache; but with
-  `relatime` the first read after a file changes (or once a day) updates its atime, which needs an ext4 journal handle
-  and could wait in a stall. The only such file this loop reads while driving is `LastAthenaPingTime`, rewritten by
-  athenad when online. The `storage report`'s mount options say whether `/data` is `noatime`, and a slow
-  `startup_params` / `athena_ping` section would show it.
+  `/data/openpilot` twice a loop on a git install. Reads take no lock and the files are in the page cache. The atime
+  concern - with `relatime` the first read after a file changes would update its atime, which needs a journal handle -
+  is retired by the same fstab: /data is `noatime,nodiratime`, so a page-cached read takes no journal handle. The
+  first route's `storage report` mount line confirms it on this device's AGNOS; a slow `startup_params` /
+  `athena_ping` section would still show it.
 * `statvfs(/data)` (the free-space section) does not take a journal handle.
 * `DoShutdown` stays a blocking write, offroad only.
 * Other daemons still stall in a storage stall (mapd_manager, logmessaged, the deleter); none is checked by selfdrived.
@@ -284,10 +345,10 @@ routes, so this takes weeks of driving; until then 6.1 is the proof.
 
 | file | |
 |---|---|
-| `openpilot/sunnypilot/system/params_writer.py` | `ParamsWriter` |
-| `openpilot/sunnypilot/system/storage_diag.py` | `StorageReporter`, `LoopTimer`, `storage_report()` |
+| `openpilot/sunnypilot/system/params_writer.py` | `ParamsWriter`, its exit flush and its `params writer slow write` line |
+| `openpilot/sunnypilot/system/storage_diag.py` | `StorageReporter`, `LoopTimer`, `storage_report()`, `disk_devices()` |
 | `openpilot/system/hardware/hardwared.py` | 3.2 and the diagnostics' hooks |
 | `openpilot/selfdrive/selfdrived/selfdrived.py` | 3.3 |
 | `openpilot/selfdrive/monitoring/policy.py` | 3.4 |
 | `openpilot/system/hardware/tests/comm_issue/fault_injection.py`, `fscount.c`, `RESULT.json` | 6.1, not run by the suite |
-| the four test files of 6.2 | |
+| the five test files of 6.2 | |

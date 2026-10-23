@@ -54,9 +54,10 @@ change.** Not car-specific, not gated. **Not driven yet.** All of it is in `docs
   nothing (COMM-ISSUE.md section 4).
 * **The storage's side, in every route** (errorLogMessage, so the qlogs carry it): a `storage report` 30 s into each
   drive - /data's mount and ext4 options, writeback settings, whether TRIM ever runs (the fstrim timer and its last
-  run) and the device takes it, free space, the journal's statistics - and a `hardwared slow loop section` line
-  whenever part of hardwared's loop takes over 0.3 s, naming it, with the disk's counters over that loop (at most one
-  line per 10 s).
+  run) and the device takes it, free space, the journal's statistics - a `params writer slow write` line whenever one
+  of those background writes takes over 0.3 s (after the fix this is where a stall shows: the loop no longer waits for
+  it), naming the write, with the disk's counters over it, and a `hardwared slow loop section` line whenever part of
+  hardwared's loop itself takes over 0.3 s (each at most one line per 10 s).
 
 ### The proof
 
@@ -72,22 +73,60 @@ directory fsync held to the window's end), F3 both with two engage edges and the
 
 The alerts come both from cereal's SubMaster run on the received stream at selfdrived's rate and from the d1024
 `vf_model` replay; the two agree to 0.01 s. In the suite: the real `hardware_thread` with the lock held 4 s keeps
-deviceState under 1.5 s (push11's stops 4.1 s under the same test), the writer's 8 tests, the DM lockout, the
-diagnostics, and a source guard that fails if a merge brings a blocking write back into those loops.
+deviceState under 1.5 s (push11's stops 4.1 s under the same test), the writer's 15 tests, the DM lockout, the
+diagnostics, and a source guard that fails if a merge brings a blocking write back into those loops. Each patched
+fault also logged exactly one `params writer slow write` (IsEngaged, 5.54 s), which the run now requires.
 
 ### What to look for in the next drives
 
 * No mid-drive "Communication Issue" or "Low Communication Rate", and in particular none on a drive where mapd's
-  liveMapDataSP gaps by more than 2 s or a `hardwared slow loop section` line appears: those are the stalls, and
-  deviceState must stay under 1 s through them. Stalls hit 2 of the last ~110 routes, so this takes weeks.
-* The first route's `storage report`: is /data `discard` or `noatime`, does `fstrim` ever run, does the UFS take
-  discards (`discard_max_bytes`)? That decides whether to free space or trim next - not this push.
+  liveMapDataSP gaps by more than 2 s or a `params writer slow write` / `hardwared slow loop section` line appears:
+  those are the stalls, and deviceState must stay under 1 s through them. Stalls hit 2 of the last ~110 routes, so
+  this takes weeks.
+* The first route's `storage report`: is /data `discard` and `noatime` (AGNOS's fstab says both), does `fstrim` ever
+  run, does the UFS take discards (`discard_max_bytes`)? Online discard on a near-full flash device is a known cause
+  of long journal commits. That decides whether to free space, trim or change the mount next - not this push.
 * A `slow loop section` naming a read (`startup_params`, `athena_ping`) rather than a write would mean reads can stall
   too (COMM-ISSUE.md section 7).
 
+### Two reviews, and what they changed
+
+Two independent reviews of `0aabf0582`. Both agreed the fix does its job: the first re-ran the real hardwared under
+longer, repeated and flapping stalls - three 12 s windows, a 12 s fsync stall across the 240-loop Uptime write
+followed by a 12 s lock, and fifteen 1.5 s stalls every 2 s - and push11 alerted in all three (gaps to 12.3 s,
+commIssue and AvgFreq, AvgFreq even from the flapping alone) while push12 held 0.50-0.51 s with none and the values on
+disk right. The second mutated the fix 19 ways: 13 were caught, 5 passed every test and one hung the suite. What
+they found, each confirmed before fixing:
+
+* **After the fix a stall left no per-stall trace in the routes.** The loop no longer waits, so `hardwared slow loop
+  section` never fired (0 lines in 82.5 s of stalls); the stall sat silently in the writer. The writer now logs
+  `params writer slow write` (above).
+* **The writer's flush at exit never ran under manager.** It was an `atexit` handler, and manager's children leave
+  through multiprocessing's `os._exit`, which skips atexit: reproduced, a manager-style child stopped while the lock
+  was held exited at 0.81 s with its write lost. The case that mattered: selfdrived at key-off with
+  `Offroad_ExcessiveActuation` (which keeps the car from going onroad again) still pending. The flush is now a
+  multiprocessing finalizer, which runs both ways out, and selfdrived's `run()` also flushes its writer as it ends.
+* **Gaps in the tests:** GithubRunnerSufficientVoltage written every loop, a storage report run on the loop, a writer
+  that moves a re-requested key to the end, and a missing exit flush all passed; a synchronous writer hung the suite
+  instead of failing it. Each now fails a test (and a synchronous writer fails in seconds).
+* **Stated, not changed:** the excessive-actuation param now lands when the writer gets the lock - the latch and the
+  disable come at once, the param a little later; only a crash of selfdrived inside a stall could lose it
+  (COMM-ISSUE.md 3.3). AGNOS mounts /data `noatime`, which retires the read-side atime worry, and `discard`, a lead
+  for the stalls themselves.
+
 ### Gates
 
-On the code tip `4ec3db74c` in `~/sp-merge` (WSL Ubuntu-24.04):
+After the review fixes, on the code tip `2e36bee6d` (the docs and RESULT.json as committed on top):
+
+* `scons -j16`: rc 0. The full suite: **3009 passed, 47 skipped, 1 xfailed, 0 failed** in 531 s - the 3001 below
+  plus the 8 new tests (7 writer, 1 guard); locationd's `test_params_gps` passed.
+* `ty check openpilot`: 4 diagnostics, push11's same 4 in the same files. `ruff`, codespell (no new hits),
+  `compile_settings_ui --check`, the repo's lint, file modes: as below, clean.
+* The fault injection: ALL PASS, now requiring the writer's line in every patched fault. The first review's harder
+  stalls (S1-S3), patched: 0.50 s, no alerts. The second review's 19 mutations plus the fix round's 4: all caught,
+  none hangs.
+
+The first round, on the code tip `4ec3db74c` in `~/sp-merge` (WSL Ubuntu-24.04):
 
 * `scons -j16`: rc 0 (push12 changes no C++).
 * The full suite (`RAYLIB_BACKEND=headless python tools/test_runner.py -j 12`): **3001 passed, 47 skipped, 1 xfailed,
