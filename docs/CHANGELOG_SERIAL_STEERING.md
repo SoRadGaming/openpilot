@@ -95,8 +95,8 @@ On the code tip `4ec3db74c` in `~/sp-merge` (WSL Ubuntu-24.04):
   2 DM). locationd's `test_params_gps`, which fails on this PC on older trees too, passed in both runs.
 * `ruff check openpilot` and opendbc: clean. `ty check openpilot`: 4 diagnostics, push11's same 4 in the same files
   (the first pass found 22 in the new tests and harness, none in shipped code; fixed in `4ec3db74c`).
-* codespell: no new hits in the 13 changed code files (the harness's "analyse" and "dur" renamed) or the three
-  documents. `compile_settings_ui --check`: matches. check_indentation, large files, shebangs, nomerge, conflict
+* codespell: no new hits in the 16 changed files, the three documents included (two words in the harness and the
+  shim renamed for it). `compile_settings_ui --check`: matches. check_indentation, large files, shebangs, nomerge, conflict
   markers: pass.
 * File modes: no mode change against push11 (hardwared.py and selfdrived.py stay 755); every new file 644, none with a
   shebang.
