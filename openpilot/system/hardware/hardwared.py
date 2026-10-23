@@ -31,6 +31,7 @@ from openpilot.system.hardware.fan_controller import FanController
 from openpilot.system.hardware.chestnut.status import ChestnutStatus
 from openpilot.common.version import terms_version, training_version, get_build_metadata, terms_version_sp
 from openpilot.sunnypilot.system.params_writer import ParamsWriter  # FORK(COMM-ISSUE)
+from openpilot.sunnypilot.system.storage_diag import LoopTimer, StorageReporter  # FORK(COMM-ISSUE)
 
 ThermalStatus = log.DeviceState.ThermalStatus
 NetworkType = log.DeviceState.NetworkType
@@ -248,10 +249,12 @@ def hardware_thread(end_event, hw_queue) -> None:
   # FORK(COMM-ISSUE): nothing this loop writes waits on /data. A Params put or remove takes <params>/.lock and fsyncs the
   # params directory, and a stuck ext4 journal commit held deviceState for 4-8 s in routes 14d and 152 (selfdrived's
   # commIssue / commIssueAvgFreq: a soft disable and the car braking at 95-110 km/h). Every write goes through
-  # params_writer, whose own thread waits instead; the loop still reads params, and reads take no lock.
-  # docs/fork/COMM-ISSUE.md
+  # params_writer, whose own thread waits instead; the loop still reads params, and reads take no lock. The loop's
+  # sections are timed and the storage described in the routes. docs/fork/COMM-ISSUE.md
   params_writer = ParamsWriter("hardwared_params")
   set_alert = functools.partial(set_offroad_alert_if_changed, writer=params_writer)
+  loop_timer = LoopTimer("hardwared", params.get_param_path())
+  storage_reporter = StorageReporter(params.get_param_path())
 
   uptime_offroad: float = params.get("UptimeOffroad", return_default=True)
   uptime_onroad: float = params.get("UptimeOnroad", return_default=True)
@@ -267,6 +270,7 @@ def hardware_thread(end_event, hw_queue) -> None:
 
   while not end_event.is_set():
     sm.update(PANDA_STATES_TIMEOUT)
+    loop_timer.start()  # FORK(COMM-ISSUE)
 
     pandaStates = sm['pandaStates']
     peripheralState = sm['peripheralState']
@@ -293,8 +297,11 @@ def hardware_thread(end_event, hw_queue) -> None:
 
     # Run at 2Hz, plus either edge of ignition
     ign_edge = (started_ts is not None) != all(onroad_conditions.values())
+    loop_timer.mark("pandaStates")  # FORK(COMM-ISSUE)
     if (sm.frame % round(SERVICE_LIST['pandaStates'].frequency * DT_HW) != 0) and not ign_edge:
+      loop_timer.finish()  # FORK(COMM-ISSUE)
       continue
+    loop_timer.sample_disk()  # FORK(COMM-ISSUE)
 
     msg = messaging.new_message('deviceState', valid=True)
     msg.deviceState = thermal_config.get_msg()
@@ -304,13 +311,16 @@ def hardware_thread(end_event, hw_queue) -> None:
       last_hw_state = hw_queue.get_nowait()
     except queue.Empty:
       pass
+    loop_timer.mark("thermal")  # FORK(COMM-ISSUE)
 
     msg.deviceState.freeSpacePercent = get_available_percent(default=100.0)
+    loop_timer.mark("free_space")  # FORK(COMM-ISSUE)
     msg.deviceState.memoryUsagePercent = int(round(system_stats.memory_usage_percent()))
     msg.deviceState.gpuUsagePercent = int(round(HARDWARE.get_gpu_usage_percent()))
     online_cpu_usage = [int(round(n)) for n in system_stats.cpu_usage_percent()]
     offline_cpu_usage = [0., ] * (len(msg.deviceState.cpuTempC) - len(online_cpu_usage))
     msg.deviceState.cpuUsagePercent = online_cpu_usage + offline_cpu_usage
+    loop_timer.mark("system_stats")  # FORK(COMM-ISSUE)
 
     msg.deviceState.networkType = last_hw_state.network_type
     msg.deviceState.networkMetered = last_hw_state.network_metered
@@ -322,6 +332,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     msg.deviceState.modemTempC = last_hw_state.modem_temps
 
     msg.deviceState.screenBrightnessPercent = HARDWARE.get_screen_brightness()
+    loop_timer.mark("brightness")  # FORK(COMM-ISSUE)
 
     set_usb_state(msg.deviceState, last_hw_state.usb_state)
     chestnut.update(started_ts is None, last_hw_state.usb_state)
@@ -330,6 +341,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     chestnut_status.update(started_ts is None, branch, last_hw_state.usb_state, chestnut.failed,
                            params.get_bool("ChestnutLoading"), params.get("ChestnutActive"),
                            chestnut_state if chestnut_valid else None, set_alert)  # FORK(COMM-ISSUE): set_alert
+    loop_timer.mark("chestnut")  # FORK(COMM-ISSUE)
     # this subset is only used for offroad
     temp_sources = [
       msg.deviceState.memoryTempC,
@@ -381,6 +393,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     offroad_mode = params.get_bool("OffroadMode")
     startup_conditions["not_always_offroad"] = not offroad_mode
     onroad_conditions["not_always_offroad"] = not offroad_mode
+    loop_timer.mark("startup_params")  # FORK(COMM-ISSUE)
 
     # if an unsupported device and branch is detected, going onroad is blocked
     # only allow going onroad when:
@@ -393,6 +406,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     # FORK(COMM-ISSUE): on change, off this thread. set_offroad_alert(..., False) is a Params remove(), which takes
     # <params>/.lock even when the key is absent - every loop, the wait in the 14d/152 stalls
     set_alert("Offroad_TiciSupport", is_unsupported_combo, extra_text=build_metadata.channel)
+    loop_timer.mark("tici_alert")  # FORK(COMM-ISSUE)
 
     # if the temperature enters the danger zone, go offroad to cool down
     onroad_conditions["device_temp_good"] = thermal_status < ThermalStatus.critical
@@ -400,6 +414,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     show_alert = (not onroad_conditions["device_temp_good"] or not startup_conditions["device_temp_engageable"]) and onroad_conditions["ignition"]
     # FORK(COMM-ISSUE): set_alert drops the text of a hidden alert, so the temperature moving is no longer a write
     set_alert("Offroad_TemperatureTooHigh", show_alert, extra_text=extra_text)
+    loop_timer.mark("temp_alert")  # FORK(COMM-ISSUE)
 
     if show_alert:
       msg.deviceState.fanSpeedPercentDesired = 100
@@ -424,11 +439,13 @@ def hardware_thread(end_event, hw_queue) -> None:
           kmsg.write(f"<3>[hardware] engaged: {engaged}\n")
       except Exception:
         pass
+    loop_timer.mark("engaged")  # FORK(COMM-ISSUE)
 
     should_pwrsave = not onroad_conditions["ignition"] and msg.deviceState.screenBrightnessPercent < 1e-3
     if should_pwrsave != pwrsave or (count == 0):
       HARDWARE.set_power_save(should_pwrsave)
     pwrsave = should_pwrsave
+    loop_timer.mark("power_save")  # FORK(COMM-ISSUE)
 
     if should_start:
       off_ts = None
@@ -471,6 +488,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     som_power_draw = HARDWARE.get_som_power_draw()
     statlog.sample("som_power_draw", som_power_draw)
     msg.deviceState.somPowerDrawW = som_power_draw
+    loop_timer.mark("power")  # FORK(COMM-ISSUE)
 
     # Check if we need to shut down
     if power_monitor.should_shutdown(onroad_conditions["ignition"], in_car, off_ts, started_seen):
@@ -483,9 +501,11 @@ def hardware_thread(end_event, hw_queue) -> None:
     last_ping = params.get("LastAthenaPingTime")
     if last_ping is not None:
       msg.deviceState.lastAthenaPingTime = last_ping
+    loop_timer.mark("athena_ping")  # FORK(COMM-ISSUE)
 
     msg.deviceState.thermalStatus = thermal_status
     pm.send("deviceState", msg)
+    loop_timer.mark("send")  # FORK(COMM-ISSUE)
 
     statlog.gauge("free_space_percent", msg.deviceState.freeSpacePercent)
     statlog.gauge("gpu_usage_percent", msg.deviceState.gpuUsagePercent)
@@ -503,6 +523,7 @@ def hardware_thread(end_event, hw_queue) -> None:
       statlog.gauge(f"modem_temperature{i}", temp)
     statlog.gauge("fan_speed_percent_desired", msg.deviceState.fanSpeedPercentDesired)
     statlog.gauge("screen_brightness_percent", msg.deviceState.screenBrightnessPercent)
+    loop_timer.mark("statlog")  # FORK(COMM-ISSUE)
 
     # report to server once every 10 minutes, or every 1s when thermally blocked
     rising_edge_started = should_start and not should_start_prev
@@ -523,6 +544,7 @@ def hardware_thread(end_event, hw_queue) -> None:
           params_writer.put("LastOffroadStatusPacket", dat)  # FORK(COMM-ISSUE): was put(block=True) here
         except Exception:
           cloudlog.exception("failed to save offroad status")
+    loop_timer.mark("status_packet")  # FORK(COMM-ISSUE)
 
     params_writer.put_bool("NetworkMetered", msg.deviceState.networkMetered, if_changed=not params_rewrite)  # FORK(COMM-ISSUE)
 
@@ -537,6 +559,11 @@ def hardware_thread(end_event, hw_queue) -> None:
       # FORK(COMM-ISSUE): were put(block=True) here, two fsyncs on this thread every minute
       params_writer.put("UptimeOffroad", uptime_offroad)
       params_writer.put("UptimeOnroad", uptime_onroad)
+    loop_timer.mark("uptime")  # FORK(COMM-ISSUE)
+
+    # FORK(COMM-ISSUE): a section over 0.3 s is logged with the disk's counters; the storage report once per start
+    loop_timer.finish(count=count, started=started_ts is not None)
+    storage_reporter.update(started_ts, now_ts)
 
     count += 1
     should_start_prev = should_start
