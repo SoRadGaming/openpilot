@@ -286,6 +286,59 @@ class ApproachState:
                             is_metric=is_metric)
 
 
+# FORK(NSW-CAMERAS): the camera ahead, right of the card in MAX's place (hud_renderer._draw_camera; HudCameraAlerts)
+CAMERA_SERVICE = 'customReserved12'   # mapd's camera ahead (sunnypilot/mapd/live_map_data/nsw_map_data.py), 1 Hz
+CAMERA_STATES = (2, 3)                # a camera ahead: found this tick, or held by mapd through a short gap
+CAMERA_EXTRAPOLATE_S = 1.0            # between messages the distance is run down by vEgo, for at most one period ...
+CAMERA_STALE_S = 2.5                  # ... and with no new message for this long, nothing is shown
+CAMERA_MAX_M = 400.0                  # mapd looks this far along the road (matcher camera_ahead_m)
+CAMERA_LABELS = {1: 'camera (map)', 2: 'red-light cam (map)', 3: 'school cam (map)'}
+
+
+@dataclass(frozen=True)
+class CameraAhead:
+  kind: int     # 1 speed, 2 red light (incl. red-light speed), 3 school zone (nsw_zones/cameras.py KIND_*)
+  dist: float   # m along the road, run down between messages
+  label: str    # 'camera (map)': map data, which can be out of date
+
+
+class CameraState:
+  """The camera ahead, frame by frame: what mapd says (customReserved12, drawn only while it is this drive's and still
+  arriving), its 1 Hz distance run down by the car's speed between messages, behind HudCameraAlerts. Nothing once the
+  run-down reaches the camera, when mapd says none, or after CAMERA_STALE_S without a message. update() is idempotent
+  within a frame."""
+  def __init__(self):
+    self._frame = -1
+    self._base: tuple[float, float] | None = None  # (distance mapd said, when it arrived)
+
+  def reset(self) -> None:
+    self._frame = -1
+    self._base = None
+
+  def update(self, sm, s: HudSettings, *, started_frame: int, now: float) -> CameraAhead | None:
+    if not s.camera or not fresh(sm, CAMERA_SERVICE, started_frame):
+      self.reset()
+      return None
+    c = sm[CAMERA_SERVICE]
+    kind = int(c.kind)
+    if int(c.state) not in CAMERA_STATES or kind not in CAMERA_LABELS:
+      self.reset()
+      return None
+    f = sm.recv_frame[CAMERA_SERVICE]
+    if f != self._frame or self._base is None:
+      self._frame = f
+      self._base = (float(c.distance), now)
+    d0, t0 = self._base
+    age = now - t0
+    if age > CAMERA_STALE_S:
+      return None
+    v = float(sm['carState'].vEgo) if fresh(sm, 'carState', started_frame) else 0.0
+    dist = d0 - max(v, 0.0) * min(max(age, 0.0), CAMERA_EXTRAPOLATE_S)
+    if not (0.0 < dist <= CAMERA_MAX_M + 1.0):
+      return None
+    return CameraAhead(kind, dist, CAMERA_LABELS[kind])
+
+
 def box_outline(t: float) -> tuple[bool, float]:
   """(lit, phase) of the compact confirm's card outline t seconds after it was first half visible: lit = the outline is
   one solid line (a flash), else - the split card's dashes - drawn phase px along the outline (clockwise): 0 through the

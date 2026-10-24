@@ -35,6 +35,10 @@ INPUTS, once per tick (1 Hz, as validated on the owner's drives):
 EVERY NSW CALL IS WRAPPED: an exception publishes OSM with state 5 and counts in nswZone.errors. The index is loaded
 off-thread (a sha256 over ~68 MB takes seconds on the device); until it is there the state is 6 and OSM is published.
 
+FORK(NSW-CAMERAS): the next camera ahead from the index's OpenStreetMap camera layer (matcher.camera_ahead, held through
+a short gap by cameras.CameraHold) goes out once a tick as customReserved12, on its own PubMaster: a display-only alert
+for the comma 4 HUD. It never touches liveMapDataSP, and a failure in it never stops liveMapDataSP.
+
 Contains data from Transport for NSW (Speed Zones, School Zones), licensed CC BY 4.0.
 Modified: filtered, simplified, re-encoded. Not endorsed by Transport for NSW.
 """
@@ -52,6 +56,7 @@ from openpilot.common.time_helpers import system_time_valid
 from openpilot.sunnypilot.mapd.live_map_data.osm_map_data import OsmMapData
 from openpilot.sunnypilot.mapd.nsw_zones import MODE_LIVE, MODE_OFF, read_mode
 from openpilot.sunnypilot.mapd.nsw_zones import downloader
+from openpilot.sunnypilot.mapd.nsw_zones.cameras import CameraHold  # FORK(NSW-CAMERAS)
 from openpilot.sunnypilot.mapd.nsw_zones.index import IndexInvalid
 
 # nswZone.state codes the integration sets itself (the matcher's own are matcher.STATE_CODES)
@@ -75,6 +80,13 @@ CAR_STATE_MAX_AGE_S = 1.0
 MOTION_MAX_AGE_S = 1.0
 LOG_FIRST_ERRORS = 5
 LOG_ERROR_EVERY = 100
+
+# FORK(NSW-CAMERAS): customReserved12.state
+CAM_STATE_OFF = 0    # no camera layer, zones off, no data, or the matcher failed this tick
+CAM_STATE_NONE = 1   # nothing ahead within the look
+CAM_STATE_AHEAD = 2  # a camera ahead, found this tick
+CAM_STATE_HELD = 3   # a camera found within CameraHold.HOLD_S, its distance run down by the car's speed
+CAMERA_SERVICE = 'customReserved12'
 
 
 def wall_now() -> float:
@@ -111,12 +123,18 @@ class NswZoneMapData(OsmMapData):
     self.osm_speed_limit = 0.
     self._nsw_pub: float | None = None  # this tick's NSW value in m/s (0 = silence), None = OSM's
     self._last_match: tuple[float, float] | None = None  # (monotonic time, m/s) of the last matched NSW value
+    # FORK(NSW-CAMERAS): the camera alert's own publisher and state
+    self.cam_pm = None
+    self.cam_hold = CameraHold()
+    self.camera: dict | None = None  # this tick's camera (CameraHold.update), None = none
+    self.cam_errors = 0
     try:
       self.gps_service = get_gps_location_service(self.params)
       # replaces BaseMapData's liveLocationKalman-only SubMaster; liveLocationKalman stays first for OsmMapData
       self.sm = messaging.SubMaster(['liveLocationKalman', 'carState', 'deviceMotion', self.gps_service])
       self.dir = data_dir or downloader.data_dir()
       self.mode = read_mode(self.params)
+      self.cam_pm = messaging.PubMaster([CAMERA_SERVICE])  # FORK(NSW-CAMERAS)
       if load:
         self.reload()
     except Exception:
@@ -203,6 +221,7 @@ class NswZoneMapData(OsmMapData):
   def update_location(self) -> None:
     super().update_location()
     self.result = None
+    self.camera = None  # FORK(NSW-CAMERAS)
     if self.disabled:
       return
 
@@ -212,19 +231,24 @@ class NswZoneMapData(OsmMapData):
     self.mode = mode
     if mode == MODE_OFF:
       self.state = STATE_OFF
+      self.cam_hold.reset()
       return
 
     m = self.matcher
     if m is None:
       self.state = self.load_state
+      self.cam_hold.reset()
       return
     try:
-      r = m.update(**self.matcher_inputs())
+      inputs = self.matcher_inputs()
+      r = m.update(**inputs)
       self.result = r
       self.state = int(r['state_code'])
+      self.camera = self.cam_hold.update(r, inputs['speed_mps'], inputs['mono_time'])  # FORK(NSW-CAMERAS)
     except Exception:
       self.result = None
       self.state = STATE_ERROR
+      self.cam_hold.reset()
       self.errors += 1
       if self.errors <= LOG_FIRST_ERRORS or self.errors % LOG_ERROR_EVERY == 0:
         cloudlog.exception(f"nsw_zones: matcher error #{self.errors}, publishing OSM")
@@ -302,6 +326,52 @@ class NswZoneMapData(OsmMapData):
       out.append(f"The NSW school-day calendar ends {end}. After it, every weekday is taken as a school day until a "
                  + "software update adds the next year's dates.")
     return " ".join(out) or None
+
+  # -- FORK(NSW-CAMERAS): the camera ahead, its own message -----------------------
+  def publish(self) -> None:
+    super().publish()
+    self.publish_camera()
+
+  def fill_camera(self, c) -> None:
+    """customReserved12 for this tick (see custom.capnp)."""
+    m = self.matcher
+    n = int(getattr(m, 'n_cameras', 0) or 0) if m is not None else 0
+    if self.disabled or self.mode == MODE_OFF or m is None or n == 0 or self.result is None:
+      c.state = CAM_STATE_OFF
+      c.cameras = n
+      if self.mode == MODE_OFF:
+        c.reason = 'zones off'
+      elif m is not None and n == 0:
+        c.reason = 'no camera layer'
+      else:
+        c.reason = 'matcher error' if self.state == STATE_ERROR else 'no data'
+      return
+    c.cameras = n
+    c.osmDate = str((getattr(m, 'camera_meta', None) or {}).get('osm_base') or '')
+    cam = self.camera
+    if cam is None:
+      c.state = CAM_STATE_NONE
+      c.reason = str(self.result.get('camera_stop') or '')
+      return
+    c.state = CAM_STATE_HELD if cam['held'] else CAM_STATE_AHEAD
+    c.kind = int(cam['kind']) & 0xFF
+    c.distance = float(cam['dist_m'])
+    c.osmId = int(cam['id'])
+    c.directionKnown = bool(cam['dir_known'])
+    c.deadReckoning = bool(cam['dr'])
+    c.reason = 'held' if cam['held'] else 'found'
+
+  def publish_camera(self) -> None:
+    if self.cam_pm is None:
+      return
+    try:
+      msg = messaging.new_message(CAMERA_SERVICE)
+      self.fill_camera(getattr(msg, CAMERA_SERVICE))
+      self.cam_pm.send(CAMERA_SERVICE, msg)
+    except Exception:
+      self.cam_errors += 1
+      if self.cam_errors <= LOG_FIRST_ERRORS or self.cam_errors % LOG_ERROR_EVERY == 0:
+        cloudlog.exception(f"nsw_zones: camera message error #{self.cam_errors}")
 
   def fill_extensions(self, live_map_data) -> None:
     if self.mode == MODE_OFF:

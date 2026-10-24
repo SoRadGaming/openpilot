@@ -67,6 +67,7 @@ from openpilot.system.ui.widgets.scroller import NavScroller
 from openpilot.sunnypilot.mapd.nsw_zones import ATTRIBUTION as NSW_ATTRIBUTION, MODE_OFF, MODE_LOG_ONLY, read_mode
 from openpilot.sunnypilot.mapd.nsw_zones.downloader import CHECK_PARAM as NSW_CHECK_PARAM, STATUS_NAME as NSW_STATUS_NAME, \
   VERSION_PARAM as NSW_VERSION_PARAM, data_dir as nsw_data_dir, read_status as nsw_read_status
+from openpilot.sunnypilot.mapd.nsw_zones.cameras import OSM_ATTRIBUTION as NSW_CAMERA_ATTRIBUTION  # FORK(NSW-CAMERAS)
 
 # params are files: read them on a tick, not every frame
 REFRESH_S = 1.0
@@ -357,8 +358,9 @@ def nsw_date() -> tuple[str, str]:
 
 
 def nsw_status() -> tuple[str, str, str]:
-  """(attribution line, date header, date line). The attribution scrolls: it is the license's, not a summary."""
-  return (NSW_ATTRIBUTION, *nsw_date())
+  """(attribution line, date header, date line). The attribution scrolls: it is the license's, not a summary.
+  FORK(NSW-CAMERAS): the data also carries the OpenStreetMap camera locations (ODbL), credited after it."""
+  return (NSW_ATTRIBUTION + " " + NSW_CAMERA_ATTRIBUTION, *nsw_date())
 
 
 def nsw_check_status() -> dict:

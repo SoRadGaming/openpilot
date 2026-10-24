@@ -91,6 +91,7 @@ _services: dict[str, tuple] = {
   "carControlSP": (True, 100., 10),
   "carStateSP": (True, 100., 10),
   "liveMapDataSP": (True, 1., 1),
+  "customReserved12": (True, 1., 1),  # FORK(NSW-CAMERAS): the camera ahead (mapd, nsw_map_data.py); every one in qlogs
   "modelDataV2SP": (True, 20., None, QueueSize.BIG),
   "liveLocationKalman": (True, 20.),
 

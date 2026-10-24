@@ -1716,6 +1716,12 @@
               ]
             },
             {
+              "key": "HudCameraAlerts",
+              "widget": "toggle",
+              "title": "Camera Alerts",
+              "description": "A small camera, how far it is and 'camera (map)' (or red-light cam, school cam) top left, right of where MAX shows, from about 400 m before a fixed speed, red-light or school-zone camera on the road you are on, in your direction. The locations come from OpenStreetMap in the NSW speed-zone data, updated weekly - they can be out of date or missing, so it says (map). Mobile and average-speed cameras are not shown. Display only - it never changes your speed, and there is no sound. Needs NSW Speed Zones on."
+            },
+            {
               "key": "HudCompactLimitPrompts",
               "widget": "toggle",
               "title": "Compact Speed Limit Prompts",

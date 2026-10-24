@@ -731,7 +731,20 @@ struct CustomReserved10 @0xcb9fd56c7057593a {
 struct CustomReserved11 @0xc2243c65e0340384 {
 }
 
+# FORK(NSW-CAMERAS): the next fixed speed / red-light / school-zone camera ahead on the road, from the OpenStreetMap
+# camera layer of the NSW speed-zone index (sunnypilot/mapd/nsw_zones/cameras.py; matcher.camera_ahead). Published by
+# mapd (live_map_data/nsw_map_data.py) once a second as customReserved12 while SpeedLimitNswZones is not 0; drawn by the
+# comma 4 HUD as 'camera (map)' (HudCameraAlerts). DISPLAY ONLY: nothing reads it to change the car's speed.
 struct CustomReserved12 @0x9ccdc8676701b412 {
+  state @0 :UInt8;            # 0 no camera layer / zones off / no data, 1 none ahead, 2 camera ahead, 3 held (a short gap)
+  kind @1 :UInt8;             # 0 none, 1 speed, 2 red light (incl. red-light speed), 3 school zone (cameras.KIND_*)
+  distance @2 :Float32;       # m along the road to it; 0 when none
+  osmId @3 :Int64;            # the camera's OpenStreetMap node id; 0 when none
+  directionKnown @4 :Bool;    # the map says which traffic it checks (else it is taken to check both directions)
+  deadReckoning @5 :Bool;     # found along the dead-reckoned path (GPS lost, e.g. a tunnel)
+  cameras @6 :UInt32;         # cameras in the loaded layer; 0 = the installed index has no camera layer
+  osmDate @7 :Text;           # the OSM data timestamp of the layer, e.g. 2026-10-24T01:59:36Z; "" none
+  reason @8 :Text;            # why none was found ('found' otherwise), for the logs
 }
 
 struct CustomReserved13 @0xcd96dafb67a082d0 {

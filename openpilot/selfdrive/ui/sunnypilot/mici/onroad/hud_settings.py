@@ -21,6 +21,10 @@ driving. Unreadable, or a value this build does not know: the split card.
 Round 5 (2026-10-09, the owner's option A) took the live speed, the speed-limit sign and its zone styling, and the next
 lower limit off the screen, with their settings; the stop timer stays top right. The coming limit is now announced in
 the stock MAX number's place (HudApproachingLimit, hud_model.ApproachState).
+
+FORK(NSW-CAMERAS) push13: HudCameraAlerts - 'camera (map)' right of that place, before a fixed speed, red-light or
+school-zone camera on the road ahead (hud_model.CameraState). Display only; no chime (a chime needs a selfdrived event,
+which this batch may not add to cereal).
 """
 import math
 import time
@@ -41,6 +45,7 @@ PARAM_APPROACHING_LIMIT = "HudApproachingLimit"  # the coming limit (lower or hi
 # reads it too, to drop the two block alerts and chime on the refused nudge (lane_block_alert.py)
 PARAM_LANE_BLOCK = "HudLaneBlock"
 PARAM_LIMIT_STYLE = "HudLimitStyle"         # INT: how the coming limit and the confirm are drawn there (STYLES)
+PARAM_CAMERA = "HudCameraAlerts"            # FORK(NSW-CAMERAS): 'camera (map)' before a camera on the road ahead
 
 STYLE_SPLIT, STYLE_STOCK_PLUS = 0, 1        # D3 'split card' (the default), D1 'stock-plus'
 STYLES = (STYLE_SPLIT, STYLE_STOCK_PLUS)
@@ -49,7 +54,8 @@ STYLES = (STYLE_SPLIT, STYLE_STOCK_PLUS)
 FIELDS = {PARAM_STOPPED_TIMER: "stopped_timer", PARAM_STOPPED_BANNER: "stopped_banner",
           PARAM_PLANNED_STOP: "planned_stop", PARAM_CURVE: "curve", PARAM_COMPACT_LIMIT: "compact_limit",
           PARAM_COMPACT_DISENGAGE: "compact_disengage", PARAM_COMPACT_TURN: "compact_turn",
-          PARAM_APPROACHING_LIMIT: "approaching_limit", PARAM_LANE_BLOCK: "lane_block"}
+          PARAM_APPROACHING_LIMIT: "approaching_limit", PARAM_LANE_BLOCK: "lane_block",
+          PARAM_CAMERA: "camera"}  # FORK(NSW-CAMERAS)
 ALL_PARAMS = tuple(FIELDS)   # the toggles
 KEYS = ALL_PARAMS + (PARAM_LIMIT_STYLE,)   # every HUD key: the toggles and the style
 
@@ -65,6 +71,7 @@ class HudSettings:
   compact_turn: bool = False
   approaching_limit: bool = False
   lane_block: bool = False
+  camera: bool = False  # FORK(NSW-CAMERAS)
   limit_style: int = STYLE_SPLIT
 
 
