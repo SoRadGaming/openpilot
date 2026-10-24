@@ -211,12 +211,30 @@ turned 11 of 192 near-misses into collisions; with the extra checks, none.
 
 ## The cruise controller no longer "winds up" at full brake (round 8)
 
-At full brake the car can only give about -1.8 to -2.0 m/s². When openpilot wanted more than that (the stopped car on
-143), its controller kept piling up extra brake request it could never get, which would have held the brake on longer
-once the danger passed. Its limit is now -3.2 instead of -4.0: still full brake, just without the pile-up. Going
-uphill the limit moves down with the slope (to -4.0 from about 8%), because the hill compensation adds back what the
-slope does: the first build of this lost about a fifth of full brake on a 10% climb, and more on steeper ones. Nothing else changes,
-and on your four full-log drives only those 2.7 s on 143 were affected.
+At full brake the car gives about -2.45 m/s² on the level at the old 255-count ceiling, and about -2.95 with brake320's
+320 counts (below; measured on your drives, October 2026). This section first said "about -1.8 to -2.0": that was
+route 143's stop, which was on a ~5% downhill. When openpilot wanted more than full brake (the stopped car on 143), its
+controller kept piling up extra brake request it could never get, which would have held the brake on longer once the
+danger passed. Its limit is -3.25 since brake320 (-3.2 from round 8, -4.0 before): still full brake, just without the
+pile-up. Going uphill the limit moves down with the slope (to -4.0 from about 8%), because the hill compensation adds
+back what the slope does: the first build of this lost about a fifth of full brake on a 10% climb, and more on steeper
+ones. Nothing else changes, and on your four full-log drives only those 2.7 s on 143 were affected.
+
+---
+
+## It can brake harder when it has to: 320 counts (brake320, push13, October 2026)
+
+openpilot's brake request used to stop at 255 counts - about -2.45 m/s² on the level. The car's own radar asks for up to
+320 when it brakes for you, so the brakes take it: openpilot may now ask for up to 320, about -2.95 m/s² - roughly 20%
+more braking, 7-22 m shorter stops from 60-100 km/h. **Only when it is needed:** an ordinary stop, and every brake up
+to about -2.45 m/s², is exactly what it was; only a request harder than that earns counts above 255, and only while
+openpilot is braking (not while it holds you at a stop). The panda's safety check was changed to allow it on this car
+only, so the comma flashes its panda once on the first start after the update. **If the VSA shows any fault** (the
+32-11 valve, or any brake or ABS warning), it goes back to 255 for the rest of the drive. When the car's own radar
+warns of a collision while openpilot is braking above 255, openpilot's brake message carries the radar's warning and
+chime, so you still get them. In your logs a request that hard comes about 7 times an engaged hour, a second or two
+each (hard slow-downs, often downhill), and there it now brakes a little harder; the one moment where it would have
+changed the outcome is route 143, the stopped car at night.
 
 ---
 
@@ -233,8 +251,8 @@ full logs, and 51 more drives: no new phantom brake anywhere. It now also stands
 **moving** car near where the camera puts its car (twice in those drives a roadside return came close to counting as a
 stopped car while you were following a moving one). It is off in stock ACC mode. **13e and 13f could not be tested**
 (only their small logs are on disk, without radar data), so treat this one as conditional until they are. **It does
-not make the car stop for that kind of hazard on its own** - full brake is still only about 0.2 g - it just starts
-sooner. Keep covering the brake at night.
+not make the car stop for that kind of hazard on its own** - full brake is still only about a quarter of a g (about
+0.3 g with brake320's 320 counts) - it just starts sooner. Keep covering the brake at night.
 
 ---
 

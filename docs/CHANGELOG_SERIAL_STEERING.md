@@ -15,173 +15,236 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
-## 2026-10-24 — push13: the lane-change floor, close follow and the bend ease in shadow, radar dots and camera alerts (board `883a3cd1` unchanged)
+## 2026-10-24 — push13: close follow live, braking to 320, the lane-change floor; brake-sooner and bend ease in shadow; radar dots and camera alerts (board `883a3cd1` unchanged)
 
-Five features, each built on push12 (`7711de756`) in a branch of its own, reviewed there by an independent agent and
-fixed: close follow in queues (`closefollow` `d34ccbb70`), ease off for bends (`bends` `b45db6be7`), the lane-change
-floor (`lcfloor` `f3c51a3fe`), radar dots (`radardots` `90e78ab91`) and the NSW camera alerts (`nswcam` `f5444245f`).
-They are merged into `push13` in that order. **opendbc (`b44473bf`), the panda (`74a0adce`), the EPS board
-(`883a3cd1`) and the bundled board images do not change. Not driven yet; not pushed.**
+One update, as you asked ("keep it all in main"). Built on push12 (`7711de756`): push13's five features (close follow,
+the bend ease, the lane-change floor, radar dots, the camera alerts), then three branches merged on top - the lead brake
+assist (`leadbrake` `2946492cd`), the radar's track-slot fixes (`radartidy` `a90ec9f85`, opendbc `149a024e`) and the
+320-count brake (`brake320` `b3215c1be`, opendbc `df00ddad`) - then close follow switched to live, and the push13
+review's four small fixes. **sunnypilot `release13` (the code at `1aaf39bbf`; this entry is the commit after it),
+opendbc `release13` at `469d12c7`. The EPS board (`883a3cd1`) and the bundled board images do not change. The panda
+firmware does (brake320): the comma flashes the panda by itself on the first start. Not driven yet; not pushed.**
 
-* **Only one of the five changes how the car drives: the lane-change floor.** Close follow and the bend ease are
-  shadow - they work out what they would do and log it, and the plan, the brakes, the gas and every CAN frame stay
-  push12's (proven below on three of your routes). Radar dots and the camera alerts only draw on the comma 4.
-* **Not edited by any of the five:** the stock-ACC stand-down (`SCM_BUTTONS` `MAIN_ON = 0`) and stock ACC mode,
-  CMBS/AEB and panda safety. Close follow and the bend ease build nothing in stock ACC mode, without openpilot
-  longitudinal or on any other car; the lane-change floor keys on this car's fingerprint and every other car keeps
-  upstream's 20 mph.
-* **New logs, one reserved struct each:** `customReserved10` close follow (plannerd, 2 Hz in the qlog),
-  `customReserved11` the bend ease (plannerd, 10 Hz in the qlog), `customReserved12` the camera ahead (mapd, every
-  message in the qlog), plus error-level `closefollow` (at most one per 10 s) and `bendease` (one per bend) lines, so
-  the qlogs carry them without SSH.
+**Push order: opendbc first.** opendbc `release13` fast-forwards `SoRadGaming/opendbc` `sp-master` (it is a descendant
+of `b44473bf`, push12's); then sunnypilot `release13` to `master`; then start the mirror
+(`gh workflow run mirror-sunnypilot.yaml -R SoRadGaming/openpilot`) and check `sunnypilot` moved.
 
-### What changes in the car
+### What you will notice
 
-* **No lane change starts below 52 km/h** (live). 52 km/h is where the board starts steering (it lets go under 51), so
-  below it a lane change was the model asking for steering the car does not give. Below 52 the blinker arms nothing: no
-  "steer to change lanes" prompt, and a nudge does nothing. A change already waiting for its nudge is kept down to 51
-  km/h, so a small dip does not cancel it, but it only starts at 52 or above. A change already running finishes - the
-  model has had its lane-change signal and completes the change whatever openpilot's state says. As upstream, a blinker
-  switched on below 52 and held past it gives no prompt: switch it off and on again above 52. Replayed over 67 of your
-  routes (22.7 h): 174 of 438 lane-change starts go - 171 started below 52 km/h (89 of them at 32-40), and 3 at 53-58
-  km/h were a second change in a blinker hold whose waiting change had been dropped under 51; one start moves 0.45 s
-  later (51.8 to 52.0 km/h); nothing that started or was armed at 52 or above changes otherwise. Merges begun by hand
-  below 52: the board takes over at 52 and follows the model's lane, which may pull back toward the old lane while the
-  car is still across the line - pushing against it fades the board (first-drive check, `docs/fork/README.md` step 7).
-* **Radar dots** (display, **off by default**): every track the radar reports as a small dot on the road under it -
-  white a track openpilot is not following, cyan the car it follows (a smaller cyan dot for a second lead), a cyan ring
-  the thing the clutter guard holds the speed back for without calling it a car. For checking the radar and the
-  clutter guard. **Switch it on** on the comma 4 under **Settings > toggles, "radar dots"** (after "use metric
-  units"), or in sunnylink **Visuals > HUD, "Radar Dots"**. Off, it costs nothing (no socket, no drawing).
-* **Camera alerts** (display, **on by default**, no sound, never changes the speed): from about 400 m before a fixed
-  speed, red-light or school-zone camera on the road you are on, in your direction, a small camera, its distance and
-  'camera (map)' ('red-light cam (map)', 'school cam (map)') top left, right of where MAX shows. The locations are
-  OpenStreetMap's (about 370 in NSW), carried in the weekly NSW speed-zone data, so they can be out of date or missing -
-  hence "(map)". Mobile and average-speed cameras are not shown. The setting is sunnylink **Visuals > HUD, "Camera
-  Alerts"**. **Nothing shows in the car until the weekly NSW data Action in `SoRadGaming/openpilot` is given the camera
-  file** - a small edit, written and ready (the push13 report's `nswcam/workflow/`) but not made or pushed
-  (`NSW-SPEED-ZONES.md`).
-  Replayed on 126 routes: 109 alerts on 13 cameras across 70 routes, first shown at a median 390 m; 86 followed by
-  passing it, 23 where the car turned off or stopped short; 2 cameras passed with no alert (one just past a junction the
-  look-ahead could not see through, one red-light camera crossed on another road). **Legal note:** NSW bans devices
-  designed to detect or interfere with police speed-measuring equipment (Road Transport Act 2013 s 119); a map list of
-  where cameras stand is not that. Transport for NSW publishes the camera locations itself and its own Speed Adviser app
-  warns of camera zones by GPS; Google Maps and Waze do the same in Australia. This is not legal advice.
+* **Close follow in queues - live, on by default.** In slow traffic, behind a car the radar tracks, openpilot now
+  follows closer so cars can't cut in: still 6 m at a stop, about 1 s behind at 15 km/h (push12 held 1.25 s on
+  aggressive), and the gap grows back to your personality's own by **17 km/h (aggressive), 19 (standard) or 22
+  (relaxed)** - above that nothing changes. It also nudges the model's own (longer) experimental-mode gap closer, never
+  closer than its own limit. It works by itself whenever openpilot drives the speed, and **steps out at once** for a
+  car ahead braking (and stays out 3 s after a hard brake), a time to collision under 3 s, a downhill steeper than 3 %,
+  any collision warning, a car cutting in, or your gas or brake. **While it is holding the closer gap you see a small
+  mark of two cars, one close behind the other, at the bottom of the comma 4's right strip** (the planned stop and the
+  curve stay at the top; the confidence ball covers the mark when it comes down that far). **To switch it off:** comma 4
+  **Settings > Toggles, "close follow"**, or sunnylink **Vehicle > Honda, "Close Follow"** - it takes effect within 3 s,
+  also while driving; off, it only works out and logs what it would do. The mark has its own setting (sunnylink Visuals
+  > HUD, "Close Follow Mark").
+  *The safety limit:* its gap was sized (the skeptic's set) so that a car braking at -4 m/s² from steady following still
+  leaves 2 m with a weak brake (-1.8 m/s² after 0.36 s - the old 255-count ceiling's weak end). In this update's
+  closed-loop sim with the real controllers and brake: **2.21 m at the closest** (2.04 m after a VSA fallback to 255).
+  *What it costs:* a closer gap is less room. Below its hand-back it keeps 0.5-1.7 m less margin than push12 when the
+  car ahead brakes - that is the closer gap itself. In the sim it never touches a car braking at -4, -5 or -6 m/s² while
+  it holds the closer gap (with the weak design brake), nor one braking at -5 with an even weaker brake (-1.5); the
+  closest calls are at 20-22 km/h, where it has already handed back and brake320 makes them better than push12. The case
+  it costs most: **a car pulling away hard from a crawl (8 to 22 km/h at 1.5 m/s²) and then braking at -4** - with the
+  weak design brake that leaves 1.64 m (relaxed) and 1.53 m (standard) where push12 left 2.76 and 1.93 (3.3 / 3.2 m
+  against 4.7 / 4.1 with the measured brake). Close follow has already handed back by then, but the gap it closed at 8
+  km/h has not fully reopened; the envelope study expected this (it predicted worse: 0.26 m and contact). And one
+  stacked case touches where push12 did not: the weakest brake AND a VSA fallback to 255 AND a car braking at -6, at 1-2
+  km/h. If that is not acceptable, the switch is the answer for now. Details below.
+  *On your routes* (the real planner with close follow live, on 20 routes, 290 engaged minutes): behind a car under 22
+  km/h for 52 minutes (35 of them standing), the closer gap was in 70 % of that time, and it actually tightened (the
+  mark) for 1.8 minutes - 0.5-1.2 m shorter target gaps at 2-17 km/h; it raised the plan for 1.9 minutes, by a median
+  0.04 m/s² (most 0.22), and **never while a car ahead was braking, never during any of the 76 collision-warning
+  frames**. On hilly routes the downhill rule kept it out a fair share of the time (10 % overall).
+* **Harder braking when it has to: 320 counts (brake320).** openpilot's brake request used to stop at 255 counts (about
+  -2.45 m/s² on the level); the car's own radar asks for up to 320 when it brakes for you, and now openpilot may too
+  (about -2.95 m/s², roughly 20 % more, 7-22 m shorter stops from 60-100 km/h). Only a request harder than about -2.45
+  earns it - ordinary braking and every stop are exactly as before - and only on this car with openpilot driving the
+  speed. A VSA fault of any kind (the 32-11 valve, any brake or ABS warning) takes it back to 255 for the drive. When
+  the car's radar warns of a collision while openpilot brakes above 255, openpilot's brake message carries the radar's
+  warning and chime, so you still get them. In your logs a request that hard comes about 7 times an engaged hour, a
+  second or two each (hard slow-downs, often downhill), and there it now brakes a little harder; the one moment where it
+  would have changed the outcome is route 143, the stopped car at night. The panda's safety check changed with it
+  (safety param 164), which is why the panda flashes.
+* **No lane change starts below 52 km/h** (live, from push13). 52 km/h is where the board starts steering (it lets go
+  under 51), so below it a lane change was the model asking for steering the car does not give. Below 52 the blinker
+  arms nothing: no "steer to change lanes" prompt, and a nudge does nothing. A change already waiting is kept down to 51
+  so a small dip does not cancel it, but it only starts at 52 or above; a change already running finishes. A blinker
+  switched on below 52 and held past it gives no prompt: switch it off and on again above 52. **A merge you make by hand
+  through 52 km/h with the blinker on:** openpilot gives it no lane change, and when the board starts steering at 52 it
+  follows the model's lane - which may still be the old one while you are across the line - so the wheel may pull you
+  back. Hold the wheel through it: pushing against the board fades it out. (Replayed over 67 routes: 174 of 438
+  lane-change starts go, 171 of them below 52 km/h.)
+* **Radar dots** (off by default): every track the radar reports as a small dot on the road - white a track openpilot is
+  not following, cyan the car it follows (a smaller cyan dot for a second lead), a cyan ring what the clutter guard
+  holds the speed back for. Switch it on under comma 4 **Settings > Toggles, "radar dots"** or sunnylink **Visuals >
+  HUD, "Radar Dots"**.
+* **Camera alerts** (on by default, no sound, never changes the speed): from about 400 m before a fixed speed,
+  red-light or school-zone camera on your road, in your direction, a small camera, its distance and 'camera (map)' top
+  left. The locations are OpenStreetMap's, carried in the weekly NSW data - they can be out of date or missing, hence
+  "(map)". **Nothing shows until the weekly NSW data Action in `SoRadGaming/openpilot` is given the camera file** - a
+  small edit, written and ready (the push13 report's `nswcam/workflow/`) but not made or pushed (`NSW-SPEED-ZONES.md`).
+  Replayed on 126 routes: 109 alerts on 13 cameras. **Legal note:** NSW bans devices designed to detect or interfere
+  with police speed-measuring equipment (Road Transport Act 2013 s 119); a map list of where cameras stand is not that -
+  Transport for NSW publishes the locations and its own Speed Adviser app warns of them. This is not legal advice.
+* **The radar's track slots, tidied** (radartidy, opendbc): an empty slot is only the radar's "nothing here" value
+  (returns at 255-256 m were being dropped), the update waits for the radar's last track message, a re-used track number
+  keeps its id only when it is the same object, and a coasted (extrapolated) track is marked as such. Replayed on 69
+  routes: no new phantom brake (`CHANGELOG-elesys.md` section 25).
 
 ### Shadow: logged only, for you to decide on
 
-* **Close follow in queues** (`CloseFollowMode` 1, no UI; your round-5 request "close up in queues so cars can't cut
-  in"). Below 35 km/h behind a real radar lead it works out a closer follow - 0.5 s at a stop, 1.0 s at 18 km/h, back to
-  your personality's by 35 km/h, the stopped gap still 6 m - and in experimental mode how far it would lift the model's
-  accel when the model hangs 3-10 m further back (at most 0.5 m/s² on aggressive). It drops out on the same frame on a
-  braking lead, any FCW, a pedal or a new car. Replayed on 20 routes (61 engaged minutes behind a lead under 35 km/h,
-  about 40 of them standing): it would have raised the plan for 3.9 minutes, mostly by 0.03-0.09 m/s², and **never
-  while a lead was braking** (0 frames on all 20 routes; 0 in the 76 FCW frames). As specified it does little in your
-  queues: in experimental mode the model holds about 17 m at 18-29 km/h where close follow aims for 13 m. Its solve runs after the plan
-  is sent, so the shadow never delays the plan; its cost is in the log (`smax`/`xmax` in the `closefollow` line).
-  **To decide before it goes live:** the on-switch (a distance-button hold, or automatic - one hook,
-  `CloseFollowSwitch`), the fade speed (`CF_FADE_KPH`, 35 km/h) and a speed cap. A live preview (sim, chill mode, the
-  car's own CMBS left out) cut the closest approach by 0.4-1.15 m at 10-30 km/h, and at 20 km/h with the lead
-  braking at -8 m/s² left 0.09 m where push12 left 1.24 m. If you want it to do more: shorter holds, a lift from 7 km/h,
-  or a softer lead-braking trip - each gives up some margin.
-* **Ease off for bends** (`BendEaseMode` 1; sunnylink **Vehicle > Honda, "Ease Off for Bends"**: Off / Shadow / Live).
-  Your EPS holds about 1.0-1.25 m/s² sideways and SCC-V only slows for bends it puts over 1.3, so motorway bends and
-  ramps set off the board's steer-required alarm: 65 bends of 1.0-1.6 m/s² in 7.8 h of steering at 60 km/h or more
-  (routes aa-152, about 8 an hour). From the model's planned path it works out a gentle slowdown toward the speed that
-  takes the bend at 1.1 m/s² - at most 0.6 m/s² of braking and 15 km/h off, never under 55 km/h, only while openpilot
-  steers and drives the speed, nothing while you press the gas or for 2 s after. Replayed closed loop on 48 routes it
-  would have eased 9 of 64 alarm bends by 2 km/h or more (2 of them down to 1.1), about 1.2 an hour; 4 of 283 bends the
-  EPS did hold would have been slowed by 2.7-8.9 km/h; no straight-road slowdowns. Live, the comma 4's curve item shows
-  its target. Behind a lead the plan can be up to about 0.2 m/s² higher for a few seconds (the planner follows the lead
-  from its eased speed; in the car the car is slower and the gap larger too). **Suggested:** a week in shadow, then
-  look at `customReserved11` and the `bendease` lines before choosing Live. Open: keep 1.0/1.1 or move to 1.0/1.0; the
-  15 km/h cap could be 10; is the curve item showing a bend slowdown what you want.
+* **Brake sooner for a hard-braking car** (`LeadBrakeAssistMode` 1 = shadow; sunnylink **Vehicle > Honda, "Brake
+  Sooner for a Hard-Braking Car"**: Off / Shadow / Live, offroad only). When the car ahead brakes hard it reads the fall
+  in that car's radar speed before the radar's own smoothed estimate catches up, once the camera also sees it slowing
+  (or the fall shows on two radar readings in a row). On 184 hard-braking leads from your routes the plan would reach
+  -2.0 m/s² a mean 0.24 s sooner, 0.25 m more room after 4 s; 0 phantom brakes on the 83 clutter and round-8 routes.
+  It logs `customReserved13` and one `leadbrake` line per episode. It and close follow never act on the same moment:
+  close follow is out for any braking car before this one can start.
+* **Ease off for bends** (`BendEaseMode` 1 = shadow; sunnylink **Vehicle > Honda, "Ease Off for Bends"**): a gentle
+  slowdown, at most 0.6 m/s² and 15 km/h, for a motorway bend or ramp sharper than your EPS can hold (about 1.1 m/s²
+  sideways), so the board's steer-required alarm is not set off; never under 55 km/h. Replayed: it would have eased 9
+  of 64 alarm bends by 2 km/h or more, about 1.2 an hour. Suggested: a week in shadow, then the `customReserved11` /
+  `bendease` lines before choosing Live.
 
-### The brake cap, corrected
+### Fixed after push13's review
+
+* **mapd: a camera-alert failure can no longer change the NSW speed limits.** Its publisher is made separately after
+  the NSW setup (a failure there used to switch NSW off for the whole boot) and the camera hold has its own error
+  handling that only clears the camera (a failure used to publish OSM's limit for that second). Both proven by tests
+  that fail on push13's code.
+* **plannerd sends `driverAssistance` (the lane-departure warning) before close follow's shadow work**, so that solve
+  can never delay it.
+* **The brake figures are the measured ones everywhere**: full brake is about -2.45 m/s² at 255 counts on the level
+  and about -2.95 at 320; "-1.8 to -2.0" was route 143's downhill (`FEATURES-elesys.md`, `CAR-HONDA-ACCORD-9G-AU.md`
+  5.3, 7.12, 7.13, 10.8 and the code comments now agree).
+* **The hand-merge note above**, in plain words (also README Step 7, item 7).
+
+### The brake cap, corrected (push13's finding, now acted on by brake320)
 
 The factory radar's real brake request tops out at **320 counts**, with the pump bit on; **840 was a one-frame release
-value**, never a request. The only 840 in all 201 routes is drive `0000004a` (`S:\OP\comma_logs`, Fri 12 Jun 2026
-20:49:57 AEST, segment 5 about 14 s in, route time 5:14.0): the radar's `0x1FA` on bus 2 held 320 for about 5 s and
-then let go 840 → 630 → 420 → 210 → 0, 20 ms a step, pump bit off (808 → 606 → 404 → 202 → 0 a second earlier, then
-back to 320). openpilot was engaged and the comma blocked the radar's frames, so the brakes got openpilot's own 14-50
-counts and the car slowed at no more than about 0.85 m/s². There are 111 such release spikes (324-1022) on 31 routes
-from May-July, all on bus 2 with the pump bit off, none on the car bus; since July the radar's brake count is 0 on every
-frame. The "1022 counts at -4.24 m/s²" (route 25) and "-4.88" (route 0e) were your own pedal braking.
+value**, never a request - the only 840 in 201 routes is drive `0000004a` (12 Jun 2026, segment 5), where the radar held
+320 for about 5 s and then let go 840 → 630 → 420 → 210 → 0. There are 111 such release spikes (324-1022) on 31 routes
+from May-July, all on the radar's bus with the pump bit off; the "1022 counts at -4.24 m/s²" (route 25) and "-4.88"
+(route 0e) were your own pedal braking. brake320 is what that finding wanted: openpilot's ceiling at the radar's own
+320, on this car only, with the panda changed in step.
 
-* **Measured on the level:** 240-255 counts give about -2.45 m/s² (not -1.8 to -2.0, which was route 143's 5%
-  downhill); 320 would give about -2.95, so raising openpilot's cap from 255 to 320 buys about 0.5 m/s² (20%) - 7-22 m
-  shorter stops from 60-100 km/h. In your logs it would have changed one event: route 143, the stopped car at night,
-  which 320 would have stopped 2.5-3.7 m short with no driver.
-* **Not in push13, and best not before the VSA (32-11) is repaired:** the faulted valve is in the unit that applies
-  this braking. When it is done it wants a this-car-only fraction ceiling in opendbc and the panda changed in step
-  (the panda refusing frames over 255 would latch BRAKE_ERROR), and the code and doc comments that still say "a real
-  CMBS brake is 320-1022" or "full brake -1.8 to -2.0" corrected with it.
+### The merge, the gates, the sims and the replays
 
-### The merge, the gates and the replays
+* **opendbc `release13`** = push12's `b44473bf` + radartidy + brake320, merged with no conflict (they touch the radar
+  decoder and the controller/safety; only `FORK.md` was edited by both, in different places). **sunnypilot
+  `release13`** = push13 + leadbrake + radartidy + brake320. Conflicts only in lists both sides add to - plannerd's
+  PubMaster (`customReserved10`, `11`, and `13` where the lead brake runs), `services.py`, `params_keys.h`, the car
+  doc's file table and the fork guide's rows; `custom.capnp` merged by itself (each feature has its own reserved
+  struct: close follow 10, bends 11, cameras 12, lead brake 13, brake320 14). The one real decision is the one leadbrake
+  prescribed: close follow's MPC is handed the lead brake's view of the car ahead, not radarState. **Every file only one
+  branch touched is byte-identical to that branch's tip** at the merge (close follow's two files differ by that
+  resolution alone; later commits change some on purpose).
+* **Close follow live** (`b09b7a958`): the `CloseFollow` switch (BOOL, default on, replacing push13's `CloseFollowMode`,
+  which no UI ever set), automatic activation, the skeptic's schedule and the three new step-out rules unchanged from the
+  spec, the log's new fields (`switchOn`, `live`, `tightening`, `pitchFiltered`, `ttc`, `hardBrakeHold`; the 10 s
+  `closefollow` line's `sw` and `live`), the mark, and its tests (57). LongControl, the PID floor and the brake's rise
+  limit are not touched by it.
+* **Gates** (`~/sp-merge`, `release13` checked out, code tip `1aaf39bbf`):
+  * `scons -j12` rc 0. **The panda firmware built with it, `panda_h7.bin.signed`, carries brake320's safety**: sha256
+    `191d5b11144c6536836537a0b82f8169925daa69fdafb8f1b089a7b18eeaff15`, byte-identical to brake320's reviewed image
+    (push12's is `631c9f66...`), with the new `honda_nidec_max_brake` in its symbol table.
+  * opendbc safety suite: 9342 tests OK (939 skipped), **100 % line coverage** (honda.h 228/228); `honda.h` mutation
+    254/254 killed; MISRA no violations (the cppcheck checkers list differs from `checkers.txt` exactly as on brake320).
+    opendbc car + sunnypilot tests: 1195 passed, 39 skipped.
+  * The full openpilot suite: **3286 passed, 47 skipped, 1 xfailed, 0 failed** (push13: 3220 / 46 / 1). Test by test:
+    every push13 test still passes but six of close follow's 46, rewritten for the live switch; 72 new - the lead brake
+    36 + 2, close follow 17 (57 in all), brake320's log 6, cereal's per-service tests for the two new services 8, the
+    NSW camera isolation 2, the mark's render 1. The skip IDs are the same 34; the runner's count of hardware-only classes
+    skipped in `setUpClass` (once per worker that drew them) is one higher.
+  * `ruff` clean (openpilot and opendbc); `ty check openpilot` 4, push12's 4 in the same files (leadbrake's and
+    brake320's tests had 41 new ones, fixed with casts and annotations only); codespell no new hit (brake320's test
+    used `assertIn`); `compile_settings_ui --check` matches; no file mode changed; no file over 120 KB added (largest
+    new: `test_close_follow.py`, 60,774 bytes); `params_keys.h` 322 entries, no duplicate.
+* **[R] Closed-loop sim of close follow live** (the skeptic's frame - the real MPC and close follow driven as the
+  planner drives them, radard's filter - with the real LongControl and the car's real CarController and brake320; the
+  car's measured brake curve scaled to the design brake, -1.8 m/s² at 255 counts, -2.13 at 320). Margins in m (the
+  closest any family came, push12 vs this update live; `!` = contact, km/h):
 
-* **Conflicts only where two features list the same things,** each side kept: plannerd's PubMaster (now
-  `customReserved10` and `customReserved11`), `hud_settings.py` (`HudCameraAlerts` the tenth toggle, on by default;
-  `HudRadarDots` a key outside the toggles, off by default), `test_hud_cluster.py` and `docs/fork/README.md`.
-  `custom.capnp`, `services.py`, `params_keys.h` (320 entries, no duplicate), `ui_state.py`, `hud_model.py` and the
-  sunnylink pages merged by themselves; `compile_settings_ui --check` matches.
-* **One test needed the merge:** close follow's `test_shadow_runs_after_the_plan_is_sent` listed every send of the
-  planner's `publish()`, and on push13 the bend ease also sends `customReserved11` there (after `longitudinalPlanSP`,
-  before close follow's solve). It now checks close follow's and the plan's sends in order and that nothing but
-  `customReserved10` follows close follow's solve in shadow; moving the solve back before the plan still fails it.
-* **ty:** the merged tree had 36 new diagnostics from four branches (code ty could not follow, no bug among them). Fixed
-  with annotations and casts only; nothing the code does changed (`386e5d180`). push13 now has push12's 4, in the same
-  files and lines.
-* **Gates:** on the code tip `386e5d180` (the docs commit on top changes no code), in `~/sp-merge`:
-  `scons -j12` rc 0. The full suite (`tools/test_runner.py -j 12`): **3220 passed, 46 skipped, 1 xfailed, 0 failed**
-  (the same on the merges before the ty fix). Against push12 run the same way the same afternoon (3009 passed, 47
-  skipped, 1 xfailed), test by test: every push12 test still passes, and the 211 new passes are the five branches' tests
-  (close follow 46, the bend ease 44 and its curve item 6, the lane-change floor 16, radar dots 33, the cameras 38, their
-  mapd messages 6 and their HUD 10) plus cereal's per-service tests for the three new services (12). The one skip less is
-  the runner's count of hardware-only classes skipped in `setUpClass` (pandad, sensord, onroad: reported once per worker
-  that drew them, 5 times on push12's run, 4 on push13's); the same classes are skipped in both. `ty check openpilot`: 4,
-  push12's 4 at the same lines. `ruff` clean on openpilot and opendbc; codespell no new hits (two words in this entry and
-  one in `NSW-SPEED-ZONES.md` reworded for it); `compile_settings_ui --check` matches; the repo's lint (indentation,
-  large files, shebangs, nomerge) passes; no file mode changed, and every new file is 644 except `cameras.py`, 755 like
-  `build_index.py` (a script with a shebang); no file over 120 KB added (the largest new file is `close_follow.py`,
-  45,852 bytes); `params_keys.h` 320 entries, no duplicate (`Params().all_keys()` agrees).
-* **[R] The default params change no CAN** (closed-loop process replay of plannerd + controlsd + card, openpilot's own
-  harness, push12 and push13 run side by side on each 4-minute chunk, the routes' own params, close follow and the bend
-  ease at their defaults): **14c, all 47 segments: every output identical** - `sendcan` 278,426 messages, 682,167 CAN
-  frames, frame for frame, and carState, carControl, carOutput, controlsState, longitudinalPlan and longitudinalPlanSP.
-  **14d, all 44 segments: `sendcan` identical** (259,948 messages, 636,894 CAN frames) and every other output too,
-  except `longitudinalPlanSP` on 44 of 52,232 messages in two chunks, all in speed-limit assist's 'now' offer (`nowKey`,
-  `nowLimit`, `nowTarget`), which counts a cruise-button release inside a 0.5 s wall-clock window. Not push13: re-run
-  side by side, push12 against push12 differs on the same chunks, frames and fields (20 and 36 messages), and push12
-  against push13 again (21 and 31); the open-loop run below, on the log's clock, has every one of those plans identical.
-  The shadows were working throughout: close follow active on 258 / 172 plans (14c / 14d) and would have raised the plan
-  on 104 / 64; the bend ease in an episode on 1,056 / 3,286 plans and would have slowed the car on 520 / 1,073. Route
-  152 has qlogs only (no full-rate CAN or model), so it cannot be replayed closed loop; it is in the next two items.
-* **[R] The plans, open loop with the log's clock** (the real planner, driven as plannerd drives it, push12's against
-  push13's on the same inputs; speed-limit assist's 0.5 s button window on the log's clock, so nothing depends on how
-  busy the PC is): 14c 55,913 plans and 14d 52,232, `longitudinalPlan` and `longitudinalPlanSP` identical on every one;
-  **152** (qlogs only, so the model is rebuilt from `drivingModelData` at reduced fidelity, as the close-follow replay
-  did) **24,254 plans, identical**, with close follow active on 314 of them and wanting to raise the plan on 12 (the
-  rebuilt model has no bends, so the bend ease had nothing to do there). The plan is the only way close follow and the
-  bend ease reach controlsd and card, so identical plans mean identical CAN.
-* **[R] Where the lane-change floor changes lateral desire** (push12's `DesireHelper` against push13's on the logged
-  inputs): 14c: the same 13 lane-change starts (67-117 km/h); for 2.7 s at 32-38 km/h push12 showed a waiting prompt
-  push13 does not, and the desire the model gets is identical on every frame. 14d: 27 starts become 26 - the one at 39.9
-  km/h (t=487 s) goes, so the model's desire differs for 5.1 s at 37-40 km/h, plus 2.3 s of a waiting prompt at 32-48
-  km/h. 152 (qlogs, 10 Hz car state, no model probabilities: coarse): two lane changes at 31-42 km/h go, the desire
-  differs for 1.8 s at 32-39 km/h. Every frame where the desire differs is under 52 km/h, where the board does not
-  steer. The closed-loop replay above feeds the logged model, so it cannot show this: in the car, `0x0E4` (the steering
-  request; the board does not steer below 51 km/h) and the lane-change alerts differ in exactly those seconds and
-  nowhere else.
+  | scenario (5-22 km/h, aggressive / standard / relaxed) | push12 | release13 live | live after a VSA fallback (255) |
+  |---|---|---|---|
+  | lead brakes at -4 | -0.41!4.0 / 0.50 / 2.20 | 0.50 / 1.39 / 2.43 | -0.41!4.0 / 0.50 / 2.20 |
+  | lead brakes at -5 | -1.00!6.3 / -0.03!1.0 / 1.71 | -0.11!1.9 / 0.88 / 2.20 | -1.00!6.3 / -0.03!1.0 / 1.71 |
+  | lead brakes at -6 | -1.41!7.6 / -0.40!4.0 / 1.37 | -0.54!4.5 / 0.50 / 2.04 | -1.40!7.6 / -0.39!4.0 / 1.37 |
+  | the lead's lead stops (lead at -10, 10-22 km/h) | -2.14!9.4 / -1.10!6.7 / 0.72 | -1.31!7.3 / -0.21!2.8 / 1.62 | -2.13!9.4 / -1.10!6.7 / 0.73 |
+  | accelerate then slam (8→22 km/h at 1.5, then -4) | 0.87 / 1.93 / 2.76 | 1.44 / **1.53 / 1.64** | 0.84 / 1.04 / 1.17 |
+  | cut-in (a car lands 5 m ahead, 1 m/s slower, -4 after 1 s) | -3.10!11.5 / -3.68!12.5 / -3.12!11.5 | -2.67!11.1 / -3.28!12.4 / -2.70!11.2 | -3.09!11.5 / -3.68!12.5 / -3.10!11.5 |
+  | 3 % downhill, lead -4 (4 % takes it out) | -1.25!6.5 / -0.33!3.3 / 1.21 | -0.01!0.5 / 0.91 / 1.55 | -1.25!6.5 / -0.33!3.3 / 0.60 |
+  | weak brake (-1.5 at 255), lead -4 | -2.64!9.6 / -1.73!7.7 / -0.02!0.8 | -1.47!7.1 / -0.50!4.0 / 0.97 | -2.64!9.6 / -1.73!7.7 / -0.02!0.8 |
+  | weak brake, lead -5 | -3.23!10.6 / -2.27!8.9 / -0.52!4.1 | -2.08!8.6 / -1.05!5.9 / 0.60 | -3.23!10.6 / -2.27!8.9 / -0.52!4.1 |
+  | weak brake, lead -6 | -3.64!11.3 / -2.64!9.6 / -0.87!5.4 | -2.52!9.5 / -1.43!7.0 / 0.32 | -3.63!11.3 / -2.64!9.6 / -0.87!5.4 |
 
-### What to look for in the next drives
+  The closest cases are at 20-22 km/h, where close follow has handed back and the plan is push12's: brake320 is what
+  improves them. **The acceptance** (as corrected on 24 Oct: a closer gap must leave less margin, so "never worse than
+  close follow off" was the wrong test) **is met:** with the design brake, a car braking at -4 to a stop leaves at least
+  2 m while close follow holds its closer gap - **2.21 m** at the closest (21 cases), **2.04 m** after a VSA fallback to
+  255; no contact at -5 or -6 with close follow in; with the weak brake (-1.5) and a lead at -5, no contact with close
+  follow in either. Every contact in the table but the cut-in's is at 18-22 km/h with close follow already out (46 runs:
+  frame for frame the same as with the switch off, or as push12 after a fallback) and no worse than push12's. The waves,
+  the lead's lead, the cut-in and the 3 % downhill are within what the envelope study expected: its own sim of this
+  schedule had the 8→22 wave at 0.26 m on relaxed and contact on standard and aggressive (here 1.64 / 1.53 / 1.44 m);
+  the lead's-lead and downhill contacts are all at 20-22 km/h with close follow out. **One stacked case is worse than
+  push12:** the weak brake AND a VSA fallback to 255 AND a lead braking at -6 touches at 1.0 km/h (standard, from 18
+  km/h) and 2.3 km/h (relaxed, from 20) where push12 kept 0.35 / 0.51 m - close follow was holding a 1.35-1.59 s gap
+  there. The cut-in is better live: close follow drops out on the new car, and from then the plan is push12's from a car
+  already following closer behind the old one. (The cut-in and the weak-brake rows are stress cases: a car landing 5 m
+  ahead at 20 km/h and braking a second later is contact for every build.) The point-by-point loss against push12 is the
+  closer gap itself: 0.5-1.7 m behind a braking car below the hand-back. One option for the accelerate-then-slam case
+  was tried and **not** shipped: reading the schedule also at the lead's speed 2 s ahead, so a car pulling away hands it
+  back sooner - it gives back about half of the loss on relaxed and standard (2.20 / 1.85 m) but costs aggressive 0.3 m,
+  and no change that keeps the closer gap at a crawl can reopen it instantly.
+* **[R] Open loop on 20 of your routes** (the real planner live, as plannerd drives it, on the routes the close-follow
+  builder used): above. Plan raise while a car ahead brakes: **0** (the controller's own test); a look-ahead check that
+  sees 0.5 s into the future, which no controller can, finds 12 frames (at most 0.15 m/s²).
+* **[R] Closed-loop process replay, push12 vs this update, default params** (plannerd + controlsd + card, openpilot's
+  own harness, side by side on 4-minute chunks, routes 14c, 14d and 142): **every `sendcan` difference is explained;
+  none is a bug.** `carState`, `carStateSP`, `carControlSP` and `driverAssistance` are identical on all three routes;
+  `carParams` differs only in the safety param (36 -> 164, brake320), and `radarTracks` in radartidy's decoder (radard
+  is not replayed, so the plan sees the logged `radarState`; radartidy's own proof is its 69-route replay). **14c** (47
+  segments): 270 of 278,426 `sendcan` messages differ, all close follow live and tightening (2 episodes, 4 and 11 s,
+  `0x200`/`0x1FA`; the plan raised at most 0.13 m/s²; at most 157 brake counts where push12 sent 189). **14d** (44):
+  8,658 of 259,948 - close follow 250 (one episode, then 1-count brake steps carried in the planner's warm start: a
+  control run with the switch off makes those segments identical to push12), brake320 8,408: 320 counts where push12
+  sent 255, in four stretches that are a harness artefact both trees share - the replayed card starts cold mid-route and
+  holds a set speed under the logged car's (89 km/h against 100, 105 against 110), so both plans brake at -1.2 m/s² for
+  15-80 s against a logged car that does not slow and both controllers wind down to their floors; the one difference is
+  brake320's ceiling (and its documented tail, the brake learner a count apart afterwards). **142** (23): 1,743 of
+  130,530 - close follow 1,726 (7 episodes, the plan raised at most 0.09 m/s²), brake320 17: a real hard slow-down on a
+  4 % downhill, the request with its pitch term -2.62 m/s², 279 counts against push12's 255 for 0.3 s. Close follow
+  raised its candidate or lifted while a lead braked on 0 plans; `customReserved14` allowed 320, no fallback. The
+  lane-change floor cannot show here (it changes modeld's input, and modeld is not replayed), and no radar warning came
+  above 255 on these routes, so the FCW passthrough had nothing to pass.
 
-* Below 52 km/h no lane-change prompt and no lane change; at 52 and above, lane changes as before. A merge made by hand
-  through 52: what the board does when it takes over.
-* Nothing else should feel different. In the routes: `customReserved10` / `customReserved11` with `mode` 1, and the
-  `closefollow` / `bendease` lines; plannerd's CPU in procLog and `smax` / `xmax` in the `closefollow` lines for the
-  shadow's cost on the device.
-* Radar dots, once switched on: the cyan ring where the clutter guard holds the speed, and whether the dots are big
-  enough on the 536x240 screen. Camera alerts only after the Action edit.
+### What to check on the first drives
+
+1. **The panda.** The first start after the update flashes it (a minute; normal). In the rlog, pandad's start-up line
+   `Panda ... signature <16 hex>, expected <16 hex>`: the two match, and no "Version mismatch after flashing". push12's
+   signature was `b023b54a...`; still seeing it means the old firmware. `pandaStates.safetyParam` 164.
+2. **brake320** (`CAR-HONDA-ACCORD-9G-AU.md` 7.13): `customReserved14` once a second with `allowedCounts` 320,
+   `ceilingCounts` 320, `vsaFallback` false. After a hard stop, `maxCountsDrive` above 255 and a `hondabrake max=`
+   line. **`pandaStates.safetyTxBlocked` must not grow in any second where `maxCountsLastSecond` is above 255** - if it
+   does, stop using openpilot's longitudinal and check the panda's firmware. No `BRAKE_ERROR`. A `hondabrake fallback=`
+   line means the VSA took it back to 255 for that drive: look at the VSA bits first.
+3. **Close follow** in a queue: the mark comes on behind a car under 17-22 km/h and goes when it steps out; the gap
+   feels closer but not uncomfortable; it never holds the closer gap with a car braking ahead. In the qlog every
+   `closefollow` line (at most one per 10 s) reads `mode=2 sw=1`, **`brk=0`** (anything else is a bug), and `live=` the
+   share of its chances it tightened; `customReserved10` carries `switchOn`, `live` and `tightening`. Switch it off once
+   (Toggles) and see `mode=1` within 3 s and no mark.
+4. **The lane-change floor**: below 52 km/h no lane-change prompt and no lane change; at 52 and above, as before. A merge
+   you make by hand through 52: hold the wheel - the board may pull toward the old lane when it starts steering.
+5. Nothing else should feel different. The shadows: `customReserved11` (bends) and `customReserved13` (brake sooner)
+   with `mode` 1, `bendease` and `leadbrake` lines. Radar dots, once switched on: big enough? Camera alerts: only after
+   the Action edit.
 
 ---
 
