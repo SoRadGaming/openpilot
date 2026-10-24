@@ -662,7 +662,12 @@ class TestPlanner(OpenpilotTestCase):
           self.assertEqual(log, in_update)
           log.clear()
           pl.publish(cast(Any, sm), pm)
-          self.assertEqual(log, in_publish)
+          # push13 merge: publish() also sends bend_ease's customReserved11 (FORK(BENDS), from
+          # publish_longitudinal_plan_sp). This test is about close follow's place: its own sends and the plan's in
+          # this order, and in shadow nothing but customReserved10 sent after its solve
+          self.assertEqual([e for e in log if e in in_publish + ['closeSolve']], in_publish)
+          if mode == 1:
+            self.assertEqual(log[log.index('closeSolve') + 1:], ['customReserved10'])
         self.assertTrue(pl.close_follow.mpc_solved)
 
   def test_deferred_shadow_logs_what_inline_would(self):
