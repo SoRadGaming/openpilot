@@ -203,6 +203,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // from the first stock-mode start until they are put back (sunnypilot/selfdrive/car/honda_stock_acc.py).
     {"HondaElesysStockAcc", {PERSISTENT, BOOL, "0"}},
     {"HondaElesysStockAccSaved", {PERSISTENT, JSON}},
+    // FORK(BENDS): ease off for bends the EPS can't hold (bend_ease.py, HONDA_ELESYS only). 0 off, 1 shadow (logs the
+    // target speed it would set in customReserved11, changes nothing), 2 live. A setting, so BACKUP; plannerd reads it
+    // every 3 s, so it can change on the move.
+    {"BendEaseMode", {PERSISTENT | BACKUP, INT, "1"}},
     // FORK(HUD): the comma 4 HUD, one setting per piece (sunnylink Visuals > HUD). Every toggle defaults on; all off is
     // the stock screen. Read by the UI at most once a second. HudPlannedStop / HudCurve: the right strip (hud_rail.py);
     // HudCompact*: named normal alerts small (hud_model.COMPACT_TYPES); HudApproachingLimit: the coming limit in MAX's

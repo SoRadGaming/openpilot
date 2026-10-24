@@ -92,6 +92,7 @@ _services: dict[str, tuple] = {
   "carStateSP": (True, 100., 10),
   "liveMapDataSP": (True, 1., 1),
   "modelDataV2SP": (True, 20., None, QueueSize.BIG),
+  "customReserved11": (True, 20., 2),  # FORK(BENDS): bend_ease.py, plannerd on HONDA_ELESYS only; 10 Hz in the qlog
   "liveLocationKalman": (True, 20.),
   # FORK(CLOSE-FOLLOW): close follow in queues, from plannerd at plan rate; 2 Hz in the qlog (close_follow.py)
   "customReserved10": (True, 20., 10),

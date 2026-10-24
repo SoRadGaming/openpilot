@@ -796,7 +796,25 @@ struct CustomReserved10 @0xcb9fd56c7057593a {
   }
 }
 
+# FORK(BENDS): ease off for bends the EPS can't hold (sunnypilot/selfdrive/controls/lib/smart_cruise_control/bend_ease.py).
+# plannerd publishes it as customReserved11 every planner frame on HONDA_ELESYS only.
+# Reading a shadow log: 'would slow the car' is limiting AND aTarget < 0; the size of the cut is vStart - vGoal (an upper
+# bound - what it would really reach needs the closed-loop replay), not the minimum of vTarget.
 struct CustomReserved11 @0xc2243c65e0340384 {
+  mode @0 :UInt8;            # BendEaseMode: 0 off, 1 shadow (computes and logs, changes nothing), 2 live
+  active @1 :Bool;           # an episode is running: a bend of 1.0 m/s^2 or more ahead at today's speed
+  vTarget @2 :Float32;       # m/s: the speed it sets (live) or would set (shadow) this frame; 0 when none. Never under
+                             # vEgo - 0.6, so in shadow, where the car does not slow, it stays near vEgo - 0.6: see vGoal
+  predLatAccel @3 :Float32;  # m/s^2: the bend ahead at today's speed (vEgo^2 x the plan's largest curvature)
+  vBend @4 :Float32;         # m/s: the speed that takes the tightest point at 1.1 m/s^2 (0: no curvature)
+  distance @5 :Float32;      # m: how far ahead the point that sets the brake curve is
+  aTarget @6 :Float32;       # m/s^2: the accel vTarget implies (vTarget - vEgo, from -1.2), before the planner's jerk limit
+  limiting @7 :Bool;         # vTarget is under the planner's chosen target: it took over (live) or would have (shadow).
+                             # Also when only the 0.5 m/s^2 accel cap binds (aTarget >= 0), which holds the accel, not slows
+  reason @8 :UInt8;          # bend_ease.Reason: 0 off, 1 idle, 2 active, 3 gas, 4 not steering, 5 long off, 6 slow, 7 lane change
+  vStart @9 :Float32;        # m/s: the speed the episode began at (or the driver left it at); 0 outside one
+  vGoal @10 :Float32;        # m/s: where vTarget is heading - the held brake curve within the episode's bounds (55 km/h,
+                             # vStart - 15 km/h), without the per-frame vEgo - 0.6 / + 0.5 limits; 0 when there is no target
 }
 
 struct CustomReserved12 @0x9ccdc8676701b412 {

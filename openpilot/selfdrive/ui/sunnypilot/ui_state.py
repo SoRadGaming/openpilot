@@ -34,6 +34,7 @@ class UIStateSP:
     self.has_icbm: bool = False
     self.is_sp_release: bool = self.params.get_bool("IsReleaseSpBranch")
     self.sm_services_ext = [
+      "customReserved11",  # FORK(BENDS): the bend ease, live, for the comma 4's curve item (hud_model.bend_target)
       "modelManagerSP", "selfdriveStateSP", "longitudinalPlanSP", "backupManagerSP",
       "gpsLocation", "lateralTorqueParameters", "carStateSP", "liveMapDataSP", "carParamsSP", "lateralDelay",
       "modelDataV2SP",  # FORK(HUD): the road-edge block and the refused nudge, for the comma 4's lane-block tile
