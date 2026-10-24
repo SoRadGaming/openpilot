@@ -195,14 +195,18 @@ from May-July, all on the radar's bus with the pump bit off; the "1022 counts at
   `closefollow` line's `sw` and `live`), the mark, and its tests (57). LongControl, the PID floor and the brake's rise
   limit are not touched by it. The release13 review's fixes (`683ecc077`, above): the look-ahead, the 1 m cap, the
   hand-back reset, the mark's rules, `raised` / `gapCloser` / `scheduleSpeed` and a meaningful `up`; 64 tests.
-* **Gates** (`~/sp-merge`, `release13` checked out, code tip `1aaf39bbf`):
+* **Gates** (`~/sp-merge`, `release13` checked out; re-run after the release13 review on `3a29720d6`, the code at
+  `683ecc077`):
   * `scons -j12` rc 0. **The panda firmware built with it, `panda_h7.bin.signed`, carries brake320's safety**: sha256
     `191d5b11144c6536836537a0b82f8169925daa69fdafb8f1b089a7b18eeaff15`, byte-identical to brake320's reviewed image
-    (push12's is `631c9f66...`), with the new `honda_nidec_max_brake` in its symbol table.
-  * opendbc safety suite: 9342 tests OK (939 skipped), **100 % line coverage** (honda.h 228/228); `honda.h` mutation
-    254/254 killed; MISRA no violations (the cppcheck checkers list differs from `checkers.txt` exactly as on brake320).
-    opendbc car + sunnypilot tests: 1195 passed, 39 skipped.
-  * The full openpilot suite: **3286 passed, 47 skipped, 1 xfailed, 0 failed** (push13: 3220 / 46 / 1). Test by test:
+    (push12's is `631c9f66...`), with the new `honda_nidec_max_brake` in its symbol table (the review touched no C).
+  * opendbc (`469d12c7`, unchanged by the review, re-run): safety suite 9342 tests OK (939 skipped), **100 % line
+    coverage** (honda.h 228/228); `honda.h` mutation 254/254 killed; MISRA no violations (the cppcheck checkers list
+    differs from `checkers.txt` exactly as on brake320). opendbc car + sunnypilot tests: 1195 passed, 39 skipped.
+  * The full openpilot suite after the review: **3295 passed, 45 skipped, 1 xfailed, 0 failed** (`-j 8`; before the
+    review 3286 / 45 / 1 at `-j 8` - 47 skipped at `-j 12`, the skip count moves with the worker count, the skipped tests
+    are the same). The review added 9: close follow 7 (64 in all), the mark's rules without a window 2; the mark's render
+    test grew. Before the review, against push13 (3220 / 46 / 1), test by test:
     every push13 test still passes but six of close follow's 46, rewritten for the live switch; 72 new - the lead brake
     36 + 2, close follow 17 (57 in all), brake320's log 6, cereal's per-service tests for the two new services 8, the
     NSW camera isolation 2, the mark's render 1. The skip IDs are the same 34; the runner's count of hardware-only classes
@@ -211,8 +215,9 @@ from May-July, all on the radar's bus with the pump bit off; the "1022 counts at
     brake320's tests had 41 new ones, fixed with casts and annotations only); codespell no new hit in any changed file
     (brake320's log test named unittest's assert-in method, which codespell flags: plain asserts now);
     `compile_settings_ui --check` matches; no file mode changed; no new file over 120 KB (largest:
-    `test_close_follow.py`, 60,774 bytes - the three docs already over it at push12 only grew); `params_keys.h` 322
-    entries, no duplicate.
+    `test_close_follow.py`, 72,821 bytes after the review - the three docs already over it at push12 only grew);
+    `params_keys.h` 322 entries, no duplicate (`CloseFollow` default on, `CloseFollowMode` gone). After the review the
+    same: ruff clean, ty push12's 4, codespell no new hit in the 54 changed files, settings match, no mode change.
 * **[R] Closed-loop sim of close follow live** (the skeptic's frame - the real MPC and close follow driven as the
   planner drives them, radard's filter - with the real LongControl and the car's real CarController and brake320; the
   car's measured brake curve scaled to the design brake, -1.8 m/s² at 255 counts, -2.13 at 320; push12 here is push12's
