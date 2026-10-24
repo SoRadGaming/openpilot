@@ -38,7 +38,8 @@ Long range (long_range_track()): a stopped car the camera finds far ahead but re
 (Mon 00:46:03, at night, 58 km/h): radar track 272 had a vehicle stopped in the lane at 94 -> 73 m from t=168.32, but
 the camera read it at 10-16 m/s, so upstream's vel_sane (and from 67 m this guard's tolerance, the same 10 m/s) set
 the track aside and radard used the camera's lead, but for single frames, until t=169.7; the plan stayed at -0.3 to
--0.9 m/s^2 until t=170.1 and the car, at its full brake of about -1.8 m/s^2, needed the driver. Only on HONDA_ELESYS,
+-0.9 m/s^2 until t=170.1 and the car, at full brake (255 counts: -2.45 m/s^2 on the level, measured; -1.65 to -1.92
+there, a ~5% downhill), needed the driver. Only on HONDA_ELESYS,
 only for leadOne, and only on a frame where radard has FALLEN BACK to the camera's lead (its match found no track),
 radard takes a stationary track (|vLead| under LR_V_STATIONARY) within LR_D_SHARE of the camera's range and LR_Y_TOL of
 its lateral position, with the car above LR_V_EGO, the camera's lead LR_D_MIN or more away and radard's filtered prob

@@ -110,6 +110,8 @@ _services: dict[str, tuple] = {
   "livestreamNarrowRoadEncodeData": (False, 20., None, QueueSize.MEDIUM),
   "livestreamCabinEncodeData": (False, 20., None, QueueSize.MEDIUM),
   "customReservedRawData0": (True, 0.),
+  # FORK(HONDA_ACCORD_9G_AU): brake320's ceiling and VSA fallback, 1 Hz and on change, in the qlog (decimation 1)
+  "customReserved14": (True, 1., 1),
 }
 SERVICE_LIST = {name: Service(*vals) for
                 idx, (name, vals) in enumerate(_services.items())}

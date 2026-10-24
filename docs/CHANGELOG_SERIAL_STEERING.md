@@ -1364,7 +1364,9 @@ from a learned gain of 1.0062. What full braking gains is the credit, 2.6 x `win
   the credit, <= 38 counts, for <= ~8 sends). Both pump rules already run the pump continuously above 200 counts
   while moving, so the pump bit does not change. The soft stop's ceiling still applies after it. Stock AEB is
   untouched: panda forwards the CMBS `0x1FA` while its brake is >= openpilot's, and a real CMBS brake is 320-1022
-  counts.
+  counts. (Corrected 2026-10-24, brake320 - see `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 7.11 and 7.13: the radar's real
+  CMBS requests top out at 320 counts with the pump bit on, 256-320 on the CMBS brakes of 1-7 July; the 500-1022 values
+  are its pump-off release step-downs, never requests.)
 * **One interaction, kept:** the brake learner weights its error by the commanded fraction, which at full brake is now
   0.99 instead of 0.99 - wind. It is gated on 150 frames of a steady plan, so it rarely runs during an emergency; on
   the replays below no frame after a full-brake episode changed.

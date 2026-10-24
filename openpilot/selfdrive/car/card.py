@@ -28,6 +28,7 @@ from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfac
 from openpilot.sunnypilot.selfdrive.car.honda_stock_acc import LongSettingsRestore  # FORK(HONDA_ACCORD_9G_AU)
 from openpilot.sunnypilot.selfdrive.car.diag_tool_guard import DiagToolGuard  # FORK(HONDA_ACCORD_9G_AU)
 from openpilot.sunnypilot.selfdrive.car.blr_board import BlrBoardParams  # FORK(BRAKE-LAMP-RELAY)
+from openpilot.sunnypilot.selfdrive.car.brake320_log import Brake320Log  # FORK(HONDA_ACCORD_9G_AU): brake320
 
 REPLAY = "REPLAY" in os.environ
 
@@ -198,6 +199,9 @@ class Car:
     # (diag_tool_guard.py). It inherits DiagToolStock, so a card restart inside the drive keeps holding.
     self._diag_written = self.params.get_bool("DiagToolStock")
     self.diag_guard = DiagToolGuard(self.CP, self._diag_written)
+    # FORK(HONDA_ACCORD_9G_AU): brake320's ceiling, VSA fallback and counts sent, as customReserved14 (brake320_log.py).
+    # None, and no socket, on every other car and in stock ACC mode.
+    self.brake320_log = Brake320Log.create(self.CI)
 
     self.v_cruise_helper = VCruiseHelper(self.CP, self.CP_SP)
 
@@ -306,6 +310,8 @@ class Car:
     # FORK(HONDA_ACCORD_9G_AU): carStateSP is sent above, before carState
     self.stage_board_firmware(CS_SP)
     self.blr_board.stage(CS_SP)  # FORK(BRAKE-LAMP-RELAY): notes only; written from params_thread
+    if self.brake320_log is not None:  # FORK(HONDA_ACCORD_9G_AU): brake320, 1 Hz and on change; never raises
+      self.brake320_log.update()
 
   def stage_board_firmware(self, CS_SP: custom.CarStateSP) -> None:
     """Note the board's firmware identity for params_thread to write.

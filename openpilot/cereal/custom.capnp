@@ -861,7 +861,20 @@ struct CustomReserved13 @0xcd96dafb67a082d0 {
   camera @20 :Bool;           # the camera saw this lead slowing in the last 0.3 s (else a raw decel needs 2 samples in a row)
 }
 
+# FORK(HONDA_ACCORD_9G_AU): brake320, this car's brake ceiling (opendbc/sunnypilot/car/honda/brake_ceiling.py). card sends
+# it at 1 Hz and on any change of the ceiling or the fallback, only on HONDA_ACCORD_9G_AU with openpilot longitudinal
+# (panda's max_brake 320); every other car sends none. Kept under its reserved name: service customReserved14.
 struct CustomReserved14 @0xb057204d7deadf3f {
+  allowedCounts @0 :UInt16;            # panda's max_brake on this drive, from the safety param: 320
+  ceilingCounts @1 :UInt16;            # the CarController's ceiling now: 320, or 255 after the VSA fallback
+  vsaFallback @2 :Bool;                # latched: any VSA / ABS / brake fault or warning seen this drive
+  vsaFallbackReason @3 :Text;          # what latched it, '+'-joined: vsaFault, vsaStoredFault, accFaulted, espDisabled,
+                                       # vsaMonitorError (or error)
+  vsaFallbackFrame @4 :UInt32;         # the CarState frame (100 Hz from card's start) it latched on; 0 if it has not
+  maxCountsLastSecond @5 :UInt16;      # the highest COMPUTER_BRAKE sent in the last full second
+  sendsAbove255LastSecond @6 :UInt16;  # 0x1FA sends above 255 in that second (50 Hz)
+  maxCountsDrive @7 :UInt16;           # the highest COMPUTER_BRAKE sent this drive
+  sendsAbove255Drive @8 :UInt32;       # 0x1FA sends above 255 this drive
 }
 
 struct CustomReserved15 @0xbd443b539493bc68 {
