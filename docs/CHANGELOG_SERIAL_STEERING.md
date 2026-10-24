@@ -163,9 +163,11 @@ from May-July, all on the radar's bus with the pump bit off; the "1022 counts at
     NSW camera isolation 2, the mark's render 1. The skip IDs are the same 34; the runner's count of hardware-only classes
     skipped in `setUpClass` (once per worker that drew them) is one higher.
   * `ruff` clean (openpilot and opendbc); `ty check openpilot` 4, push12's 4 in the same files (leadbrake's and
-    brake320's tests had 41 new ones, fixed with casts and annotations only); codespell no new hit (brake320's test
-    used unittest's assert-in method); `compile_settings_ui --check` matches; no file mode changed; no file over 120 KB added (largest
-    new: `test_close_follow.py`, 60,774 bytes); `params_keys.h` 322 entries, no duplicate.
+    brake320's tests had 41 new ones, fixed with casts and annotations only); codespell no new hit in any changed file
+    (brake320's log test named unittest's assert-in method, which codespell flags: plain asserts now);
+    `compile_settings_ui --check` matches; no file mode changed; no new file over 120 KB (largest:
+    `test_close_follow.py`, 60,774 bytes - the three docs already over it at push12 only grew); `params_keys.h` 322
+    entries, no duplicate.
 * **[R] Closed-loop sim of close follow live** (the skeptic's frame - the real MPC and close follow driven as the
   planner drives them, radard's filter - with the real LongControl and the car's real CarController and brake320; the
   car's measured brake curve scaled to the design brake, -1.8 m/s² at 255 counts, -2.13 at 320). Margins in m (the
