@@ -51,6 +51,45 @@ NUDGE_RELEASE_FRAMES = 4
 # one counts
 NUDGE_REFUSED_GAP_FRAMES = int(2.0 / DT_MDL)
 
+# FORK(HONDA_ACCORD_9G_AU): NO LANE CHANGE STARTS BELOW THE EPS'S STEERING FLOOR.
+#
+# This car steers through the LKAS gateway board, and the EPS will not take the
+# board's torque below about 51 km/h: the board asks from 52.00 km/h and lets go
+# under 51.00 (GW_EPS_ACK_CPH / GW_EPS_KEEP_CPH in the board's gw_active.c; the
+# EPS itself drops out at 50.2-50.8). A lane change started below that is the
+# driver's hands alone, and it is a single desire pulse to the model, which goes
+# on with the maneuver once the car is back over the floor and the board has the
+# wheel again - after an intersection turn as much as after a real lane change.
+# On routes 10f-152, 66 of 222 lane changes started below 52 km/h, half of them
+# with the wheel past 90 degrees within 8 s (turns), and 6 started below 50 were
+# still running above 52.5. Replayed over 67 routes, this takes 174 of 438 lane
+# change starts: 171 started below 52 km/h, 3 were a second change in the same
+# blinker hold after one of them; every other change is armed and started on
+# the same frame as before but one, nudged at 51.8 km/h, which starts 0.45 s
+# later at 52.0.
+#
+# So, per fingerprint, upstream's LANE_CHANGE_SPEED_MIN rule moves up to this
+# floor, with the board's 1 km/h of hysteresis:
+#   * the blinker arms a lane change (preLaneChange) only at or above the floor,
+#     and a nudge or the auto lane change starts one only there;
+#   * a waiting change is dropped, as upstream drops it under its minimum, only
+#     once the car is LANE_CHANGE_FLOOR_HYST below the floor; in between it
+#     waits, so a dip to 51.9 km/h does not cancel the blinker;
+#   * a change already running finishes, as upstream's does under its minimum:
+#     the model had its one pulse when the change started and finishes it
+#     whatever this state says, so ending the state would only hide a lane
+#     change that is still happening.
+# As upstream, only the blinker's rising edge arms a change: one switched on
+# below the floor, or still on after its waiting change was dropped under the
+# hysteresis, arms nothing until it is switched on again at the floor. In the
+# band a nudge is not a refused one (no chime, no tile); it waits for the floor.
+# Both are left for the owner (CAR doc 10.2 rule 3 has the replayed
+# alternatives). Every car not in the table keeps LANE_CHANGE_SPEED_MIN exactly.
+LANE_CHANGE_SPEED_FLOOR = {
+  "HONDA_ACCORD_9G_AU": 52. * CV.KPH_TO_MS,
+}
+LANE_CHANGE_FLOOR_HYST = 1. * CV.KPH_TO_MS
+
 TURN_DESIRES = {
   TurnDirection.none: log.Desire.none,
   TurnDirection.turnLeft: log.Desire.turnLeft,
@@ -63,6 +102,11 @@ class DesireHelper:
     # direction confirms at once. See NUDGE_FIRM.
     self.nudge_firm = NUDGE_FIRM.get(car_fingerprint)
     self.nudge_frames = 0
+    # FORK(HONDA_ACCORD_9G_AU): where a lane change may start, and under which a waiting one is dropped; both are
+    # upstream's LANE_CHANGE_SPEED_MIN on a car without a LANE_CHANGE_SPEED_FLOOR
+    floor = LANE_CHANGE_SPEED_FLOOR.get(car_fingerprint)
+    self.lane_change_speed_min = LANE_CHANGE_SPEED_MIN if floor is None else max(floor, LANE_CHANGE_SPEED_MIN)
+    self.lane_change_speed_drop = LANE_CHANGE_SPEED_MIN if floor is None else max(floor - LANE_CHANGE_FLOOR_HYST, LANE_CHANGE_SPEED_MIN)
     # FORK(HUD): a nudge refused by a block, for the comma 4's lane-block tile and its chime (see update())
     self.nudge_refused = False
     self.refusal_armed = True
@@ -89,7 +133,8 @@ class DesireHelper:
     self.lane_turn_controller.update_params()
     v_ego = carstate.vEgo
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
-    below_lane_change_speed = v_ego < LANE_CHANGE_SPEED_MIN
+    below_lane_change_speed = v_ego < self.lane_change_speed_min  # FORK(HONDA_ACCORD_9G_AU): LANE_CHANGE_SPEED_FLOOR
+    below_lane_change_drop_speed = v_ego < self.lane_change_speed_drop  # FORK(HONDA_ACCORD_9G_AU): its hysteresis
 
     # Lane turn controller update
     self.lane_turn_controller.update_lane_turn(blindspot_left=carstate.leftBlindspot, blindspot_right=carstate.rightBlindspot,
@@ -154,11 +199,13 @@ class DesireHelper:
 
         self.alc.update_lane_change(blindspot_detected, carstate.brakePressed)
 
-        if not one_blinker or below_lane_change_speed:
+        # FORK(HONDA_ACCORD_9G_AU): dropped under the floor's hysteresis, started only at the floor (on every other car
+        # both are upstream's below_lane_change_speed, and the start's extra test is then always true)
+        if not one_blinker or below_lane_change_drop_speed:
           self.lane_change_state = LaneChangeState.off
           self.lane_change_direction = LaneChangeDirection.none
           self.lane_change_timer = 0.0
-        elif (torque_applied or self.alc.auto_lane_change_allowed) and not blindspot_detected:
+        elif (torque_applied or self.alc.auto_lane_change_allowed) and not blindspot_detected and not below_lane_change_speed:
           self.lane_change_state = LaneChangeState.laneChangeStarting
           self.lane_change_timer = 0.0
 
