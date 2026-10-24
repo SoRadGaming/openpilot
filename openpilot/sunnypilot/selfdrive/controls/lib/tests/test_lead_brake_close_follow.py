@@ -32,7 +32,8 @@ V = 4.5   # m/s (16.2 km/h): inside close follow's safe limit (release13: aggres
 
 def planner(lb_mode, cf_mode):
   # (the planner starts at this test's speed: tl.planner's init_v is tl.V0)
-  with mock.patch.object(LP, 'read_mode', return_value=cf_mode), mock.patch.object(lba, 'read_mode', return_value=lb_mode),        mock.patch.object(tl, 'V0', V):
+  with (mock.patch.object(LP, 'read_mode', return_value=cf_mode), mock.patch.object(lba, 'read_mode', return_value=lb_mode),
+        mock.patch.object(tl, 'V0', V)):
     pl = tl.planner(lb_mode)
   # release13: close follow re-reads its switch at the first engage - the switch says the mode this test wants
   Params().put_bool("CloseFollow", cf_mode == cf.MODE_LIVE, block=True)

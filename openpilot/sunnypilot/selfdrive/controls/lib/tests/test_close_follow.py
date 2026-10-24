@@ -106,7 +106,7 @@ class TestSchedule(OpenpilotTestCase):
       self.assertAlmostEqual(close_t_follow(0., t_p), 0.5)
       self.assertAlmostEqual(close_t_follow(3.75, t_p), 0.88)
       self.assertAlmostEqual(close_t_follow(4.167, t_p), 1.0)
-      self.assertAlmostEqual(close_t_follow(1.875, t_p), 0.69, "halfway to 13.5 km/h: halfway to 0.88 s")
+      self.assertAlmostEqual(close_t_follow(1.875, t_p), 0.69, msg="halfway to 13.5 km/h: halfway to 0.88 s")
       vs = np.linspace(0., 15., 1501)
       ts = [close_t_follow(v, t_p) for v in vs]
       self.assertTrue(all(b >= a - 1e-12 for a, b in zip(ts, ts[1:], strict=False)), "the gap only grows with speed")
@@ -126,7 +126,7 @@ class TestSchedule(OpenpilotTestCase):
     # no closer gap while the lead pulls away faster than the car: the schedule is read at max(vEgo, vLead)
     t_p = get_T_FOLLOW(P.aggressive)
     self.assertAlmostEqual(close_t_follow(2., t_p, v_lead=3.75), 0.88)
-    self.assertAlmostEqual(close_t_follow(3.75, t_p, v_lead=1.), 0.88, "a slower lead does not shorten it")
+    self.assertAlmostEqual(close_t_follow(3.75, t_p, v_lead=1.), 0.88, msg="a slower lead does not shorten it")
     self.assertEqual(close_t_follow(2., t_p, v_lead=6.), t_p)
     self.assertAlmostEqual(close_t_follow(2., t_p, v_lead=float('nan')), close_t_follow(2., t_p))
 
@@ -1077,7 +1077,7 @@ class TestPlanner(OpenpilotTestCase):
         np.testing.assert_allclose(pl.a_desired_trajectory, plan[1], rtol=0., atol=0.)
         self.assertEqual((c.g, c.gap.authority, c.lift.authority, c.lifting), (0., 0., 0., 0.))
         break
-    self.assertIsNotNone(k_off, "switched off within 3 s")
+    assert k_off is not None, "switched off within 3 s"
     self.assertLessEqual(k_off, round(cf.SWITCH_READ_S / DT_MDL))
     self.assertTrue(c.defer)
     params.put_bool("CloseFollow", True, block=True)

@@ -10,6 +10,7 @@ a second and on the step the ceiling or the VSA fallback changes; only this car 
 Brake320Log (every other car and stock ACC mode: none, no socket); it never raises; and card calls it from
 state_publish with no Params I/O.
 """
+from typing import Any, cast
 import ast
 import logging
 from pathlib import Path
@@ -62,7 +63,7 @@ class TestBrake320Log(OpenpilotTestCase):
 
   def test_the_struct_is_the_status(self):
     self.assertEqual(tuple(custom.CustomReserved14.schema.fieldnames), FIELDS)
-    self.assertEqual(set(brake320_status(make_ci())), set(FIELDS))
+    self.assertEqual(set(cast(dict, brake320_status(make_ci()))), set(FIELDS))
 
   def test_one_a_second_and_on_change(self):
     ci = make_ci()
@@ -108,7 +109,7 @@ class TestBrake320Log(OpenpilotTestCase):
     class BadPM:
       def send(self, *a):
         raise RuntimeError("socket")
-    b.pm = BadPM()
+    cast(Any, b).pm = BadPM()
     b.update()
     with mock.patch.object(brake320_log, "brake320_status", side_effect=RuntimeError("boom")):
       self.assertIsNone(Brake320Log.create(make_ci(), FakePM()))

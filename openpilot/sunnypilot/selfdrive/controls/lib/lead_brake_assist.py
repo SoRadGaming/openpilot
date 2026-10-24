@@ -75,6 +75,7 @@ card on routes d5 (15-26) and 142 (10-18) against push12, longitudinalPlan, cont
 identical message for message.
 """
 import math
+from typing import cast
 from collections import deque
 from dataclasses import dataclass
 
@@ -662,7 +663,7 @@ class LeadBrakePlanner:
 
   def _compare(self, a_others, action_t: float, standstill: bool):
     m = self._mpc2
-    (xs, us, x0, a_prev, crash_cnt), prev_accel_constraint, personality = self._snap
+    (xs, us, x0, a_prev, crash_cnt), prev_accel_constraint, personality = cast(tuple, self._snap)  # set by before_mpc()
     m.set_weights(prev_accel_constraint, personality=personality)
     for i in range(N + 1):
       m.solver.set(i, 'x', xs[i])

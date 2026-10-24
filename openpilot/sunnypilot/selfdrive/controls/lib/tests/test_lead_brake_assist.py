@@ -33,7 +33,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib import lead_brake_assist as lba
 from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import held_id
 
 V0 = 20.0
-OLD = {'raw_d_max': 80.0, 'raw_cam_a': None, 'raw_one_step': 0.0, 'tau_release': False}   # the first version (62e04f92d), for the regressions
+OLD: dict[str, Any] = {'raw_d_max': 80.0, 'raw_cam_a': None, 'raw_one_step': 0.0, 'tau_release': False}   # the first version (62e04f92d), for the regressions
 
 
 def cam_lead(x, a, prob=1.0):
@@ -55,7 +55,8 @@ def braking(n=80, brake_at=20, a_brake=-4.0, d0=35.0, v0=V0, tid=7, noise=None, 
   kp = KalmanParams(DT_MDL)
   tr = None
   v, d = v0, d0
-  out, last = [], None
+  out: list = []
+  last: Any = None
   for k in range(n):
     if k >= brake_at and (brake_n is None or k < brake_at + brake_n):
       v = max(0.0, v + a_brake * DT_MDL)
@@ -403,7 +404,7 @@ class TestProjection(OpenpilotTestCase):
     # plan behind a lead at a steady speed). Once the lead's raw speed stops falling, radard's own aLeadTau is back.
     frames = braking(n=100, a_brake=-3.5, brake_n=12)
     end = 20 + 12
-    for cfg, want_tail in ((lba.Config(**{**OLD, 'raw_cam_a': lba.Config().raw_cam_a}), True), (lba.Config(), False)):
+    for cfg, want_tail in ((lba.Config(**cast(dict[str, Any], {**OLD, 'raw_cam_a': lba.Config().raw_cam_a})), True), (lba.Config(), False)):
       ps = run(frames, cfg)
       self.assertTrue(any(p.reason & lba.REASON_RAW for p in ps[:end + 4]))
       late = [k for k in range(end + 8, len(ps)) if frames[k].aLeadK < -0.5]
