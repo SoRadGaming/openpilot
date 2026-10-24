@@ -1,8 +1,10 @@
 """FORK(CLOSE-FOLLOW): close follow in queues (close_follow.py; push13 shadow, release13 live behind the CloseFollow
 switch, default on).
 
-Pinned here: the safe limit (CF_T_FOLLOW_BP/_V at max(vEgo, vLead), never above the personality's: it hands back at
-17.2 / 19.0 / 21.6 km/h; the stopped gap stays 6 m; the jerk factor max(1.0, the personality's)), the gap's trips (each
+Pinned here: the safe limit (CF_T_FOLLOW_BP/_V at max(vEgo, vLead + 2 s of its aLeadK over 0.3), never more than 1 m of
+gap under the personality's and never above it: it hands back at 17.2 / 19.0 / 21.6 km/h, sooner behind a lead speeding
+up; the plan's stopped gap stays 6 m; the jerk factor max(1.0, the personality's); the hand-back resets the gap's
+authority - the release13 review, with the accelerating queue closed loop in TestAcceleratingQueue), the gap's trips (each
 drops it on the same frame - release13 adds a hard-braking lead and its 3 s hold, a downhill steeper than 3 % on the
 filtered pitch, and a time to collision under 3 s), the lift (never past the MPC candidate or cruise, zero from the
 hand-back, nothing on the frame a lead brakes, a hard trip or a pedal, then a 3 s lockout and a slow rise), the switch
@@ -11,7 +13,8 @@ the planner: with the switch off (shadow) it publishes exactly what the planner 
 frame, bit for bit - while its own log says what it would have done, and does all of its work after plannerd's sends;
 live takes close follow's candidates, blended by the gap's authority while it ramps in, and is the plan's own MPC on the
 frame a lead brakes; an FCW (the car's, or close follow's own MPC crash flag) holds the gap and the lift out 5 s, the
-lift never back before the gap; every other car and stock ACC mode never build it.
+lift never back before the gap; the HUD mark (tightening) only while close follow raises the plan; every other car and
+stock ACC mode never build it.
 
 Big outputs are compared with assert_same_frames(): unittest's assertEqual on two 400-frame lists builds a difflib diff
 that takes minutes, so a shadow leak would look like a hang rather than a failure.

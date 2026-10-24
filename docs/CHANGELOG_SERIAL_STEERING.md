@@ -21,9 +21,10 @@ One update, as you asked ("keep it all in main"). Built on push12 (`7711de756`):
 the bend ease, the lane-change floor, radar dots, the camera alerts), then three branches merged on top - the lead brake
 assist (`leadbrake` `2946492cd`), the radar's track-slot fixes (`radartidy` `a90ec9f85`, opendbc `149a024e`) and the
 320-count brake (`brake320` `b3215c1be`, opendbc `df00ddad`) - then close follow switched to live, and the push13
-review's four small fixes. **sunnypilot `release13` (the code at `1aaf39bbf`; this entry is the commit after it),
-opendbc `release13` at `469d12c7`. The EPS board (`883a3cd1`) and the bundled board images do not change. The panda
-firmware does (brake320): the comma flashes the panda by itself on the first start. Not driven yet; not pushed.**
+review's four small fixes, then the release13 review's fixes. **sunnypilot `release13` (the code at `683ecc077`; this
+entry is the commit after it), opendbc `release13` at `469d12c7`. The EPS board (`883a3cd1`) and the bundled board
+images do not change. The panda firmware does (brake320): the comma flashes the panda by itself on the first start. Not
+driven yet; not pushed.**
 
 **Push order: opendbc first.** opendbc `release13` fast-forwards `SoRadGaming/opendbc` `sp-master` (it is a descendant
 of `b44473bf`, push12's); then sunnypilot `release13` to `master`; then start the mirror
@@ -32,34 +33,49 @@ of `b44473bf`, push12's); then sunnypilot `release13` to `master`; then start th
 ### What you will notice
 
 * **Close follow in queues - live, on by default.** In slow traffic, behind a car the radar tracks, openpilot now
-  follows closer so cars can't cut in: still 6 m at a stop, about 1 s behind at 15 km/h (push12 held 1.25 s on
-  aggressive), and the gap grows back to your personality's own by **17 km/h (aggressive), 19 (standard) or 22
-  (relaxed)** - above that nothing changes. It also nudges the model's own (longer) experimental-mode gap closer, never
-  closer than its own limit. It works by itself whenever openpilot drives the speed, and **steps out at once** for a
-  car ahead braking (and stays out 3 s after a hard brake), a time to collision under 3 s, a downhill steeper than 3 %,
-  any collision warning, a car cutting in, or your gas or brake. **While it is holding the closer gap you see a small
-  mark of two cars, one close behind the other, at the bottom of the comma 4's right strip** (the planned stop and the
-  curve stay at the top; the confidence ball covers the mark when it comes down that far). **To switch it off:** comma 4
-  **Settings > Toggles, "close follow"**, or sunnylink **Vehicle > Honda, "Close Follow"** - it takes effect within 3 s,
-  also while driving; off, it only works out and logs what it would do. The mark has its own setting (sunnylink Visuals
-  > HUD, "Close Follow Mark").
+  follows closer so cars can't cut in: about 1 s behind at 15 km/h (push12 held 1.25 s on aggressive), **never more
+  than 1 m closer than your personality's own gap**, and the gap grows back to your personality's by **17 km/h
+  (aggressive), 19 (standard) or 22 (relaxed)** - sooner when the traffic ahead speeds up; above that nothing changes.
+  It still aims for 6 m at a standstill, but because it arrives at the stop from a closer gap, **after a gentle stop
+  you end up about 1 m closer than push12 did** (in the sim 3.8-4.5 m behind the stopped car, against 4.3-5.1). It also
+  nudges the model's own (longer) experimental-mode gap closer, never closer than its own limit. It works by itself
+  whenever openpilot drives the speed, and **steps out at once** for a car ahead braking (and stays out 3 s after a hard
+  brake), a time to collision under 3 s, a downhill steeper than 3 %, any collision warning, a car cutting in, or your
+  gas or brake. **While it actually has openpilot following closer than it otherwise would, you see a small mark of two
+  cars, one close behind the other, at the bottom of the comma 4's right strip**; it goes the moment close follow steps
+  out or you disengage (the planned stop and the curve stay at the top; the confidence ball covers the mark when it
+  comes down that far). **To switch it off:** comma 4 **Settings > Toggles, "close follow"**, or sunnylink **Vehicle >
+  Honda, "Close Follow"** - it takes effect within 3 s, also while driving; off, it only works out and logs what it
+  would do. The mark has its own setting (sunnylink Visuals > HUD, "Close Follow Mark").
   *The safety limit:* its gap was sized (the skeptic's set) so that a car braking at -4 m/s² from steady following still
   leaves 2 m with a weak brake (-1.8 m/s² after 0.36 s - the old 255-count ceiling's weak end). In this update's
   closed-loop sim with the real controllers and brake: **2.21 m at the closest** (2.04 m after a VSA fallback to 255).
-  *What it costs:* a closer gap is less room. Below its hand-back it keeps 0.5-1.7 m less margin than push12 when the
-  car ahead brakes - that is the closer gap itself. In the sim it never touches a car braking at -4, -5 or -6 m/s² while
-  it holds the closer gap (with the weak design brake), nor one braking at -5 with an even weaker brake (-1.5); the
-  closest calls are at 20-22 km/h, where it has already handed back and brake320 makes them better than push12. The case
-  it costs most: **a car pulling away hard from a crawl (8 to 22 km/h at 1.5 m/s²) and then braking at -4** - with the
-  weak design brake that leaves 1.64 m (relaxed) and 1.53 m (standard) where push12 left 2.76 and 1.93 (3.3 / 3.2 m
-  against 4.7 / 4.1 with the measured brake). Close follow has already handed back by then, but the gap it closed at 8
-  km/h has not fully reopened; the envelope study expected this (it predicted worse: 0.26 m and contact). And one
-  stacked case touches where push12 did not: the weakest brake AND a VSA fallback to 255 AND a car braking at -6, at 1-2
-  km/h. If that is not acceptable, the switch is the answer for now. Details below.
+  *What the release13 review found, and what changed:* that sizing was for steady following. **A queue that speeds up
+  from a crawl and then brakes hard** broke it: the gap closed at the crawl did not reopen while the queue pulled away,
+  and close follow kept its closer gap in while the car was still accelerating. In the reviewer's sim (648 runs: the car
+  ahead goes from 5-12 km/h to 18-26 km/h at an ordinary 1.0-1.5 m/s², cruises 0-3 s, then brakes at -4 or -6 to a
+  stop; the weak design brake and the measured one; the same 320-count brake on both builds) **it touched in 65 runs
+  where push12 stopped short - 11 of them with the closer gap still in - at up to 7.7 km/h, where push12 had kept up
+  to 2.4 m**. Three changes, no constant of the skeptic's set touched: the closer gap is now read at the speed the
+  queue is heading for (the car ahead's speed plus 2 s of its acceleration), so it hands back while the queue is still
+  speeding up; it is never more than 1 m closer than your personality's gap, so what a crawl closes up can be reopened
+  (on aggressive that keeps nearly all of it - 1.0 m of the 1.4 m it had at 13.5 km/h; standard and relaxed had been
+  up to 2.1 and 3.2 m closer); and once it has handed back it comes back only slowly (before, the closer gap snapped
+  back in at full strength the moment the car ahead started braking, until the braking rule caught it). Same 648
+  runs now: **19 touches where push12 stopped short, none with the closer gap in, all where push12 itself stopped
+  within 0.9 m, at up to 4.5 km/h**; where both stop short, close follow now costs at most 0.8 m of room (median 0.4;
+  it was up to 2.0, median 0.9); where both touch, at most 2.8 km/h harder (it was 6.6).
+  *What it still costs:* a closer gap is less room. In that wave, and in a gas push from the closer gap just before the
+  car ahead brakes (12 km/h, lead at -4 one second after you lift: a 2.8 km/h touch where push12 kept 0.76 m), close
+  follow can still touch at a few km/h where push12 only just stopped. And the one stacked case is unchanged: the
+  weakest brake AND a VSA fallback to 255 AND a car braking at -6, at 18-20 km/h on standard or relaxed, touches at 1.0
+  / 2.3 km/h where push12 kept 0.35 / 0.51 m. **This is your call: if it is not acceptable, switch close follow off
+  (Toggles) - off is push12's plan exactly.** The closest steady-following cases are at 20-22 km/h, where it has
+  already handed back and brake320 makes them better than push12. Details below.
   *On your routes* (the real planner with close follow live, on 20 routes, 290 engaged minutes): behind a car under 22
-  km/h for 52 minutes (35 of them standing), the closer gap was in 70 % of that time, and it actually tightened (the
-  mark) for 1.8 minutes - 0.5-1.2 m shorter target gaps at 2-17 km/h; it raised the plan for 1.9 minutes, by a median
-  0.04 m/s² (most 0.22), and **never while a car ahead was braking, never during any of the 76 collision-warning
+  km/h for 52 minutes (35 of them standing), the closer gap was in 69 % of that time; **it raised the plan by 0.02
+  m/s² or more (the mark) for 1.1 minutes** - 1.0 m shorter target gaps at 9-17 km/h, the plan raised by a median 0.03
+  m/s² (most 0.20) - and **never while a car ahead was braking, never during any of the 76 collision-warning
   frames**. On hilly routes the downhill rule kept it out a fair share of the time (10 % overall).
 * **Harder braking when it has to: 320 counts (brake320).** openpilot's brake request used to stop at 255 counts (about
   -2.45 m/s² on the level); the car's own radar asks for up to 320 when it brakes for you, and now openpilot may too
@@ -125,6 +141,34 @@ of `b44473bf`, push12's); then sunnypilot `release13` to `master`; then start th
   5.3, 7.12, 7.13, 10.8 and the code comments now agree).
 * **The hand-merge note above**, in plain words (also README Step 7, item 7).
 
+### Fixed after release13's review (`683ecc077`)
+
+Three reviews of `release13`: the integration (nothing blocking), close follow's safety, and the UI and settings. Each
+finding was reproduced first; each fix has tests that fail on the reviewed code (`cd3c4bc2d`).
+
+* **High - close follow's safe limit did not hold in a queue speeding up and then braking hard.** Reproduced bit for bit
+  with the reviewer's closed-loop sim (the whole planner, radard's filter, LongControl and the car's own
+  CarController with brake320; 130 of 130 runs identical). Fixed as above: read where the queue is heading, at most 1
+  m under your personality's gap, and the hand-back resets it. The changelog's old claims - "never touches a car
+  braking at -4, -5 or -6 while it holds the closer gap" and "the case it costs most leaves 1.64 m" - were wrong for
+  this case and are gone; what holds now is in the bullet above and the sims below. **Whether close follow stays live
+  by default is still yours to decide** (you chose "Live now, with a safety limit"; this is where that limit was
+  weakest, and what is left is the closer gap itself).
+* **Medium - the mark showed when close follow was not changing anything** (40 % of its time on your routes: the
+  closer gap in, but the model's own experimental plan or cruise setting the speed). The mark now means the plan is
+  raised: close follow's candidates against the plan without them, by 0.02 m/s² or more (`raised` in
+  `customReserved10`; the old test is logged as `gapCloser`). Over the 20 routes the mark shows 55 s (was 124 s), never
+  without the plan raised but for its 1 s hold at the end, and the `closefollow` line's `up` is now the most it raised
+  the plan (it read 0 whenever close follow was live).
+* **Low - the mark stayed up about 1.15 s after close follow stepped out**, and after a disengage came back alone on
+  the screen. It now goes on the frame close follow drops out, the planner disengages or openpilot is not engaged.
+* **Low - "6 m at a stop".** The plan still aims for 6 m, but the car stops about 1 m closer than push12 after a gentle
+  stop (above); the sunnylink texts, the code's notes and the fork guide now say so.
+* **Low - the replays never ran radard**, so the new radar decoder (radartidy) was never replayed together with close
+  follow live. The replays below (14c, 14d, 142) now run radard too, and explain every difference.
+* Not changed (a note, not a finding): `CloseFollow` is backed up with sunnylink's backup, so a restore brings back
+  whatever the switch was when the backup was made.
+
 ### The brake cap, corrected (push13's finding, now acted on by brake320)
 
 The factory radar's real brake request tops out at **320 counts**, with the pump bit on; **840 was a one-frame release
@@ -149,7 +193,8 @@ from May-July, all on the radar's bus with the pump bit off; the "1022 counts at
   which no UI ever set), automatic activation, the skeptic's schedule and the three new step-out rules unchanged from the
   spec, the log's new fields (`switchOn`, `live`, `tightening`, `pitchFiltered`, `ttc`, `hardBrakeHold`; the 10 s
   `closefollow` line's `sw` and `live`), the mark, and its tests (57). LongControl, the PID floor and the brake's rise
-  limit are not touched by it.
+  limit are not touched by it. The release13 review's fixes (`683ecc077`, above): the look-ahead, the 1 m cap, the
+  hand-back reset, the mark's rules, `raised` / `gapCloser` / `scheduleSpeed` and a meaningful `up`; 64 tests.
 * **Gates** (`~/sp-merge`, `release13` checked out, code tip `1aaf39bbf`):
   * `scons -j12` rc 0. **The panda firmware built with it, `panda_h7.bin.signed`, carries brake320's safety**: sha256
     `191d5b11144c6536836537a0b82f8169925daa69fdafb8f1b089a7b18eeaff15`, byte-identical to brake320's reviewed image
@@ -170,62 +215,75 @@ from May-July, all on the radar's bus with the pump bit off; the "1022 counts at
     entries, no duplicate.
 * **[R] Closed-loop sim of close follow live** (the skeptic's frame - the real MPC and close follow driven as the
   planner drives them, radard's filter - with the real LongControl and the car's real CarController and brake320; the
-  car's measured brake curve scaled to the design brake, -1.8 m/s² at 255 counts, -2.13 at 320). Margins in m (the
-  closest any family came, push12 vs this update live; `!` = contact, km/h):
+  car's measured brake curve scaled to the design brake, -1.8 m/s² at 255 counts, -2.13 at 320; push12 here is push12's
+  own 255-count brake). Re-run on the release13 review's code. Margins in m (the closest any family came, push12 vs
+  this update live; `!` = contact, km/h):
 
   | scenario (5-22 km/h, aggressive / standard / relaxed) | push12 | release13 live | live after a VSA fallback (255) |
   |---|---|---|---|
-  | lead brakes at -4 | -0.41!4.0 / 0.50 / 2.20 | 0.50 / 1.39 / 2.43 | -0.41!4.0 / 0.50 / 2.20 |
-  | lead brakes at -5 | -1.00!6.3 / -0.03!1.0 / 1.71 | -0.11!1.9 / 0.88 / 2.20 | -1.00!6.3 / -0.03!1.0 / 1.71 |
+  | lead brakes at -4 | -0.41!4.0 / 0.50 / 2.20 | 0.50 / 1.39 / 2.53 | -0.41!4.0 / 0.50 / 2.20 |
+  | lead brakes at -5 | -1.00!6.3 / -0.03!1.0 / 1.71 | -0.11!1.9 / 0.88 / 2.25 | -1.00!6.3 / -0.03!1.0 / 1.71 |
   | lead brakes at -6 | -1.41!7.6 / -0.40!4.0 / 1.37 | -0.54!4.5 / 0.50 / 2.04 | -1.40!7.6 / -0.39!4.0 / 1.37 |
   | the lead's lead stops (lead at -10, 10-22 km/h) | -2.14!9.4 / -1.10!6.7 / 0.72 | -1.31!7.3 / -0.21!2.8 / 1.62 | -2.13!9.4 / -1.10!6.7 / 0.73 |
-  | accelerate then slam (8→22 km/h at 1.5, then -4) | 0.87 / 1.93 / 2.76 | 1.44 / **1.53 / 1.64** | 0.84 / 1.04 / 1.17 |
-  | cut-in (a car lands 5 m ahead, 1 m/s slower, -4 after 1 s) | -3.10!11.5 / -3.68!12.5 / -3.12!11.5 | -2.67!11.1 / -3.28!12.4 / -2.70!11.2 | -3.09!11.5 / -3.68!12.5 / -3.10!11.5 |
+  | accelerate then slam (8→22 km/h at 1.5, then -4) | 0.87 / 1.93 / 2.76 | 1.26 / 1.97 / 2.57 | 0.64 / 1.60 / 2.40 |
+  | cut-in (a car lands 5 m ahead, 1 m/s slower, -4 after 1 s) | -3.10!11.5 / -3.68!12.5 / -3.12!11.5 | -2.67!11.1 / -3.28!12.4 / -2.70!11.2 | -3.09!11.5 / -3.68!12.5 / -3.09!11.5 |
   | 3 % downhill, lead -4 (4 % takes it out) | -1.25!6.5 / -0.33!3.3 / 1.21 | -0.01!0.5 / 0.91 / 1.55 | -1.25!6.5 / -0.33!3.3 / 0.60 |
   | weak brake (-1.5 at 255), lead -4 | -2.64!9.6 / -1.73!7.7 / -0.02!0.8 | -1.47!7.1 / -0.50!4.0 / 0.97 | -2.64!9.6 / -1.73!7.7 / -0.02!0.8 |
-  | weak brake, lead -5 | -3.23!10.6 / -2.27!8.9 / -0.52!4.1 | -2.08!8.6 / -1.05!5.9 / 0.60 | -3.23!10.6 / -2.27!8.9 / -0.52!4.1 |
-  | weak brake, lead -6 | -3.64!11.3 / -2.64!9.6 / -0.87!5.4 | -2.52!9.5 / -1.43!7.0 / 0.32 | -3.63!11.3 / -2.64!9.6 / -0.87!5.4 |
 
-  The closest cases are at 20-22 km/h, where close follow has handed back and the plan is push12's: brake320 is what
-  improves them. **The acceptance** (as corrected on 24 Oct: a closer gap must leave less margin, so "never worse than
-  close follow off" was the wrong test) **is met:** with the design brake, a car braking at -4 to a stop leaves at least
-  2 m while close follow holds its closer gap - **2.21 m** at the closest (21 cases), **2.04 m** after a VSA fallback to
-  255; no contact at -5 or -6 with close follow in; with the weak brake (-1.5) and a lead at -5, no contact with close
-  follow in either. Every contact in the table but the cut-in's is at 18-22 km/h with close follow already out (46 runs:
-  frame for frame the same as with the switch off, or as push12 after a fallback) and no worse than push12's. The waves,
-  the lead's lead, the cut-in and the 3 % downhill are within what the envelope study expected: its own sim of this
-  schedule had the 8→22 wave at 0.26 m on relaxed and contact on standard and aggressive (here 1.64 / 1.53 / 1.44 m);
-  the lead's-lead and downhill contacts are all at 20-22 km/h with close follow out. **One stacked case is worse than
-  push12:** the weak brake AND a VSA fallback to 255 AND a lead braking at -6 touches at 1.0 km/h (standard, from 18
-  km/h) and 2.3 km/h (relaxed, from 20) where push12 kept 0.35 / 0.51 m - close follow was holding a 1.35-1.59 s gap
-  there. The cut-in is better live: close follow drops out on the new car, and from then the plan is push12's from a car
-  already following closer behind the old one. (The cut-in and the weak-brake rows are stress cases: a car landing 5 m
-  ahead at 20 km/h and braking a second later is contact for every build.) The point-by-point loss against push12 is the
-  closer gap itself: 0.5-1.7 m behind a braking car below the hand-back. One option for the accelerate-then-slam case
-  was tried and **not** shipped: reading the schedule also at the lead's speed 2 s ahead, so a car pulling away hands it
-  back sooner - it gives back about half of the loss on relaxed and standard (2.20 / 1.85 m) but costs aggressive 0.3 m,
-  and no change that keeps the closer gap at a crawl can reopen it instantly.
+  **The acceptance is met as before:** with the design brake, a car braking at -4 to a stop from steady following
+  leaves at least 2 m while close follow holds its closer gap - **2.21 m** at the closest (21 points), **2.04 m** after
+  a VSA fallback to 255; no contact at -5 or -6 with close follow in; with the weak brake and a lead at -5, none either.
+  The only contacts with the closer gap in at the moment the lead brakes are the cut-ins (a car landing 5 m ahead and
+  braking a second later: contact on every build) and the stacked case above (the weak brake, a 255 fallback and a lead
+  at -6: 1.0 / 2.3 km/h at 18-20 km/h, push12 0.35 / 0.51 m - unchanged by the review). **The release13 review's
+  family, added:** the car ahead from 5, 8 or 12 km/h at 1.0 or 1.5 m/s² to 18, 22 or 26 km/h, a 0, 1 or 3 s cruise,
+  then -4 or -6 to a stop, every personality, the design and the measured brake (648 points per build): live with
+  brake320 never touches where push12 (255) stopped short, and never touches with the closer gap in (it is in when the
+  lead brakes only where the queue settled at 18 km/h, under standard's and relaxed's hand-back: the steady case);
+  after a VSA fallback to 255, 14 touches where push12 stopped short, all where push12 kept 0.45 m or less, at up to
+  4.6 km/h. Two close-MPC solver resets in the 3,288 runs, both after a 19-20 km/h impact that every build has (the sim
+  carries on through the car ahead).
+  **The reviewer's own closed-loop sim** (the whole planner, lead brake and bend ease in shadow, radard's filter, the
+  same controls and car; both builds on brake320, so it measures close follow alone), re-run on this code with the
+  switch on and off (3,768 runs; the push12 runs are the reviewer's): every set it had (lead braking with several plants and both ceilings, stops, approaches, stop-go waves
+  with radar noise, brake taps, radar flicker, a lead turning off, a track swap, a near cut-in, vision-only leads, gas
+  override, engaging close, personality changes, downhill, experimental mode, launches with the radar blind, the
+  hand-back) and the 648-run accelerating family. With the switch off every CAN frame and plan equals close follow
+  absent (1,876 pairs), and its 16 mid-drive switch flips change mode without a failure. Live, against close follow
+  absent: the
+  accelerating family as in the bullet above (19 touches where push12 stopped short, was 65; none with the closer gap
+  in, was 11; worst 4.5 km/h, was 7.7); the reviewer's earlier accelerate-then-slam set including the weak brake and
+  the 255 fallback 18 (was 39), worst 4.4 km/h (was 7.3), push12 having kept at most 1.05 m; every other set no new
+  touch but the gas push (2.8 km/h, push12 0.76 m) - the stacked weak-brake case and a radar-flicker case the review
+  had are gone. Comfort: brake taps of -0.6 to -1.0 now jolt the plan less (rms 0.19 against 0.27 m/s³, push12 0.14),
+  and in stop-go waves the closer gap is in 41 % of the time (was 48 %).
 * **[R] Open loop on 20 of your routes** (the real planner live, as plannerd drives it, on the routes the close-follow
-  builder used): above. Plan raise while a car ahead brakes: **0** (the controller's own test); a look-ahead check that
-  sees 0.5 s into the future, which no controller can, finds 12 frames (at most 0.15 m/s²).
-* **[R] Closed-loop process replay, push12 vs this update, default params** (plannerd + controlsd + card, openpilot's
-  own harness, side by side on 4-minute chunks, routes 14c, 14d and 142): **every `sendcan` difference is explained;
-  none is a bug.** `carState`, `carStateSP`, `carControlSP` and `driverAssistance` are identical on all three routes;
-  `carParams` differs only in the safety param (36 -> 164, brake320), and `radarTracks` in radartidy's decoder (radard
-  is not replayed, so the plan sees the logged `radarState`; radartidy's own proof is its 69-route replay). **14c** (47
-  segments): 270 of 278,426 `sendcan` messages differ, all close follow live and tightening (2 episodes, 4 and 11 s,
-  `0x200`/`0x1FA`; the plan raised at most 0.13 m/s²; at most 157 brake counts where push12 sent 189). **14d** (44):
-  8,658 of 259,948 - close follow 250 (one episode, then 1-count brake steps carried in the planner's warm start: a
-  control run with the switch off makes those segments identical to push12), brake320 8,408: 320 counts where push12
-  sent 255, in four stretches that are a harness artifact both trees share - the replayed card starts cold mid-route and
-  holds a set speed under the logged car's (89 km/h against 100, 105 against 110), so both plans brake at -1.2 m/s² for
-  15-80 s against a logged car that does not slow and both controllers wind down to their floors; the one difference is
-  brake320's ceiling (and its documented tail, the brake learner a count apart afterwards). **142** (23): 1,743 of
-  130,530 - close follow 1,726 (7 episodes, the plan raised at most 0.09 m/s²), brake320 17: a real hard slow-down on a
-  4 % downhill, the request with its pitch term -2.62 m/s², 279 counts against push12's 255 for 0.3 s. Close follow
-  raised its candidate or lifted while a lead braked on 0 plans; `customReserved14` allowed 320, no fallback. The
-  lane-change floor cannot show here (it changes modeld's input, and modeld is not replayed), and no radar warning came
-  above 255 on these routes, so the FCW passthrough had nothing to pass.
+  builder used), re-run on the review's code: above. Plan raise while a car ahead brakes: **0** (the controller's own
+  test); a look-ahead check that sees 0.5 s into the future, which no controller can, finds 10 frames (at most 0.12
+  m/s²). The mark, with the comma 4's rules (on after 0.5 s, held 1 s, gone at once when close follow is out or
+  openpilot disengaged): 55 s over the 20 routes in 26 showings (was 124 s in 37), never while not engaged or while a
+  car ahead brakes, and never without the plan raised but for its 1 s hold (12 s of the 55).
+* **[R] Closed-loop process replay, push12 vs this update, default params** (card + **radard** + plannerd + controlsd,
+  openpilot's own harness, side by side on 4-minute chunks, routes 14c, 14d and 142, three runs each: push12, this
+  update, and this update with the switch off). Re-run on the release13 review's code, now with radard - the first
+  replays left it out, so the plan saw the logged `radarState` and radartidy's decoder never met close follow live.
+  **Every `sendcan` difference is explained; none is a bug.** `carState`, `carOutput` and `driverAssistance` are
+  identical on all three routes in all three runs; `carParams` differs only in the safety param (36 -> 164, brake320).
+  `radarState` differs from push12 in 18,314 / 14,509 / 7,019 plans (radartidy: the empty slot, the update trigger, a
+  reused track number, coasting) and is identical with the switch on and off. **Switch off against switch on** (what
+  close follow live does): 164 `sendcan` messages on 14c (2 episodes), 130 on 14d (1) and 1,490 on 142 (8), every one
+  close follow live and in at its start - at most 157 brake counts where the switch-off run sent 189. **push12 against
+  the switch off** (what the rest of the update does): 14c 4,860 and 14d 7,555 messages after a radar difference (in
+  every chunk the first thing that differs is `radarState`, then the plan 0.1 s later, then the controls; two 14c
+  episodes start more than 15 s after their chunk's first radar difference, with the controls still apart from it, which
+  the classifier's 15 s look-back could not see); 14d also 4,120 from brake320 - 320 counts where push12 sent 255, in
+  stretches that are a harness artifact both trees share (the replayed card starts cold mid-route and holds a set speed
+  under the logged car's, 89 km/h against 100, 105 against 110, so both plans brake at -1.2 m/s² for 15-80 s against a
+  logged car that does not slow, and both controllers wind down to their floors; the one difference is brake320's
+  ceiling); 142 66 - 49 radartidy (0x1FA 75 counts against 74) and 17 brake320, a real hard slow-down on a 4 % downhill,
+  the request with its pitch term -2.62 m/s², 279 counts against push12's 255 for 0.3 s. The lane-change floor cannot
+  show here (it changes modeld's input, and modeld is not replayed), and no radar warning came above 255 on these
+  routes, so the FCW passthrough had nothing to pass.
 
 ### What to check on the first drives
 
@@ -237,11 +295,13 @@ from May-July, all on the radar's bus with the pump bit off; the "1022 counts at
    line. **`pandaStates.safetyTxBlocked` must not grow in any second where `maxCountsLastSecond` is above 255** - if it
    does, stop using openpilot's longitudinal and check the panda's firmware. No `BRAKE_ERROR`. A `hondabrake fallback=`
    line means the VSA took it back to 255 for that drive: look at the VSA bits first.
-3. **Close follow** in a queue: the mark comes on behind a car under 17-22 km/h and goes when it steps out; the gap
-   feels closer but not uncomfortable; it never holds the closer gap with a car braking ahead. In the qlog every
-   `closefollow` line (at most one per 10 s) reads `mode=2 sw=1`, **`brk=0`** (anything else is a bug), and `live=` the
-   share of its chances it tightened; `customReserved10` carries `switchOn`, `live` and `tightening`. Switch it off once
-   (Toggles) and see `mode=1` within 3 s and no mark.
+3. **Close follow** in a queue: the mark comes on behind a car under 17-22 km/h while it has you following closer and
+   goes the moment it steps out; the gap feels closer but not uncomfortable (at most 1 m closer than your personality);
+   it never holds the closer gap with a car braking ahead, and when the queue speeds up it hands back early. In the
+   qlog every `closefollow` line (at most one per 10 s) reads `mode=2 sw=1`, **`brk=0`** (anything else is a bug),
+   `live=` the share of its chances it raised the plan and `up=` the most it raised it; `customReserved10` carries
+   `switchOn`, `live`, `tightening`, `raised`, `gapCloser` and `scheduleSpeed`. Switch it off once (Toggles) and see
+   `mode=1` within 3 s and no mark.
 4. **The lane-change floor**: below 52 km/h no lane-change prompt and no lane change; at 52 and above, as before. A merge
    you make by hand through 52: hold the wheel - the board may pull toward the old lane when it starts steering.
 5. Nothing else should feel different. The shadows: `customReserved11` (bends) and `customReserved13` (brake sooner)
