@@ -2090,7 +2090,7 @@ lead time while moving on the six routes below. The DBC now says 1/64 on all 13 
 
   At walking pace the near-range returns are often clutter. On 10f at t=2740-2745, tracks 0x410 and 0x414 sit at 4-6 m
   reading -2.5 to -3.0 m/s (about -vEgo); their distance closes, then jumps back. Such tracks jump by more than 0.4 m
-  in 4-10% of frames, against 1% for moving tracks, and `FLAG_B21`/`FLAG_B22` do not tell them apart. Measured by
+  in 4-10% of frames, against 1% for moving tracks, and `FLAG_B21`/`FLAG_B22` (`COASTING` since 2026-10-24) do not tell them apart. Measured by
   replaying the plan with the old and the new decode, counting episodes where the new `aTarget` is at or below -2 and
   at least 1 m/s² below the old one:
   - **Nine routes** (c0, c8, c9, 10f, 113, 115, 120, 121, the first 963 s of 14): 144 episodes. 94 below 4 m/s, 93 of
