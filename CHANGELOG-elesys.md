@@ -843,6 +843,80 @@ this side draws the flash:
 
 ---
 
+## 25. The radar's track slots: empty at 0x7FFF, the update on 0x424, a held NEW_TRACK, COASTING (2026-10-24, radartidy)
+
+`opendbc/car/honda/radar_interface.py` (`_update_elesys_track()`, `elesys_same_object()`, `ELESYS_*`),
+`opendbc/dbc/honda_accord_2015au_radar.dbc` (`FLAG_B22` is `COASTING`; comments on `LONG_DIST`, `NEW_TRACK`,
+`COASTING`); tests `test_elesys_radar.py` `TestElesysRadarTracks`. Branch `radartidy`: opendbc `ae090281` on
+`b44473bf`, sunnypilot on push12 (`7711de756`). Design: `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 4.8 and 5.2.
+
+The radar audit of 2026-10-24 found the decode right field by field and four small issues in how the 13 track slots
+become radar points. The owner approved the tidy-ups to go in "after replay": into an update only if the clutter routes
+replay identically or with explained, harmless differences. HONDA_ELESYS only; the Nidec branch is upstream's.
+
+- **An empty slot is raw `LONG_DIST` 0x7FFF**, the only empty pattern in 9.9 M frames. The test was `LONG_DIST < 255`,
+  which dropped real returns at 255.0-255.98 m (about 5 frames an hour; route dd t=804.45, a car 4.5 m to the left
+  first seen at 255.34 m is now tracked two frames sooner).
+- **The update fires on 0x424**, the last track frame of the radar's cycle (84,853 cycles on 6 routes: always last, and
+  in the CAN batch after 0x423 in 2.3% of them). It fired on 0x423, so slot 0x424 was a cycle stale in those cycles
+  (route 141 t=102.7: an oncoming car's first frame, at 94.68 m, never reached radard). Then the update now comes one
+  CAN batch, about 10 ms, later. 0x400 is sent after 0x424 and is read a cycle late, as before.
+- **A held `NEW_TRACK`.** The audit read `NEW_TRACK` on two frames in a row as one object given a new trackId twice, and
+  proposed a new id on a rising edge only. Measured: of 1,467 such repeats on 6 routes the second frame is ANOTHER new
+  object 92% of the time (its range or lateral position 1 m or more off the first's path, 72% by 10 m or more), and the
+  frame after it continues that second object. So a new trackId when the slot was empty, when `NEW_TRACK` rises, or
+  when it stays set on a frame that does not continue the slot's object (`elesys_same_object()`: range within 1 m of the
+  last frame's moved on at its vRel, lateral within 1 m, vRel within 2 m/s; 94.5-97.5% of frames without `NEW_TRACK`
+  meet it, 1.4-5.5% of rising ones). A held flag on the same object (8%; route 113 t=87.8) keeps its id, and with it
+  radard's Kalman filter and the clutter guard's per-track history. The rising-edge-only rule was replayed as well
+  (below) and is not taken.
+- **`COASTING`** (byte 2 bit 6, `FLAG_B22` until now): the radar extrapolated the track that cycle instead of measuring
+  it. RadarPoint's measured flag is its inverse. Upstream moved that field into `RadarPoint.deprecated` (its #3546)
+  because nothing used it; nothing here reads it either (radard, the clutter guard, `held_lead.py`, the planner, the UI,
+  the replay tools and the radar-dots work in progress read `trackId`, `dRel`, `yRel` and `vRel` only), so it changes
+  only what `radarTracks` carries in a route.
+
+**The replay gate.** push12's decoder (A) against this one (C) on the 69 routes round 8 was validated on (the guard's 14
+clutter routes, 13d, 141, 142, 143 and the round 8 review's 51): 27.8 h, 15.9 h engaged, 2.0 M radard frames. Each
+decoder feeds its own push12 radard (clutter guard, held lead, long-range rule) and its own push12 planner (re-entry
+ramp on), open loop on the logged CAN and messages. Two more decoders split the changes: D (C with a new trackId on
+every `NEW_TRACK`: the empty test, the trigger and the measured flag only) and B (C with a new trackId on a rising edge
+only). The harness reproduces the car: push12's decoder gave the logged `radarTracks` exactly (route 143, 2,392 of 2,392
+messages).
+
+| | A -> C (this change) | A -> D (empty test, trigger) | D -> C (held `NEW_TRACK`) | D -> B (rising edge only) |
+|---|---|---|---|---|
+| long-range locks | 8 and 8, identical | identical | identical | identical |
+| FCW frames | 0 and 0 | 0 and 0 | 0 and 0 | 0 and 0 |
+| new phantom (a firmer plan on a return the car drove through) | 0 | 0 | 0 | **23** (holds, disengaged) |
+| plan differences over 0.05 m/s^2, frames (engaged) | 247 (71) | 179 (71) | 68 (0) | 978 (297) |
+| largest engaged | +0.95 softer (1f, below); firmest -0.11 | the same | none | **-3.46** (129 t=2464.7, 21 m/s, 1.25 s) |
+| leadOne differences, episodes (engaged) | 137 (40) | 130 (40) | 7 (0), all the hold 0.1 s apart | 100 (4) |
+
+- **A -> D, the trigger.** Every leadOne difference falls on a frame where the two decoders hand radard different radar
+  cycles: when 0x424 comes a batch after 0x423, A's update is ~10 ms earlier and a modelV2 frame between sees A's new
+  cycle and C's previous one (52,000 frames, 2.6%). 1,866 frames are the same object a cycle apart; 72 episodes pick
+  another source (camera or another track) for one to three frames, 35 of them engaged. Engaged plan episodes: 15, of
+  which 14 are within 0.12 m/s^2 (11 of those with the gas pressed). The one larger is route 1f t=1598.4-1599.9
+  (9.7 m/s, engaged from 1598.5): on its fresher cycle push12 matched a stationary return 49 m ahead and 1.6 m to the
+  left to the camera's moving lead (1.3 m to the right) for one frame, and its plan reached -1.40 then eased over 1.45 s; this change did not
+  take that return and planned -0.45. The 255 m returns (change 1) never reach a lead: the camera's lead stops at
+  about 127 m.
+- **D -> C, the held `NEW_TRACK`.** Nothing engaged. A kept trackId keeps radard's Kalman filter (plan within 0.16 m/s^2,
+  disengaged, 9 episodes) and the guard's hold count (the hold on 7 returns at 2.9-4.0 m/s starts 0.1 s earlier, no
+  plan change but one 0.16 softer).
+- **D -> B, the rising-edge-only rule, not taken.** Joining two objects under one trackId feeds radard's Kalman filter
+  the step between them (a moving car's aLeadK -9.95 m/s^2: route 129 t=2464.7, engaged at 21 m/s, plan -3.35 against
+  +0.11 for 1.25 s; aLeadK -3.27: 129 t=2783.6, engaged, -1.57 against -0.33 for 1.85 s) and lets a return inherit
+  another's hold count (22 new holds of clutter at 1.6-3.9 m/s, plans up to 1.7 m/s^2 firmer).
+- On the 14 clutter routes alone (6.7 h), A -> C: 31 plan episodes, 5 engaged, at most 0.09 m/s^2 engaged (0.69
+  disengaged: c8 t=2731.0 at 2.7 m/s, the same hold 0.1 s apart); no new lock, FCW or phantom.
+
+So the gate is met: the differences are the update's timing (change 3) and the kept trackIds (change 2), both small, and
+none is a new phantom or lock. Open loop, as every replay here: the car's speed is the logged one.
+
+---
+
 ## Status
 
 *As of 2026-09-08: two weeks of real driving on the tuner (sections 12-13); the paragraph below
