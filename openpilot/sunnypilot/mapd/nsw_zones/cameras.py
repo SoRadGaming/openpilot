@@ -429,6 +429,10 @@ class CameraHold:
     camera was found within HOLD_S and is still ahead by the distance run down at the car's speed, it is published as
     HELD with that distance - for at most HOLD_S;
   * once that run-down distance reaches 0 the camera is behind the car: it goes, and is not held again;
+  * it also goes at once when the matcher is sure of the road (state 'matched', not hysteresis) and searched it, along
+    the car's GPS course, at least as far as the camera stood when last found (camera_walk_m) without finding it: the
+    car is on another road (route 14: turned off at the Parker St school camera's light), as the camera can only have
+    come closer since;
   * nothing is held across a change of state the matcher calls unsafe (no match, ambiguous) for longer than HOLD_S.
   update() -> None or dict(id, kind, dist_m, dir_known, dr, held)."""
 
@@ -452,6 +456,10 @@ class CameraHold:
       self.last, self._t = dict(found), now
       return found
     if self.last is None or self._t is None:
+      return None
+    walk = None if r is None else r.get('camera_walk_m')
+    if r is not None and r.get('state') == 'matched' and walk is not None and float(walk) >= self.last['dist_m']:
+      self.reset()  # searched past where it stood, on a road the matcher is sure of: not on this road
       return None
     age = now - self._t
     run = self.last['dist_m'] - max(float(speed_mps or 0.0), 0.0) * age

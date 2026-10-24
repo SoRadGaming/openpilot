@@ -320,7 +320,7 @@ class TestCameraAhead(unittest.TestCase):
 
   def test_result_keys(self):
     r = self.last([(100, 1), (115, 1)], 90.0)
-    for k in ('camera_kind', 'camera_dist_m', 'camera_id', 'camera_dir_known', 'camera_dr', 'camera_stop'):
+    for k in ('camera_kind', 'camera_dist_m', 'camera_id', 'camera_dir_known', 'camera_dr', 'camera_stop', 'camera_walk_m'):
       self.assertTrue((k) in (r))
     self.assertTrue(set(r) >= set(nz.RESULT_KEYS))
 
@@ -339,7 +339,8 @@ class TestCameraAhead(unittest.TestCase):
   def test_beyond_the_look_and_once_passed(self):
     r = self.last([(100, 1), (120, 1)], 90.0)  # 480 m: beyond 400
     self.assertEqual(r['camera_kind'], 0)
-    self.assertTrue(r['camera_stop'].startswith('none within'))
+    # the walk takes the rest of the 60 line (880 m), but the search, and what it says, stop at the look
+    self.assertEqual((r['camera_stop'], r['camera_walk_m']), ('none within 400 m (horizon)', 400.0))
     r = self.last([(590, 1), (610, 1)], 90.0)  # just passed it
     self.assertNotEqual(r['camera_id'], self.ci.ids['east_only'])
 
@@ -431,6 +432,48 @@ class TestCameraAhead(unittest.TestCase):
       self.assertEqual((r['camera_kind'], r['camera_stop']), (0, 'no camera layer'))
       self.assertEqual(r['limit_kph'], 60)
 
+  def test_turning_off_before_it_ends_the_hold(self):
+    """Review finding 3 (route 14, the Parker St school camera): the car turns off at the junction before the camera.
+    The tick in the turn is unsure of the road and holds the camera; the first tick matched on the cross street, whose
+    search runs past where the camera stood, drops it - not 3 s later."""
+    m, h = self.m(), cam.CameraHold()
+    shown = []
+    fixes = [((400 + 20 * i, 1), 90.0) for i in range(5)] + [((501, 15), 45.0), ((501, 35), 0.0), ((501, 55), 0.0)]
+    for i, ((x, y), hd) in enumerate(fixes):
+      r = drive(m, [(x, y)], hd, speed=15.0, t0=float(i), unix=T_OUT + i, lookahead=True)[-1]
+      shown.append((r['state'], h.update(r, 15.0, float(i))))
+    self.assertEqual([s[1]['id'] for s in shown[:5]], [self.ci.ids['east_only']] * 5)
+    self.assertFalse(shown[4][1]['held'])
+    self.assertNotEqual(shown[5][0], 'matched')  # in the turn
+    self.assertTrue(shown[5][1]['held'])
+    self.assertEqual(shown[6][0], 'matched')  # on the cross street, northbound
+    self.assertEqual([s[1] for s in shown[6:]], [None, None])
+
+  def test_a_walk_off_the_car_s_course_is_not_counted_as_searched(self):
+    """Routes 08, 06 and 142 at the Great Western Hwy red-light camera, route ad at Parker St: a match snapped onto the
+    very end of its line walks on from a zero-length step and takes a line the car is not on. That walk finds nothing
+    but must not end a hold."""
+    m = self.m()
+    r = drive(m, [(280, 1), (300, 1)], 90.0, speed=15.0, unix=T_OUT, lookahead=True)[-1]
+    self.assertEqual((r['camera_id'], r['camera_walk_m']), (self.ci.ids['east_only'], 400.0))
+    part = m._ctx['part']
+
+    def walk(xy, parts):
+      pts = [latlon(x, y) for x, y in xy]
+      la, lo = np.array([p[0] * 1e6 for p in pts]), np.array([p[1] * 1e6 for p in pts])
+      m._live_path = lambda H, fwd: (la, lo, np.array(parts), 500.0, 'horizon')
+      return m.camera_ahead('matched')
+
+    h = cam.CameraHold()
+    for xy, parts in (([(300, 0), (300, 0), (300, 200), (300, 500)], [part] * 4),  # north, while the car heads east
+                      ([(300, 0), (300, 0), (360, 0), (360, 500)], [part, part, part + 1, part + 1])):  # off the line's end
+      out = walk(xy, parts)
+      self.assertEqual((out['camera_kind'], out['camera_walk_m'], out['camera_stop']), (0, None, 'none within 400 m (horizon)'))
+      h.update(r, 15.0, 0.0)
+      self.assertTrue(h.update(dict(out, state='matched'), 15.0, 1.0)['held'])
+    out = walk([(300, 0), (300, 0), (360, 0), (760, 0)], [part] * 4)  # a zero-length step inside the line is no end
+    self.assertEqual(out['camera_walk_m'], 400.0)
+
   def test_the_limit_look_ahead_is_unchanged_by_the_layer(self):
     with MiniIndex(FEATS, SCHOOLS) as plain:
       for pts, hd in (([(280, 1), (300, 1)], 90.0), ([(780, 1), (800, 1)], 90.0), ([(180, -1999), (200, -1999)], 90.0)):
@@ -439,6 +482,98 @@ class TestCameraAhead(unittest.TestCase):
         for k in nz.RESULT_KEYS:
           if not k.startswith('camera_'):
             self.assertEqual(a[k], b[k], k)
+
+
+# ----------------------------------------------------------------------------- a camera with a direction, beside other roads
+FEATS_BESIDE = [
+  # a 60 road (y=0) and a separate 50 street 12 m north of it
+  feat([(0, 0), (2000, 0)], 60, 'Ordinary Permanent'),
+  feat([(0, 12), (2000, 12)], 50),
+  # two 60 lines 14 m apart with a 50 line between them: not one road drawn twice (y=-500, -493, -486)
+  feat([(0, -500), (2000, -500)], 60, 'Ordinary Permanent'),
+  feat([(0, -493), (2000, -493)], 50),
+  feat([(0, -486), (2000, -486)], 60, 'Ordinary Permanent'),
+  # a divided road drawn as two Both Directions lines 13 m apart (y=-1000, -987), a 50 service road outside it (y=-1010)
+  feat([(0, -1000), (2000, -1000)], 80, 'Ordinary Permanent'),
+  feat([(0, -987), (2000, -987)], 80, 'Ordinary Permanent'),
+  feat([(0, -1010), (2000, -1010)], 50),
+  # two One Way carriageways 20 m apart: eastbound at y=-1500, westbound at y=-1480
+  feat([(0, -1500), (2000, -1500)], 80, 'Ordinary Permanent', 'One Way'),
+  feat([(2000, -1480), (0, -1480)], 80, 'Ordinary Permanent', 'One Way'),
+]
+
+
+class TestBesideOtherRoads(unittest.TestCase):
+  """Review findings 1 and 4: a camera whose direction is known is homed on a second, parallel line only when that line
+  is the other line of the same divided road - never on a separate street beside the road - and never on the One Way
+  carriageway of the other direction, even when that one is nearer."""
+
+  @classmethod
+  def setUpClass(cls):
+    cls.mi = MiniIndex(FEATS_BESIDE)
+    o = Osm()
+    cls.ids = {
+      'street': o.cam(800, -2, direction='90'),       # 2 m off the 60 road; the 50 street is 14 m away
+      'between': o.cam(800, -501, direction='90'),    # 1 m off a 60 line; the other 60 line is 15 m away, a 50 line between
+      'service': o.cam(800, -1001, direction='90'),   # 1 m off the divided road's southern line, the service road 9 m south
+      'one_way': o.cam(800, -1484, direction='90'),   # checks eastbound traffic, but 4 m from the WESTBOUND carriageway
+    }
+    rows, _ = cam.parse_overpass(o.doc())
+    arrays = dict(cls.mi.B['arrays'])
+    c, _ = bi.camera_arrays(arrays, rows, 'test', 'x', log=lambda s: None)
+    arrays.update(c)
+    cls.path = os.path.join(cls.mi.tmp, 'beside.npz')
+    bi.write_index(arrays, cls.path)
+    cls.a = nzi.load_index(cls.path)
+
+  @classmethod
+  def tearDownClass(cls):
+    cls.mi.close()
+
+  def homes(self, key):
+    """[(limit, one way, the line's y in m)] of a camera's home lines."""
+    a = self.a
+    row = int(np.nonzero(a['c_osm'] == self.ids[key])[0][0])
+    lat0 = latlon(0, 0)[0]
+    out = []
+    for e in range(int(a['c_home_v0'][row]), int(a['c_home_v0'][row + 1])):
+      q = int(a['c_home_part'][e])
+      y = (int(a['b_vlat'][int(a['b_part_v0'][q])]) * 1e-6 - lat0) * nz.M_PER_DEG_LAT
+      out.append((int(a['b_part_speed'][q]), int(a['b_part_dir'][q]) == nz.DIR_ONE_WAY, round(y)))
+    return sorted(out)
+
+  def last(self, pts, heading):
+    return drive(nz.Matcher(self.path, calendar=NEVER), pts, heading, speed=15.0, unix=T_OUT, lookahead=True)[-1]
+
+  def test_homes(self):
+    self.assertEqual(self.homes('street'), [(60, False, 0)])  # not the 50 street 14 m away
+    self.assertEqual(self.homes('between'), [(60, False, -500)])  # not the 60 line beyond the 50 one
+    self.assertEqual(self.homes('service'), [(80, False, -1000), (80, False, -987)])  # both lines of the road, no service road
+    self.assertEqual(self.homes('one_way'), [(80, True, -1500)])  # its own carriageway only, though 16 m off
+
+  def test_a_street_beside_the_road_never_gets_its_camera(self):
+    r = self.last([(480, 12), (500, 12)], 90.0)  # eastbound on the 50 street
+    self.assertEqual((r['state'], r['limit_kph']), ('matched', 50))
+    self.assertNotEqual(r['camera_id'], self.ids['street'])
+    r = self.last([(480, 1), (500, 1)], 90.0)  # on the road itself
+    self.assertEqual(r['camera_id'], self.ids['street'])
+    self.assertAlmostEqual(r['camera_dist_m'], 300.0, delta=3.0)
+
+  def test_both_lines_of_a_divided_road_but_not_its_service_road(self):
+    for y in (-999, -988):
+      r = self.last([(480, y), (500, y)], 90.0)
+      self.assertEqual(r['camera_id'], self.ids['service'], y)
+      self.assertAlmostEqual(r['camera_dist_m'], 300.0, delta=3.0)
+    r = self.last([(480, -1011), (500, -1011)], 90.0)  # eastbound on the service road
+    self.assertEqual((r['state'], r['limit_kph']), ('matched', 50))
+    self.assertNotEqual(r['camera_id'], self.ids['service'])
+
+  def test_a_one_way_camera_on_its_own_carriageway(self):
+    r = self.last([(480, -1499), (500, -1499)], 90.0)  # eastbound, on its carriageway, 16 m from the camera's node
+    self.assertEqual(r['camera_id'], self.ids['one_way'])
+    self.assertAlmostEqual(r['camera_dist_m'], 300.0, delta=3.0)
+    r = self.last([(1120, -1481), (1100, -1481)], 270.0)  # westbound, on the carriageway the node is nearer
+    self.assertNotEqual(r['camera_id'], self.ids['one_way'])
 
 
 # ----------------------------------------------------------------------------- the hold
@@ -461,6 +596,26 @@ class TestCameraHold(unittest.TestCase):
     h.update(self.r(15.0), 20.0, 0.0)
     self.assertIsNone(h.update(None, 20.0, 1.0))  # run down past it: behind the car
     self.assertIsNone(h.update(None, 0.0, 1.5))
+
+  def none(self, state, walk):
+    return {'state': state, 'camera_kind': 0, 'camera_walk_m': walk}
+
+  def test_matched_elsewhere_ends_it_at_once(self):
+    h = cam.CameraHold()
+    h.update(self.r(370.0), 7.0, 0.0)
+    self.assertIsNone(h.update(self.none('matched', 400.0), 7.0, 1.0))  # searched past 370 m: another road
+    self.assertIsNone(h.update(None, 7.0, 1.5))  # and not held again
+    h.update(self.r(120.0), 7.0, 2.0)
+    self.assertIsNone(h.update(self.none('matched', 120.0), 7.0, 3.0))  # exactly as far as it stood
+
+  def test_kept_while_the_road_or_the_search_is_in_doubt(self):
+    h = cam.CameraHold()
+    h.update(self.r(300.0), 10.0, 0.0)
+    for t, state, walk in ((1.0, 'hysteresis', 400.0), (1.5, 'low_confidence', None), (2.0, 'matched', 120.0),
+                           (2.5, 'matched', None), (2.8, 'dead_reckoning', 400.0)):
+      out = h.update(self.none(state, walk), 10.0, t)  # unsure of the line, the walk cut short at a junction, no heading
+      self.assertTrue(out is not None and out['held'], (state, walk))
+      self.assertAlmostEqual(out['dist_m'], 300.0 - 10.0 * t)
 
   def test_a_new_camera_replaces_the_held_one(self):
     h = cam.CameraHold()

@@ -175,6 +175,9 @@ RESULT_KEYS = (
   'camera_dir_known',  # the map says which traffic it checks (else both directions are taken)
   'camera_dr',  # found along the dead-reckoned path (GPS lost)
   'camera_stop',  # why none was found, or 'found'
+  # how far along the road ahead the search looked (m, at most camera_ahead_m), while matched and only when the walk
+  # starts along the GPS course (camera_walk_deg); None otherwise. CameraHold ends a hold on it.
+  'camera_walk_m',
 )
 
 
@@ -368,6 +371,7 @@ class Matcher:
     "camera_ahead_m": 400.0,  # look this far along the road for a camera
     "camera_lat_m": 30.0,  # the camera stands within this of the walked line (OSM vs TfNSW geometry, roadside poles)
     "camera_dir_deg": 90.0,  # the travel direction within this of the traffic the camera checks (build_index: c_home_brg)
+    "camera_walk_deg": 30.0,  # camera_walk_m counts only a walk that starts within this of the GPS course
     # a School line whose state cannot be known (the clock is not set): 'withhold' publishes nothing while matched
     # (ambiguous, candidate_kph = the school limit) and the school limit while dead reckoning; 'apply' always the
     # school limit; 'ignore' the base limit (the P1 behavior, never the default: it is the too-high answer)
@@ -2211,7 +2215,8 @@ class Matcher:
   def camera_ahead(self, state):
     """The nearest camera of the index's OSM layer ahead on the road the car is on (see the module docstring).
     state: this tick's result state. -> dict with the camera_* keys (camera_kind 0 and camera_stop = why, when none)."""
-    out = {'camera_kind': 0, 'camera_dist_m': None, 'camera_id': None, 'camera_dir_known': False, 'camera_dr': False, 'camera_stop': None}
+    out = {'camera_kind': 0, 'camera_dist_m': None, 'camera_id': None, 'camera_dir_known': False, 'camera_dr': False, 'camera_stop': None,
+           'camera_walk_m': None}
     if self.C is None or self.n_cameras == 0:
       out['camera_stop'] = 'no camera layer'
       return out
@@ -2244,16 +2249,44 @@ class Matcher:
         out['camera_stop'] = 'no path'
         return out
       found = self._camera_on_path(*path[:3], H)
+      # the search looks no further than H, even where the walk took a whole line beyond it
+      searched = round(min(float(path[3]), H), 1)
+      # CameraHold may end a hold on this, so it counts only a live walk that starts the way the car is going (review of
+      # nswcam finding 3)
+      course = None if dr or self._ctx is None else self._ctx.get('fwd_heading')
+      if course is not None and self._walk_along(path[0], path[1], path[2], float(course)):
+        out['camera_walk_m'] = searched
     except Exception as e:  # advisory: never fail the update for it
       out['camera_stop'] = f'error {e!r}'
+      out['camera_walk_m'] = None
       return out
     if found is None:
-      out['camera_stop'] = f'none within {path[3]:.0f} m ({path[4]})'
+      out['camera_stop'] = f'none within {searched:.0f} m ({path[4]})'
       return out
     s_m, row = found
     out.update(camera_kind=int(self.C['kind'][row]), camera_dist_m=round(s_m, 1), camera_id=int(self.C['osm'][row]),
                camera_dir_known=int(self.C['dir'][row]) >= 0, camera_dr=dr, camera_stop='found')
     return out
+
+  def _walk_along(self, la, lo, pp, course, min_m=5.0):
+    """FORK(NSW-CAMERAS) Does a live walk (micro-degree float arrays, the part of each vertex) start the way the car is
+    going? Not when the match was snapped onto the very end of its line: the walk then goes on from a zero-length step,
+    with no arrival direction to choose the next line by, and can take a line the car is not on (routes 08, 06, 142 at
+    the Great Western Hwy red-light camera, route ad at Parker St). Otherwise the bearing from its start to its first
+    vertex min_m or more away must be within camera_walk_deg of the GPS course."""
+    if len(la) < 2:
+      return False
+    kx = 1e-6 * M_PER_DEG_LON_EQ * math.cos(math.radians(la[0] * 1e-6))
+    ky = 1e-6 * M_PER_DEG_LAT
+    X, Y = (lo - lo[0]) * kx, (la - la[0]) * ky
+    d = np.hypot(X, Y)
+    if len(pp) >= 3 and d[1] < 0.5 and int(pp[2]) != int(pp[0]):
+      return False  # snapped onto the end of its line
+    k = np.nonzero(d >= min_m)[0]
+    if len(k) == 0:
+      return False
+    start = math.degrees(math.atan2(X[k[0]], Y[k[0]])) % 360.0
+    return abs(_wrap180(start - course)) <= self.p['camera_walk_deg']
 
   def _camera_on_path(self, la, lo, pp, H):
     """The first camera along a walked path (micro-degree float arrays, the part of each vertex) whose home entry is

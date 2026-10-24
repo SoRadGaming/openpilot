@@ -479,9 +479,11 @@ points), and NSW enforces them on heavy vehicles except two trial lengths (Pacif
 
 **In the index.** `build_index.py --cameras` snaps each camera onto the TfNSW line(s) it stands on (its "home" lines:
 the nearest within 30 m that runs along the OSM road the node is on and can carry the camera's traffic; for a camera
-with a direction also a parallel line within 15 m, because TfNSW draws some divided roads as two Both Directions lines
-13 m apart), marks a speed camera on a TfNSW School line as a school-zone camera (55), and stores them as `c_*` arrays
-and `cameras_json` in the same `nsw_zones.npz` (369 of 370 snapped; +~0.02 MB). **Format 2 is unchanged:** a car on
+with a direction also the other line of a divided road within 15 m, because TfNSW draws some divided roads as two Both
+Directions lines 13 m apart - only a two-way line with the same limit and type and no other line between the two, so a
+separate street or service road beside the road never gets the road's camera), marks a speed camera on a TfNSW School
+line as a school-zone camera (55), and stores them as `c_*` arrays and `cameras_json` in the same `nsw_zones.npz` (369
+of 370 snapped; +~0.02 MB). **Format 2 is unchanged:** a car on
 older software verifies and uses the file as before and ignores the cameras (checked with push12's code on a real
 build). A missing, unreadable or implausible fetch (under 150 cameras, or 25 % fewer than the last release) never fails
 the build: the previous release's cameras are snapped again onto the new lines, or the index has none.
@@ -492,9 +494,11 @@ light) and on through unique continuations, or the dead-reckoned path while ever
 - and reports the nearest camera within 400 m that has one of the walked lines as a home, stands within 30 m of it,
 and checks traffic in the direction of travel. Cameras on the other carriageway, a side road or the cross street are
 never on the walk. Nothing while the limit is withheld (ambiguous: the road itself is in doubt). mapd holds a camera
-through a gap of up to 3 s (`CameraHold`, run down by the car's speed, never past it) and publishes **`customReserved12`**
-once a tick (state, kind, distance, OSM id, direction known, dead reckoning, cameras in the layer, OSM date, reason;
-logged, every message in the qlog). It works in modes 1 and 2; mode 0 (off) has no matcher and no cameras.
+through a gap of up to 3 s (`CameraHold`, run down by the car's speed, never past it, and dropped at once when the
+matcher is sure of the road and has searched it, along the car's GPS course, past where the camera stood: the car
+turned off) and publishes
+**`customReserved12`** once a tick (state, kind, distance, OSM id, direction known, dead reckoning, cameras in the
+layer, OSM date, reason; logged, every message in the qlog). It works in modes 1 and 2; mode 0 (off) has no matcher and no cameras.
 
 **On the screen.** `HudCameraAlerts` (sunnylink Visuals > HUD > "Camera Alerts", on by default): `hud_model.CameraState`
 reads `customReserved12` while it is this drive's and still arriving, runs the distance down by vEgo between messages
@@ -511,7 +515,9 @@ the manifest (`attribution`, `cameras.licence`), `ATTRIBUTION.txt` (with how the
 and the maps page say so. The cameras in a published index are themselves ODbL.
 
 **The Action (not changed yet).** The workflow lives in SoRadGaming/openpilot and was not edited or pushed in push13.
-It needs, before or after this code reaches `master` (the builder works without the file): a step after the TfNSW
+**Until it is changed, nothing shows in the car:** the weekly build gets no camera file, the index has no camera
+layer, and mapd publishes `customReserved12` state 0 'no camera layer'. It needs, before or after this code reaches
+`master` (the builder works without the file): a step after the TfNSW
 download that runs `python "$NSW_PKG/cameras.py" fetch --out src/osm_cameras.json` and never fails the run;
 `--cameras src/osm_cameras.json` added to the build when that file exists; `'cameras'` in the test step's `PURE` set (so
 `test_cameras.py` runs there); `cameras_json` VOLATILE in the compare step (`osm_base`, `origin`) and the `c_` /
@@ -524,7 +530,10 @@ car passing within 30 m of the camera (most within 5 m); 23 were not - the car t
 80 m, at red-light intersections and a school zone it turns before). Passes of a camera, in its direction, with no
 alert: 2 - one 22 m past a junction the walk could not see through, one a red-light camera at an interchange the car
 crossed on another road. No alert while dead reckoning (none of the routes passes a tunnel camera). The matcher's tick
-costs ~0-1 ms more on the PC (~5 ms on the device by the usual 5x).
+costs ~0-1 ms more on the PC (~5 ms on the device by the usual 5x). After the review fixes (a twin line only for a
+divided road, the hold dropped on another road): the same 109 alerts and the same 2 misses; 19 alerts end 1-3 s
+sooner, every one where the car had turned off or just passed the camera (ticks shown as held: 71 -> 37); 171 cameras
+(was 198) are on two or more lines.
 
 **For the owner to check.**
 1. The badge's place and size on the device (top, right of MAX's place; under the timer when stopped).

@@ -1072,10 +1072,12 @@ def self_test(arrays, path, n=300, seed=20260929, log=print):
 CAM_SNAP_R_M = 30.0  # a camera further than this from every base line is not on a road the matcher knows: left out
 CAM_AXIS_DEG = 35.0  # a home line runs within this of the OSM road the camera node sits on (either way)
 CAM_HOME_SLACK_M = 3.0  # lines this little further than the nearest are the same road drawn twice: homes too ...
-CAM_HOME_SLACK_DIR_M = 15.0  # ... and, for a camera whose direction is known, a parallel line this far: TfNSW draws some
-#                              divided roads as two Both Directions lines ~13 m apart, and which one the OSM node falls
-#                              nearer depends on the two maps' offsets (route 137: the car matched the other one). The
-#                              direction check on the device keeps the opposite carriageway's traffic out.
+CAM_HOME_SLACK_DIR_M = 15.0  # ... and, for a camera whose direction is known, a parallel line this far that is the other
+#                              line of a divided road (_divided_twin): TfNSW draws some divided roads as two Both
+#                              Directions lines ~13 m apart, and which one the OSM node falls nearer depends on the two
+#                              maps' offsets (route 137: the car matched the other one). The direction check on the
+#                              device keeps the opposite carriageway's traffic out. A separate street beside the road
+#                              (another limit or type, or a line between) is never a twin (nswcam review finding 1).
 CAM_SCHOOL_R_M = 12.0  # a speed camera with a TfNSW School line this close, along its road, is a school-zone camera
 CAM_MIN_ROWS = 150  # fewer from a fetch is a broken answer (2026-10: 370)
 CAM_DROP_TOL = 0.25  # ... as is more than this many fewer than the previous release
@@ -1085,15 +1087,37 @@ def _undirected(a, b):
   return min(cameras.adiff(a, b), cameras.adiff(a, b + 180.0))
 
 
+def _divided_twin(L, near, c, cand):
+  """FORK(NSW-CAMERAS) Candidate line c (a cand tuple of camera_arrays: dist, part, bearing, one way, x, y of its point
+  nearest the camera) lies beyond CAM_HOME_SLACK_M of the nearest line: is it the other line of the same divided road
+  as `near` (the nearest, or a line drawn on it), the road drawn as two Both Directions lines? Only if both lines are
+  two-way with the same limit, type and direction code, and no other line of cand runs between them (across the road,
+  more than CAM_HOME_SLACK_M from each). A separate street or service road beside the road fails this (the 2026-10
+  data has 60 roads with 50 'Default' lines 8-16 m off; nswcam review finding 1)."""
+  qa, qb = near[1], c[1]
+  if near[3] or c[3]:
+    return False
+  if any(int(L[k][qa]) != int(L[k][qb]) for k in ('part_speed', 'part_type', 'part_dir')):
+    return False
+  ux, uy = math.sin(math.radians(near[2])), math.cos(math.radians(near[2]))
+
+  def across(x):  # signed distance across the nearest line's axis (m)
+    return ux * x[5] - uy * x[4]
+
+  lo, hi = sorted((across(near), across(c)))
+  return not any(lo + CAM_HOME_SLACK_M < across(x) < hi - CAM_HOME_SLACK_M for x in cand if x[1] not in (qa, qb))
+
+
 def camera_arrays(arrays, rows, origin, osm_base=None, log=print):
   """Snap camera rows (cameras.parse_overpass) onto the base lines of `arrays` (build_arrays output) -> (c_* arrays incl.
   cameras_json, report). A camera's HOME lines are the nearest base line within CAM_SNAP_R_M that runs along the OSM
   road it stands on (CAM_AXIS_DEG; without one, along the nearest line) and, for a camera with a direction, that can
   carry that traffic (a One Way line drawn the other way cannot), plus any line within CAM_HOME_SLACK_M of it along
-  the same axis (the same road drawn twice) - CAM_HOME_SLACK_DIR_M when the camera's direction is known, as the device
-  then checks the direction of travel. So a camera on one carriageway of a divided road is homed on that carriageway's
-  line (or both, each for its own direction), and one at a junction on its own approach, not the cross street. Rows
-  with no home are left out and counted."""
+  the same axis (the same road drawn twice) and, when the camera's direction is known (the device then checks the
+  direction of travel), the other line of a divided road drawn as two Both Directions lines within CAM_HOME_SLACK_DIR_M
+  (_divided_twin: never a separate street beside it). So a camera on one carriageway of a divided road is homed on
+  that carriageway's line (or both, each for its own direction), and one at a junction on its own approach, not the
+  cross street. Rows with no home are left out and counted."""
   matcher = _sibling('matcher')
   m = matcher.Matcher(arrays, calendar=(lambda d, division=None: False, 'cameras: no school days'))
   L, O = m.L['b'], m.L['o']
@@ -1105,14 +1129,15 @@ def camera_arrays(arrays, rows, origin, osm_base=None, log=print):
     cand = []
     if seg is not None:
       sv, sp, ax, ay, bx, by, kx, ky = seg
-      dx, dy, slen, _, _, _, _, d = m._project(ax, ay, bx, by)
+      dx, dy, slen, _, _, px, py, d = m._project(ax, ay, bx, by)
       best: dict[int, int] = {}
       for i in np.nonzero((d <= CAM_SNAP_R_M) & (slen > 0))[0]:
         q = int(sp[i])
         if q not in best or d[i] < d[best[q]]:
           best[q] = int(i)
       for q, i in best.items():
-        cand.append((float(d[i]), q, math.degrees(math.atan2(dx[i], dy[i])) % 360.0, int(L['part_dir'][q]) == matcher.DIR_ONE_WAY))
+        cand.append((float(d[i]), q, math.degrees(math.atan2(dx[i], dy[i])) % 360.0, int(L['part_dir'][q]) == matcher.DIR_ONE_WAY,
+                     float(px[i]), float(py[i])))
     if r['axis'] is not None:
       cand = [c for c in cand if _undirected(c[2], r['axis']) <= CAM_AXIS_DEG]
     if r['dir'] is not None:
@@ -1127,10 +1152,12 @@ def camera_arrays(arrays, rows, origin, osm_base=None, log=print):
         rep['no_line_examples'].append({'osm': r['id'], 'lat': round(r['lat'], 6), 'lon': round(r['lon'], 6), 'kind': cameras.KIND_NAMES[r['kind']]})
       continue
     dmin = cand[0][0]
-    slack = CAM_HOME_SLACK_M if r['dir'] is None else CAM_HOME_SLACK_DIR_M
+    near = [c for c in cand if c[0] <= dmin + CAM_HOME_SLACK_M]  # the nearest line, and the same road drawn on it
     home = []
-    for dd, q, b, _ow in cand:
-      if dd > dmin + slack:
+    for c in cand:
+      dd, q, b = c[0], c[1], c[2]
+      if dd > dmin + CAM_HOME_SLACK_M and not (r['dir'] is not None and dd <= dmin + CAM_HOME_SLACK_DIR_M
+                                               and any(_divided_twin(L, n, c, cand) for n in near)):
         continue
       brg = -1 if r['dir'] is None else int(round(b if cameras.adiff(b, r['dir']) <= 90.0 else (b + 180.0) % 360.0)) % 360
       home.append((q, brg, b))

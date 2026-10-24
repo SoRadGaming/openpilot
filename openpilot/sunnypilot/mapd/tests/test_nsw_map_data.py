@@ -541,6 +541,15 @@ class TestCameraMessage(NswMapDataHarness):
     assert lmd.nswZone.state == nmd.STATE_ERROR
     assert (self.cam(md).state, self.cam(md).reason) == (nmd.CAM_STATE_OFF, 'matcher error')
 
+  def test_matched_on_another_road_drops_the_held_camera(self):
+    md = self.make_cam()
+    self.fake_cam(md, camera_kind=3, camera_dist_m=366.5, camera_id=10261867875, camera_dir_known=True, camera_stop='found')
+    self.fake_cam(md, state='low_confidence', camera_kind=0, camera_stop='not on a known road (low_confidence)')
+    assert self.cam(md).state == nmd.CAM_STATE_HELD  # unsure of the road: held
+    self.fake_cam(md, camera_kind=0, camera_walk_m=400.0, camera_stop='none within 400 m (horizon)')
+    c = self.cam(md)
+    assert (c.state, c.reason) == (nmd.CAM_STATE_NONE, 'none within 400 m (horizon)'), "matched elsewhere: gone at once"
+
   def test_a_camera_message_failure_never_stops_live_map_data(self):
     md = self.make_cam()
 
