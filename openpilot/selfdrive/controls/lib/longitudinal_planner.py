@@ -129,10 +129,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.output_a_target)
-    # FORK(LEAD-BRAKE): the MPC's radarState - the projected leadOne in mode 2 (live), radarState itself in mode 1 (shadow)
+    # FORK(LEAD-BRAKE): the MPC's radarState - the projected leadOne in mode 2 (live), radarState itself in mode 1 (shadow).
+    # Anything else that solves an MPC on the lead in this plan must be handed radar_state, not sm['radarState'].
     radar_state = sm['radarState']
     if self.lead_brake is not None:
-      radar_state = self.lead_brake.before_mpc(radar_state, self.mpc, v_ego, sm['selfdriveState'].personality, prev_accel_constraint)
+      radar_state = self.lead_brake.before_mpc(radar_state, self.mpc, v_ego, sm['selfdriveState'].personality, prev_accel_constraint,
+                                               sm['modelV2'], sm.logMonoTime['radarState'])
     self.mpc.update(radar_state, personality=sm['selfdriveState'].personality)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
@@ -169,7 +171,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
     # FORK(LEAD-BRAKE): the plan the other way (mode 1: with the projection; mode 2: without), for CustomReserved13
     if self.lead_brake is not None:
-      self.lead_brake.after_plan(output_a_target, [c[0] for c in candidates[1:]], action_t, self.fcw, sm['carState'].standstill,
+      self.lead_brake.after_plan(output_a_target, [c[0] for c in candidates], action_t, self.fcw, sm['carState'].standstill,
                                  not reset_state, v_ego)
     # FORK(HONDA_ACCORD_9G_AU): for 1.5 s after the driver lifts off the gas the plan may fall at most 1.5 m/s^3, from
     # min(aEgo, 0); skipped on FCW, the MPC's crash flag, a plan (or the MPC's next 2.5 s) under -2.0, or a lead

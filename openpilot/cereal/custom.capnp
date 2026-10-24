@@ -735,7 +735,8 @@ struct CustomReserved12 @0x9ccdc8676701b412 {
 }
 
 # FORK(LEAD-BRAKE): the lead brake assist (sunnypilot/selfdrive/controls/lib/lead_brake_assist.py), published by plannerd
-# once per plan (20 Hz) on HONDA_ELESYS with openpilot longitudinal, stock ACC mode off and LeadBrakeAssistMode 1 or 2.
+# on HONDA_ELESYS with openpilot longitudinal, stock ACC mode off and LeadBrakeAssistMode 1 or 2: on every plan where the
+# assist is active, has a raw decel under its threshold or an episode open, and once a second (all of them in the qlog).
 # Kept under the reserved name: the struct and the Event field stay CustomReserved13 / customReserved13.
 struct CustomReserved13 @0xcd96dafb67a082d0 {
   mode @0 :UInt8;             # LeadBrakeAssistMode: 1 shadow (computes and logs, changes nothing), 2 live
@@ -756,6 +757,9 @@ struct CustomReserved13 @0xcd96dafb67a082d0 {
   fcwAssist @15 :Bool;        # ... with it
   compared @16 :Bool;         # the second solve ran and converged this frame
   episodes @17 :UInt16;       # episodes (runs of active frames) so far this drive
+  skipped @18 :Bool;          # the second solve was not run: another layer changed the MPC's candidate after its solve
+  aCamera @19 :Float32;       # the camera's lead accel (modelV2 leadsV3[0].a[0]; NaN without a camera lead at prob 0.5)
+  camera @20 :Bool;           # the camera saw this lead slowing in the last 0.3 s (else a raw decel needs 2 samples in a row)
 }
 
 struct CustomReserved14 @0xb057204d7deadf3f {

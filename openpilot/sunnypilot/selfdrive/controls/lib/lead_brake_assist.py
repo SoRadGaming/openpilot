@@ -10,40 +10,69 @@ slowing faster than 1 m/s^2 (182 hard-braking leads, 51 h of drives).
 
 WHAT. leadOne's aLeadK and aLeadTau, for the planner's MPC only, from two ports behind one projection:
   * the raw decel (henryopen/openpilot hcop c3aba1e72, ec47d05ad, 628dad62c, MIT; adapted): the least-squares slope of
-    the lead's raw radar speed over its own radar samples (10 Hz; a reading radard repeats is no new sample), over the
-    last 0.3 s under RAW_THR (-2.0) and over 0.5 s under RAW_THR2 (-1.5), the last 3 steps not rising, a track seen
-    moving (4 m/s), within 80 m, no jump in range or speed (another object), and radard's own aLeadK already under -1.0
-    on the sample's frame. Decided once per radar sample. It stands in for aLeadK when harsher (floored at -6).
+    the lead's raw radar speed over its own radar samples (10 Hz; a reading radard repeats is no new sample; each stamped
+    with radarState's own time), over the last 0.3 s under RAW_THR (-2.0) and over 0.5 s under RAW_THR2 (-1.5), the last
+    3 steps not rising, a track seen moving (4 m/s), within 60 m, no jump in range or speed (another object), and
+    radard's own aLeadK already under -1.0 on the sample's frame. And corroborated: the camera (modelV2's lead, the same
+    car within 6 m or 30% of the range, prob 0.5) saw it slowing (accel under -0.25) in the last 0.3 s; else the fall
+    must show on two radar samples in a row - as must a fall resting on one reading (a step of 0.5 m/s or more, the two
+    before it under half of it), camera or not. This radar's speed glitches - one to three readings 1-2.5 m/s low, then
+    back - look just like a car braking, and the camera does not see them. Decided once per radar sample. It stands in
+    for aLeadK when harsher (floored at -6). It is harsher than the lead's real braking by design, not a better estimate
+    of it: the slope is taken the moment it crosses -2, a median 0.5 m/s^2 harsher than what the lead did (measured with
+    hindsight), so the MPC starts early rather than accurately.
   * the tau attack (CarrotPilot carrot-wip openpilot/selfdrive/carrot/radar_motion/lead_dynamics.py, MIT): while the
     lead's braking is strong and still building (projected accel under -0.5, jerk under -1.5, full at -1.5 / -3.0) on
-    two distinct radar samples <= 150 ms apart, aLeadTau decays up to 0.5 a frame instead of radard's 0.1, so the MPC
-    keeps the braking longer. Here only on samples where the raw decel counts (tau_needs_raw), and as a factor on
-    radard's own aLeadTau (radard's quiet reset and its "an acceleration is never prolonged" rule kept).
+    two distinct radar samples <= 150 ms apart, aLeadTau decays faster than radard's, so the MPC keeps the braking longer:
+    at full strength to about 0.45 of its value per 0.1 s (radard alone: 0.81; the attack's 0.5 applies on the sample's
+    frame only, every other frame). Here only on samples where the raw decel counts (tau_needs_raw), and as a factor on
+    radard's own aLeadTau (radard's quiet reset and its "an acceleration is never prolonged" rule kept); given back on
+    the first sample on which the lead's raw speed no longer falls (tau_release): a braking that ended is not prolonged.
   Left out: vision leads (radarTrackId -1), held leads (<= -2, held_lead.py), stationary and oncoming tracks (never
-  moving), far tracks. radarState itself is never changed: the projection is handed to the MPC and to the re-entry
-  ramp's lead gate in the planner.
+  moving), tracks beyond 60 m. radarState itself is never changed: the projection is handed to the MPC and to the
+  re-entry ramp's lead gate in the planner (in mode 2 a projected lead under -2.0 ends a re-entry ramp, as a lead radard
+  sees braking that hard does). Anything else that solves an MPC on the lead in the plan (close follow, once merged) must
+  be handed the same view.
 
-MODES (LeadBrakeAssistMode, read once when plannerd starts): 0 off (nothing built, upstream's plan bit for bit),
-1 shadow (default: computes, solves the MPC a second time from the planner's own warm start while the projection
-differs, logs customReserved13 and one cloudlog line per episode; the plan is untouched - proven bit for bit), 2 live.
+MODES (LeadBrakeAssistMode, read once when plannerd starts; sunnylink Vehicle > Honda, offroad only): 0 off (nothing
+built, upstream's plan bit for bit), 1 shadow (default: computes, solves the MPC a second time from the planner's own
+warm start while the projection differs, logs customReserved13 and an error-level cloudlog line per episode; the plan
+is untouched - proven bit for bit), 2 live. Shadow's logged difference is one solve on one frame: mode 2's effect on
+the plan lasts longer (the MPC carries it on), so read the shadow logs as a lower bound and the replay as the measure.
+customReserved13 goes out on every frame where the projection is active, a raw decel is under its threshold or an
+episode is open, and once a second otherwise; all of them reach the qlog. Episodes that end within LOG_MIN_GAP of the
+last line share the next one (merged = how many), up to LOG_MAX lines a drive.
 
-REPLAY (radard on the logged radar CAN, then the real planner open loop, mode 2 against mode 0; 192 routes, 51.3 h,
-21.2 h engaged; the 14 clutter routes and round 8's 69 among them). Phantom brake: an engaged episode on a lead that
-did not then slow (its own track, or what radard followed next) with the plan 0.1 m/s^2 or more firmer.
-  * this (rawC + tau on raw): 0 phantom brakes on the 14, the 69 and all 192 routes. 182 hard-braking leads (112
-    engaged), projected on 176. The plan reaches -1.5 a median 0.13 s (max 1.05) and -2.0 0.15 s (max 1.70) sooner;
-    first-order (this car's brake, a 0.3 s lag) a median 0.28 m and up to 1.85 m more room after 4 s on the engaged
-    ones, 1 m or more on 17 of 112. The plan is 0.3 m/s^2 or more firmer on 5.3 episodes per engaged hour, every one on
-    a lead that was braking. Active on 0.23% of frames. One FCW frame more (disengaged, a lead braking at -2.8 20 m
-    ahead).
-  * henryopen verbatim (vLead differenced over 0.3 s in frames, -1.0, 2 frames): 40 phantom brakes on the 14 clutter
-    routes (15 per engaged hour); with his gap gate 34. This radar's raw speed jumps up to 2 m/s between readings.
-  * CarrotPilot alone (the tau attack on aLeadK): 0 phantom brakes but ~nothing gained (median 0.00 s, 0.03 m): radard's
-    own tau has usually decayed by the time aLeadK is under -0.5.
-  * the raw decel with 0.5 s under -2.0 (rawA): 0 phantoms, about two thirds of the gain, 3.5 firm episodes / engaged h.
-SHADOW PROOF. process_replay of plannerd -> controlsd -> card (each feeding the next) on routes d5 (segments 15-26,
-the shadow active on 54 frames) and 142 (10-18, 147 frames, logging plans up to 0.61 m/s^2 firmer), push12 against
-this in mode 1: longitudinalPlan, controlsState, carControl and sendcan identical message for message.
+REPLAY (radard on the logged radar CAN, then the real planner open loop, mode 2 against mode 0). Phantom brake: engaged,
+the plan 0.1 m/s^2 or more firmer, on a lead that was not braking. Two independent replays, each with its own test:
+  * the review's (opendbc's RadarInterface on the bus-1 CAN, the branch's RadarD, a reduced planner; 78 routes - the 14
+    clutter routes, round 8's 69, 9 more from October - 29.8 h, 13.5 h engaged; the lead "not braking" when its own radar
+    speed, a 1 s centered slope seen with hindsight, never fell faster than -0.5 where the raw decel was used): the first
+    version (80 m, no corroboration) braked for nothing twice engaged - c8 t=1449.31 (three readings 1.8 m/s low 75 m
+    out) and fd t=662.96 (a jump to ~20 m/s for 0.7 s, 37 m) - and would have three more times not engaged (de, 112, 14).
+    This: none engaged; one not engaged (14 t=1412.35, 8 m/s, 10 m, the camera itself seeing the lead ease at -0.45). On
+    the first version's 184 engaged hard-braking leads, the same events, the plan reaches -1.5 a mean 0.20 s sooner (the
+    first version 0.21) and -2.0 0.24 s (0.26); first-order (this car's brake, a 0.3 s lag) 0.25 m more room after 4 s
+    (0.31); on the 50 where the plan was 0.3 or more firmer 0.25 / 0.33 s (0.27 / 0.33) and 0.69 m (0.82). The plan is
+    0.3 or more firmer 3.4 times an engaged hour (3.7), active on 0.20% of frames (0.25%), no new FCW. Onsets resting on
+    one reading 17 (76), of them bouncing straight back 2 (10). Frames 0.1 or more firmer while the lead had stopped
+    braking 131 (205). In mode 2 a projected lead ended 10 re-entry ramps (1.5 s after a gas lift-off) on the lead gate
+    before radard's view would have, and 10 more through the MPC's own plan, on leads that were slowing (route 141
+    t=199.2: -1.4 real, -3.25 projected, the plan -1.58 at once instead of ramping in over 0.65 s).
+  * the first version's (its stage-1 radard extraction, the full planner, windows around every episode and every true
+    hard-braking event; 192 routes, 51.3 h, 21.2 h engaged; "not braking": the lead did not then slow): 0 phantom brakes
+    on the 14 + 69 routes and on all 192 (as before); no new FCW (the first version had one, not engaged); the plan
+    reaches -1.5 a mean 0.15 s sooner (0.17) and -2.0 0.18 s (0.20, max 1.70), 0.28 m median room (0.26); 0.3 or more
+    firmer 5.0 times an engaged hour (5.3).
+  How the first version was chosen (its replay): henryopen's rule as written (vLead differenced over 0.3 s in frames,
+  -1.0, 2 frames) braked for nothing 40 times on the 14 clutter routes (34 with his gap gate) - this radar's raw speed
+  jumps up to 2 m/s between readings; CarrotPilot's tau attack alone gained ~nothing (radard's own tau has usually
+  decayed by the time aLeadK is under -0.5); the 0.5 s window at -2.0 instead of -1.5 kept about two thirds of the gain.
+SHADOW PROOF. process_replay of plannerd on route 141 segments 1-10 (12000 plans): mode 1 against mode 0, every
+longitudinalPlan and driverAssistance identical (processingDelay and solverExecutionTime aside); mode 1 logged 898
+customReserved13 messages, 100 of them active, every one compared. The first version's proof: plannerd -> controlsd ->
+card on routes d5 (15-26) and 142 (10-18) against push12, longitudinalPlan, controlsState, carControl and sendcan
+identical message for message.
 """
 import math
 from collections import deque
@@ -75,14 +104,16 @@ BLOCK_RANGE = 2    # beyond raw_d_max: the radar's speed is noisiest far out
 BLOCK_GAP = 4      # the gap does not need it yet (henryopen's RAW_GAP_FRAC / RAW_TTC gate)
 BLOCK_MONO = 8     # the samples are not falling one after another (a jump, not a braking car)
 BLOCK_KALMAN = 16  # radard's own aLeadK does not yet say the lead is slowing
+BLOCK_CAMERA = 32  # not corroborated yet: no camera agreement (or a fall resting on one reading) and not raw_n_alone samples
 
 RADAR_DT = 0.1     # s: the Elesys radar reports at 10 Hz; radard runs at 20 Hz and sees each reading twice
 LEAD_ACCEL_TAU = 1.5                      # radard._LEAD_ACCEL_TAU
 LEAD_ACCEL_ALPHA = 0.05 / (0.45 + 0.05)   # radard's FirstOrderFilter(1.5, 0.45, DT_MDL).update(0.0), per frame
 ACTIVE_DV = 0.05   # m/s: a projection counts as different when it moves the lead's predicted 4 s speed by this much
 EPISODE_GAP = 0.5  # s: active frames this close together are one episode (one cloudlog line)
-LOG_MIN_GAP = 2.0  # s between cloudlog lines,
-LOG_MAX = 40       # and at most this many a drive
+LOG_MIN_GAP = 2.0  # s between cloudlog lines (episodes ending closer together share one),
+LOG_MAX = 100      # and at most this many a drive
+HEARTBEAT_FRAMES = 20   # customReserved13 at least once a second, so even a qlog shows the assist running
 
 
 @dataclass
@@ -97,13 +128,21 @@ class Config:
   raw_win2: float = 0.5          # s: and over this longer window too (0: not checked)
   raw_thr2: float | None = -1.5  # m/s^2: the longer window's threshold (None: raw_thr)
   raw_thr: float = -2.0          # m/s^2: a window slope under this counts,
-  raw_n: int = 1                 # for this many radar samples in a row (each <= raw_gap_max apart)
+  raw_n: int = 1                 # for this many radar samples in a row (each <= raw_gap_max apart) while the camera agrees,
+  raw_n_alone: int = 2           # and this many while it does not (raw_cam_a None: raw_n always)
+  raw_cam_a: float | None = -0.25  # m/s^2: the camera agrees when the vision model's lead (modelV2 leadsV3[0]) accel is
+  raw_cam_win: float = 0.3       # under this on some frame in the last raw_cam_win s, the lead at prob >= raw_cam_prob
+  raw_cam_prob: float = 0.5      # and within raw_cam_dx m (or raw_cam_dx_frac of dRel) of the radar lead's range
+  raw_cam_dx: float = 6.0
+  raw_cam_dx_frac: float = 0.3
+  raw_one_step: float = 0.5      # m/s: a fall resting on one reading - the newest step down this much or more, the two
+                                 # before it each under half of it - needs raw_n_alone samples even with the camera
   raw_gap_max: float = 0.15      # s
   raw_min_samples: int = 4       # samples the window must hold
   raw_jump_m: float = 2.0        # m: a range step this much beyond what vRel explains is another object: restart
   raw_step_max: float = 12.0     # m/s^2: a speed step between two samples steeper than this is no car braking: restart
   raw_v_moving: float = 4.0      # m/s: the track must have read this raw vLead at some point while leadOne
-  raw_d_max: float = 80.0        # m
+  raw_d_max: float = 60.0        # m
   raw_mono: bool = True          # each of the last raw_mono_n sample steps no rise beyond raw_mono_dv
   raw_mono_n: int = 3
   raw_mono_dv: float = 0.05      # m/s
@@ -119,6 +158,8 @@ class Config:
   tau_j_full: float = 3.0
   tau_attack_rc: float = 0.05
   tau_confirm_gap: float = 0.15
+  tau_release: bool = True       # an unconfirmed sample with the lead's raw speed no longer falling (0.3 s slope above
+                                 # -tau_a_start) gives radard's own aLeadTau back: a braking that ended is not prolonged
   # jerk: CarrotPilot opendbc radar_tracks.py MyTrack (a quadratic velocity trend), at the radar's 10 Hz
   jerk_min_samples: int = 7
   jerk_hist_s: float = 0.5
@@ -208,10 +249,13 @@ class _Jerk:
 
 class _TauBoost:
   """CarrotPilot's jerk-confirmed attack on aLeadTau (lead_dynamics.LeadAccelTau), kept as a factor on radard's own
-  aLeadTau so that only the attack differs: radard decays aLeadTau by LEAD_ACCEL_ALPHA per frame while |aLeadK| >= 0.5
-  and resets it to 1.5 below; Carrot decays by up to 0.5 per frame instead, on two distinct radar samples no more than
-  tau_confirm_gap apart, by the strength min over that pair of ramp(-a, 0.5..1.5) x ramp(-j, 1.5..3.0). A positive
-  acceleration restores radard's tau: it never prolongs an acceleration."""
+  aLeadTau so that only the attack differs: radard decays aLeadTau by LEAD_ACCEL_ALPHA (0.1) per frame while
+  |aLeadK| >= 0.5 and resets it to 1.5 below; the attack decays it by up to 0.5 instead, on the frame of a radar sample
+  that confirms it - two distinct samples no more than tau_confirm_gap apart, by the strength min over that pair of
+  ramp(-a, 0.5..1.5) x ramp(-j, 1.5..3.0). A sample comes every other frame (10 Hz radar, 20 Hz planner) and the frames
+  between keep radard's 0.1, so at full strength aLeadTau falls to about 0.45 of radard's per 0.1 s, not 0.25. A positive
+  acceleration restores radard's tau (it never prolongs an acceleration), and with tau_release so does a sample on which
+  the lead's raw speed is no longer falling (a braking that ended is not prolonged either)."""
 
   def __init__(self, cfg: Config):
     self.cfg = cfg
@@ -219,7 +263,8 @@ class _TauBoost:
     self.prev_strength = 0.0
     self.sample_t: float | None = None
 
-  def update(self, a: float, j: float, sample_t: float, new_sample: bool, allowed: bool = True) -> float:
+  def update(self, a: float, j: float, sample_t: float, new_sample: bool, allowed: bool = True,
+             falling: bool = True) -> float:
     cfg = self.cfg
     if not _finite(a, j, sample_t):
       self.prev_strength, self.sample_t, self.boost = 0.0, None, 1.0
@@ -231,7 +276,7 @@ class _TauBoost:
     if new_sample:
       self.prev_strength = strength
       self.sample_t = sample_t
-    if abs(a) < 0.5 or a >= 0.0:
+    if abs(a) < 0.5 or a >= 0.0 or (cfg.tau_release and new_sample and confirmed <= 0.0 and not falling):
       self.boost = 1.0
     else:
       fast = DT_MDL / (cfg.tau_attack_rc + DT_MDL)
@@ -258,6 +303,7 @@ class _Track:
     self.last_d: float | None = None
     self.raw: float | None = None     # the raw decel decided on the last sample's frame (None: it does not count)
     self.blocked = 0
+    self.cam_t: float | None = None   # the last frame the camera saw this lead slowing (camera_slowing())
 
 
 @dataclass
@@ -273,6 +319,9 @@ class Projection:
   j_lead: float = 0.0
   a_lead: float = 0.0       # projected
   tau: float = LEAD_ACCEL_TAU   # projected
+  d_rel: float = 0.0
+  a_cam: float = math.nan   # the camera's lead accel (modelV2 leadsV3[0].a[0]; NaN: no camera lead readable)
+  cam: bool = False         # the camera saw this lead slowing within raw_cam_win (camera_slowing())
 
 
 _DV_T = np.arange(0.0, 4.0 + 1e-9, 0.1)
@@ -281,6 +330,34 @@ _DV_T = np.arange(0.0, 4.0 + 1e-9, 0.1)
 def predicted_dv(a: float, tau: float) -> float:
   """The lead's speed change over 4 s as long_mpc.extrapolate_lead() predicts it (before its clip at standstill)."""
   return float(np.sum(a * np.exp(-tau * _DV_T ** 2 / 2.0)) * 0.1)
+
+
+def camera_slowing(model_lead, d_rel: float, cfg: Config) -> tuple[float, bool]:
+  """The camera's view of the radar's lead: (its accel, whether it sees the lead slowing). modelV2 leadsV3[0]: its
+  accel now (a[0]; NaN when there is no lead, a non-finite one, or prob under raw_cam_prob), and slowing when that is
+  under raw_cam_a with the lead's distance within raw_cam_dx m (or raw_cam_dx_frac of the range) of the radar lead's -
+  the same car. The camera judges the brake lights and the car's shape, not the Doppler, so a radar speed glitch (which
+  on this radar looks just like a car braking for one to three readings) does not move it."""
+  if model_lead is None:
+    return math.nan, False
+  try:
+    prob, x, a = float(model_lead.prob), float(model_lead.x[0]), float(model_lead.a[0])
+  except (AttributeError, TypeError, ValueError, IndexError):
+    return math.nan, False
+  if not _finite(prob, x, a, d_rel) or prob < cfg.raw_cam_prob:
+    return math.nan, False
+  same = abs(x - d_rel) <= max(cfg.raw_cam_dx, cfg.raw_cam_dx_frac * d_rel)
+  return a, bool(same and cfg.raw_cam_a is not None and a < cfg.raw_cam_a)
+
+
+def _one_reading(samples, step: float) -> bool:
+  """Does the fall rest on one reading: the newest step down step m/s or more, each of the two before it less than half
+  of it? (Reviewer's 12a: 8.09, 8.02, 7.88, 7.79, then 6.81 and back to 7.67 - a lead easing off at -1, one low reading.)"""
+  if step <= 0.0 or len(samples) < 4:
+    return False
+  v = [s[1] for s in list(samples)[-4:]]
+  last = v[3] - v[2]
+  return last <= -step and v[2] - v[1] > last / 2 and v[1] - v[0] > last / 2
 
 
 def _desired_gap(v_ego: float, v_lead: float, t_follow: float) -> float:
@@ -296,7 +373,9 @@ class LeadBrakeAssist:
     self.track: _Track | None = None
     self.proj = Projection()
 
-  def update(self, lead, t: float, v_ego: float, t_follow: float = 1.25) -> Projection:
+  def update(self, lead, t: float, v_ego: float, t_follow: float = 1.25, model_lead=None) -> Projection:
+    """lead: radarState's leadOne; t: the time of this radarState (s, monotonic); model_lead: modelV2's leadsV3[0] (or
+    None), the camera's view of the lead."""
     cfg = self.cfg
     p = Projection()
     self.proj = p
@@ -307,7 +386,7 @@ class LeadBrakeAssist:
     except (AttributeError, TypeError, ValueError):
       self.track = None
       return p
-    p.track_id, p.a_lead_k, p.a_lead_tau, p.a_lead, p.tau = tid, a_k, tau_k, a_k, tau_k
+    p.track_id, p.a_lead_k, p.a_lead_tau, p.a_lead, p.tau, p.d_rel = tid, a_k, tau_k, a_k, tau_k, d
     # a radar track only: not a vision lead (-1), not a held lead (<= -2, held_lead.py), never a non-finite one
     if not present or not radar or tid < 0 or not _finite(d, v_rel, v_lead, a_k, tau_k, t, v_ego):
       self.track = None
@@ -315,6 +394,10 @@ class LeadBrakeAssist:
     tr = self.track
     if tr is None or tr.tid != tid:
       tr = self.track = _Track(tid, cfg)
+    p.a_cam, slowing = camera_slowing(model_lead, d, cfg)
+    if slowing:
+      tr.cam_t = t
+    p.cam = tr.cam_t is not None and t - tr.cam_t <= cfg.raw_cam_win + 1e-6
     # a new radar sample: the reading changed, or a radar period has passed (a reading that really stayed the same; a
     # stalled radar's repeats only flatten the slopes, which never makes the projection brake)
     new = (d, v_rel) != tr.key or (tr.last_t is not None and t - tr.last_t >= RADAR_DT - 1e-3)
@@ -364,11 +447,16 @@ class LeadBrakeAssist:
     p.j_lead = tr.jerk.j
 
     # the raw decel is decided once per radar sample, on the frame it arrives (radard's aLeadK of that frame), and held
-    # until the next: a frame repeating a reading neither confirms nor changes it (henryopen's frames mode: every frame)
+    # until the next: a frame repeating a reading neither confirms nor changes it (henryopen's frames mode: every frame).
+    # A fall the camera does not see must last raw_n_alone samples: this radar's speed glitches (one to three readings
+    # low, then back) look just like a car braking, and the camera does not see them.
     if new or cfg.raw_frames:
       tr.raw, tr.blocked = None, 0
       if cfg.use_raw and tr.run >= cfg.raw_n:
         blocked = 0
+        alone = not (p.cam or cfg.raw_cam_a is None) or _one_reading(tr.samples, cfg.raw_one_step)
+        if tr.run < (max(cfg.raw_n, cfg.raw_n_alone) if alone else cfg.raw_n):
+          blocked |= BLOCK_CAMERA
         if tr.v_max < cfg.raw_v_moving:
           blocked |= BLOCK_SLOW
         if d > cfg.raw_d_max:
@@ -397,7 +485,7 @@ class LeadBrakeAssist:
     if cfg.use_tau:
       a_in = a_proj if cfg.tau_from_proj else a_k
       boost = tr.tau.update(a_in, tr.jerk.j, tr.last_t if tr.last_t is not None else t, new,
-                            allowed=not cfg.tau_needs_raw or tr.raw is not None)
+                            allowed=not cfg.tau_needs_raw or tr.raw is not None, falling=tr.slope <= -cfg.tau_a_start)
       if boost < 1.0 and a_in < 0.0:
         tau = tau_k * boost
         if tau < tau_k:
@@ -436,24 +524,32 @@ class LeadBrakePlanner:
   before_mpc(): radarState for the planner's MPC - the projection in mode 2, radarState itself in mode 1 - and, while
   the projection is active, a snapshot of the MPC's warm start. after_plan(): the comparison solve, on a second MPC
   started from that snapshot, of the other radarState (the projection in mode 1, radarState in mode 2), turned into a
-  plan the same way the planner does (get_accel_from_plan, then the min with the other candidates). publish(): the
-  frame's CustomReserved13."""
+  plan the same way the planner does (get_accel_from_plan, then the min with the other candidates); skipped (and
+  flagged) when another layer changed the MPC's candidate after its solve (close follow live, once merged), since the
+  second solve could not reproduce that. publish(): CustomReserved13 on every frame that matters (active, a raw decel
+  under the threshold, an open episode) and once a second, every one of them in the qlog too."""
 
   def __init__(self, mode: int, dt: float = DT_MDL, cfg: Config | None = None):
     self.mode = mode
     self.dt = dt
     self.assist = LeadBrakeAssist(cfg)
-    self.t = 0.0
+    self.t = 0.0                   # the planner's frame clock (episodes, the log lines)
+    self.frame = 0
+    self._ts: float | None = None  # the last radarState time handed to the assist (s)
     self.proj = Projection()
     self._snap = None
+    self._mpc_ref = None
     self._alt = None
     self.compared = False
+    self.skipped = False
     self.a_base = self.a_assist = 0.0
     self.fcw_base = self.fcw_assist = False
     self.episodes = 0
     self._ep: dict | None = None
+    self._pending: dict | None = None   # ended episodes waiting for LOG_MIN_GAP: one line for all of them
     self._last_log_t = -math.inf
     self._logs = 0
+    self.unlogged = 0                   # episodes after the LOG_MAX-th line: in customReserved13 only
     self._failed = False
     try:
       self._mpc2 = LongitudinalMpc(dt=dt)   # the second MPC, built once here so no plan frame pays for it
@@ -461,18 +557,24 @@ class LeadBrakePlanner:
       self._fail("init")
 
   # ---- planner hooks ----
-  def before_mpc(self, radar_state, mpc, v_ego: float, personality, prev_accel_constraint: bool):
+  def before_mpc(self, radar_state, mpc, v_ego: float, personality, prev_accel_constraint: bool, model=None,
+                 radar_mono_time=None):
+    """model: modelV2 (the camera's lead, leadsV3[0]); radar_mono_time: radarState's logMonoTime (ns)."""
     self.t += self.dt
+    self.frame += 1
     self._alt = None
     self.compared = False
+    self.skipped = False
     if self._failed:
       return radar_state
     try:
-      self.proj = self.assist.update(radar_state.leadOne, self.t, v_ego, get_T_FOLLOW(personality))
+      self.proj = self.assist.update(radar_state.leadOne, self._time(radar_mono_time), v_ego, get_T_FOLLOW(personality),
+                                     _model_lead(model))
       if not self.proj.active:
         return radar_state
       view = _RadarView(radar_state, _LeadView(radar_state.leadOne, self.proj.a_lead, self.proj.tau))
       self._snap = (_snapshot(mpc), prev_accel_constraint, personality)
+      self._mpc_ref = mpc
       if self.mode == MODE_LIVE:
         self._alt = radar_state
         return view
@@ -482,30 +584,35 @@ class LeadBrakePlanner:
       self._fail("before_mpc")
       return radar_state
 
-  def after_plan(self, a_plan: float, a_others, action_t: float, mpc_fcw: bool, standstill: bool, engaged: bool,
+  def after_plan(self, a_plan: float, a_candidates, action_t: float, mpc_fcw: bool, standstill: bool, engaged: bool,
                  v_ego: float) -> None:
-    """a_plan: the planner's min over its candidates this frame (before the re-entry ramp); a_others: the candidates
-    other than the MPC's (cruise, and e2e when it is one); mpc_fcw: the planner's FCW this frame."""
+    """a_plan: the planner's min over its candidates this frame (before the re-entry ramp); a_candidates: those
+    candidates, the MPC's first (then cruise, and e2e when it is one); mpc_fcw: the planner's FCW this frame."""
     self.a_base = self.a_assist = float(a_plan)
     self.fcw_base = self.fcw_assist = bool(mpc_fcw)
     if self._alt is not None and not self._failed:
       try:
-        a_alt, fcw_alt, ok = self._compare(a_others, action_t, standstill)
-        self.compared = ok
-        if ok:
-          if self.mode == MODE_LIVE:
-            self.a_base, self.fcw_base = a_alt, fcw_alt
-          else:
-            self.a_assist, self.fcw_assist = a_alt, fcw_alt
+        if self._mpc_altered(float(a_candidates[0]), action_t):
+          self.skipped = True
+        else:
+          a_alt, fcw_alt, ok = self._compare(a_candidates[1:], action_t, standstill)
+          self.compared = ok
+          if ok:
+            if self.mode == MODE_LIVE:
+              self.a_base, self.fcw_base = a_alt, fcw_alt
+            else:
+              self.a_assist, self.fcw_assist = a_alt, fcw_alt
       except Exception:
         self._fail("after_plan")
     self._episode(engaged, v_ego)
 
   def publish(self, pm, valid: bool, a_target: float) -> None:
+    p = self.proj
+    if not (p.active or p.blocked or p.reason or self._ep is not None or self.frame % HEARTBEAT_FRAMES == 1):
+      return
     msg = messaging.new_message('customReserved13')
     msg.valid = bool(valid)
     m = msg.customReserved13
-    p = self.proj
     m.mode = self.mode
     m.active = bool(p.active)
     m.reason = int(p.reason)
@@ -524,9 +631,35 @@ class LeadBrakePlanner:
     m.fcwAssist = bool(self.fcw_assist)
     m.compared = bool(self.compared)
     m.episodes = min(int(self.episodes), 65535)
+    m.skipped = bool(self.skipped)
+    m.aCamera = float(p.a_cam)
+    m.camera = bool(p.cam)
     pm.send('customReserved13', msg)
 
   # ---- internals ----
+  def _time(self, mono_ns) -> float:
+    """radarState's own time (logMonoTime) when the planner has it: a plannerd stall then never squeezes the lead's
+    speed change over the stall into one 50 ms step. Without it (tools, tests): the planner's frame clock."""
+    try:
+      ts = float(mono_ns) * 1e-9 if mono_ns is not None else 0.0
+    except (TypeError, ValueError):
+      ts = 0.0
+    if not (math.isfinite(ts) and ts > 0.0):
+      return self.t
+    if self._ts is not None and ts < self._ts:
+      ts = self._ts   # never backwards
+    self._ts = ts
+    return ts
+
+  def _mpc_altered(self, a_mpc_used: float, action_t: float) -> bool:
+    """Did something change the MPC's candidate after its solve (close follow's live blend, once merged)? The planner
+    computes it exactly like this from the MPC's solution, so without such a layer the two are equal bit for bit."""
+    m = self._mpc_ref
+    t_idx = ModelConstants.T_IDXS[:CONTROL_N]
+    own = get_accel_from_plan(np.interp(t_idx, T_IDXS, m.v_solution), np.interp(t_idx, T_IDXS, m.a_solution), t_idx,
+                              action_t=action_t)
+    return not abs(float(own) - a_mpc_used) <= 1e-6
+
   def _compare(self, a_others, action_t: float, standstill: bool):
     m = self._mpc2
     (xs, us, x0, a_prev, crash_cnt), prev_accel_constraint, personality = self._snap
@@ -538,7 +671,8 @@ class LeadBrakePlanner:
     m.x0[:] = x0
     m.a_prev = a_prev.copy()
     m.crash_cnt = crash_cnt
-    m.update(self._alt, personality=personality)
+    with cloudlog.ctx(leadbrake="second mpc"):   # its "Long mpc reset" warning is not the planner's own MPC failing
+      m.update(self._alt, personality=personality)
     if m.solution_status != 0:
       return 0.0, False, False
     t_idx = ModelConstants.T_IDXS[:CONTROL_N]
@@ -554,9 +688,10 @@ class LeadBrakePlanner:
     if p.active:
       if self._ep is None:
         self.episodes += 1
-        self._ep = {'t0': self.t, 'track': p.track_id, 'v_ego': v_ego, 'reasons': 0, 'a_k_min': p.a_lead_k,
-                    'a_proj_min': p.a_lead, 'tau_min': p.tau, 'delta_min': 0.0, 'fcw_assist': False, 'fcw_base': False,
-                    'engaged': False, 'frames': 0}
+        self._ep = {'episode': self.episodes, 't0': self.t, 'track': p.track_id, 'v_ego': v_ego, 'd_rel': p.d_rel,
+                    'reasons': 0, 'a_k_min': p.a_lead_k, 'a_proj_min': p.a_lead, 'tau_min': p.tau, 'delta_min': 0.0,
+                    'fcw_assist': False, 'fcw_base': False, 'engaged': False, 'camera': False, 'skipped': 0,
+                    'frames': 0}
       e = self._ep
       e['t1'] = self.t
       e['frames'] += 1
@@ -568,22 +703,57 @@ class LeadBrakePlanner:
       e['fcw_assist'] |= self.fcw_assist
       e['fcw_base'] |= self.fcw_base
       e['engaged'] |= bool(engaged)
+      e['camera'] |= bool(p.cam)
+      e['skipped'] += int(self.skipped)
     elif self._ep is not None and self.t - self._ep['t1'] > EPISODE_GAP:
       e, self._ep = self._ep, None
-      if self._logs < LOG_MAX and self.t - self._last_log_t >= LOG_MIN_GAP:
-        self._logs += 1
-        self._last_log_t = self.t
-        cloudlog.event(LOG_TAG, error=True, mode=self.mode, episode=self.episodes, t0=round(e['t0'], 2),
-                       dur=round(e['t1'] - e['t0'], 2), frames=e['frames'], track=e['track'], v_ego=round(e['v_ego'], 2),
-                       reasons=e['reasons'], a_k_min=round(e['a_k_min'], 2), a_proj_min=round(e['a_proj_min'], 2),
-                       tau_min=round(e['tau_min'], 3), delta_min=round(e['delta_min'], 3), fcw_assist=e['fcw_assist'],
-                       fcw_base=e['fcw_base'], engaged=e['engaged'])
+      self._queue(e)
+    self._flush()
+
+  def _queue(self, e: dict) -> None:
+    """An episode that ended: its line waits while the last line is under LOG_MIN_GAP old, and every episode that ends
+    meanwhile joins it - one line for all of them, with the details of the one whose plan differed most, and how many
+    it stands for. None is dropped until the LOG_MAX-th line; after that they are counted (customReserved13.episodes)."""
+    if self._logs >= LOG_MAX:
+      self.unlogged += 1
+      return
+    e = dict(e, merged=1, engaged_any=e['engaged'], fcw_assist_any=e['fcw_assist'])
+    q = self._pending
+    if q is not None:
+      worst = e if e['delta_min'] <= q['delta_min'] else q
+      e = dict(worst, episode=e['episode'], merged=q['merged'] + 1, engaged_any=q['engaged_any'] or e['engaged'],
+               fcw_assist_any=q['fcw_assist_any'] or e['fcw_assist'])
+    self._pending = e
+
+  def _flush(self) -> None:
+    e = self._pending
+    if e is None or self.t - self._last_log_t < LOG_MIN_GAP:
+      return
+    self._pending = None
+    self._logs += 1
+    self._last_log_t = self.t
+    cloudlog.event(LOG_TAG, error=True, mode=self.mode, episode=e['episode'], merged=e['merged'],
+                   engaged_any=e['engaged_any'], fcw_assist_any=e['fcw_assist_any'], last_line=self._logs >= LOG_MAX,
+                   t0=round(e['t0'], 2), duration=round(e['t1'] - e['t0'], 2), frames=e['frames'], track=e['track'],
+                   v_ego=round(e['v_ego'], 2), d_rel=round(e['d_rel'], 1), reasons=e['reasons'],
+                   a_k_min=round(e['a_k_min'], 2), a_proj_min=round(e['a_proj_min'], 2), tau_min=round(e['tau_min'], 3),
+                   delta_min=round(e['delta_min'], 3), fcw_assist=e['fcw_assist'], fcw_base=e['fcw_base'],
+                   engaged=e['engaged'], camera=e['camera'], skipped=e['skipped'])
 
   def _fail(self, where: str) -> None:
     # never take the planner down: the assist turns itself off for the rest of the drive, radarState passes through
     self._failed = True
     self._alt = None
     cloudlog.exception(f"{LOG_TAG}: {where} failed, off for this drive")
+
+
+def _model_lead(model):
+  """modelV2's leadsV3[0] (the camera's nearest lead), or None."""
+  try:
+    leads = model.leadsV3
+    return leads[0] if len(leads) else None
+  except Exception:
+    return None
 
 
 def _snapshot(mpc):
