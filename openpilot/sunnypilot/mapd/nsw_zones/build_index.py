@@ -9,7 +9,7 @@ FORK(NSW-ZONES): build_index.py - TfNSW Speed Zones + School Zones -> nsw_zones.
 
   python build_index.py --speedzones speed_zones.geojson --schoolzones schoolzones.zip --out DIR
                         [--previous-manifest OLD/manifest.json] [--previous-index OLD/nsw_zones.npz] [--allow-review]
-                        [--simplify-m 1.0] [--stored]
+                        [--cameras osm_cameras.json] [--simplify-m 1.0] [--stored]
 
 Runs on a PC / in CI only, never on the device. STANDALONE: numpy + the standard library + its sibling files
 index.py, school_days.py and matcher.py (loaded by path) - no openpilot imports, so a sparse checkout of this
@@ -73,6 +73,21 @@ Decoded layout (every array is a plain numpy array; no pickles):
   s_ring_v0 int32 (CSR ring->vertices), s_rlat/s_rlon int32.
   opcal_start/opcal_end int32 (V, 8) days since 1970-01-01, -1 padded -- TfNSW's own
   term calendar, kept for cross-checking only (it has known errors, see manifest).
+
+  FORK(NSW-CAMERAS) - fixed speed / red-light / school-zone cameras from OpenStreetMap (--cameras: an Overpass answer,
+  cameras.OVERPASS_QUERY), for a display-only HUD alert. Optional: an index without them is complete, and the matcher
+  then reports no camera. One row per camera and direction, prefix "c_":
+  c_lat/c_lon int32 micro-degrees, c_kind uint8 (cameras.KIND_*), c_dir int16 the checked traffic's bearing in whole
+  degrees (-1 both ways), c_dsrc uint8 (cameras.DSRC_*: where the direction came from), c_axis int16 the OSM road's
+  bearing at the node (-1 none), c_osm int64 OSM node id, c_maxspeed uint8 (0 unknown); the TfNSW base lines the
+  camera stands on ("home" lines, snapped here): c_home_v0 int32 CSR camera -> home entries, c_home_part int32 base
+  part, c_home_brg int16 the bearing ALONG that line of the traffic the camera checks (-1 both ways); and the inverse,
+  c_bypart_part int32 (sorted) / c_bypart_home int32 (home entry), for the matcher's walk. cameras_json uint8 UTF-8
+  JSON: source, OSM data timestamp, attribution, license, counts. Camera locations (c) OpenStreetMap contributors,
+  ODbL 1.0: the attribution and ATTRIBUTION.txt say so whenever the layer is present.
+  A failed or implausible fetch (fewer than --min-cameras rows, or more than 25 % fewer than the previous release)
+  never fails the build: the previous index's cameras are re-snapped onto the new lines instead, or, with no previous
+  index, the index has no camera layer. Cameras never hold back the speed-zone data.
 """
 
 import argparse
@@ -109,6 +124,7 @@ def _sibling(name):
 
 nz_index = _sibling('index')
 school_days = _sibling('school_days')
+cameras = _sibling('cameras')  # FORK(NSW-CAMERAS)
 
 FORMAT_VERSION = nz_index.FORMAT_VERSION
 ATTRIBUTION = "Contains data from Transport for NSW, CC BY 4.0, modified"
@@ -1052,6 +1068,231 @@ def self_test(arrays, path, n=300, seed=20260929, log=print):
   return ok, rep
 
 
+# ----------------------------------------------------------------------------- cameras (FORK(NSW-CAMERAS))
+CAM_SNAP_R_M = 30.0  # a camera further than this from every base line is not on a road the matcher knows: left out
+CAM_AXIS_DEG = 35.0  # a home line runs within this of the OSM road the camera node sits on (either way)
+CAM_HOME_SLACK_M = 3.0  # lines this little further than the nearest are the same road drawn twice: homes too ...
+CAM_HOME_SLACK_DIR_M = 15.0  # ... and, for a camera whose direction is known, a parallel line this far that is the other
+#                              line of a divided road (_divided_twin): TfNSW draws some divided roads as two Both
+#                              Directions lines ~13 m apart, and which one the OSM node falls nearer depends on the two
+#                              maps' offsets (route 137: the car matched the other one). The direction check on the
+#                              device keeps the opposite carriageway's traffic out. A separate street beside the road
+#                              (another limit or type, or a line between) is never a twin (nswcam review finding 1).
+CAM_SCHOOL_R_M = 12.0  # a speed camera with a TfNSW School line this close, along its road, is a school-zone camera
+CAM_MIN_ROWS = 150  # fewer from a fetch is a broken answer (2026-10: 370)
+CAM_DROP_TOL = 0.25  # ... as is more than this many fewer than the previous release
+
+
+def _undirected(a, b):
+  return min(cameras.adiff(a, b), cameras.adiff(a, b + 180.0))
+
+
+def _divided_twin(L, near, c, cand):
+  """FORK(NSW-CAMERAS) Candidate line c (a cand tuple of camera_arrays: dist, part, bearing, one way, x, y of its point
+  nearest the camera) lies beyond CAM_HOME_SLACK_M of the nearest line: is it the other line of the same divided road
+  as `near` (the nearest, or a line drawn on it), the road drawn as two Both Directions lines? Only if both lines are
+  two-way with the same limit, type and direction code, and no other line of cand runs between them (across the road,
+  more than CAM_HOME_SLACK_M from each). A separate street or service road beside the road fails this (the 2026-10
+  data has 60 roads with 50 'Default' lines 8-16 m off; nswcam review finding 1)."""
+  qa, qb = near[1], c[1]
+  if near[3] or c[3]:
+    return False
+  if any(int(L[k][qa]) != int(L[k][qb]) for k in ('part_speed', 'part_type', 'part_dir')):
+    return False
+  ux, uy = math.sin(math.radians(near[2])), math.cos(math.radians(near[2]))
+
+  def across(x):  # signed distance across the nearest line's axis (m)
+    return ux * x[5] - uy * x[4]
+
+  lo, hi = sorted((across(near), across(c)))
+  return not any(lo + CAM_HOME_SLACK_M < across(x) < hi - CAM_HOME_SLACK_M for x in cand if x[1] not in (qa, qb))
+
+
+def camera_arrays(arrays, rows, origin, osm_base=None, log=print):
+  """Snap camera rows (cameras.parse_overpass) onto the base lines of `arrays` (build_arrays output) -> (c_* arrays incl.
+  cameras_json, report). A camera's HOME lines are the nearest base line within CAM_SNAP_R_M that runs along the OSM
+  road it stands on (CAM_AXIS_DEG; without one, along the nearest line) and, for a camera with a direction, that can
+  carry that traffic (a One Way line drawn the other way cannot), plus any line within CAM_HOME_SLACK_M of it along
+  the same axis (the same road drawn twice) and, when the camera's direction is known (the device then checks the
+  direction of travel), the other line of a divided road drawn as two Both Directions lines within CAM_HOME_SLACK_DIR_M
+  (_divided_twin: never a separate street beside it). So a camera on one carriageway of a divided road is homed on
+  that carriageway's line (or both, each for its own direction), and one at a junction on its own approach, not the
+  cross street. Rows with no home are left out and counted."""
+  matcher = _sibling('matcher')
+  m = matcher.Matcher(arrays, calendar=(lambda d, division=None: False, 'cameras: no school days'))
+  L, O = m.L['b'], m.L['o']
+  keep, homes = [], []
+  rep = {'rows_in': len(rows), 'no_line': 0, 'no_line_examples': [], 'school_from_tfnsw': 0, 'homes_2plus': 0}
+  for r in rows:
+    lat_e6, lon_e6 = int(round(r['lat'] * 1e6)), int(round(r['lon'] * 1e6))
+    seg = m._segments(L, lat_e6, lon_e6, CAM_SNAP_R_M)
+    cand = []
+    if seg is not None:
+      sv, sp, ax, ay, bx, by, kx, ky = seg
+      dx, dy, slen, _, _, px, py, d = m._project(ax, ay, bx, by)
+      best: dict[int, int] = {}
+      for i in np.nonzero((d <= CAM_SNAP_R_M) & (slen > 0))[0]:
+        q = int(sp[i])
+        if q not in best or d[i] < d[best[q]]:
+          best[q] = int(i)
+      for q, i in best.items():
+        cand.append((float(d[i]), q, math.degrees(math.atan2(dx[i], dy[i])) % 360.0, int(L['part_dir'][q]) == matcher.DIR_ONE_WAY,
+                     float(px[i]), float(py[i])))
+    if r['axis'] is not None:
+      cand = [c for c in cand if _undirected(c[2], r['axis']) <= CAM_AXIS_DEG]
+    if r['dir'] is not None:
+      cand = [c for c in cand if not c[3] or cameras.adiff(c[2], r['dir']) <= 90.0]
+    cand.sort()
+    if cand and r['axis'] is None:
+      ref = cand[0][2]
+      cand = [c for c in cand if _undirected(c[2], ref) <= CAM_AXIS_DEG]
+    if not cand:
+      rep['no_line'] += 1
+      if len(rep['no_line_examples']) < 20:
+        rep['no_line_examples'].append({'osm': r['id'], 'lat': round(r['lat'], 6), 'lon': round(r['lon'], 6), 'kind': cameras.KIND_NAMES[r['kind']]})
+      continue
+    dmin = cand[0][0]
+    near = [c for c in cand if c[0] <= dmin + CAM_HOME_SLACK_M]  # the nearest line, and the same road drawn on it
+    home = []
+    for c in cand:
+      dd, q, b = c[0], c[1], c[2]
+      if dd > dmin + CAM_HOME_SLACK_M and not (r['dir'] is not None and dd <= dmin + CAM_HOME_SLACK_DIR_M
+                                               and any(_divided_twin(L, n, c, cand) for n in near)):
+        continue
+      brg = -1 if r['dir'] is None else int(round(b if cameras.adiff(b, r['dir']) <= 90.0 else (b + 180.0) % 360.0)) % 360
+      home.append((q, brg, b))
+    kind = r['kind']
+    if kind == cameras.KIND_SPEED:
+      oseg = m._segments(O, lat_e6, lon_e6, CAM_SCHOOL_R_M)
+      if oseg is not None:
+        osv, osp, oax, oay, obx, oby, _, _ = oseg
+        sdx, sdy, oslen, _, _, _, _, od = m._project(oax, oay, obx, oby)
+        for i in np.nonzero((od <= CAM_SCHOOL_R_M) & (oslen > 0))[0]:
+          ob = math.degrees(math.atan2(sdx[i], sdy[i])) % 360.0
+          if int(O['part_type'][int(osp[i])]) == matcher.T_SCHOOL and any(_undirected(ob, h[2]) <= 20.0 for h in home):
+            kind = cameras.KIND_SCHOOL
+            rep['school_from_tfnsw'] += 1
+            break
+    rep['homes_2plus'] += len(home) > 1
+    keep.append(dict(r, kind=kind))
+    homes.append(home)
+
+  n = len(keep)
+  hv0 = np.zeros(n + 1, np.int32)
+  hv0[1:] = np.cumsum([len(h) for h in homes], dtype=np.int64)
+  hpart = np.array([q for h in homes for q, _, _ in h], np.int32)
+  hbrg = np.array([b for h in homes for _, b, _ in h], np.int16)
+  order = np.argsort(hpart, kind='stable')
+  kinds = {cameras.KIND_NAMES[k]: sum(1 for x in keep if x['kind'] == k) for k in (cameras.KIND_SPEED, cameras.KIND_RED_LIGHT, cameras.KIND_SCHOOL)}
+  dsrc = {cameras.DSRC_NAMES[k]: sum(1 for x in keep if x['dsrc'] == k) for k in range(len(cameras.DSRC_NAMES))}
+  doc = {
+    'source': 'OpenStreetMap (Overpass API): highway=speed_camera nodes and type=enforcement relations in NSW',
+    'osm_base': osm_base,
+    'origin': origin,
+    'attribution': cameras.OSM_ATTRIBUTION,
+    'licence': cameras.OSM_LICENCE,
+    'kinds': list(cameras.KIND_NAMES),
+    'dir_sources': list(cameras.DSRC_NAMES),
+    'rows': n,
+    'counts': {'kinds': kinds, 'direction_sources': dsrc, 'left_out_no_line': rep['no_line'], 'school_from_tfnsw': rep['school_from_tfnsw']},
+  }
+  out = {
+    'c_lat': np.array([int(round(x['lat'] * 1e6)) for x in keep], np.int32),
+    'c_lon': np.array([int(round(x['lon'] * 1e6)) for x in keep], np.int32),
+    'c_kind': np.array([x['kind'] for x in keep], np.uint8),
+    'c_dir': np.array([-1 if x['dir'] is None else int(round(x['dir'])) % 360 for x in keep], np.int16),
+    'c_dsrc': np.array([x['dsrc'] for x in keep], np.uint8),
+    'c_axis': np.array([-1 if x['axis'] is None else int(round(x['axis'])) % 360 for x in keep], np.int16),
+    'c_osm': np.array([x['id'] for x in keep], np.int64),
+    'c_maxspeed': np.array([min(int(x['maxspeed'] or 0), 255) for x in keep], np.uint8),
+    'c_home_v0': hv0,
+    'c_home_part': hpart,
+    'c_home_brg': hbrg,
+    'c_bypart_part': hpart[order].astype(np.int32),
+    'c_bypart_home': order.astype(np.int32),
+    'cameras_json': np.frombuffer(json.dumps(doc).encode('utf-8'), np.uint8).copy(),
+  }
+  rep.update(rows=n, kinds=kinds, direction_sources=dsrc)
+  log(f"cameras ({origin}): {n} of {len(rows)} rows on a base line {kinds}; {rep['no_line']} left out (no line), "
+      + f"{rep['school_from_tfnsw']} school zone by TfNSW's School lines, {rep['homes_2plus']} on two or more lines")
+  return out, rep
+
+
+def camera_rows_from_index(prev):
+  """The camera rows of a previous index (load_index output), ready to be snapped again onto new lines: its line ids
+  are its own. -> (rows, cameras_json dict) or ([], None) when it has none."""
+  if 'c_lat' not in prev:
+    return [], None
+  try:
+    doc = json.loads(bytes(np.asarray(prev['cameras_json'])).decode('utf-8'))
+  except (KeyError, ValueError, UnicodeDecodeError):
+    doc = {}
+  rows = []
+  for i in range(len(prev['c_lat'])):
+    d, ax = int(prev['c_dir'][i]), int(prev['c_axis'][i])
+    rows.append({'id': int(prev['c_osm'][i]), 'lat': int(prev['c_lat'][i]) * 1e-6, 'lon': int(prev['c_lon'][i]) * 1e-6,
+                 'kind': int(prev['c_kind'][i]), 'dir': None if d < 0 else float(d), 'dsrc': int(prev['c_dsrc'][i]),
+                 'axis': None if ax < 0 else float(ax), 'maxspeed': int(prev['c_maxspeed'][i])})
+  return rows, doc
+
+
+def camera_layer(arrays, cameras_path, previous_index, previous_manifest, min_rows=CAM_MIN_ROWS, log=print):
+  """Which cameras go into this build -> (c_* arrays or {}, report, warnings). Never a gate failure: a fetch that is
+  missing, unreadable or implausible gives the previous release's cameras re-snapped, or none."""
+  warnings, why = [], None
+  prev_rows = None
+  if previous_manifest:
+    try:
+      with open(previous_manifest, encoding='utf-8') as f:
+        prev_rows = ((json.load(f) or {}).get('cameras') or {}).get('rows')
+    except (OSError, ValueError, AttributeError):
+      prev_rows = None
+  if cameras_path:
+    try:
+      doc = cameras.load_overpass(cameras_path)
+      rows, prep = cameras.parse_overpass(doc)
+    except (OSError, ValueError, KeyError, TypeError) as e:
+      why = f'the camera file could not be read ({e!r})'
+    else:
+      if len(rows) < min_rows:
+        why = f'only {len(rows)} cameras in the OSM answer (expected >= {min_rows})'
+      elif isinstance(prev_rows, int) and prev_rows > 0 and len(rows) < (1.0 - CAM_DROP_TOL) * prev_rows:
+        why = f'{len(rows)} cameras in the OSM answer, the previous release has {prev_rows} (more than {CAM_DROP_TOL * 100:.0f} % fewer)'
+      else:
+        c, rep = camera_arrays(arrays, rows, 'overpass', prep.get('osm_base'), log)
+        rep['parse'] = prep
+        return c, rep, warnings
+  else:
+    why = 'no --cameras file given'
+  warnings.append(f'cameras: {why}')
+  if previous_index:
+    try:
+      prev = nz_index.load_index(previous_index)
+    except (nz_index.IndexInvalid, OSError, ValueError) as e:
+      warnings.append(f'cameras: the previous index is unreadable ({e}): this build has no camera layer')
+      return {}, {'origin': None, 'why': why}, warnings
+    rows, pdoc = camera_rows_from_index(prev)
+    if rows:
+      base = (pdoc or {}).get('osm_base')
+      c, rep = camera_arrays(arrays, rows, f'carried over from the previous index (OSM data of {base})', base, log)
+      warnings.append(f"cameras: the previous release's {len(rows)} cameras were carried over")
+      rep['why'] = why
+      return c, rep, warnings
+  warnings.append('cameras: this build has no camera layer')
+  return {}, {'origin': None, 'why': why}, warnings
+
+
+def add_camera_meta(arrays, cams):
+  """With a camera layer, the index's long attribution also credits OpenStreetMap (the maps page and the release show
+  it). meta_json is rewritten in place."""
+  meta = nz_index.read_meta(arrays)
+  if cams:
+    meta['attribution_long'] = ATTRIBUTION_LONG + ' ' + cameras.OSM_ATTRIBUTION
+    meta['camera_layer'] = True
+  arrays['meta_json'] = np.frombuffer(json.dumps(meta).encode(), np.uint8).copy()
+  return meta
+
+
 # ----------------------------------------------------------------------------- main
 def _src_info(path):
   st = os.stat(path)
@@ -1074,6 +1315,16 @@ ATTRIBUTION_TXT = (
   + 'Licence: Creative Commons Attribution 4.0 International, https://creativecommons.org/licenses/by/4.0/\n'
   + 'Term dates (c) State of New South Wales (Department of Education), CC BY 4.0. '
   + 'Public holidays (c) State of New South Wales, CC BY 4.0 - www.nsw.gov.au.\n'
+)
+
+
+# FORK(NSW-CAMERAS): appended to ATTRIBUTION.txt when the index carries the camera layer
+CAMERA_ATTRIBUTION_TXT = (
+  '\n'
+  + cameras.OSM_ATTRIBUTION
+  + '\nThe speed camera locations (the c_* arrays and cameras_json) are extracted from OpenStreetMap and are available under '
+  + 'the Open Database License (ODbL) 1.0, https://opendatacommons.org/licenses/odbl/1-0/ . How they were extracted: '
+  + 'openpilot/sunnypilot/mapd/nsw_zones/cameras.py (OVERPASS_QUERY, parse_overpass) and build_index.py (camera_arrays).\n\n'
 )
 
 
@@ -1102,6 +1353,9 @@ def main(argv=None):
   ap.add_argument('--min-base-parts', type=int, default=400000, help='size gate (lower it only for test data)')
   ap.add_argument('--min-schools', type=int, default=1000, help='size gate (lower it only for test data)')
   ap.add_argument('--allow-gate-failures', action='store_true', help='write the files anyway (never in CI)')
+  # FORK(NSW-CAMERAS): optional; a missing or implausible file carries the previous index's cameras over (never a gate)
+  ap.add_argument('--cameras', default=None, help='Overpass JSON answer to cameras.OVERPASS_QUERY (OSM speed / red-light cameras)')
+  ap.add_argument('--min-cameras', type=int, default=CAM_MIN_ROWS, help='fewer camera rows is a broken fetch (lower it only for test data)')
   a = ap.parse_args(argv)
 
   T0 = time.monotonic()
@@ -1162,6 +1416,16 @@ def main(argv=None):
     (warnings if a.allow_review else gates).append(g)
   review = {'failures': rv_fails + lr_fails, 'notes': rv_notes, 'limit_diff': lr_rep, 'allowed_by_hand': bool(a.allow_review)}
 
+  # ---- FORK(NSW-CAMERAS): the camera layer (display only; never a gate)
+  t = time.monotonic()
+  cams, cam_rep, cam_warn = camera_layer(arrays, a.cameras, a.previous_index, a.previous_manifest, a.min_cameras, log)
+  arrays.update(cams)
+  add_camera_meta(arrays, cams)
+  warnings += cam_warn
+  for w in cam_warn:
+    log(w)
+  log(f'camera layer in {time.monotonic() - t:.1f} s')
+
   # ---- write under a temporary name, self-test, then publish
   npz = os.path.join(a.out, nz_index.INDEX_NAME)
   tmp = npz + '.new'
@@ -1181,6 +1445,7 @@ def main(argv=None):
     'gates': {'passed': not gates, 'failures': gates, 'warnings': warnings},
     'self_test': st_rep,
     'review': review,
+    'cameras': cam_rep,
     'feature_counts': {
       'type': {str(k): v for k, v in B['counts']['type'].most_common()},
       'direction': {str(k): v for k, v in B['counts']['dir'].most_common()},
@@ -1213,6 +1478,7 @@ def main(argv=None):
 
   os.replace(tmp, npz)
   sha = sha256_file(npz)
+  cam_doc = json.loads(bytes(arrays['cameras_json']).decode('utf-8')) if 'cameras_json' in arrays else None
   manifest = {
     'format_version': FORMAT_VERSION,
     'data_version': data_version,
@@ -1220,7 +1486,7 @@ def main(argv=None):
     'bytes': os.path.getsize(npz),
     'file': nz_index.INDEX_NAME,
     'built_utc': report['built_utc'],
-    'attribution': ATTRIBUTION_LONG,
+    'attribution': ATTRIBUTION_LONG + (' ' + cameras.OSM_ATTRIBUTION if cam_doc else ''),
     'licence': 'CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)',
     'feature_count': n_features,
     'counts': {
@@ -1240,9 +1506,12 @@ def main(argv=None):
     | {'flagged': rv_fails + lr_fails, 'allowed_by_hand': bool(a.allow_review)},
     'builder': 'openpilot/sunnypilot/mapd/nsw_zones/build_index.py',
   }
+  if cam_doc:  # FORK(NSW-CAMERAS)
+    manifest['cameras'] = {k: cam_doc.get(k) for k in ('rows', 'osm_base', 'origin', 'counts')} | {'licence': cameras.OSM_LICENCE}
   _write_json(os.path.join(a.out, nz_index.MANIFEST_NAME), manifest)
   with open(os.path.join(a.out, nz_index.ATTRIBUTION_NAME), 'w', encoding='utf-8', newline='\n') as f:
-    f.write(ATTRIBUTION_TXT + f'Data version: {data_version}. Built {report["built_utc"]} by {manifest["builder"]}.\n')
+    f.write(ATTRIBUTION_TXT + (CAMERA_ATTRIBUTION_TXT if cam_doc else '')
+            + f'Data version: {data_version}. Built {report["built_utc"]} by {manifest["builder"]}.\n')
   # the published pair must verify exactly as the device will verify it
   info = nz_index.verify_index(npz, os.path.join(a.out, nz_index.MANIFEST_NAME))
   if a.stored:

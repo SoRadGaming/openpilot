@@ -145,7 +145,7 @@ class TestHudParams(OpenpilotTestCase):
         assert "BOOL" in flags and '"0"' in flags, f"{key}: the diagnostic defaults to off (test_radar_dots.py)"
       else:
         assert "BOOL" in flags and '"1"' in flags, f"{key} defaults to on"
-    assert set(HS.FIELDS) == set(HS.ALL_PARAMS) and len(HS.ALL_PARAMS) == 9
+    assert set(HS.FIELDS) == set(HS.ALL_PARAMS) and len(HS.ALL_PARAMS) == 10  # FORK(NSW-CAMERAS): + HudCameraAlerts
     assert HS.KEYS == HS.ALL_PARAMS + (HS.PARAM_LIMIT_STYLE, HS.PARAM_RADAR_DOTS)
     assert {f.name for f in dataclasses.fields(HS.HudSettings)} == set(HS.FIELDS.values()) | {"limit_style", "radar_dots"}
 

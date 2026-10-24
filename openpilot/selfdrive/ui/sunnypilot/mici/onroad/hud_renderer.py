@@ -13,7 +13,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer, CRUISE_DISABLED_CHAR, KM_TO_MILE
 from openpilot.selfdrive.ui.sunnypilot.onroad.blind_spot_indicators import BlindSpotIndicators
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_alerts, hud_draw  # FORK(HUD)
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (Approach, ApproachState, MaxCard,  # FORK(HUD)
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (Approach, ApproachState, CameraState, MaxCard,  # FORK(HUD)
                                                                      approach_text, arm_flash, armed_text, box_breath,
                                                                      box_outline, ease_in_out, ease_out, event_name,
                                                                      fresh, press_words, resolver_map_limit,
@@ -29,6 +29,11 @@ from openpilot.system.ui.lib.application import gui_app
 PENDING_STALE_S = 0.25  # FORK(HUD): no frame drawn for this long - the box's state is old, not fading
 APPROACH_FREE, APPROACH_MAX, APPROACH_CUT = 0, 1, 2  # FORK(HUD): what else has the top left (_approach_blocker)
 CARD_RIGHT_MARGIN = 40  # FORK(HUD): the card in MAX's place stops this far short of the road's right edge (_draw_card)
+# FORK(NSW-CAMERAS): 'camera (map)' (_draw_camera): top, right of the card in MAX's place - its usual right edge (222)
+# + a gap - or further right when a wider card is drawn; under the stop timer when it would reach it
+CAMERA_X, CAMERA_Y = 236, 12
+CAMERA_GAP = 14
+CAMERA_UNDER_TIMER_Y = 72
 
 
 class HudRendererSP(HudRenderer):
@@ -68,6 +73,13 @@ class HudRendererSP(HudRenderer):
     # stays up under it
     self._lane_block = LaneBlockTile()
     self._turn_intent = BlockTurnIntent(self._lane_block)
+    # FORK(NSW-CAMERAS): the camera ahead (hud_model.CameraState), right of the card in MAX's place
+    self._camera = CameraState()
+    self._camera_alpha = FirstOrderFilter(0.0, 0.1, 1 / gui_app.target_fps)
+    self._camera_t = -1e9
+    self._camera_shown = None  # the last camera drawn: what fades out once it has gone
+    self._card_right = 0.0     # this frame's card right edge (0: none drawn), which the camera keeps right of
+    self.camera_rect: tuple | None = None  # where the camera was drawn this frame (tests)
 
   def _update_state(self) -> None:
     super()._update_state()
@@ -79,9 +91,11 @@ class HudRendererSP(HudRenderer):
     self._lane_block_now()  # FORK(HUD): before the wheel's turn-intent arrow asks
 
   def _render(self, rect: rl.Rectangle) -> None:
+    self._card_right = 0.0  # FORK(NSW-CAMERAS)
     super()._render(rect)
     self._draw_pending_max(rect)  # FORK(HUD)
     self._draw_approach(rect)  # FORK(HUD)
+    self._draw_camera(rect)  # FORK(NSW-CAMERAS): after the cards, right of whichever was drawn
     self._lane_block.render(rect)  # FORK(HUD): over the top-left items, which make way for it
     self.blind_spot_indicators.render(rect)
     hud_alerts.frame_alert.clear()  # FORK(HUD): the last to ask this frame
@@ -117,9 +131,11 @@ class HudRendererSP(HudRenderer):
     right = min(rect.x + rect.width - CARD_RIGHT_MARGIN, hud_alerts.cluster_edge.timer_left - hud_alerts.BANNER_GAP)
     card = dataclasses.replace(card, max_right=right)
     if hud_settings.get().limit_style == STYLE_STOCK_PLUS:
-      hud_draw.stock_plus_card(card, rect.x, rect.y)
+      r = hud_draw.stock_plus_card(card, rect.x, rect.y)
     else:
-      hud_draw.split_card(card, rect.x, rect.y)
+      r = hud_draw.split_card(card, rect.x, rect.y)
+    if r is not None and card.alpha >= 1e-2:  # FORK(NSW-CAMERAS): the camera keeps right of it
+      self._card_right = max(self._card_right, float(r[2]))
 
   # FORK(HUD): the lane-block tile (hud_lane_block.py)
   def _lane_block_now(self) -> LaneBlockTile:
@@ -393,6 +409,38 @@ class HudRendererSP(HudRenderer):
     self._draw_card(rect, MaxCard(CARD_APPROACH, shown.limit, shown.lower, self._current_text(), text=text, frac=frac,
                                   alpha=alpha, lit=lit, enter=ease_out((now - self._approach_t0) / CARD_ENTER_S),
                                   armed=held, digits=digits))
+
+  def _draw_camera(self, rect: rl.Rectangle) -> None:  # FORK(NSW-CAMERAS)
+    """'camera (map)' before a camera on the road ahead (hud_model.CameraState): top, right of the card in MAX's place
+    (CAMERA_X, or right of a wider card drawn this frame), under the stop timer when it would reach it. Fades in and out
+    as the coming limit does (0.1 s); goes at once while an alert has the screen - any alert but those that draw nothing
+    and the compact confirm, which is the card it keeps right of - and is never drawn over one. Not a top icon: the
+    driver-monitoring face, top left, is never in its way."""
+    self.camera_rect = None
+    s = hud_settings.get()
+    cam = self._camera.update(ui_state.sm, s, started_frame=ui_state.started_frame, now=rl.get_time())
+    now = rl.get_time()
+    alert = self._frame_alert()[0] if self.alert_renderer is not None else None
+    blocked = alert is not None and not (hud_alerts.frees_top_icons(alert) or hud_alerts.box_alert(alert, s))
+    if blocked or now - self._camera_t > PENDING_STALE_S:
+      self._camera_alpha.x = 0.0   # (or the road view was not drawn for a while: no tail)
+    self._camera_t = now
+    self._camera_alpha.update(1.0 if cam is not None and not blocked else 0.0)
+    if cam is not None:
+      self._camera_shown = cam
+    shown, alpha = self._camera_shown, self._camera_alpha.x
+    if shown is None or alpha < 1e-2:
+      if alpha < 1e-2:
+        self._camera_shown = None
+      return
+    from openpilot.selfdrive.ui.sunnypilot.onroad.speed_limit import SpeedLimitRenderer
+    text = SpeedLimitRenderer._format_dist(shown.dist)
+    w, _ = hud_draw.camera_badge_size(text, shown.label)
+    x = max(rect.x + CAMERA_X, self._card_right + CAMERA_GAP if self._card_right > 0 else 0.0)
+    y = rect.y + CAMERA_Y
+    if x + w > hud_alerts.cluster_edge.timer_left - hud_alerts.BANNER_GAP:
+      y = rect.y + CAMERA_UNDER_TIMER_Y
+    self.camera_rect = hud_draw.camera_badge(x, y, text, shown.label, shown.kind, alpha)
 
   def _armed_lower(self, limit: int, target: int) -> bool:  # FORK(SPEED-LIMIT): sla-flash
     """The armed limit's chevron: lower than the limit in force (the resolver's map limit), or - with none - its set

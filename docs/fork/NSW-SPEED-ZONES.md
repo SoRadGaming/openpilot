@@ -23,7 +23,8 @@ can be switched to log-only or off at any time (see [Modes and params](#modes-an
 | where | what |
 |---|---|
 | `openpilot/sunnypilot/mapd/nsw_zones/` | The package, pure Python and numpy. `matcher.py` is the map matcher, dead reckoning and look-ahead. `school_days.py` is the school-zone day calendar. `index.py` loads and verifies an index file. `build_index.py` is the builder (CI and PC only). `downloader.py` is the device side of the release. `tests/` holds the tests. |
-| `openpilot/sunnypilot/mapd/live_map_data/nsw_map_data.py` | `NswZoneMapData(OsmMapData)`, the liveMapDataSP publisher when the mode is not off. |
+| `openpilot/sunnypilot/mapd/live_map_data/nsw_map_data.py` | `NswZoneMapData(OsmMapData)`, the liveMapDataSP publisher when the mode is not off. Since push13 it also publishes the camera ahead as `customReserved12` ([Speed and red-light cameras](#speed-and-red-light-cameras-map-data)). |
+| `openpilot/sunnypilot/mapd/nsw_zones/cameras.py` | push13: the OpenStreetMap camera layer - the Overpass query and fetch (CI only), what counts and which way it looks, and `CameraHold`. |
 | `openpilot/sunnypilot/mapd/mapd_manager.py` | Chooses the publisher and runs the downloader tick. |
 | `openpilot/sunnypilot/selfdrive/controls/lib/speed_limit/speed_limit_resolver.py` | Age fix, tunnel pass-through (states 4 and 7), settle window. |
 | `openpilot/cereal/custom.capnp` | `LiveMapDataSP.nswZone @6`. **Merge hazard:** it sits on an upstream struct at the next free ordinal. If upstream sunnypilot ever adds its own `@6` to `LiveMapDataSP`, one side must be renumbered, and routes logged before that decode wrongly with the other schema. Check this on every upstream merge. |
@@ -452,6 +453,97 @@ It hands over in the same place to the speed-limit confirm box or the stock MAX 
 ahead are not marked (phase 2: the matcher knows the zone type ahead, `ahead_kind` / `ahead_zone_type`, but
 `liveMapDataSP` has no field for it).
 
+## Speed and red-light cameras (map data)
+
+push13 (2026-10-24, area **NSW-CAMERAS** in [README.md](README.md), markers `FORK(NSW-CAMERAS)`). The comma 4 shows a
+small camera, how far it is and **'camera (map)'** ('red-light cam (map)', 'school cam (map)') top left, right of the
+card in MAX's place, from about 400 m before a fixed speed, red-light(-speed) or school-zone camera on the road ahead,
+in the car's direction. **Display only:** nothing reads it to change the speed, and it makes no sound.
+
+**Legal.** NSW bans devices that detect or interfere with speed-measuring equipment (radar / laser detectors and
+jammers: Road Transport Act 2013 s 119, the "prohibited speed measuring evasion article" of the 1998 anti-evasion
+amendments). A list of where cameras stand is not such a device: Transport for NSW publishes the camera locations
+itself (its "Speed camera locations" pages and map, and open data), its own Speed Adviser app tells the driver by GPS
+when entering a mobile speed camera zone, and Google Maps and Waze show camera alerts in Australia.
+
+**Data.** OpenStreetMap only (the TfNSW camera dataset needs an account; none is used): `highway=speed_camera` nodes and
+`type=enforcement` relations in NSW, fetched with one Overpass query by the weekly Action (`cameras.py fetch`; never by
+the car). On 2026-10-24: 418 camera nodes and 186 relations gave **370 cameras** (237 speed, 125 red-light, 8 school by
+their tags; 35 duplicates merged); left out: 47 average-speed and 25 Safe-T-Cam (heavy-vehicle) sites, 6 mobile-phone
+cameras, and parking / bus-lane / access / waterway enforcement. Direction (the traffic it checks): an enforcement
+relation's from -> to (143), the one-way road the node is on (54), the node's `direction=` tag (97; it agreed with the
+other two within 30 deg for 88 of 107 cameras that have both and was the opposite for 15 - those are known misses), or
+none (76: shown both ways). **Average-speed zones are not shown:** OSM describes no usable zone (3 relations, ~40 unpaired
+points), and NSW enforces them on heavy vehicles except two trial lengths (Pacific Hwy Kew - Lake Innes, Hume Hwy Coolac
+- Gundagai). Mobile cameras are not in OSM.
+
+**In the index.** `build_index.py --cameras` snaps each camera onto the TfNSW line(s) it stands on (its "home" lines:
+the nearest within 30 m that runs along the OSM road the node is on and can carry the camera's traffic; for a camera
+with a direction also the other line of a divided road within 15 m, because TfNSW draws some divided roads as two Both
+Directions lines 13 m apart - only a two-way line with the same limit and type and no other line between the two, so a
+separate street or service road beside the road never gets the road's camera), marks a speed camera on a TfNSW School
+line as a school-zone camera (55), and stores them as `c_*` arrays and `cameras_json` in the same `nsw_zones.npz` (369
+of 370 snapped; +~0.02 MB). **Format 2 is unchanged:** a car on
+older software verifies and uses the file as before and ignores the cameras (checked with push12's code on a real
+build). A missing, unreadable or implausible fetch (under 150 cameras, or 25 % fewer than the last release) never fails
+the build: the previous release's cameras are snapped again onto the new lines, or the index has none.
+
+**On the car.** The zone matcher (`matcher.camera_ahead`) walks the same road as its look-ahead - the matched line in the
+direction of travel (kept from the last moving fix while slow, so a red-light camera stays up while waiting at the
+light) and on through unique continuations, or the dead-reckoned path while every contending hypothesis is on one line
+- and reports the nearest camera within 400 m that has one of the walked lines as a home, stands within 30 m of it,
+and checks traffic in the direction of travel. Cameras on the other carriageway, a side road or the cross street are
+never on the walk. Nothing while the limit is withheld (ambiguous: the road itself is in doubt). mapd holds a camera
+through a gap of up to 3 s (`CameraHold`, run down by the car's speed, never past it, and dropped at once when the
+matcher is sure of the road and has searched it, along the car's GPS course, past where the camera stood: the car
+turned off) and publishes
+**`customReserved12`** once a tick (state, kind, distance, OSM id, direction known, dead reckoning, cameras in the
+layer, OSM date, reason; logged, every message in the qlog). It works in modes 1 and 2; mode 0 (off) has no matcher and no cameras.
+
+**On the screen.** `HudCameraAlerts` (sunnylink Visuals > HUD > "Camera Alerts", on by default): `hud_model.CameraState`
+reads `customReserved12` while it is this drive's and still arriving, runs the distance down by vEgo between messages
+(one period at most) and shows nothing 2.5 s after the last one; `HudRendererSP._draw_camera` draws the badge at x 236,
+y 12 (right of the card, or of a wider one), under the stop timer at a standstill, and not at all while an alert other
+than the compact confirm has the screen. The maps page's attribution line credits OpenStreetMap.
+
+**No chime.** The owner asked for an optional chime (default off). Sounds on this device come only from a selfdrived
+alert, which needs a new `OnroadEventSP.EventName` ordinal in `custom.capnp`; push13 was limited to the reserved struct,
+so the chime is left for a decision (see the report of the push13 batch).
+
+**License.** Camera locations (c) OpenStreetMap contributors, Open Database License 1.0: the index's long attribution,
+the manifest (`attribution`, `cameras.licence`), `ATTRIBUTION.txt` (with how they were extracted), the release notes
+and the maps page say so. The cameras in a published index are themselves ODbL.
+
+**The Action (not changed yet).** The workflow lives in SoRadGaming/openpilot and was not edited or pushed in push13.
+**Until it is changed, nothing shows in the car:** the weekly build gets no camera file, the index has no camera
+layer, and mapd publishes `customReserved12` state 0 'no camera layer'. It needs, before or after this code reaches
+`master` (the builder works without the file): a step after the TfNSW
+download that runs `python "$NSW_PKG/cameras.py" fetch --out src/osm_cameras.json` and never fails the run;
+`--cameras src/osm_cameras.json` added to the build when that file exists; `'cameras'` in the test step's `PURE` set (so
+`test_cameras.py` runs there); `cameras_json` VOLATILE in the compare step (`osm_base`, `origin`) and the `c_` /
+`cameras_json` areas named; a camera row in the notes and the summary. The patched file and its diff are kept with the
+push13 report (`workflow/nsw-speedzones.yaml`, `nsw-speedzones-cameras.patch`); the publish job's verifier is unchanged.
+
+**Replay** (the owner's 126 recent routes in `sunny_logs`, 1 Hz like mapd, on the 2026-09-29 index plus the
+2026-10-24 cameras): **109 alerts on 13 cameras in 70 routes**, first shown at a median 390 m; 86 were followed by the
+car passing within 30 m of the camera (most within 5 m); 23 were not - the car turned off or stopped short (12 within
+80 m, at red-light intersections and a school zone it turns before). Passes of a camera, in its direction, with no
+alert: 2 - one 22 m past a junction the walk could not see through, one a red-light camera at an interchange the car
+crossed on another road. No alert while dead reckoning (none of the routes passes a tunnel camera). The matcher's tick
+costs ~0-1 ms more on the PC (~5 ms on the device by the usual 5x). After the review fixes (a twin line only for a
+divided road, the hold dropped on another road): the same 109 alerts and the same 2 misses; 19 alerts end 1-3 s
+sooner, every one where the car had turned off or just passed the camera (ticks shown as held: 71 -> 37); 171 cameras
+(was 198) are on two or more lines.
+
+**For the owner to check.**
+1. The badge's place and size on the device (top, right of MAX's place; under the timer when stopped).
+2. Alerts where you turn off before the camera (Parker St school zone, Great Western Hwy red light): fine, or shorter
+   than 400 m?
+3. A camera whose OSM `direction=` is the camera's facing, not the traffic's, is announced the wrong way (~15 % of
+   tagged ones): report any you notice, they can be fixed in OSM.
+4. The chime (see above).
+5. Tunnel cameras by dead reckoning: not seen on a route yet.
+
 ## The maps page (mici)
 
 Settings has a **maps** page. Below the OSM pair (fix C) is a second pair, **nsw zones**:
@@ -533,6 +625,7 @@ Cruise → Speed Limits → Speed Limit Settings holds the OSM pair:
 |---|---|
 | `sunnypilot/mapd/nsw_zones/tests/`: `test_matcher`, `test_school_days`, `test_dead_reckoning`, `test_owner_rules`, `test_lookahead`, `test_index`, `test_build_index`, `test_review_fixes` | See the list below. |
 | `nsw_zones/tests/test_downloader.py` | The device side. When a check is due: the first download, the week, the button, parked, unmetered, and waiting after a failure. Only the three fixed URLs are requested. Up to date downloads nothing more, and an incompatible format is not downloaded. Damaged, truncated or oversized files never replace a good install. A forced check runs offroad with the ignition on (Always Offroad) and is refused and cleared onroad or before deviceState is heard. Going onroad cancels any download in flight, and an install between any two of its steps; ignition cancels an automatic one but not a forced one. An install finished while driving is loaded when the device is next offroad. A damaged install is set aside and fetched again. It never raises into mapd_manager. Since 2026-10-09 (`TestSunnylinkReport`, which also re-runs every `TestUpdater` case with a recording params double): `NswZonesStatus` after a weekly check, an asked-for one, an onroad request (`offroad only`, not queued), other refusals and a failure, the version written before the status and the `ParamsVersion` bump after it, one bump when the request is taken and one when the check ends, no write for progress or for an automatic check that is not due, a failing param write that stops nothing, and the key's PERSISTENT / STRING / not-BACKUP flags. |
+| `nsw_zones/tests/test_cameras.py`, `sunnypilot/mapd/tests/test_nsw_map_data.py` (`TestCameraMessage`), `selfdrive/ui/tests/test_hud_camera.py` | push13, the cameras: the Overpass parsing, snapping, the camera ahead (direction, carriageway, side road, continuation, distance, waiting at a light, a tunnel), the hold, the builder CLI with, without and with a broken camera file; `customReserved12`; the HUD badge's rules and its drawing on the real road view. |
 | `sunnypilot/mapd/tests/test_nsw_map_data.py` | The publisher. Mode 0 is `OsmMapData` byte for byte, and switching to 0 stops NSW at once. Log only publishes OSM exactly. Live publishes the NSW limit and each state's value (the held value in state 7, never OSM; OSM agreeing with NSW's best guess in state 3; the 3 s no-match hold), and carries the school code. A matcher exception gives OSM plus the error count, and a failed setup leaves a working `OsmMapData`. It also covers a missing or damaged file (set aside), reload after an install, the inputs, the stale-data alert and the capnp field. |
 | `.../speed_limit/tests/test_speed_limit_nsw.py` | The resolver. Dead reckoning (4) and its ended hold (7) pass the freeze and are never re-frozen to an older value, while GPS loss without them is still frozen, and the OSM publisher keeps fix B. The message's mode decides, not the param. An NSW match ends the settle window, stale data is dropped, and there is no early switch. Log-only and off are unchanged, including upstream's age. |
 | `selfdrive/ui/tests/test_maps_settings.py` | The maps page pair: both buttons gate on offroad only (no ignition), with a reason that fits the value line and matches what the device answers; an onroad refusal is not shown once offroad; `update_osm_db()` is handed `request_allowed`. |

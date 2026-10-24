@@ -212,6 +212,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // HudCompact*: named normal alerts small (hud_model.COMPACT_TYPES); HudApproachingLimit: the coming limit in MAX's
     // place (round 5). HudLimitStyle (INT, not a toggle): how that and the confirm are drawn, 0 split card, 1 stock-plus.
     {"HudApproachingLimit", {PERSISTENT | BACKUP, BOOL, "1"}},
+    // FORK(NSW-CAMERAS): HudCameraAlerts - 'camera (map)' before a fixed speed / red-light / school-zone camera on the
+    // road ahead (OSM, via the NSW zones index; customReserved12). Display only.
+    {"HudCameraAlerts", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCompactDisengage", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCompactLimitPrompts", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCompactTurn", {PERSISTENT | BACKUP, BOOL, "1"}},

@@ -61,6 +61,14 @@ Rules (all timings are seconds of the mono_time the caller passes, never fix cou
   * Look-ahead: along the matched line and on through a UNIQUE continuation (or along the dead-reckoned
     path while all hypotheses agree), the first point where the published limit would change - the
     co-location rule included - or the first school zone that will be active at the estimated arrival time.
+  * FORK(NSW-CAMERAS) Camera ahead (display only): when the index carries the OSM camera layer (c_*, build_index.py),
+    the nearest camera within camera_ahead_m along the SAME walk - the matched line (its direction kept from the last
+    moving fix while slow, so a red-light camera stays up while waiting at the light) and its unique continuations,
+    or the dead-reckoned path while every contending hypothesis is on the same line. A camera counts only on one of
+    its home lines (the TfNSW lines it was snapped to at build time: its own carriageway, its own approach), ahead
+    of the car, within camera_lat_m of the walked line, and checking traffic in the direction of travel (or both
+    ways). Cameras on other carriageways, side roads and cross streets are never on the walk. Nothing while the
+    limit is withheld (ambiguous: the road itself is in doubt) or GPS is lost with dead reckoning ended.
 """
 
 import datetime as _dt
@@ -160,6 +168,16 @@ RESULT_KEYS = (
   'ahead_school_name',
   'ahead_path_m',  # how far the walk got
   'ahead_stop',  # why the walk ended
+  # FORK(NSW-CAMERAS): the next camera ahead (display only); camera_kind 0 = none
+  'camera_kind',  # cameras.KIND_*: 1 speed, 2 red light (incl. red-light speed), 3 school zone; 0 none
+  'camera_dist_m',  # along the road to it (m)
+  'camera_id',  # its OSM node id
+  'camera_dir_known',  # the map says which traffic it checks (else both directions are taken)
+  'camera_dr',  # found along the dead-reckoned path (GPS lost)
+  'camera_stop',  # why none was found, or 'found'
+  # how far along the road ahead the search looked (m, at most camera_ahead_m), while matched and only when the walk
+  # starts along the GPS course (camera_walk_deg); None otherwise. CameraHold ends a hold on it.
+  'camera_walk_m',
 )
 
 
@@ -179,6 +197,9 @@ def _blank():
     variable=False,
     n_candidates=0,
     dr_yaw=False,
+    camera_kind=0,
+    camera_dir_known=False,
+    camera_dr=False,
   )
   return r
 
@@ -346,6 +367,11 @@ class Matcher:
     "lookahead_max_m": 1000.0,
     "lookahead_step_m": 20.0,
     "hysteresis_q": 0.7,
+    # FORK(NSW-CAMERAS): the camera alert's walk and its tolerances
+    "camera_ahead_m": 400.0,  # look this far along the road for a camera
+    "camera_lat_m": 30.0,  # the camera stands within this of the walked line (OSM vs TfNSW geometry, roadside poles)
+    "camera_dir_deg": 90.0,  # the travel direction within this of the traffic the camera checks (build_index: c_home_brg)
+    "camera_walk_deg": 30.0,  # camera_walk_m counts only a walk that starts within this of the GPS course
     # a School line whose state cannot be known (the clock is not set): 'withhold' publishes nothing while matched
     # (ambiguous, candidate_kph = the school limit) and the school limit while dead reckoning; 'apply' always the
     # school limit; 'ignore' the base limit (the P1 behavior, never the default: it is the too-high answer)
@@ -377,6 +403,15 @@ class Matcher:
       self.calendar, self.calendar_desc = calendar, getattr(calendar, '__name__', 'custom')
     # the last date every division's school calendar covers (None: unknown). Past it, weekdays are taken as school days.
     self.calendar_end = getattr(self.calendar, 'coverage_first_end', None)
+    # FORK(NSW-CAMERAS): the OSM camera layer, when the index has one
+    self.C = {k[2:]: v for k, v in a.items() if k.startswith('c_')} if 'c_home_v0' in a else None
+    self.camera_meta: dict[str, Any] = {}
+    if self.C is not None:
+      try:
+        self.camera_meta = json.loads(bytes(np.asarray(a['cameras_json'])).decode('utf-8'))
+      except (KeyError, ValueError, UnicodeDecodeError):
+        self.camera_meta = {}
+    self.n_cameras = 0 if self.C is None else len(self.C['lat'])
     self.reset()
 
   # ------------------------------------------------------------------ state
@@ -556,7 +591,8 @@ class Matcher:
     return int(L['part_speed'][pick]), pick
 
   # ------------------------------------------------------------------ main entry
-  def update(self, lat, lon, bearing_deg, speed_mps, gps_ok, h_accuracy_m, unix_time, mono_time=None, yaw_deg=None, yaw_rate_dps=None, lookahead=True):
+  def update(self, lat, lon, bearing_deg, speed_mps, gps_ok, h_accuracy_m, unix_time, mono_time=None, yaw_deg=None, yaw_rate_dps=None, lookahead=True,
+             cameras=True):
     """One fix / tick. All arguments may be None when unknown.
       lat, lon        WGS84 degrees of the fix
       bearing_deg     GPS course over ground (deg from north, clockwise); used above min_heading_speed
@@ -572,6 +608,7 @@ class Matcher:
                       integrated here with the update interval
                       (both signs checked against the GPS course on the owner's drives: slope 0.9-1.0)
       lookahead       also fill the ahead_* keys
+      cameras         FORK(NSW-CAMERAS): also fill the camera_* keys (with lookahead, and only if the index has cameras)
     -> dict with every key in RESULT_KEYS."""
     r = self._update(lat, lon, bearing_deg, speed_mps, gps_ok, h_accuracy_m, unix_time, mono_time, yaw_deg, yaw_rate_dps)
     if lookahead:
@@ -581,6 +618,8 @@ class Matcher:
         r.update(self.lookahead(unix_time=unix_time))
       else:
         r['ahead_stop'] = 'no limit published'
+      if cameras:
+        r.update(self.camera_ahead(r['state']))
     return _finish(r)
 
   def _integrate(self, t, spd, yaw_deg, yaw_rate_dps):
@@ -2048,18 +2087,25 @@ class Matcher:
     if ctx is None or ctx['fwd'] is None:
       return None
     H = float(horizon_m or self._horizon(ctx['spd']))
+    cur_kph = ctx['kph']
+    unix = unix_time if unix_time is not None else ctx['unix']
+    spd = max(ctx['spd'] or 0.0, 5.0)
+    la, lo, pp, walked, stop = self._live_path(H, ctx['fwd'])
+    return self._ahead_from_path(la, lo, pp, cur_kph, H, walked, stop, unix, spd, ctx['fwd_heading'])
+
+  def _live_path(self, H, fwd):
+    """The road ahead of the last match: from the snapped point along the matched line in direction `fwd` and on
+    through unique continuations, up to H m. -> (lat e6, lon e6, part of each vertex, walked m, why it stopped)."""
+    ctx = self._ctx
     L = self.L['b']
     pv0 = L['part_v0']
     vlat, vlon = L['vlat'], L['vlon']
     part = ctx['part']
-    cur_kph = ctx['kph']
-    unix = unix_time if unix_time is not None else ctx['unix']
-    spd = max(ctx['spd'] or 0.0, 5.0)
     a, b = int(pv0[part]), int(pv0[part + 1])
     s = ctx['sv']
     start_lat = ctx['lat_e6'] + ctx['py'] / (1e-6 * M_PER_DEG_LAT)
     start_lon = ctx['lon_e6'] + ctx['px'] / (1e-6 * M_PER_DEG_LON_EQ * math.cos(math.radians(ctx['lat_e6'] * 1e-6)))
-    idx = np.arange(s + 1, b) if ctx['fwd'] else np.arange(s, a - 1, -1)
+    idx = np.arange(s + 1, b) if fwd else np.arange(s, a - 1, -1)
     path_lat = [np.array([start_lat]), vlat[idx].astype(np.float64)]
     path_lon = [np.array([start_lon]), vlon[idx].astype(np.float64)]
     path_part = [np.array([part]), np.full(len(idx), part)]
@@ -2071,10 +2117,7 @@ class Matcher:
     prev_lat = float(vlat[idx[-2]]) if len(idx) >= 2 else start_lat
     prev_lon = float(vlon[idx[-2]]) if len(idx) >= 2 else start_lon
     walked, stop = self._walk_unique(part, end_lat, end_lon, prev_lat, prev_lon, walked, H, path_lat, path_lon, path_part)
-    la = np.concatenate(path_lat)
-    lo = np.concatenate(path_lon)
-    pp = np.concatenate(path_part)
-    return self._ahead_from_path(la, lo, pp, cur_kph, H, walked, stop, unix, spd, ctx['fwd_heading'])
+    return np.concatenate(path_lat), np.concatenate(path_lon), np.concatenate(path_part), walked, stop
 
   def _walk_unique(self, part, end_lat, end_lon, prev_lat, prev_lon, walked, H, path_lat, path_lon, path_part):
     """Extend a walked path (lists of arrays, appended in place) through UNIQUE continuations (_next_line) until
@@ -2135,9 +2178,20 @@ class Matcher:
     if len(kph) != 1 or None in kph:
       return {"ahead_path_m": 0.0, "ahead_stop": 'dead reckoning: paths disagree'}
     h = D['hyps'][0]
+    H = float(horizon_m or self._horizon(self._last_spd))
+    path = self._dr_path(h, H)
+    if path is None:
+      return None
+    la, lo, pp, walked, stop = path
+    spd = max(self._last_spd or 0.0, 5.0)
+    ux, uy = h['cur_u']
+    return self._ahead_from_path(la, lo, pp, h['cur_kph'], H, walked, stop, unix_time, spd, math.degrees(math.atan2(ux, uy)) % 360.0)
+
+  def _dr_path(self, h, H):
+    """The road ahead along dead-reckoning hypothesis h: the rest of its built path, then unique continuations, up to
+    H m. -> (lat e6, lon e6, part of each vertex, walked m, why it stopped), or None."""
     along = self._odo - self._last_good[3]
     s0 = (h['scale'] or 1.0) * along
-    H = float(horizon_m or self._horizon(self._last_spd))
     cum = np.asarray(h['cum'])
     if len(cum) < 2:
       return None
@@ -2155,20 +2209,130 @@ class Matcher:
       else:
         la_, lo_ = h['lat'], h['lon']
         walked, stop = self._walk_unique(h['end_part'], la_[-1], lo_[-1], la_[-2], lo_[-2], walked, H, path_lat, path_lon, path_part)
-    spd = max(self._last_spd or 0.0, 5.0)
-    ux, uy = h['cur_u']
-    return self._ahead_from_path(
-      np.concatenate(path_lat),
-      np.concatenate(path_lon),
-      np.concatenate(path_part),
-      h['cur_kph'],
-      H,
-      walked,
-      stop,
-      unix_time,
-      spd,
-      math.degrees(math.atan2(ux, uy)) % 360.0,
-    )
+    return np.concatenate(path_lat), np.concatenate(path_lon), np.concatenate(path_part), walked, stop
+
+  # ------------------------------------------------------------------ FORK(NSW-CAMERAS): the camera ahead
+  def camera_ahead(self, state):
+    """The nearest camera of the index's OSM layer ahead on the road the car is on (see the module docstring).
+    state: this tick's result state. -> dict with the camera_* keys (camera_kind 0 and camera_stop = why, when none)."""
+    out = {'camera_kind': 0, 'camera_dist_m': None, 'camera_id': None, 'camera_dir_known': False, 'camera_dr': False, 'camera_stop': None,
+           'camera_walk_m': None}
+    if self.C is None or self.n_cameras == 0:
+      out['camera_stop'] = 'no camera layer'
+      return out
+    try:
+      H = float(self.p['camera_ahead_m'])
+      dr = False
+      if state in ('matched', 'hysteresis'):
+        ctx = self._ctx
+        fwd = None if ctx is None else (ctx['fwd'] if ctx['fwd'] is not None else ctx.get('fwd_known'))
+        if fwd is None:
+          out['camera_stop'] = 'no direction on the line yet'
+          return out
+        path = self._live_path(H, fwd)
+      elif state == 'dead_reckoning':
+        D = self._dr
+        if D is None or not D['hyps'] or self._last_good is None:
+          out['camera_stop'] = 'dead reckoning: no path'
+          return out
+        best = D['hyps'][0]['cost']
+        on = {h.get('cur_part') for h in D['hyps'] if not D['yaw'] or h['cost'] <= best + self.p['dr_decide_gap']}
+        if len(on) != 1 or None in on:
+          out['camera_stop'] = 'dead reckoning: paths on different lines'
+          return out
+        path = self._dr_path(D['hyps'][0], H)
+        dr = True
+      else:
+        out['camera_stop'] = f'not on a known road ({state})'
+        return out
+      if path is None:
+        out['camera_stop'] = 'no path'
+        return out
+      found = self._camera_on_path(*path[:3], H)
+      # the search looks no further than H, even where the walk took a whole line beyond it
+      searched = round(min(float(path[3]), H), 1)
+      # CameraHold may end a hold on this, so it counts only a live walk that starts the way the car is going (review of
+      # nswcam finding 3)
+      course = None if dr or self._ctx is None else self._ctx.get('fwd_heading')
+      if course is not None and self._walk_along(path[0], path[1], path[2], float(course)):
+        out['camera_walk_m'] = searched
+    except Exception as e:  # advisory: never fail the update for it
+      out['camera_stop'] = f'error {e!r}'
+      out['camera_walk_m'] = None
+      return out
+    if found is None:
+      out['camera_stop'] = f'none within {searched:.0f} m ({path[4]})'
+      return out
+    s_m, row = found
+    out.update(camera_kind=int(self.C['kind'][row]), camera_dist_m=round(s_m, 1), camera_id=int(self.C['osm'][row]),
+               camera_dir_known=int(self.C['dir'][row]) >= 0, camera_dr=dr, camera_stop='found')
+    return out
+
+  def _walk_along(self, la, lo, pp, course, min_m=5.0):
+    """FORK(NSW-CAMERAS) Does a live walk (micro-degree float arrays, the part of each vertex) start the way the car is
+    going? Not when the match was snapped onto the very end of its line: the walk then goes on from a zero-length step,
+    with no arrival direction to choose the next line by, and can take a line the car is not on (routes 08, 06, 142 at
+    the Great Western Hwy red-light camera, route ad at Parker St). Otherwise the bearing from its start to its first
+    vertex min_m or more away must be within camera_walk_deg of the GPS course."""
+    if len(la) < 2:
+      return False
+    kx = 1e-6 * M_PER_DEG_LON_EQ * math.cos(math.radians(la[0] * 1e-6))
+    ky = 1e-6 * M_PER_DEG_LAT
+    X, Y = (lo - lo[0]) * kx, (la - la[0]) * ky
+    d = np.hypot(X, Y)
+    if len(pp) >= 3 and d[1] < 0.5 and int(pp[2]) != int(pp[0]):
+      return False  # snapped onto the end of its line
+    k = np.nonzero(d >= min_m)[0]
+    if len(k) == 0:
+      return False
+    start = math.degrees(math.atan2(X[k[0]], Y[k[0]])) % 360.0
+    return abs(_wrap180(start - course)) <= self.p['camera_walk_deg']
+
+  def _camera_on_path(self, la, lo, pp, H):
+    """The first camera along a walked path (micro-degree float arrays, the part of each vertex) whose home entry is
+    a line of the path, standing within camera_lat_m of that line's stretch of the path, ahead of its start and within
+    H, and checking the traffic travelling along it. -> (distance along the path m, camera row) or None."""
+    C = self.C
+    if len(la) < 2:
+      return None
+    parts = np.unique(pp.astype(np.int64))
+    bp = C['bypart_part']
+    lo_i = np.searchsorted(bp, parts, side='left')
+    hi_i = np.searchsorted(bp, parts, side='right')
+    entries = np.concatenate([C['bypart_home'][a:b] for a, b in zip(lo_i, hi_i, strict=True) if b > a] or [np.zeros(0, np.int32)])
+    if len(entries) == 0:
+      return None
+    kx = 1e-6 * M_PER_DEG_LON_EQ * math.cos(math.radians(la[0] * 1e-6))
+    ky = 1e-6 * M_PER_DEG_LAT
+    X = (lo - lo[0]) * kx
+    Y = (la - la[0]) * ky
+    dx, dy = np.diff(X), np.diff(Y)
+    seglen = np.hypot(dx, dy)
+    cum = np.concatenate([[0.0], np.cumsum(seglen)])
+    seg_part = pp[1:].astype(np.int64)  # segment k runs into vertex k + 1, whose part it is (as in _walk_limits)
+    heading = np.degrees(np.arctan2(dx, dy)) % 360.0
+    row_of = np.searchsorted(C['home_v0'], entries, side='right') - 1
+    best = None
+    for e, row in zip(entries.tolist(), row_of.tolist(), strict=True):
+      k = np.nonzero((seg_part == int(C['home_part'][e])) & (seglen > 0))[0]
+      if len(k) == 0:
+        continue
+      cx = (float(C['lon'][row]) - lo[0]) * kx
+      cy = (float(C['lat'][row]) - la[0]) * ky
+      t = np.clip(((cx - X[k]) * dx[k] + (cy - Y[k]) * dy[k]) / (seglen[k] ** 2), 0.0, 1.0)
+      d = np.hypot(X[k] + t * dx[k] - cx, Y[k] + t * dy[k] - cy)
+      j = int(np.argmin(d))
+      if d[j] > self.p['camera_lat_m']:
+        continue
+      s_m = float(cum[k[j]] + t[j] * seglen[k[j]])
+      if s_m <= 0.5 or s_m > H:
+        continue  # behind the car (or just passed), or beyond the look
+      brg = int(C['home_brg'][e])
+      if brg >= 0 and _wrap180(float(heading[k[j]]) - brg) ** 2 > self.p['camera_dir_deg'] ** 2:
+        continue  # it checks the other direction
+      if best is None or s_m < best[0]:
+        best = (s_m, int(row))
+    return best
 
   @staticmethod
   def _stage_part(h, s):

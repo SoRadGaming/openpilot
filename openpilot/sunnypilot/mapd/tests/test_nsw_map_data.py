@@ -110,7 +110,8 @@ class FakeSM:
     return getattr(self.msgs[s], s)
 
 
-class TestNswMapData(OpenpilotTestCase):
+class NswMapDataHarness(OpenpilotTestCase):
+  """The publisher on a mini index, with fake params, messaging and clock (no tests of its own)."""
   @classmethod
   def setUpClass(cls):
     cls.mini = MiniIndex([feat([(0, -2000), (0, 2000)], NSW_KPH)])
@@ -172,6 +173,8 @@ class TestNswMapData(OpenpilotTestCase):
         return lmd
     raise AssertionError(f"never matched: state {md.state}, {md.result and md.result['reason']}")
 
+
+class TestNswMapData(NswMapDataHarness):
   # -- mode 0 -----------------------------------------------------------------
   def test_mode_off_is_osm_map_data_byte_for_byte(self):
     osm = self.wire(OsmMapData(), MODE_OFF)
@@ -435,3 +438,133 @@ class TestNswMapData(OpenpilotTestCase):
                           'matchDistance', 'headingError', 'candidates', 'dataVersion', 'osmSpeedLimit', 'errors',
                           'holdDistance']
 
+
+
+# ----------------------------------------------------------------------------- FORK(NSW-CAMERAS): customReserved12
+class TestCameraMessage(NswMapDataHarness):
+  """The camera ahead goes out as customReserved12 on its own publisher, once a tick; it never touches liveMapDataSP."""
+
+  @classmethod
+  def setUpClass(cls):
+    from openpilot.sunnypilot.mapd.nsw_zones import build_index as bi
+    super().setUpClass()
+    cls.cam_mini = MiniIndex([feat([(0, -2000), (0, 2000)], NSW_KPH)])
+    lat, lon = latlon(4.0, 600.0)
+    rows = [{'id': 4242, 'lat': lat, 'lon': lon, 'kind': 2, 'dir': 0.0, 'dsrc': 1, 'axis': None, 'maxspeed': 60}]
+    arrays = dict(cls.cam_mini.B['arrays'])
+    c, _ = bi.camera_arrays(arrays, rows, 'test', '2026-10-24T01:59:36Z', log=lambda s: None)
+    arrays.update(c)
+    bi.add_camera_meta(arrays, c)
+    cls.cam_path = os.path.join(cls.cam_mini.tmp, 'cams.npz')
+    bi.write_index(arrays, cls.cam_path)
+
+  @classmethod
+  def tearDownClass(cls):
+    cls.cam_mini.close()
+    super().tearDownClass()
+
+  def make_cam(self, mode=MODE_LIVE, path=None):
+    d = tempfile.mkdtemp(prefix='nswz_cam_')
+    self.addCleanup(shutil.rmtree, d, True)
+    install_for_test(d, path or self.cam_path)
+    md = self.wire(NswZoneMapData(data_dir=d, load=False), mode)
+    md.cam_pm = FakePM()
+    md._load()
+    assert md.matcher is not None
+    return md
+
+  def cam(self, md):
+    return md.cam_pm.sent[-1].customReserved12
+
+  def test_found_with_its_distance_kind_and_id(self):
+    md = self.make_cam()
+    self.until_matched(md)
+    while self.y < 300.0:
+      self.tick(md)
+    c = self.cam(md)
+    assert (c.state, c.kind, c.osmId) == (nmd.CAM_STATE_AHEAD, 2, 4242), (c.state, c.reason)
+    assert abs(c.distance - (600.0 - self.y)) < 5.0
+    assert c.directionKnown and not c.deadReckoning
+    assert c.cameras == 1 and c.osmDate == '2026-10-24T01:59:36Z' and c.reason == 'found'
+    assert len(md.cam_pm.sent) == len(md.pm.sent), "one camera message a tick"
+    while self.y < 610.0:
+      self.tick(md)
+    assert self.cam(md).state == nmd.CAM_STATE_NONE, "once passed"
+    md.params.values["SpeedLimitNswZones"] = MODE_LOG_ONLY  # log only: the camera alert still works
+    self.y = 100.0
+    md.matcher.reset()
+    self.until_matched(md)
+    self.tick(md)
+    assert self.cam(md).state == nmd.CAM_STATE_NONE  # 480 m: beyond the look
+    while self.y < 300.0:
+      self.tick(md)
+    assert self.cam(md).state == nmd.CAM_STATE_AHEAD
+    md.params.values["SpeedLimitNswZones"] = MODE_OFF
+    self.tick(md)
+    c = self.cam(md)
+    assert (c.state, c.reason) == (nmd.CAM_STATE_OFF, 'zones off')
+
+  def test_an_index_without_the_layer(self):
+    md = self.make_cam(path=self.mini.path)
+    self.until_matched(md)
+    c = self.cam(md)
+    assert (c.state, c.cameras, c.reason) == (nmd.CAM_STATE_OFF, 0, 'no camera layer')
+
+  def fake_cam(self, md, **fields):
+    r = nz._blank()
+    r.update(state='matched', limit_kph=60, base_kph=60)
+    r.update(fields)
+    md.matcher = SimpleNamespace(update=lambda **kw: nz._finish(dict(r)), reset=lambda: None, data_version="fake",
+                                 n_cameras=5, camera_meta={'osm_base': 'x'})
+    return self.tick(md)
+
+  def test_held_through_a_gap_then_none_and_a_matcher_error(self):
+    md = self.make_cam()
+    lmd = self.fake_cam(md, camera_kind=1, camera_dist_m=200.0, camera_id=9, camera_dir_known=False, camera_stop='found')
+    assert lmd.nswZone.state == nmd.STATE_MATCHED
+    c = self.cam(md)
+    assert (c.state, c.kind, c.distance, c.osmId, c.directionKnown) == (nmd.CAM_STATE_AHEAD, 1, 200.0, 9, False)
+    assert (c.cameras, c.osmDate) == (5, 'x')
+    self.fake_cam(md, camera_kind=0, camera_stop='none within 120 m (horizon)')
+    c = self.cam(md)
+    assert c.state == nmd.CAM_STATE_HELD and abs(c.distance - 185.0) < 1e-3 and c.reason == 'held'  # 15 m/s for 1 s
+    assert (c.kind, c.osmId) == (1, 9)
+    for _ in range(4):
+      self.fake_cam(md, camera_kind=0, camera_stop='none within 400 m (horizon)')
+    c = self.cam(md)
+    assert c.state == nmd.CAM_STATE_NONE and c.reason == 'none within 400 m (horizon)'
+
+    def boom(**kw):
+      raise RuntimeError("matcher bug")
+    md.matcher = SimpleNamespace(update=boom, reset=lambda: None, data_version="fake", n_cameras=5)
+    lmd = self.tick(md)
+    assert lmd.nswZone.state == nmd.STATE_ERROR
+    assert (self.cam(md).state, self.cam(md).reason) == (nmd.CAM_STATE_OFF, 'matcher error')
+
+  def test_matched_on_another_road_drops_the_held_camera(self):
+    md = self.make_cam()
+    self.fake_cam(md, camera_kind=3, camera_dist_m=366.5, camera_id=10261867875, camera_dir_known=True, camera_stop='found')
+    self.fake_cam(md, state='low_confidence', camera_kind=0, camera_stop='not on a known road (low_confidence)')
+    assert self.cam(md).state == nmd.CAM_STATE_HELD  # unsure of the road: held
+    self.fake_cam(md, camera_kind=0, camera_walk_m=400.0, camera_stop='none within 400 m (horizon)')
+    c = self.cam(md)
+    assert (c.state, c.reason) == (nmd.CAM_STATE_NONE, 'none within 400 m (horizon)'), "matched elsewhere: gone at once"
+
+  def test_a_camera_message_failure_never_stops_live_map_data(self):
+    md = self.make_cam()
+
+    class Broken:
+      def send(self, *a):
+        raise RuntimeError("send failed")
+    md.cam_pm = Broken()
+    for _ in range(3):
+      lmd = self.tick(md)
+    assert md.cam_errors == 3 and lmd.speedLimitValid is not None and len(md.pm.sent) == 3
+
+  def test_capnp_and_service(self):
+    from openpilot.cereal import custom
+    from openpilot.cereal.services import SERVICE_LIST
+    names = [f for f, _ in sorted(custom.CustomReserved12.schema.fields.items(), key=lambda kv: kv[1].proto.ordinal.explicit)]
+    assert names == ['state', 'kind', 'distance', 'osmId', 'directionKnown', 'deadReckoning', 'cameras', 'osmDate', 'reason']
+    s = SERVICE_LIST[nmd.CAMERA_SERVICE]
+    assert s.should_log and s.frequency == 1.0 and s.decimation == 1, "every message reaches the qlogs"

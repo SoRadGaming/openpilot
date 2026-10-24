@@ -857,3 +857,55 @@ def unit_baseline(size: float, w: FontWeight) -> float:
   on it (ink() measures from the line box's top)."""
   _, h, _, y0 = ink("m", size, 1.0, w)
   return y0 + h
+
+
+# ------------------------------------------------------------------------------------------- FORK(NSW-CAMERAS): camera
+CAM_PAD_X = 9.0
+CAM_PAD_Y = 8.0
+CAM_RADIUS = 12.0
+CAM_GLYPH_W, CAM_GLYPH_H = 29.0, 22.0
+CAM_GLYPH_GAP = 8.0
+CAM_DIST = 28            # '300 m', ~20 px caps
+CAM_LABEL = 16           # 'camera (map)', ~12 px caps
+CAM_ROW_GAP = 7.0
+CAM_FILL = 205           # a black card the road shows through a little; small words need more than the coming limit's 145
+CAM_AMBER = rl.Color(255, 190, 0, 255)
+
+
+def camera_glyph(x: float, y: float, w: float, h: float, col: rl.Color, lamp=None):
+  """A camera, top left at (x, y): the body, the viewfinder on top, the lens a ring through to the card. lamp: a small
+  lamp top right on the body (red: a red-light camera, amber: a school zone)."""
+  top = h * 0.24
+  rl.draw_rectangle_rounded(rl.Rectangle(x + w * 0.14, y, w * 0.32, top + 4), 0.45, 6, col)
+  rl.draw_rectangle_rounded(rl.Rectangle(x, y + top, w, h - top), 0.32, 8, col)
+  cx, cy = x + w * 0.5, y + top + (h - top) * 0.5
+  r = (h - top) * 0.36
+  rl.draw_circle_v(rl.Vector2(cx, cy), r, rl.Color(0, 0, 0, col.a))
+  rl.draw_circle_v(rl.Vector2(cx, cy), r * 0.58, col)
+  if lamp is not None:
+    rl.draw_circle_v(rl.Vector2(x + w * 0.85, y + top + (h - top) * 0.25), 3.4, lamp)
+
+
+def camera_badge_size(dist_text: str, label: str) -> tuple[float, float]:
+  """(w, h) of camera_badge with these words."""
+  dw, dh, _, _ = ink(dist_text, CAM_DIST)
+  lw, lh, _, _ = ink(label, CAM_LABEL, w=FontWeight.MEDIUM)
+  row1 = max(CAM_GLYPH_H, dh)
+  return max(CAM_GLYPH_W + CAM_GLYPH_GAP + dw, lw) + 2 * CAM_PAD_X, CAM_PAD_Y + row1 + CAM_ROW_GAP + lh + CAM_PAD_Y
+
+
+def camera_badge(x: float, y: float, dist_text: str, label: str, kind: int, alpha: float = 1.0) -> tuple[float, float, float, float]:
+  """'camera (map)': a camera and how far on the first row, what kind under it, on a see-through black card with its top
+  left at (x, y). kind 2 (red light) gives the camera a red lamp, 3 (school zone) an amber one. Returns (x0, y0, x1, y1)."""
+  w, h = camera_badge_size(dist_text, label)
+  dh = ink(dist_text, CAM_DIST)[1]
+  row1 = max(CAM_GLYPH_H, dh)
+  lh = ink(label, CAM_LABEL, w=FontWeight.MEDIUM)[1]
+  rl.draw_rectangle_rounded(rl.Rectangle(x, y, w, h), 2 * CAM_RADIUS / min(w, h), 10, rl.Color(0, 0, 0, int(CAM_FILL * alpha)))
+  gx, gy = x + CAM_PAD_X, y + CAM_PAD_Y + (row1 - CAM_GLYPH_H) / 2
+  lamp = AU_RED if kind == 2 else (CAM_AMBER if kind == 3 else None)
+  camera_glyph(gx, gy, CAM_GLYPH_W, CAM_GLYPH_H, a(WHITE, alpha), a(lamp, alpha) if lamp is not None else None)
+  text_ink(dist_text, CAM_DIST, gx + CAM_GLYPH_W + CAM_GLYPH_GAP, y + CAM_PAD_Y + row1 / 2, a(WHITE, alpha), anchor="left")
+  text_ink(label, CAM_LABEL, x + CAM_PAD_X, y + CAM_PAD_Y + row1 + CAM_ROW_GAP + lh / 2, rl.Color(255, 255, 255, int(210 * alpha)),
+           w=FontWeight.MEDIUM, anchor="left")
+  return x, y, x + w, y + h
