@@ -508,6 +508,7 @@ def honda_cp(fingerprint=CAR.HONDA_ACCORD_9G_AU, op_long=True):
 def planner(mode, fingerprint=CAR.HONDA_ACCORD_9G_AU, stock_acc=False):
   from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
   Params().put("CloseFollowMode", mode)
+  Params().put("LeadBrakeAssistMode", 0)  # FORK(LEAD-BRAKE): close follow alone (test_lead_brake_close_follow.py has both)
   CP_SP = custom.CarParamsSP.new_message()
   if stock_acc:
     CP_SP.flags = HondaFlagsSP.ELESYS_STOCK_ACC.value

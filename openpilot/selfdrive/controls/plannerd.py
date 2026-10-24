@@ -29,7 +29,9 @@ def main():
   longitudinal_planner = LongitudinalPlanner(CP, CP_SP)
   # FORK(CLOSE-FOLLOW): customReserved10, close follow in queues (close_follow.py); only sent where it runs
   # FORK(BENDS): customReserved11 is bend_ease.py's log (HONDA_ELESYS only)
-  pm = messaging.PubMaster(['longitudinalPlan', 'driverAssistance', 'longitudinalPlanSP', 'customReserved10', 'customReserved11'])
+  # FORK(LEAD-BRAKE): customReserved13 only where the planner built the lead brake assist (HONDA_ELESYS, mode 1 or 2)
+  pm = messaging.PubMaster(['longitudinalPlan', 'driverAssistance', 'longitudinalPlanSP', 'customReserved10', 'customReserved11'] +
+                          (['customReserved13'] if getattr(longitudinal_planner, 'lead_brake', None) is not None else []))
   sm = messaging.SubMaster(['carControl', 'carState', 'controlsState', 'vehicleParameters', 'radarState', 'modelV2', 'selfdriveState',
                             'liveMapDataSP', 'carStateSP', 'selfdriveStateSP', gps_location_service],
                            poll='modelV2', ignore_alive=ignore_services, ignore_avg_freq=ignore_services, ignore_valid=ignore_services)

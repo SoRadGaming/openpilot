@@ -97,6 +97,7 @@ _services: dict[str, tuple] = {
   "liveLocationKalman": (True, 20.),
   # FORK(CLOSE-FOLLOW): close follow in queues, from plannerd at plan rate; 2 Hz in the qlog (close_follow.py)
   "customReserved10": (True, 20., 10),
+  "customReserved13": (True, 20., 1),  # FORK(LEAD-BRAKE): lead brake assist, plannerd (HONDA_ELESYS, mode 1/2 only), only frames that matter + 1 Hz
 
   # debug
   "uiDebug": (True, 0., 1),

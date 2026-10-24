@@ -41,6 +41,28 @@ sections:
       ECON and S tables will be fitted from) is only counted while that toggle is on.
     enablement:
     - $ref: '#/macros/offroad'
+  # FORK(LEAD-BRAKE): LeadBrakeAssistMode, read once when plannerd starts (lead_brake_assist.py), so offroad only.
+  # 0 off, 1 shadow (the default), 2 live. The owner's only switch: there is no SSH to the car.
+  - key: LeadBrakeAssistMode
+    widget: multiple_button
+    needs_onroad_cycle: true
+    title: Brake Sooner for a Hard-Braking Car
+    description: Live - when the car ahead brakes hard, openpilot starts braking a little sooner (about 0.2 s). It reads
+      the fall in that car's radar speed before the radar's own smoothed estimate catches up, once the camera also sees
+      the car slowing or the fall shows on two radar readings in a row. Shadow works out what it would do and logs it
+      for review, changing nothing. Off - nothing runs. 2013-15 Accord (Elesys) with sunnypilot longitudinal only.
+      Applies at the next drive.
+    details: Shadow is the default. The brake itself is unchanged - this only starts it earlier - and nothing here acts
+      on a car the radar sees standing still, on a car beyond 60 m, or without the radar.
+    options:
+    - value: 0
+      label: 'Off'
+    - value: 1
+      label: Shadow
+    - value: 2
+      label: Live
+    enablement:
+    - $ref: '#/macros/offroad'
   # FORK(HONDA_ACCORD_9G_AU): HondaElesysStockAcc, stock ACC mode, read once at ignition (opendbc _initialize_honda).
   # Offroad only, and never the 'longitudinal' macro: has_longitudinal_control goes false in this mode, which would
   # lock the toggle on.

@@ -21,6 +21,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import real_lead  # F
 from openpilot.sunnypilot.selfdrive.controls.lib.reentry_ramp import ReentryRamp, lead_decel, reentry_ramp_applies  # FORK(HONDA_ACCORD_9G_AU)
 from openpilot.common.params import Params  # FORK(CLOSE-FOLLOW)
 from openpilot.sunnypilot.selfdrive.controls.lib.close_follow import MODE_OFF, CloseFollow, close_follow_applies, read_mode  # FORK(CLOSE-FOLLOW)
+from openpilot.sunnypilot.selfdrive.controls.lib.lead_brake_assist import lead_brake_planner  # FORK(LEAD-BRAKE)
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
@@ -84,6 +85,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if close_follow_applies(CP, CP_SP):
       cf_mode = read_mode(Params())
       self.close_follow = CloseFollow(cf_mode, dt) if cf_mode != MODE_OFF else None
+    # FORK(LEAD-BRAKE): brake sooner when the lead brakes hard (lead_brake_assist.py). None on every other car, in stock
+    # ACC mode and with LeadBrakeAssistMode 0, which keeps upstream's plan bit for bit.
+    self.lead_brake = lead_brake_planner(CP, CP_SP, dt)
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -133,7 +137,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.output_a_target)
-    self.mpc.update(sm['radarState'], personality=sm['selfdriveState'].personality)
+    # FORK(LEAD-BRAKE): the MPC's radarState - the projected leadOne in mode 2 (live), radarState itself in mode 1 (shadow).
+    # Anything else that solves an MPC on the lead in this plan must be handed radar_state, not sm['radarState'].
+    radar_state = sm['radarState']
+    if self.lead_brake is not None:
+      radar_state = self.lead_brake.before_mpc(radar_state, self.mpc, v_ego, sm['selfdriveState'].personality, prev_accel_constraint,
+                                               sm['modelV2'], sm.logMonoTime['radarState'])
+    self.mpc.update(radar_state, personality=sm['selfdriveState'].personality)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
@@ -156,7 +166,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
                                                      prev_accel_constraint, self.fcw, self.mpc,
                                                      (self.v_desired_trajectory, self.a_desired_trajectory,
                                                       self.j_desired_trajectory),
-                                                     CONTROL_N_T_IDX, action_t, self.is_e2e(sm), self.allow_throttle)
+                                                     CONTROL_N_T_IDX, action_t, self.is_e2e(sm), self.allow_throttle,
+                                                     radar_state=radar_state)  # FORK(LEAD-BRAKE): the MPC's view of the lead
       if self.close_follow.live:
         self.v_desired_trajectory, self.a_desired_trajectory, self.j_desired_trajectory = cf_trajectories
 
@@ -187,6 +198,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
     if self.close_follow is not None:  # FORK(CLOSE-FOLLOW): what its candidates' min() would have been, for the log
       self.close_follow.finish(output_a_target, candidates[0][1], self.a_cruise, is_e2e)
+    # FORK(LEAD-BRAKE): the plan the other way (mode 1: with the projection; mode 2: without), for CustomReserved13
+    if self.lead_brake is not None:
+      self.lead_brake.after_plan(output_a_target, [c[0] for c in candidates], action_t, self.fcw, sm['carState'].standstill,
+                                 not reset_state, v_ego)
     # FORK(HONDA_ACCORD_9G_AU): for 1.5 s after the driver lifts off the gas the plan may fall at most 1.5 m/s^3, from
     # min(aEgo, 0); skipped on FCW, the MPC's crash flag, a plan (or the MPC's next 2.5 s) under -2.0, or a lead
     # braking harder than that (reentry_ramp.py)
@@ -194,7 +209,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       output_a_target = self.reentry_ramp.update(reset_state, v_ego, sm['carState'].aEgo, output_a_target,
                                                  min(output_a_target_mpc, float(np.min(self.a_desired_trajectory))),
                                                  self.fcw, self.mpc.crash_cnt, sm['carState'].gasPressed,
-                                                 lead_decel((sm['radarState'].leadOne, sm['radarState'].leadTwo)))
+                                                 lead_decel((radar_state.leadOne, radar_state.leadTwo)))
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 
@@ -232,3 +247,5 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if self.close_follow is not None:
       self.close_follow.run_deferred()
       self.close_follow.publish(pm)
+    if self.lead_brake is not None:  # FORK(LEAD-BRAKE)
+      self.lead_brake.publish(pm, plan_send.valid, self.output_a_target)

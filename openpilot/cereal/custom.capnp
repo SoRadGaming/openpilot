@@ -833,7 +833,32 @@ struct CustomReserved12 @0x9ccdc8676701b412 {
   reason @8 :Text;            # why none was found ('found' otherwise), for the logs
 }
 
+# FORK(LEAD-BRAKE): the lead brake assist (sunnypilot/selfdrive/controls/lib/lead_brake_assist.py), published by plannerd
+# on HONDA_ELESYS with openpilot longitudinal, stock ACC mode off and LeadBrakeAssistMode 1 or 2: on every plan where the
+# assist is active, has a raw decel under its threshold or an episode open, and once a second (all of them in the qlog).
+# Kept under the reserved name: the struct and the Event field stay CustomReserved13 / customReserved13.
 struct CustomReserved13 @0xcd96dafb67a082d0 {
+  mode @0 :UInt8;             # LeadBrakeAssistMode: 1 shadow (computes and logs, changes nothing), 2 live
+  active @1 :Bool;            # the projection differs from radarState's leadOne this frame (moves its 4 s speed >= 0.05 m/s)
+  reason @2 :UInt8;           # bit 0: the raw radar speed's decel (henryopen); bit 1: the tau attack (CarrotPilot)
+  blocked @3 :UInt8;          # why a raw decel under the threshold did not count (lead_brake_assist.BLOCK_*)
+  trackId @4 :Int32;          # leadOne's radarTrackId (-1 vision, <= -2 held: never projected)
+  aLeadK @5 :Float32;         # radarState leadOne aLeadK (radard's Kalman estimate)
+  aLeadTau @6 :Float32;       # radarState leadOne aLeadTau
+  aRaw @7 :Float32;           # the lead's raw-speed slope over its last radar samples (counted or not), m/s^2
+  jLead @8 :Float32;          # the lead's jerk estimate, m/s^3
+  aLeadProj @9 :Float32;      # the projected aLeadK: given to the MPC (mode 2) / that would be (mode 1)
+  aLeadTauProj @10 :Float32;  # the projected aLeadTau
+  aTarget @11 :Float32;       # longitudinalPlan.aTarget as published
+  aTargetBase @12 :Float32;   # the plan before the re-entry ramp without the projection
+  aTargetAssist @13 :Float32; # ... with it (mode 1: a second MPC solve from the planner's warm start, only while active)
+  fcwBase @14 :Bool;          # the MPC's FCW without the projection
+  fcwAssist @15 :Bool;        # ... with it
+  compared @16 :Bool;         # the second solve ran and converged this frame
+  episodes @17 :UInt16;       # episodes (runs of active frames) so far this drive
+  skipped @18 :Bool;          # the second solve was not run: another layer changed the MPC's candidate after its solve
+  aCamera @19 :Float32;       # the camera's lead accel (modelV2 leadsV3[0].a[0]; NaN without a camera lead at prob 0.5)
+  camera @20 :Bool;           # the camera saw this lead slowing in the last 0.3 s (else a raw decel needs 2 samples in a row)
 }
 
 struct CustomReserved14 @0xb057204d7deadf3f {

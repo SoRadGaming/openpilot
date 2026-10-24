@@ -652,27 +652,27 @@ class CloseFollow:
 
   def update_mpc(self, sm, reset_state: bool, v_state: float, a_state: float, prev_accel_constraint: bool, fcw: bool,
                  plan_mpc, trajectories, control_t_idxs, action_t: float, is_e2e: bool = False,
-                 allow_throttle: bool = True, inputs: Inputs | None = None):
+                 allow_throttle: bool = True, inputs: Inputs | None = None, radar_state=None):
     """After the plan's own MPC solve. v_state, a_state: what the plan's MPC was set to (set_cur_state); fcw: the
     planner's FCW this frame; trajectories: the plan's (v, a, j) at control_t_idxs. Returns the trajectories with close
     follow blended in by the gap's authority - the very same arrays while it is out, and always in shadow (defer),
     where the call is only recorded for run_deferred()."""
     args = (sm, reset_state, v_state, a_state, prev_accel_constraint, fcw, plan_mpc, trajectories, control_t_idxs,
-            action_t, is_e2e, allow_throttle, inputs)
+            action_t, is_e2e, allow_throttle, inputs, radar_state)
     if self.defer:
       self._pending = None if self.failed else [(self._run_mpc, args)]
       return trajectories
     return self._run_mpc(*args)
 
   def _run_mpc(self, sm, reset_state, v_state, a_state, prev_accel_constraint, fcw, plan_mpc, trajectories,
-               control_t_idxs, action_t, is_e2e, allow_throttle, inputs):
+               control_t_idxs, action_t, is_e2e, allow_throttle, inputs, radar_state=None):
     if self.failed:
       return trajectories
     t0 = time.monotonic()
     self.step_time = 0.
     try:
       return self._update_mpc(sm, reset_state, v_state, a_state, prev_accel_constraint, fcw, plan_mpc, trajectories,
-                              control_t_idxs, action_t, is_e2e, allow_throttle, inputs)
+                              control_t_idxs, action_t, is_e2e, allow_throttle, inputs, radar_state)
     except Exception:
       self._fail('update_mpc')
       return trajectories
@@ -680,7 +680,7 @@ class CloseFollow:
       self.step_time += time.monotonic() - t0
 
   def _update_mpc(self, sm, reset_state, v_state, a_state, prev_accel_constraint, fcw, plan_mpc, trajectories,
-                  control_t_idxs, action_t, is_e2e, allow_throttle, inputs):
+                  control_t_idxs, action_t, is_e2e, allow_throttle, inputs, radar_state=None):
     self.frame += 1
     inp = inputs if inputs is not None else inputs_from_sm(sm, reset_state, is_e2e, allow_throttle)
     inp = inp._replace(lead_slowing=self.lead_window.update(inp.lead_one))
@@ -708,7 +708,8 @@ class CloseFollow:
       personality = sm['selfdriveState'].personality
       mpc.set_weights(prev_accel_constraint, personality=personality, jerk_factor=self.jerk)
       mpc.set_cur_state(v_state, a_state)
-      mpc.update(sm['radarState'], personality=personality, t_follow=self.t_follow)
+      # FORK(LEAD-BRAKE): the lead as the plan's own MPC saw it (lead_brake_assist.py's projection in its mode 2)
+      mpc.update(sm['radarState'] if radar_state is None else radar_state, personality=personality, t_follow=self.t_follow)
       self.mpc_warm = True
       self.mpc_solved = True
       self.mpc_solve_time = float(getattr(mpc, 'solve_time', 0.))
