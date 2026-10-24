@@ -46,7 +46,7 @@ HUD_ALERTS = ROOT / "selfdrive/ui/sunnypilot/mici/onroad/hud_alerts.py"
 HUD_CLUSTER = ROOT / "selfdrive/ui/sunnypilot/mici/onroad/hud_cluster.py"
 KPH = 3.6
 
-DEFAULTS = {**dict.fromkeys(HS.ALL_PARAMS, True), HS.PARAM_LIMIT_STYLE: HS.STYLE_SPLIT}
+DEFAULTS = {**dict.fromkeys(HS.ALL_PARAMS, True), HS.PARAM_LIMIT_STYLE: HS.STYLE_SPLIT, HS.PARAM_RADAR_DOTS: False}
 # round 5 (2026-10-09, option A) took these off the screen with what they switched: nothing may read them any more
 RETIRED = ("HudSpeedCluster", "HudCurrentSpeed", "HudLimitSign", "HudSchoolZoneCue", "HudVariableLimitSign",
            "HudNextLimit", "HudConfirmLimit")
@@ -141,11 +141,13 @@ class TestHudParams(OpenpilotTestCase):
       assert "PERSISTENT" in flags and "BACKUP" in flags, f"{key}: a setting, kept and backed up"
       if key == HS.PARAM_LIMIT_STYLE:
         assert "INT" in flags and '"0"' in flags, f"{key}: an INT, the split card by default"
+      elif key == HS.PARAM_RADAR_DOTS:
+        assert "BOOL" in flags and '"0"' in flags, f"{key}: the diagnostic defaults to off (test_radar_dots.py)"
       else:
         assert "BOOL" in flags and '"1"' in flags, f"{key} defaults to on"
     assert set(HS.FIELDS) == set(HS.ALL_PARAMS) and len(HS.ALL_PARAMS) == 9
-    assert HS.KEYS == HS.ALL_PARAMS + (HS.PARAM_LIMIT_STYLE,)
-    assert {f.name for f in dataclasses.fields(HS.HudSettings)} == set(HS.FIELDS.values()) | {"limit_style"}
+    assert HS.KEYS == HS.ALL_PARAMS + (HS.PARAM_LIMIT_STYLE, HS.PARAM_RADAR_DOTS)
+    assert {f.name for f in dataclasses.fields(HS.HudSettings)} == set(HS.FIELDS.values()) | {"limit_style", "radar_dots"}
 
   def test_the_built_params_library_knows_them(self):
     params = Params()

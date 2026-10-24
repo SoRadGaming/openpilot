@@ -13,6 +13,7 @@ from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.lib.shader_polygon import draw_polygon, Gradient
 from openpilot.system.ui.widgets import Widget
 from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import real_lead  # FORK(HONDA_ACCORD_9G_AU)
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.radar_dots import RadarDots  # FORK(HUD)
 
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.model_renderer import LANE_LINE_COLORS_SP, ModelRendererSP
 
@@ -85,6 +86,7 @@ class ModelRenderer(Widget, ModelRendererSP):
 
     self._counter = -1
     self._camera_offset = ui_state.params.get("CameraOffset", return_default=True) if ui_state.active_bundle else 0.0
+    self._radar_dots = RadarDots()  # FORK(HUD): the radar's tracks as dots, off unless HudRadarDots (radar_dots.py)
 
     self._exp_gradient = Gradient(
       start=(0.0, 1.0),  # Bottom of path
@@ -154,6 +156,10 @@ class ModelRenderer(Widget, ModelRendererSP):
     if ui_state.status != UIStatus.DISENGAGED:
       self._draw_lane_lines()
       self._draw_path(sm)
+
+    # FORK(HUD): every radar track as a dot over the path, engaged or not; HudRadarDots off: no socket, nothing drawn
+    self._radar_dots.render(rect, self._car_space_transform, self._path.raw_points, self._path_offset_z,
+                            self._camera_offset, radar_state)
 
     # if render_lead_indicator and radar_state:
     #   self._draw_lead_indicator()

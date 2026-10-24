@@ -150,6 +150,15 @@ sections:
     description: Top of the right strip - a curve arrow and openpilot's target speed for the curve, in 5 km/h (5 mph)
       steps, while Smart Cruise Control is slowing the car for it. It goes as soon as you take over the speed. A
       planned stop takes the place first.
+  # FORK(HUD): HudRadarDots (push13) - the radar's tracks as dots (radar_dots.py), the one HUD toggle that defaults off
+  - key: HudRadarDots
+    widget: toggle
+    title: Radar Dots
+    description: For checking the radar - a small dot on the road under everything the car's radar is tracking. White
+      is a track openpilot is not following; cyan is the car it is following (a second, smaller cyan dot is the next
+      car it watches); a cyan ring is something on the radar that openpilot holds its speed back for without
+      following it as a car. A car only the camera sees has no dot. Off by default. It only draws; it changes nothing
+      openpilot does. Also on the comma 4 under Settings > toggles.
 - id: developer_ui
   title: Developer UI Info
   description: Speedometer and debug display options
