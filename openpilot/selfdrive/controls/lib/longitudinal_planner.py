@@ -19,6 +19,8 @@ from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import Lon
 from openpilot.sunnypilot.selfdrive.controls.lib.stopping_tune import STOPPING_SPEED  # FORK(HONDA_ACCORD_9G_AU)
 from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import real_lead  # FORK(HONDA_ACCORD_9G_AU)
 from openpilot.sunnypilot.selfdrive.controls.lib.reentry_ramp import ReentryRamp, lead_decel, reentry_ramp_applies  # FORK(HONDA_ACCORD_9G_AU)
+from openpilot.common.params import Params  # FORK(CLOSE-FOLLOW)
+from openpilot.sunnypilot.selfdrive.controls.lib.close_follow import MODE_OFF, CloseFollow, close_follow_applies, read_mode  # FORK(CLOSE-FOLLOW)
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
@@ -76,6 +78,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     # FORK(HONDA_ACCORD_9G_AU): the ramp-in after the driver lifts off the gas (reentry_ramp.py); None on every other
     # car and in stock ACC mode, which keeps upstream's plan bit for bit.
     self.reentry_ramp = ReentryRamp(dt) if reentry_ramp_applies(CP, CP_SP) else None
+    # FORK(CLOSE-FOLLOW): close follow in queues (close_follow.py), CloseFollowMode read once here: 1 shadow (logged
+    # only), 2 live. None on every other car, in stock ACC mode and in mode 0: upstream's plan bit for bit.
+    self.close_follow = None
+    if close_follow_applies(CP, CP_SP):
+      cf_mode = read_mode(Params())
+      self.close_follow = CloseFollow(cf_mode, dt) if cf_mode != MODE_OFF else None
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -140,6 +148,18 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     a_prev = self.output_a_target
 
     action_t =  self.CP.longitudinalActuatorDelay + DT_MDL
+    # FORK(CLOSE-FOLLOW): close follow's own MPC (a closer follow time below 35 km/h) beside the plan's, from the same
+    # state. Live (mode 2) blends its trajectory in by the gap's authority - the plan's own while it is out; shadow
+    # (mode 1) only records the call and runs it in publish(), after the plan is sent, and only logs it (close_follow.py).
+    if self.close_follow is not None:
+      cf_trajectories = self.close_follow.update_mpc(sm, reset_state, self.v_desired_filter.x, self.output_a_target,
+                                                     prev_accel_constraint, self.fcw, self.mpc,
+                                                     (self.v_desired_trajectory, self.a_desired_trajectory,
+                                                      self.j_desired_trajectory),
+                                                     CONTROL_N_T_IDX, action_t, self.is_e2e(sm), self.allow_throttle)
+      if self.close_follow.live:
+        self.v_desired_trajectory, self.a_desired_trajectory, self.j_desired_trajectory = cf_trajectories
+
     output_a_target_mpc = get_accel_from_plan(self.v_desired_trajectory, self.a_desired_trajectory, CONTROL_N_T_IDX,
                                               action_t=action_t)
     output_should_stop_mpc = should_stop(v_ego, output_a_target_mpc, v_ego_stopping=self.v_ego_stopping)  # FORK(HONDA_ACCORD_9G_AU)
@@ -152,6 +172,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
                                      self.a_cruise, steer_angle_without_offset, self.CP, self.dt,
                                      accel_coast, self.allow_throttle)
     cruise_should_stop = should_stop(v_ego, self.a_cruise, v_ego_stopping=self.v_ego_stopping)  # FORK(HONDA_ACCORD_9G_AU)
+    # FORK(CLOSE-FOLLOW): the lift - the model's e2e accel toward close follow's MPC candidate, never past it or
+    # cruise. Live takes it as the e2e candidate; shadow records it for publish() and only logs it (close_follow.py)
+    if self.close_follow is not None:
+      cf_e2e = self.close_follow.update_lift(sm, output_a_target_e2e, self.a_cruise, is_e2e, self.allow_throttle, self.fcw)
+      if self.close_follow.live:
+        output_a_target_e2e = cf_e2e
 
     candidates = [(output_a_target_mpc, self.mpc.source, output_should_stop_mpc),
                   (self.a_cruise, LongitudinalPlanSource.cruise, cruise_should_stop)]
@@ -159,6 +185,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       candidates.append((output_a_target_e2e, LongitudinalPlanSource.e2e, output_should_stop_e2e))
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
+    if self.close_follow is not None:  # FORK(CLOSE-FOLLOW): what its candidates' min() would have been, for the log
+      self.close_follow.finish(output_a_target, candidates[0][1], self.a_cruise, is_e2e)
     # FORK(HONDA_ACCORD_9G_AU): for 1.5 s after the driver lifts off the gas the plan may fall at most 1.5 m/s^3, from
     # min(aEgo, 0); skipped on FCW, the MPC's crash flag, a plan (or the MPC's next 2.5 s) under -2.0, or a lead
     # braking harder than that (reentry_ramp.py)
@@ -199,3 +227,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     pm.send('longitudinalPlan', plan_send)
 
     self.publish_longitudinal_plan_sp(sm, pm)
+    # FORK(CLOSE-FOLLOW): shadow runs close follow here, once the plan is out (its second MPC solve never delays
+    # longitudinalPlan; live it ran inline in update()), then customReserved10, what close follow did (would do)
+    if self.close_follow is not None:
+      self.close_follow.run_deferred()
+      self.close_follow.publish(pm)

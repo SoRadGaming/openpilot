@@ -158,6 +158,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CarParamsSPPersistent", {PERSISTENT, BYTES}},
     {"CarPlatformBundle", {PERSISTENT | BACKUP, JSON}},
     {"ChevronInfo", {PERSISTENT | BACKUP, INT, "4"}},
+    // FORK(CLOSE-FOLLOW): close follow in queues (close_follow.py, HONDA_ELESYS with openpilot longitudinal): 0 off,
+    // 1 shadow (computed and logged as customReserved10, the plan untouched), 2 live. Read once when plannerd starts.
+    // No UI sets it and it is not BACKUP: a sunnylink restore must never turn live close follow on.
+    {"CloseFollowMode", {PERSISTENT, INT, "1"}},
     {"CompletedSunnylinkConsentVersion", {PERSISTENT, STRING, "0"}},
     {"CustomAccIncrementsEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"CustomAccLongPressIncrement", {PERSISTENT | BACKUP, INT, "5"}},
