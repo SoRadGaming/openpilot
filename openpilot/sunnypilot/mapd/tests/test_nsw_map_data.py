@@ -561,6 +561,45 @@ class TestCameraMessage(NswMapDataHarness):
       lmd = self.tick(md)
     assert md.cam_errors == 3 and lmd.speedLimitValid is not None and len(md.pm.sent) == 3
 
+  def test_a_camera_hold_failure_never_changes_the_nsw_limit(self):
+    # release13 (the push13 review's low): CameraHold.update raising clears the camera only - liveMapDataSP (the NSW
+    # limit, its state, the next limit) is exactly what the same drive publishes with a working camera hold
+    md, ref = self.make_cam(), self.make_cam()
+    ref.sm = md.sm
+    with mock.patch.object(md.cam_hold, 'update', side_effect=RuntimeError("camera bug")):
+      while self.y < 300.0:
+        self.feed(md.sm)
+        md.tick()
+        ref.tick()
+        a, b = ref.pm.sent[-1], md.pm.sent[-1]
+        b.logMonoTime = a.logMonoTime
+        assert a.to_bytes() == b.to_bytes(), "the camera's failure changed liveMapDataSP"
+    assert md.pm.sent[-1].liveMapDataSP.nswZone.state == nmd.STATE_MATCHED
+    assert md.state == ref.state == nmd.STATE_MATCHED and md.result is not None and md.errors == 0
+    assert md.cam_errors > 0 and md.camera is None
+    assert self.cam(md).state == nmd.CAM_STATE_NONE and self.cam(ref).state == nmd.CAM_STATE_AHEAD
+
+  def test_a_camera_publisher_failure_leaves_the_nsw_limits(self):
+    # release13 (the push13 review's low): the camera's PubMaster is made in its own try, after the NSW setup - a
+    # failure there is no camera alert this boot, never NSW off (it used to disable the whole NSW layer)
+    real = messaging.PubMaster
+
+    def pubmaster(services, *a, **k):
+      if nmd.CAMERA_SERVICE in services:
+        raise RuntimeError("no socket")
+      return real(services, *a, **k)
+    d = tempfile.mkdtemp(prefix='nswz_cam_')
+    self.addCleanup(shutil.rmtree, d, True)
+    install_for_test(d, self.cam_path)
+    with mock.patch.object(nmd.messaging, 'PubMaster', side_effect=pubmaster):
+      md = NswZoneMapData(data_dir=d, load=False)
+    assert not md.disabled and md.cam_pm is None
+    md = self.wire(md, MODE_LIVE)
+    md._load()
+    lmd = self.until_matched(md)
+    assert math.isclose(lmd.speedLimit, NSW_KPH * CV.KPH_TO_MS, rel_tol=1e-6), "the NSW limit, live"
+    md.publish_camera()   # nothing to send it on: nothing raised
+
   def test_capnp_and_service(self):
     from openpilot.cereal import custom
     from openpilot.cereal.services import SERVICE_LIST

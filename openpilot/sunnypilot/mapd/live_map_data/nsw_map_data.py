@@ -37,7 +37,9 @@ off-thread (a sha256 over ~68 MB takes seconds on the device); until it is there
 
 FORK(NSW-CAMERAS): the next camera ahead from the index's OpenStreetMap camera layer (matcher.camera_ahead, held through
 a short gap by cameras.CameraHold) goes out once a tick as customReserved12, on its own PubMaster: a display-only alert
-for the comma 4 HUD. It never touches liveMapDataSP, and a failure in it never stops liveMapDataSP.
+for the comma 4 HUD. It never touches liveMapDataSP, and a failure in it never stops liveMapDataSP - nor changes the NSW
+limits: its publisher is created in a try of its own after the NSW setup, and CameraHold.update in a try of its own
+after the matcher's, which on a failure clears the camera only (release13, the push13 review's low).
 
 Contains data from Transport for NSW (Speed Zones, School Zones), licensed CC BY 4.0.
 Modified: filtered, simplified, re-encoded. Not endorsed by Transport for NSW.
@@ -134,13 +136,19 @@ class NswZoneMapData(OsmMapData):
       self.sm = messaging.SubMaster(['liveLocationKalman', 'carState', 'deviceMotion', self.gps_service])
       self.dir = data_dir or downloader.data_dir()
       self.mode = read_mode(self.params)
-      self.cam_pm = messaging.PubMaster([CAMERA_SERVICE])  # FORK(NSW-CAMERAS)
       if load:
         self.reload()
     except Exception:
       self.disabled = True
       self.mode = MODE_OFF
       cloudlog.exception("nsw_zones: setup failed, publishing OSM only this boot")
+    # FORK(NSW-CAMERAS): the camera alert's own publisher, in its own try AFTER the NSW setup: a failure here costs the
+    # camera alert only - never the NSW limits
+    try:
+      self.cam_pm = messaging.PubMaster([CAMERA_SERVICE])
+    except Exception:
+      self.cam_pm = None
+      cloudlog.exception("nsw_zones: the camera alert's publisher failed; no camera alerts this boot")
 
   # -- the index --------------------------------------------------------------
   def reload(self) -> None:
@@ -244,7 +252,6 @@ class NswZoneMapData(OsmMapData):
       r = m.update(**inputs)
       self.result = r
       self.state = int(r['state_code'])
-      self.camera = self.cam_hold.update(r, inputs['speed_mps'], inputs['mono_time'])  # FORK(NSW-CAMERAS)
     except Exception:
       self.result = None
       self.state = STATE_ERROR
@@ -252,6 +259,20 @@ class NswZoneMapData(OsmMapData):
       self.errors += 1
       if self.errors <= LOG_FIRST_ERRORS or self.errors % LOG_ERROR_EVERY == 0:
         cloudlog.exception(f"nsw_zones: matcher error #{self.errors}, publishing OSM")
+      return
+    # FORK(NSW-CAMERAS): the camera ahead, in a try of its own - a failure clears the camera only, never the NSW limit
+    # this tick (result and state above are the matcher's)
+    try:
+      self.camera = self.cam_hold.update(r, inputs['speed_mps'], inputs['mono_time'])
+    except Exception:
+      self.camera = None
+      try:
+        self.cam_hold.reset()
+      except Exception:
+        pass
+      self.cam_errors += 1
+      if self.cam_errors <= LOG_FIRST_ERRORS or self.cam_errors % LOG_ERROR_EVERY == 0:
+        cloudlog.exception(f"nsw_zones: camera hold error #{self.cam_errors}; the camera alert is cleared, the limit kept")
 
   def _nsw_limit_ms(self) -> float:
     kph = self.result.get('limit_kph') if self.result is not None else None
