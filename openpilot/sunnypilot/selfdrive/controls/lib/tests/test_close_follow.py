@@ -2,10 +2,15 @@
 
 Pinned here: the gap schedule (0.5 s at a stop, 1.0 s at 18 km/h, the personality's by CF_FADE_KPH; the stopped gap
 stays 6 m), the fade, the gap's trips (each drops it on the same frame), the lift (never past the MPC candidate or
-cruise, nothing on the frame a lead brakes, a hard trip or a pedal), and the planner: on this car mode 1 (shadow)
-publishes exactly what mode 0 does - every frame, bit for bit - while its own log says what it would have done; mode 2
-(live) takes close follow's candidates and is the plan's own MPC on the frame a lead brakes; every other car, stock
-ACC mode and mode 0 never build it.
+cruise, nothing on the frame a lead brakes, a hard trip or a pedal, then a 3 s lockout and a slow rise), and the
+planner: on this car mode 1 (shadow) publishes exactly what mode 0 does - every frame, bit for bit - while its own log
+says what it would have done, and does all of its work after longitudinalPlan is sent; mode 2 (live) takes close
+follow's candidates, blended by the gap's authority while it ramps in, and is the plan's own MPC on the frame a lead
+brakes; an FCW (the car's, or close follow's own MPC crash flag) holds the gap and the lift out 5 s, the lift never
+back before the gap; every other car, stock ACC mode and mode 0 never build it.
+
+Big outputs are compared with assert_same_frames(): unittest's assertEqual on two 400-frame lists builds a difflib diff
+that takes minutes, so a shadow leak would look like a hang rather than a failure.
 """
 import math
 import random
@@ -20,7 +25,9 @@ from openpilot.cereal import custom, log, messaging
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.test import OpenpilotTestCase
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_T_FOLLOW, get_jerk_factor
+from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (LongitudinalMpc, T_IDXS as T_IDXS_MPC,
+                                                                           get_T_FOLLOW, get_jerk_factor)
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib import close_follow as cf
 from openpilot.sunnypilot.selfdrive.controls.lib.close_follow import (CAP, CF_FADE_SPEED, NO_LEAD, GapGuard, Inhibit,
@@ -33,10 +40,20 @@ from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import held_id
 P = log.LongitudinalPersonality
 AGGRESSIVE, STANDARD, RELAXED = int(P.aggressive), int(P.standard), int(P.relaxed)
 LongCtrlState = structs.CarControl.Actuators.LongControlState
+CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]   # the planner's control points (longitudinal_planner.py)
 HOLD = round(cf.GAP_HOLD_S / DT_MDL)
 GAP_FULL = HOLD + round(1. / cf.GAP_RISE / DT_MDL) + 2
 LIFT_FULL = round(cf.LIFT_HOLD_S / DT_MDL) + round(1. / cf.AUTHORITY_RISE / DT_MDL) + \
   round(max(CAP.values()) / cf.BOOST_RISE / DT_MDL) + 10
+
+
+def assert_same_frames(tc, a, b, what: str) -> None:
+  """a == b, frame by frame, failing at once with the first frame that differs (assertEqual's difflib on two 400-frame
+  lists takes minutes to say the same)."""
+  tc.assertEqual(len(a), len(b), f"{what}: frame count")
+  for k, (x, y) in enumerate(zip(a, b, strict=True)):
+    if x != y:
+      tc.fail(f"{what}: frame {k} of {len(a)} differs:\n  {x!r:.1500}\n  {y!r:.1500}")
 
 
 def lead(d=20., v=6., a=0., prob=0.95, radar=True, track=7, v_ego=None) -> Lead:
@@ -67,6 +84,10 @@ class TestSchedule(OpenpilotTestCase):
     self.assertEqual((cf.GAP_BP, cf.LIFT_SPEED_BP, cf.GAP_LEAD_BRAKE, cf.GAP_HOLD_S, cf.GAP_RISE),
                      ([3., 10.], [5., 8.], -0.5, 1.0, 0.5))
     self.assertEqual(CAP, {AGGRESSIVE: 0.5, STANDARD: 0.4, RELAXED: 0.3})
+    # the holds and rates the safety tests below count frames by (60 / 20 / 100 frames at 20 Hz)
+    self.assertEqual((cf.LIFT_HOLD_S, cf.AUTHORITY_RISE, cf.AUTHORITY_FALL, cf.BOOST_RISE, cf.FCW_HOLD_S),
+                     (3.0, 0.5, 4.0, 0.25, 5.0))
+    self.assertEqual((round(cf.LIFT_HOLD_S / DT_MDL), HOLD, round(cf.FCW_HOLD_S / DT_MDL)), (60, 20, 100))
     self.assertEqual(read_mode.__module__, cf.__name__)
 
   def test_follow_time_near_a_stop_and_at_18_kph(self):
@@ -307,6 +328,53 @@ class TestLift(OpenpilotTestCase):
         _, out = lift_run(1, lift=lift, **dict(base, **kw), **args)
         self.assertEqual((lift.inhibit, out, lift.boost), (reason, 0., 0.))
 
+  def test_after_a_hard_trip_nothing_for_3_s_then_a_slow_rise(self):
+    # one frame of each hard trip, then clean frames: the lift stays at the model's own accel (0 here) for exactly
+    # LIFT_HOLD_S (60 frames) with its authority at 0, and then rises no faster than its authority (0.5/s) x CAP and
+    # BOOST_RISE (0.25 m/s^3) allow - a braking lead or a pedal locks it out, it does not merely dip
+    v = 8.
+    base = {'v': v, 'lead_one': lead(d=FAR, v=v, v_ego=v), 'md': model(v)}
+    hold = 60
+    cases = [
+      # (the trip frame, its extra arguments, the clean frames after it, the reason)
+      ({'lead_one': lead(d=FAR, v=v, v_ego=v, a=-0.6)}, {}, {}, Inhibit.leadBraking),
+      ({'lead_two': lead(d=FAR + 20., v=v, v_ego=v, a=-0.6)}, {}, {}, Inhibit.leadBraking),
+      ({'lead_slowing': True}, {}, {}, Inhibit.leadBraking),
+      ({'md': model(v, lead_v=[v, v - 1.5, v - 0.5, v, v, v])}, {}, {}, Inhibit.leadBraking),
+      ({'lead_one': lead(d=FAR - 10., v=v, v_ego=v)}, {}, {'lead_one': lead(d=FAR - 10., v=v, v_ego=v)}, Inhibit.leadChanged),
+      ({'lead_one': lead(d=FAR, v=v, v_ego=v, track=8)}, {}, {'lead_one': lead(d=FAR, v=v, v_ego=v, track=8)},
+       Inhibit.leadChanged),
+      ({'lead_one': lead(d=FAR, v=v, v_ego=v, radar=False, track=-1)}, {}, {}, Inhibit.visionLead),
+      ({'lead_one': NO_LEAD}, {}, {}, Inhibit.noLead),
+      ({'held': True}, {}, {}, Inhibit.noLead),
+      ({}, {'fcw': True}, {}, Inhibit.fcw),
+      ({'car_fcw': True}, {}, {}, Inhibit.fcw),
+      ({'gas': True}, {}, {}, Inhibit.driver),
+      ({'brake': True}, {}, {}, Inhibit.driver),
+      ({'force_decel': True}, {}, {}, Inhibit.forceDecel),
+      ({'md': model(v, hard_brake=True)}, {}, {}, Inhibit.hardBrake),
+      ({'md': model(v, should_stop=True)}, {}, {}, Inhibit.stop),
+    ]
+    rise = cf.BOOST_RISE * DT_MDL
+    for trip, args, after, reason in cases:
+      with self.subTest(reason=reason, trip=trip):
+        lift, out = lift_run(LIFT_FULL, **base)
+        self.assertAlmostEqual(out, CAP[AGGRESSIVE])
+        _, out = lift_run(1, lift=lift, **dict(base, **trip), **args)
+        self.assertEqual((lift.inhibit, out, lift.authority), (reason, 0., 0.))
+        clean = dict(base, **after)
+        outs, auths = [], []
+        for _ in range(hold + 40):
+          _, out = lift_run(1, lift=lift, **clean)
+          outs.append(out)
+          auths.append(lift.authority)
+        self.assertEqual(outs[:hold], [0.] * hold, "nothing for 3 s after the trip")
+        self.assertEqual(auths[:hold], [0.] * hold)
+        self.assertGreater(outs[hold], 0., "and back once the 3 s are up")
+        for k in range(1, 40):
+          self.assertAlmostEqual(auths[hold + k - 1], k * cf.AUTHORITY_RISE * DT_MDL, places=9)
+          self.assertLessEqual(outs[hold + k - 1], min(k * rise, auths[hold + k - 1] * CAP[AGGRESSIVE]) + 1e-12)
+
   def test_soft_trips_fade_within_a_quarter_second(self):
     v = 8.
     base = {'v': v, 'lead_one': lead(d=FAR, v=v, v_ego=v), 'md': model(v)}
@@ -383,7 +451,7 @@ class _SM(dict):
 
 
 def build_sm(v_ego, d_rel, v_lead, a_lead=0., e2e=0., engaged=True, experimental=True, gas=False, radar=True, track=7,
-             personality=P.aggressive) -> _SM:
+             personality=P.aggressive, stock_fcw=False) -> _SM:
   services = {}
   for service in ("vehicleParameters", "carStateSP", "liveMapDataSP", "gpsLocationExternal", "gpsLocation"):
     services[service] = getattr(messaging.new_message(service), service)
@@ -398,6 +466,7 @@ def build_sm(v_ego, d_rel, v_lead, a_lead=0., e2e=0., engaged=True, experimental
   cs.carState.vEgo, cs.carState.aEgo = v_ego, 0.
   cs.carState.vCruise = cs.carState.vCruiseCluster = 100.0
   cs.carState.gasPressed = gas
+  cs.carState.stockFcw = stock_fcw
   cs.carState.standstill = v_ego < 0.1
   services['carState'] = cs.carState.as_reader()
   ctl = messaging.new_message('controlsState')
@@ -458,13 +527,63 @@ def queue(n=400, brake_at=None, e2e=-0.1):
   return frames
 
 
+SERVICES = ('longitudinalPlan', 'longitudinalPlanSP', 'customReserved10')
+
+
+class PM:
+  """plannerd's PubMaster, as far as the planner sees it: what was sent per service, and the order of the sends in
+  `log` (which a test may share with anything else it wants to place in that order)."""
+
+  def __init__(self, services=SERVICES, log=None):
+    self.sock = dict.fromkeys(services)
+    self.sent: dict[str, list] = {}
+    self.log = [] if log is None else log
+
+  def send(self, service, msg):
+    self.log.append(service)
+    self.sent.setdefault(service, []).append(msg.to_bytes())
+
+
+def step(pl, sm, pm=None):
+  """One plannerd loop: update() then publish() - where shadow close follow does its work, after the plan is sent."""
+  pl.update(cast(Any, sm))
+  pl.publish(cast(Any, sm), pm if pm is not None else PM())
+
+
 def drive(pl, frames):
   out = []
   for sm in frames:
-    pl.update(cast(Any, sm))
+    step(pl, sm)
     out.append((float(pl.output_a_target), bool(pl.output_should_stop), pl.v_desired_trajectory.tolist(),
                 pl.a_desired_trajectory.tolist(), pl.j_desired_trajectory.tolist(), int(pl.mpc.source), bool(pl.fcw)))
   return out
+
+
+def plan_dicts(pm, s, drop=('processingDelay', 'solverExecutionTime')):
+  """Every message sent on s, as dicts, without its wall-clock fields (different on every run)."""
+  out = []
+  for b in pm.sent[s]:
+    d = getattr(messaging.log_from_bytes(b), s).to_dict()
+    for timing in drop:
+      d.pop(timing, None)
+    out.append(d)
+  return out
+
+
+def mpc_class(on_update):
+  """A LongitudinalMpc for close follow's mpc_factory that calls on_update(mpc, n) after its n-th solve (n from 1)."""
+  class _Mpc(LongitudinalMpc):
+    def update(self, *args, **kwargs):
+      super().update(*args, **kwargs)
+      self.n_updates = getattr(self, 'n_updates', 0) + 1
+      on_update(self, self.n_updates)
+  return _Mpc
+
+
+def plan_trajectories(mpc):
+  """An MPC's (v, a, j) at the planner's control points, as the planner takes them."""
+  return (np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, mpc.v_solution), np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, mpc.a_solution),
+          np.interp(CONTROL_N_T_IDX, T_IDXS_MPC[:-1], mpc.j_solution))
 
 
 class TestPlanner(OpenpilotTestCase):
@@ -476,9 +595,10 @@ class TestPlanner(OpenpilotTestCase):
     gap_on = lift_on = would_raise = 0
     out_off, out_shadow = [], []
     for sm in frames:
-      off.update(cast(Any, sm))
-      shadow.update(cast(Any, sm))
+      # a whole plannerd loop each: in shadow close follow runs in publish(), after the plan is out - and must not
+      # leave anything behind that the next plan would see
       for pl, out in ((off, out_off), (shadow, out_shadow)):
+        step(pl, sm)
         out.append((float(pl.output_a_target), bool(pl.output_should_stop), pl.v_desired_trajectory.tolist(),
                     pl.a_desired_trajectory.tolist(), pl.j_desired_trajectory.tolist(), int(pl.mpc.source), bool(pl.fcw),
                     float(pl.v_desired_filter.x), float(pl.a_cruise)))
@@ -486,37 +606,20 @@ class TestPlanner(OpenpilotTestCase):
       gap_on += c.gap_active
       lift_on += c.lifting > 0.
       would_raise += c.a_target_close > c.a_target + 1e-3
-    self.assertEqual(out_off, out_shadow, "shadow: every planner output bit for bit")
+    assert_same_frames(self, out_off, out_shadow, "shadow: every planner output bit for bit")
     # ...while its own log says it would have acted
     self.assertGreater(gap_on, 100)
     self.assertGreater(lift_on, 20)
     self.assertGreater(would_raise, 20)
 
   def test_shadow_publishes_the_same_plan_and_its_own_log(self):
-    class PM:
-      def __init__(self, services):
-        self.sock = dict.fromkeys(services)
-        self.sent = {}
-
-      def send(self, service, msg):
-        self.sent.setdefault(service, []).append(msg.to_bytes())
-    services = ['longitudinalPlan', 'longitudinalPlanSP', 'customReserved10']
-    pm_off, pm_shadow = PM(services), PM(services)
+    pm_off, pm_shadow = PM(), PM()
     off, shadow = planner(0), planner(1)
     for sm in queue(200):
       for pl, pm in ((off, pm_off), (shadow, pm_shadow)):
-        pl.update(cast(Any, sm))
-        pl.publish(cast(Any, sm), pm)
-    def plan_dicts(pm, s):
-      out = []
-      for b in pm.sent[s]:
-        d = getattr(messaging.log_from_bytes(b), s).to_dict()
-        for timing in ('processingDelay', 'solverExecutionTime'):   # wall-clock, different on every run
-          d.pop(timing, None)
-        out.append(d)
-      return out
+        step(pl, sm, pm)
     for s in ('longitudinalPlan', 'longitudinalPlanSP'):
-      self.assertEqual(plan_dicts(pm_off, s), plan_dicts(pm_shadow, s), s)
+      assert_same_frames(self, plan_dicts(pm_off, s), plan_dicts(pm_shadow, s), s)
     self.assertNotIn('customReserved10', pm_off.sent)
     msgs = [messaging.log_from_bytes(b).customReserved10 for b in pm_shadow.sent['customReserved10']]
     self.assertEqual(len(msgs), 200)
@@ -527,10 +630,116 @@ class TestPlanner(OpenpilotTestCase):
     self.assertLess(last.desiredGap, last.desiredGapPersonality)
     self.assertGreater(last.aMpcClose, last.aMpc)
     self.assertGreaterEqual(last.aTargetClose, last.aTarget)
+    # its cost reaches the route: the close MPC's own solve on every plan it ran, and the whole step on every plan
+    self.assertTrue(all(m.mpcSolved for m in msgs))
+    self.assertTrue(all(0. < m.mpcSolveTime < 1. for m in msgs))
+    self.assertTrue(all(m.stepTime >= m.mpcSolveTime for m in msgs))
     # a PubMaster without the service (an older plannerd, a tool): nothing sent, nothing raised
     pm = PM(['longitudinalPlan', 'longitudinalPlanSP'])
-    shadow.publish(cast(Any, queue(1)[0]), pm)
+    step(shadow, queue(1)[0], pm)
     self.assertNotIn('customReserved10', pm.sent)
+    # no lead: the close MPC does not run, and says so
+    step(shadow, build_sm(V0, None, 0.), pm_shadow)
+    last = messaging.log_from_bytes(pm_shadow.sent['customReserved10'][-1]).customReserved10
+    self.assertEqual((last.mpcSolved, last.mpcSolveTime), (False, 0.))
+    self.assertGreater(last.stepTime, 0.)
+
+  def test_shadow_runs_after_the_plan_is_sent(self):
+    # the shadow's second MPC solve must not delay longitudinalPlan (the device's solves have a ~23 ms tail): update()
+    # only records the calls, publish() sends longitudinalPlan and longitudinalPlanSP and only then solves. Live has to
+    # solve inside update(), before the plan it shapes
+    log: list = []
+    for mode, in_update, in_publish in ((1, [], ['longitudinalPlan', 'longitudinalPlanSP', 'closeSolve', 'customReserved10']),
+                                        (2, ['closeSolve'], ['longitudinalPlan', 'longitudinalPlanSP', 'customReserved10'])):
+      with self.subTest(mode=mode):
+        pl = planner(mode)
+        self.assertEqual(pl.close_follow.defer, mode == 1)
+        pl.close_follow._mpc_factory = mpc_class(lambda mpc, n: log.append('closeSolve'))
+        pm = PM(log=log)
+        for sm in queue(30):
+          log.clear()
+          pl.update(cast(Any, sm))
+          self.assertEqual(log, in_update)
+          log.clear()
+          pl.publish(cast(Any, sm), pm)
+          self.assertEqual(log, in_publish)
+        self.assertTrue(pl.close_follow.mpc_solved)
+
+  def test_deferred_shadow_logs_what_inline_would(self):
+    # the deferred shadow computes exactly what it computed inline (a tool sets defer = False to read the values right
+    # after update()): the same customReserved10 on every frame, wall-clock fields aside, and the same plans
+    deferred, inline = planner(1), planner(1)
+    inline.close_follow.defer = False
+    pm_d, pm_i = PM(), PM()
+    for sm in queue(400, brake_at=300):
+      step(deferred, sm, pm_d)
+      step(inline, sm, pm_i)
+    timing = ('mpcSolveTime', 'stepTime')
+    assert_same_frames(self, plan_dicts(pm_d, 'customReserved10', timing), plan_dicts(pm_i, 'customReserved10', timing),
+                       'customReserved10, deferred vs inline')
+    for s in ('longitudinalPlan', 'longitudinalPlanSP'):
+      assert_same_frames(self, plan_dicts(pm_d, s), plan_dicts(pm_i, s), s)
+
+  def test_live_ramps_in_blended_by_the_authority(self):
+    # after the 1 s hold the gap's authority g rises at 0.5/s, and live takes the plan's own MPC trajectory plus g of
+    # the way to close follow's (and the same for the MPC candidate's accel): a 2 s ramp, never a step to the close MPC
+    pl = planner(2)
+    c = pl.close_follow
+    action_t = pl.CP.longitudinalActuatorDelay + DT_MDL
+    gs, diffs = [], []
+    for sm in queue(GAP_FULL + 10):
+      step(pl, sm)
+      plan, close = plan_trajectories(pl.mpc), plan_trajectories(c.mpc)
+      g = c.g
+      self.assertTrue(c.mpc_solved and c.weight > 0.)
+      self.assertEqual(g, c.gap.authority)
+      for got, p, q in zip((pl.v_desired_trajectory, pl.a_desired_trajectory, pl.j_desired_trajectory), plan, close,
+                           strict=True):
+        np.testing.assert_allclose(got, p + g * (q - p), rtol=0., atol=1e-12)
+      a_plan = float(get_accel_from_plan(plan[0], plan[1], CONTROL_N_T_IDX, action_t=action_t))
+      a_close = float(get_accel_from_plan(close[0], close[1], CONTROL_N_T_IDX, action_t=action_t))
+      self.assertAlmostEqual(c.a_mpc, a_plan, places=12)
+      self.assertAlmostEqual(c.a_mpc_close - c.a_mpc, g * (a_close - a_plan), places=9)
+      gs.append(g)
+      diffs.append(a_close - a_plan)
+    ramp = [k for k, g in enumerate(gs) if 0. < g < 1.]
+    self.assertEqual(gs[:HOLD], [0.] * HOLD, "the 1 s hold")
+    self.assertEqual(ramp[0], HOLD)
+    self.assertTrue(len(ramp) in (39, 40), f"0 to 1 at 0.5/s: 2 s, not {len(ramp)} frames")
+    np.testing.assert_allclose(np.diff(gs[HOLD - 1:ramp[-1] + 1]), cf.GAP_RISE * DT_MDL, rtol=0., atol=1e-12)
+    self.assertEqual(gs[-1], 1.)
+    self.assertGreater(min(diffs[k] for k in ramp), 0.01, "the ramp blends two different candidates")
+
+  def test_an_fcw_holds_the_gap_and_the_lift_out(self):
+    # one frame of the car's FCW, or of close follow's own MPC crash flag: the gap and the lift drop on that frame and
+    # stay out as an FCW for FCW_HOLD_S (100 frames); then the gap's 1 s hold (back at +6 s) and the lift's 3 s (back at
+    # +8 s) - the lift never comes back before the gap
+    F = 300
+
+    def crash_once(mpc, n):
+      if n == F + 1:      # the close MPC solves from frame 0: its (F+1)-th solve is frame F
+        mpc.crash_cnt = 3
+    for source in ('carFcw', 'closeMpcCrash'):
+      with self.subTest(source=source):
+        pl = planner(2)
+        c = pl.close_follow
+        frames = queue(F + 200)
+        if source == 'carFcw':
+          frames[F] = build_sm(V0, 22., V0, e2e=-0.1, stock_fcw=True)
+        else:
+          c._mpc_factory = mpc_class(crash_once)
+        for sm in frames[:F]:
+          step(pl, sm)
+        self.assertTrue(c.gap_active and c.lifting > 0.)
+        states = []
+        for sm in frames[F:]:
+          step(pl, sm)
+          states.append((c.gap.authority, c.gap.inhibit, c.lifting, c.lift.inhibit, c.mpc_crash))
+        self.assertEqual(states[0], (0., Inhibit.fcw, 0., Inhibit.fcw, source == 'closeMpcCrash'))
+        self.assertTrue(all(s[1] == Inhibit.fcw and s[3] == Inhibit.fcw for s in states[:100]), "both out 5 s, as FCW")
+        first_gap = next(k for k, s in enumerate(states) if s[0] > 0.)
+        first_lift = next(k for k, s in enumerate(states) if s[2] > 0.)
+        self.assertEqual((first_gap, first_lift), (120, 160))
 
   def test_live_takes_close_follows_candidates(self):
     live = planner(2)
@@ -550,9 +759,9 @@ class TestPlanner(OpenpilotTestCase):
     c = live.close_follow
     frames = queue(301, brake_at=300)
     for sm in frames[:300]:
-      live.update(cast(Any, sm))
+      step(live, sm)
     self.assertTrue(c.gap_active and c.lifting > 0.)
-    live.update(cast(Any, frames[300]))
+    step(live, frames[300])
     self.assertEqual((c.gap_active, c.lifting, c.gap.inhibit), (False, 0., Inhibit.leadBraking))
     self.assertEqual(c.a_mpc_close, c.a_mpc)
     self.assertEqual(float(live.output_a_target), min(c.a_mpc, live.a_cruise, c.a_model))
@@ -568,11 +777,11 @@ class TestPlanner(OpenpilotTestCase):
       d += (v_lead - V0) * DT_MDL
       frames.append(build_sm(V0, d, v_lead, a_lead=-0.1))
     for sm in frames[:300]:
-      live.update(cast(Any, sm))
+      step(live, sm)
     self.assertTrue(c.gap_active and c.lifting > 0.)
     states = []
     for sm in frames[300:]:
-      live.update(cast(Any, sm))
+      step(live, sm)
       states.append((c.gap_active, c.lifting, c.a_mpc_close == c.a_mpc, c.a_target_close == c.a_target))
     self.assertEqual(states[-1], (False, 0., True, True))
     first = next(k for k, s in enumerate(states) if not s[0])
@@ -593,8 +802,8 @@ class TestPlanner(OpenpilotTestCase):
     v = CF_FADE_SPEED + 0.5
     pl = planner(1)
     for _ in range(60):
-      pl.update(cast(Any, build_sm(v, None, 0.)))
-    pl.update(cast(Any, build_sm(v, 30., v)))
+      step(pl, build_sm(v, None, 0.))
+    step(pl, build_sm(v, 30., v))
     c = pl.close_follow
     self.assertTrue(c.mpc_solved)
     self.assertEqual(c.t_follow, c.t_personality)
@@ -604,7 +813,7 @@ class TestPlanner(OpenpilotTestCase):
   def test_a_held_lead_never_runs_it(self):
     pl = planner(1)
     for _ in range(100):
-      pl.update(cast(Any, build_sm(V0, 22., V0, track=held_id(7))))
+      step(pl, build_sm(V0, 22., V0, track=held_id(7)))
     c = pl.close_follow
     self.assertEqual((c.gap_active, c.mpc_solved, c.gap.inhibit), (False, False, Inhibit.noLead))
 
@@ -620,8 +829,8 @@ class TestPlanner(OpenpilotTestCase):
   def test_disengaged_it_is_off(self):
     pl = planner(1)
     for sm in queue(200):
-      pl.update(cast(Any, sm))
-    pl.update(cast(Any, build_sm(V0, 22., V0, engaged=False)))
+      step(pl, sm)
+    step(pl, build_sm(V0, 22., V0, engaged=False))
     c = pl.close_follow
     self.assertEqual((c.requested, c.gap_active, c.lifting, c.gap.inhibit), (False, False, 0., Inhibit.notRequested))
 
@@ -630,7 +839,7 @@ class TestPlanner(OpenpilotTestCase):
     pl = planner(1)
     with mock.patch.object(cf.cloudlog, 'event') as event:
       for sm in queue(450, brake_at=300):
-        pl.update(cast(Any, sm))
+        step(pl, sm)
     calls = [c for c in event.call_args_list if c.args and c.args[0] == 'closefollow']
     self.assertEqual(len(calls), 2, "at most one per 10 s of plans")
     kw = calls[0].kwargs
@@ -638,13 +847,15 @@ class TestPlanner(OpenpilotTestCase):
     self.assertEqual((kw['mode'], kw['n'], kw['brk']), (1, 200, 0))
     self.assertGreater(kw['gap'], 0.)
     self.assertLess(kw['dg'], 0.)
+    # the slowest close-MPC solve and the slowest whole step of the 10 s, in ms (the owner's view of its cost)
+    self.assertTrue(0. < kw['smax'] <= kw['xmax'] < 1000.)
     self.assertEqual(calls[1].kwargs['brk'], 0)
     self.assertTrue('leadBraking' in calls[1].kwargs['why'])
     # no chance to act (no lead): silent
     pl = planner(1)
     with mock.patch.object(cf.cloudlog, 'event') as event:
       for _ in range(450):
-        pl.update(cast(Any, build_sm(V0, None, 0.)))
+        step(pl, build_sm(V0, None, 0.))
     self.assertFalse([c for c in event.call_args_list if c.args and c.args[0] == 'closefollow'])
 
   def test_a_failure_in_close_follow_never_reaches_the_plan(self):
@@ -660,7 +871,7 @@ class TestPlanner(OpenpilotTestCase):
         pl.close_follow._mpc_factory = broken_mpc
         with mock.patch.object(cf.cloudlog, 'exception') as exc:
           out = drive(pl, frames)
-        self.assertEqual(out, ref, "push12's plan on every frame")
+        assert_same_frames(self, out, ref, "push12's plan on every frame")
         self.assertTrue(pl.close_follow.failed)
         self.assertEqual(exc.call_count, 1, "logged once")
       with self.subTest(mode=mode, where='lift'):
@@ -670,7 +881,16 @@ class TestPlanner(OpenpilotTestCase):
           out = drive(pl, frames)
         self.assertTrue(pl.close_follow.failed)
         self.assertEqual(exc.call_count, 1)
-        self.assertEqual(out, ref)   # it failed on the first frame, still in its hold: nothing was ever blended
+        # it failed on the first frame, still in its hold: nothing was ever blended
+        assert_same_frames(self, out, ref, "push12's plan on every frame")
+    # shadow: a failure in its deferred step (after the plan is sent) is caught and logged the same way
+    pl = planner(1)
+    with mock.patch.object(pl.close_follow, '_run_finish', side_effect=RuntimeError("late")), \
+         mock.patch.object(cf.cloudlog, 'exception') as exc:
+      out = drive(pl, frames)
+    self.assertTrue(pl.close_follow.failed)
+    self.assertEqual(exc.call_count, 1)
+    assert_same_frames(self, out, ref, "push12's plan on every frame")
 
   def test_the_switch_hook(self):
     s = cf.CloseFollowSwitch()

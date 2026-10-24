@@ -150,7 +150,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     action_t =  self.CP.longitudinalActuatorDelay + DT_MDL
     # FORK(CLOSE-FOLLOW): close follow's own MPC (a closer follow time below 35 km/h) beside the plan's, from the same
     # state. Live (mode 2) blends its trajectory in by the gap's authority - the plan's own while it is out; shadow
-    # (mode 1) only logs it (close_follow.py).
+    # (mode 1) only records the call and runs it in publish(), after the plan is sent, and only logs it (close_follow.py).
     if self.close_follow is not None:
       cf_trajectories = self.close_follow.update_mpc(sm, reset_state, self.v_desired_filter.x, self.output_a_target,
                                                      prev_accel_constraint, self.fcw, self.mpc,
@@ -173,7 +173,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
                                      accel_coast, self.allow_throttle)
     cruise_should_stop = should_stop(v_ego, self.a_cruise, v_ego_stopping=self.v_ego_stopping)  # FORK(HONDA_ACCORD_9G_AU)
     # FORK(CLOSE-FOLLOW): the lift - the model's e2e accel toward close follow's MPC candidate, never past it or
-    # cruise. Live takes it as the e2e candidate; shadow only logs it (close_follow.py)
+    # cruise. Live takes it as the e2e candidate; shadow records it for publish() and only logs it (close_follow.py)
     if self.close_follow is not None:
       cf_e2e = self.close_follow.update_lift(sm, output_a_target_e2e, self.a_cruise, is_e2e, self.allow_throttle, self.fcw)
       if self.close_follow.live:
@@ -227,5 +227,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     pm.send('longitudinalPlan', plan_send)
 
     self.publish_longitudinal_plan_sp(sm, pm)
-    if self.close_follow is not None:  # FORK(CLOSE-FOLLOW): customReserved10, what close follow did (would do)
+    # FORK(CLOSE-FOLLOW): shadow runs close follow here, once the plan is out (its second MPC solve never delays
+    # longitudinalPlan; live it ran inline in update()), then customReserved10, what close follow did (would do)
+    if self.close_follow is not None:
+      self.close_follow.run_deferred()
       self.close_follow.publish(pm)

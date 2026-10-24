@@ -762,6 +762,10 @@ struct CustomReserved10 @0xcb9fd56c7057593a {
   aTarget @28 :Float32;              # m/s^2, the plan's min() this frame (push12's, before the re-entry ramp)
   aTargetClose @29 :Float32;         # m/s^2, the min() with close follow's candidates
   sourceClose @30 :UInt8;            # LongitudinalPlanSource of that min()
+  mpcSolveTime @31 :Float32;         # s, the close-follow MPC's own solve this plan (acados time_tot, as
+                                     # longitudinalPlan.solverExecutionTime); 0 when it did not run
+  stepTime @32 :Float32;             # s, wall time of all of close follow this plan (its MPC, the lift, the min()). In
+                                     # shadow it runs after longitudinalPlan is sent, so it never delays the plan
 
   enum CloseFollowInhibit {
     none @0;
@@ -776,7 +780,8 @@ struct CustomReserved10 @0xcb9fd56c7057593a {
     leadBraking @9;    # a real lead's aLeadK under -0.5, or leadOne's own speed falling faster over the last
                        # 0.5 s with aLeadK under 0 (lift: or the model's lead forecast slowing)
     leadChanged @10;   # a new car (distance jump, lift: or a radar track swap)
-    fcw @11;           # the planner's FCW, close follow's own crash flag, or the car's FCW/AEB (5 s)
+    fcw @11;           # the planner's FCW, close follow's own crash flag, or the car's FCW/AEB: the gap and the
+                       # lift both stay out 5 s (FCW_HOLD_S), then their own holds
     driver @12;        # gas or brake pressed
     forceDecel @13;
     hardBrake @14;     # lift only: the model's hard-brake flag

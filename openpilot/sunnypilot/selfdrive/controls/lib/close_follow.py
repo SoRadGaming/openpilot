@@ -33,10 +33,12 @@ So close follow does two things, both only below CF_FADE_KPH (35 km/h), both wit
    planner's min() never follows closer than the close MPC itself would. Fades in at 18-29 km/h (LIFT_SPEED_BP, the
    crawl stays the model's) and out by CF_FADE_KPH. CAP 0.5 / 0.4 / 0.3 m/s^2 for aggressive / standard / relaxed,
    rising at 0.25 m/s^3. HARD trips drop it to nothing on the same frame - a braking lead (as for the gap, or the
-   model's lead forecast losing 1 m/s within 3 s), FCW, a new car (distance jump or radar track swap), gas or brake,
-   no lead or a held one, a vision-only lead, forceDecel, the model's hard-brake flag or a stop in its plan. Soft trips
-   (lead uncertain or under 5 m/s, the model braking under -0.5 or its plan slowing, over 1 m/s^2 of lateral accel,
-   coasting, a lane change, under 5 m/s) let it fall at 4/s. Then a 3 s hold and a 0.5/s rise, as zoompilot.
+   model's lead forecast losing 1 m/s within 3 s), FCW (for as long as the gap's FCW_HOLD_S hold lasts: the lift never
+   comes back before the gap), a new car (distance jump or radar track swap), gas or brake, no lead or a held one, a
+   vision-only lead, forceDecel, the model's hard-brake flag or a stop in its plan. Soft trips (lead uncertain or under
+   5 m/s, the model braking under -0.5 or its plan slowing, over 1 m/s^2 of lateral accel, coasting, a lane change,
+   under 5 m/s) let it fall at 4/s. Then a 3 s hold (LIFT_HOLD_S, with its authority at 0 after a hard trip) and a
+   0.5/s rise, as zoompilot.
 
 THE ON-SWITCH is not decided (a distance-button hold, or automatic below ~30 km/h with a radar lead: the owner's
 choice). CloseFollowSwitch is the one place it goes. Until then it says "requested" whenever openpilot longitudinal
@@ -50,23 +52,31 @@ LOGGED (the owner has no SSH): customReserved10 (CustomReserved10 in custom.capn
 at most one `closefollow` cloudlog event at error level per SUMMARY_S (10 s), only when there was a chance to act
 (engaged, a real lead, under the fade speed): the share of those frames with the gap and the lift in, the mean follow
 time and gap change, the most it lifted the plan, the top reasons it was out, and `brk`, the frames where it lifted the
-plan while a lead braked - by construction 0; a non-zero `brk` in a route is a bug.
+plan while a lead braked - by construction 0; a non-zero `brk` in a route is a bug - and `smax` / `xmax`, the slowest
+close-MPC solve and the slowest whole close-follow step of those 10 s, in ms (mpcSolveTime / stepTime, every plan).
 
-COST: a second MPC solve (median 0.6 ms on the device) only while eligible: requested, engaged, a real lead, under
-the fade speed + CF_MPC_MARGIN.
+COST: a second MPC solve only while eligible: requested, engaged, a real lead, under the fade speed + CF_MPC_MARGIN.
+On the device the plan's own solve on such frames is 0.6 ms at the median but has a long tail (p95 7.6-13 ms, max
+~23 ms on routes 14c, 141, 142, 14d), and this one is the same solver. So in SHADOW the planner's three calls are only
+recorded (defer) and all of close follow runs in LongitudinalPlanner.publish() after longitudinalPlan and
+longitudinalPlanSP are sent (run_deferred): its cost never delays the plan controlsd acts on. Live it runs inline - it
+has to, it shapes the plan. Its cost reaches the route either way (mpcSolveTime, stepTime, smax, xmax above).
 
 REPLAYED (push13, shadow; the real planner open loop on 20 of the owner's routes: 0x130-0x152, after the radar speed
 fix, and 14, 1f, c0, c9, d5, 12a with vRel doubled; 290 engaged minutes, 61 of them engaged behind a real lead under
-35 km/h, 35 of those standing still). The replayed plans match the logged ones (median 0.000, p95 under 0.02 m/s^2).
+35 km/h, about 40 of those at a standstill and 21 moving). The replayed plans match the logged ones (median 0.000,
+p95 under 0.02 m/s^2).
 The closer gap would have been in for 48 / 43 / 35 / 28 % of the time at 2-7 / 7-18 / 18-29 / 29-35 km/h, out mostly
 for a braking lead and the 1 s hold after it; the lift for 5-9 % at 18-35 km/h (a braking lead, its 3 s hold, a
 vision lead, a stop in the model's plan). Close follow would have raised the plan by more than 0.01 m/s^2 for 3.9 of
-the 61 minutes (12-22 % of the moving time), median +0.05..0.09, p95 +0.13..0.38. The gap it aims for in steady
+the 61 minutes (12-22 % of the moving time), median +0.03..0.09, p95 +0.13..0.38. The gap it aims for in steady
 following: 9.4 m at 7-18 km/h (aggressive 10.5, driven 11.4) and 12.9 m at 18-29 (13.5, driven 17.2 - the model's own
 gap in experimental mode, which the lift seldom overrules). By its own braking test it never raised the plan while a
 lead braked; a look-ahead test (the lead's speed over +-0.5 s, which no controller can see) finds 43 onset frames,
 max +0.024 m/s^2 on the routes after the radar fix (+0.46 on route 14, where aLeadK is rebuilt from the half-scale
-radar). Never during any of the 76 engaged FCW frames.
+radar). Never during any of the 76 engaged FCW frames, and the lift was never in within 12 s after one: after the
+review's fixes (the lift's FCW hold, the deferred shadow) the 13 routes with an FCW-type frame replay identically, so
+none of these numbers changed.
 
 The lift is adapted from zoompilot (github.com/zoompilot/zoompilot, develop 5b87a72b,
 openpilot/sunnypilot/selfdrive/controls/lib/e2e_lead_gap/controller.py), under this notice:
@@ -84,6 +94,7 @@ Changes from it: the ceiling is close follow's MPC candidate; hard trips cut it 
 lead is no lead; it fades out by CF_FADE_KPH; its constants are inlined (zoompilot's set-speed nudge is not here).
 """
 import math
+import time
 from collections import Counter, deque
 from typing import NamedTuple
 
@@ -569,13 +580,18 @@ class LeadFollowLift:
 
 class CloseFollow:
   """The planner's handle. Per plan: update_mpc() right after the plan's own MPC solve and FCW, update_lift() once the
-  cruise candidate is known, finish() with the min() the plan took, publish() with the plan. In shadow the planner uses
-  none of the returns; live it takes update_mpc()'s trajectories and update_lift()'s e2e candidate.
+  cruise candidate is known, finish() with the min() the plan took, publish() with the plan. Live, the planner takes
+  update_mpc()'s trajectories and update_lift()'s e2e candidate. In shadow (defer, the default for mode 1) those three
+  calls only record their arguments and hand back the plan's own values, and run_deferred() - which the planner calls
+  in publish(), once longitudinalPlan is sent - runs them: the second MPC solve never delays the plan. A tool that
+  wants the values right after update() sets defer = False (the values are the same, only computed earlier).
   An exception anywhere in close follow never reaches plannerd: it is logged once (cloudlog.exception, error level),
   close follow is off for the rest of the drive, and every call hands back the plan's own values (push12's)."""
 
-  def __init__(self, mode: int, dt: float = DT_MDL, mpc_factory=None):
+  def __init__(self, mode: int, dt: float = DT_MDL, mpc_factory=None, defer: bool | None = None):
     self.mode = mode
+    self.defer = (mode != MODE_LIVE) if defer is None else bool(defer)
+    self._pending: list | None = None
     self.failed = False
     self.dt = dt
     self.switch = CloseFollowSwitch()
@@ -590,6 +606,8 @@ class CloseFollow:
     self.eligible = False
     self.mpc_solved = False
     self.mpc_crash = False
+    self.mpc_solve_time = 0.   # s, the close MPC's own solve this plan (acados time_tot)
+    self.step_time = 0.        # s, wall time of all of close follow this plan
     self.g = 0.
     self.weight = 0.
     self.t_follow = self.t_personality = get_T_FOLLOW(Personality.standard)
@@ -637,15 +655,29 @@ class CloseFollow:
                  allow_throttle: bool = True, inputs: Inputs | None = None):
     """After the plan's own MPC solve. v_state, a_state: what the plan's MPC was set to (set_cur_state); fcw: the
     planner's FCW this frame; trajectories: the plan's (v, a, j) at control_t_idxs. Returns the trajectories with close
-    follow blended in by the gap's authority - the very same arrays while it is out."""
+    follow blended in by the gap's authority - the very same arrays while it is out, and always in shadow (defer),
+    where the call is only recorded for run_deferred()."""
+    args = (sm, reset_state, v_state, a_state, prev_accel_constraint, fcw, plan_mpc, trajectories, control_t_idxs,
+            action_t, is_e2e, allow_throttle, inputs)
+    if self.defer:
+      self._pending = None if self.failed else [(self._run_mpc, args)]
+      return trajectories
+    return self._run_mpc(*args)
+
+  def _run_mpc(self, sm, reset_state, v_state, a_state, prev_accel_constraint, fcw, plan_mpc, trajectories,
+               control_t_idxs, action_t, is_e2e, allow_throttle, inputs):
     if self.failed:
       return trajectories
+    t0 = time.monotonic()
+    self.step_time = 0.
     try:
       return self._update_mpc(sm, reset_state, v_state, a_state, prev_accel_constraint, fcw, plan_mpc, trajectories,
                               control_t_idxs, action_t, is_e2e, allow_throttle, inputs)
     except Exception:
       self._fail('update_mpc')
       return trajectories
+    finally:
+      self.step_time += time.monotonic() - t0
 
   def _update_mpc(self, sm, reset_state, v_state, a_state, prev_accel_constraint, fcw, plan_mpc, trajectories,
                   control_t_idxs, action_t, is_e2e, allow_throttle, inputs):
@@ -667,6 +699,7 @@ class CloseFollow:
                      inp.lead_one.present and not inp.held)
     self.mpc_solved = False
     self.mpc_crash = False
+    self.mpc_solve_time = 0.
     close = None
     if self.eligible:
       mpc = self._close_mpc()
@@ -678,6 +711,7 @@ class CloseFollow:
       mpc.update(sm['radarState'], personality=personality, t_follow=self.t_follow)
       self.mpc_warm = True
       self.mpc_solved = True
+      self.mpc_solve_time = float(getattr(mpc, 'solve_time', 0.))
       self.mpc_crash = bool(mpc.crash_cnt > 2 and not inp.standstill)
       close = (np.interp(control_t_idxs, T_IDXS_MPC, mpc.v_solution), np.interp(control_t_idxs, T_IDXS_MPC, mpc.a_solution),
                np.interp(control_t_idxs, T_IDXS_MPC[:-1], mpc.j_solution))
@@ -701,35 +735,73 @@ class CloseFollow:
     return self.t_personality + self.g * (self.t_follow - self.t_personality)
 
   def update_lift(self, sm, a_model: float, a_cruise: float, is_e2e: bool, allow_throttle: bool, fcw: bool) -> float:
-    """Once the cruise candidate is known. Returns the e2e candidate with the lift (a_model while it is idle)."""
+    """Once the cruise candidate is known. Returns the e2e candidate with the lift (a_model while it is idle, and
+    always in shadow, where the call is only recorded)."""
+    if self.defer:
+      if self._pending is not None:
+        self._pending.append((self._run_lift, (sm, a_model, a_cruise, is_e2e, allow_throttle, fcw)))
+      return a_model
+    return self._run_lift(sm, a_model, a_cruise, is_e2e, allow_throttle, fcw)
+
+  def _run_lift(self, sm, a_model, a_cruise, is_e2e, allow_throttle, fcw) -> float:
     inp = self.inputs
     if inp is None or self.failed:
       return a_model
+    t0 = time.monotonic()
     try:
       if inp.is_e2e != bool(is_e2e) or inp.allow_throttle != bool(allow_throttle) or inp.model.a != a_model:
         inp = self.inputs = inp._replace(is_e2e=bool(is_e2e), allow_throttle=bool(allow_throttle),
                                          model=inp.model._replace(a=float(a_model)))
       self.a_model = float(a_model)
-      self.a_model_lifted = float(self.lift.update(inp, self.requested, self.a_mpc_close, float(a_cruise),
-                                                   bool(fcw) or self.mpc_crash, self.t_follow_used))
+      # an FCW (the planner's, the close MPC's crash flag, the car's) holds the lift out as long as the gap's FCW hold
+      # (FCW_HOLD_S), then the lift's own LIFT_HOLD_S: it never comes back before the gap does
+      lift_fcw = bool(fcw) or self.mpc_crash or self.gap.fcw_left > 0
+      self.a_model_lifted = float(self.lift.update(inp, self.requested, self.a_mpc_close, float(a_cruise), lift_fcw,
+                                                   self.t_follow_used))
       return self.a_model_lifted
     except Exception:
       self._fail('update_lift')
       return a_model
+    finally:
+      self.step_time += time.monotonic() - t0
 
   def finish(self, a_target: float, mpc_source, a_cruise: float, is_e2e: bool) -> None:
-    """With the min() the plan took (before the re-entry ramp): what close follow's candidates would have given."""
+    """With the min() the plan took (before the re-entry ramp): what close follow's candidates would have given. In
+    shadow only recorded, like the other two."""
+    if self.defer:
+      if self._pending is not None:
+        self._pending.append((self._run_finish, (a_target, mpc_source, a_cruise, is_e2e)))
+      return
+    self._run_finish(a_target, mpc_source, a_cruise, is_e2e)
+
+  def _run_finish(self, a_target, mpc_source, a_cruise, is_e2e) -> None:
     if self.failed:
       return
+    t0 = time.monotonic()
     try:
       self.a_target = float(a_target)
       candidates = [(self.a_mpc_close, mpc_source), (float(a_cruise), PlanSource.cruise)]
       if is_e2e:
         candidates.append((self.a_model_lifted, PlanSource.e2e))
       self.a_target_close, self.source_close = min(candidates, key=lambda c: c[0])
+      self.step_time += time.monotonic() - t0
       self._account()
     except Exception:
       self._fail('finish')
+
+  def run_deferred(self) -> None:
+    """Shadow: this plan's update_mpc(), update_lift() and finish(), in that order, with the arguments the planner gave
+    them. LongitudinalPlanner.publish() calls it once longitudinalPlan and longitudinalPlanSP are sent. Nothing
+    pending (live, after a failure, already run): nothing. A plan whose publish() never came (a tool calling update()
+    alone) is simply skipped by the next update_mpc()."""
+    pending, self._pending = self._pending, None
+    if not pending:
+      return
+    try:
+      for fn, args in pending:
+        fn(*args)
+    except Exception:
+      self._fail('run_deferred')
 
   # --- what reaches the route ---
 
@@ -788,6 +860,8 @@ class CloseFollow:
     msg.aTarget = float(self.a_target)
     msg.aTargetClose = float(self.a_target_close)
     msg.sourceClose = int(self.source_close)
+    msg.mpcSolveTime = float(self.mpc_solve_time)
+    msg.stepTime = float(self.step_time)
 
   def publish(self, pm) -> None:
     """customReserved10, once per plan; nothing after a failure (the cloudlog line says why)."""
@@ -806,11 +880,13 @@ class CloseFollow:
   @staticmethod
   def _new_window() -> dict:
     return {'n': 0, 'gap': 0, 'lift': 0, 't': 0., 'dg': 0., 'v': 0., 'lmax': 0., 'up': 0., 'brk': 0, 'fcw': 0,
-            'why': Counter()}
+            'smax': 0., 'xmax': 0., 'why': Counter()}
 
   def _account(self) -> None:
     inp = self.inputs
     w = self._win
+    w['smax'] = max(w['smax'], self.mpc_solve_time)
+    w['xmax'] = max(w['xmax'], self.step_time)
     chance = (inp is not None and self.requested and inp.engaged and inp.lead_one.present and not inp.held and
               _finite(inp.v_ego) and inp.v_ego < CF_FADE_SPEED)
     if chance:
@@ -843,6 +919,7 @@ class CloseFollow:
       cloudlog.event("closefollow", error=True, mode=int(self.mode), n=n, v=round(w['v'] / n, 1),
                      gap=round(g / n, 2), lift=round(w['lift'] / n, 2),
                      t=round(w['t'] / g, 2) if g else None, dg=round(w['dg'] / g, 1) if g else None,
-                     lmax=round(w['lmax'], 2), up=round(w['up'], 2), brk=w['brk'], fcw=w['fcw'], why=why)
+                     lmax=round(w['lmax'], 2), up=round(w['up'], 2), brk=w['brk'], fcw=w['fcw'], why=why,
+                     smax=round(w['smax'] * 1e3, 1), xmax=round(w['xmax'] * 1e3, 1))
     except Exception:
       pass
