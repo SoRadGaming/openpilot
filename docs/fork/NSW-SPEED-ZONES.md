@@ -511,7 +511,7 @@ alert, which needs a new `OnroadEventSP.EventName` ordinal in `custom.capnp`; pu
 so the chime is left for a decision (see the report of the push13 batch).
 
 **License.** Camera locations (c) OpenStreetMap contributors, Open Database License 1.0: the index's long attribution,
-the manifest (`attribution`, `cameras.licence`), `ATTRIBUTION.txt` (with how they were extracted), the release notes
+the manifest (`attribution`, and the ODbL notice in its `cameras` entry), `ATTRIBUTION.txt` (with how they were extracted), the release notes
 and the maps page say so. The cameras in a published index are themselves ODbL.
 
 **The Action (not changed yet).** The workflow lives in SoRadGaming/openpilot and was not edited or pushed in push13.
