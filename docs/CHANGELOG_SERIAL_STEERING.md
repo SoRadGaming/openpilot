@@ -93,7 +93,7 @@ of `b44473bf`, push12's); then sunnypilot `release13` to `master`; then start th
   with police speed-measuring equipment (Road Transport Act 2013 s 119); a map list of where cameras stand is not that -
   Transport for NSW publishes the locations and its own Speed Adviser app warns of them. This is not legal advice.
 * **The radar's track slots, tidied** (radartidy, opendbc): an empty slot is only the radar's "nothing here" value
-  (returns at 255-256 m were being dropped), the update waits for the radar's last track message, a re-used track number
+  (returns at 255-256 m were being dropped), the update waits for the radar's last track message, a reused track number
   keeps its id only when it is the same object, and a coasted (extrapolated) track is marked as such. Replayed on 69
   routes: no new phantom brake (`CHANGELOG-elesys.md` section 25).
 
@@ -164,7 +164,7 @@ from May-July, all on the radar's bus with the pump bit off; the "1022 counts at
     skipped in `setUpClass` (once per worker that drew them) is one higher.
   * `ruff` clean (openpilot and opendbc); `ty check openpilot` 4, push12's 4 in the same files (leadbrake's and
     brake320's tests had 41 new ones, fixed with casts and annotations only); codespell no new hit (brake320's test
-    used `assertIn`); `compile_settings_ui --check` matches; no file mode changed; no file over 120 KB added (largest
+    used unittest's assert-in method); `compile_settings_ui --check` matches; no file mode changed; no file over 120 KB added (largest
     new: `test_close_follow.py`, 60,774 bytes); `params_keys.h` 322 entries, no duplicate.
 * **[R] Closed-loop sim of close follow live** (the skeptic's frame - the real MPC and close follow driven as the
   planner drives them, radard's filter - with the real LongControl and the car's real CarController and brake320; the
@@ -215,7 +215,7 @@ from May-July, all on the radar's bus with the pump bit off; the "1022 counts at
   `0x200`/`0x1FA`; the plan raised at most 0.13 m/s²; at most 157 brake counts where push12 sent 189). **14d** (44):
   8,658 of 259,948 - close follow 250 (one episode, then 1-count brake steps carried in the planner's warm start: a
   control run with the switch off makes those segments identical to push12), brake320 8,408: 320 counts where push12
-  sent 255, in four stretches that are a harness artefact both trees share - the replayed card starts cold mid-route and
+  sent 255, in four stretches that are a harness artifact both trees share - the replayed card starts cold mid-route and
   holds a set speed under the logged car's (89 km/h against 100, 105 against 110), so both plans brake at -1.2 m/s² for
   15-80 s against a logged car that does not slow and both controllers wind down to their floors; the one difference is
   brake320's ceiling (and its documented tail, the brake learner a count apart afterwards). **142** (23): 1,743 of
