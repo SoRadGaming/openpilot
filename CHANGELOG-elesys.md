@@ -847,8 +847,11 @@ this side draws the flash:
 
 `opendbc/car/honda/radar_interface.py` (`_update_elesys_track()`, `elesys_same_object()`, `ELESYS_*`),
 `opendbc/dbc/honda_accord_2015au_radar.dbc` (`FLAG_B22` is `COASTING`; comments on `LONG_DIST`, `NEW_TRACK`,
-`COASTING`); tests `test_elesys_radar.py` `TestElesysRadarTracks`. Branch `radartidy`: opendbc `ae090281` on
-`b44473bf`, sunnypilot on push12 (`7711de756`). Design: `docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 4.8 and 5.2.
+`COASTING`); tests `test_elesys_radar.py` `TestElesysRadarTracks`. Branch `radartidy`: opendbc `ae090281` and
+`149a024e` (the review's test and wording, no code) on `b44473bf`, sunnypilot on push12 (`7711de756`). Design:
+`docs/fork/CAR-HONDA-ACCORD-9G-AU.md` 4.8 and 5.2. **Push opendbc's `radartidy` to SoRadGaming/opendbc before any
+sunnypilot branch that carries this section**: the sunnypilot commit points `opendbc_repo` at `149a024e`, which until
+then exists only on the build machine.
 
 The radar audit of 2026-10-24 found the decode right field by field and four small issues in how the 13 track slots
 become radar points. The owner approved the tidy-ups to go in "after replay": into an update only if the clutter routes
@@ -857,10 +860,15 @@ replay identically or with explained, harmless differences. HONDA_ELESYS only; t
 - **An empty slot is raw `LONG_DIST` 0x7FFF**, the only empty pattern in 9.9 M frames. The test was `LONG_DIST < 255`,
   which dropped real returns at 255.0-255.98 m (about 5 frames an hour; route dd t=804.45, a car 4.5 m to the left
   first seen at 255.34 m is now tracked two frames sooner).
-- **The update fires on 0x424**, the last track frame of the radar's cycle (84,853 cycles on 6 routes: always last, and
-  in the CAN batch after 0x423 in 2.3% of them). It fired on 0x423, so slot 0x424 was a cycle stale in those cycles
-  (route 141 t=102.7: an oncoming car's first frame, at 94.68 m, never reached radard). Then the update now comes one
-  CAN batch, about 10 ms, later. 0x400 is sent after 0x424 and is read a cycle late, as before.
+- **The update fires on 0x424**, the last track frame of the radar's cycle: last in every cycle the log holds whole
+  (84,853 cycles on 6 routes; the review, 1.25 M on 126 routes, never before 0x423), and in the CAN batch after 0x423
+  in 2.3% of them (2.5% on the 126). It fired on 0x423, so slot 0x424 was a cycle stale in those cycles (route 141
+  t=102.7: an oncoming car's first frame, at 94.68 m, never reached radard). In those cycles the update now comes one
+  CAN batch, about 10 ms, later. 0x400 is sent after 0x424 and is read a cycle late, as before. A cycle whose 0x424
+  never comes is not published on its own: the next cycle's frames overwrite it and publish on their 0x424 (push12
+  published it on 0x423). The review found two cycles with 0x423 and no 0x424, and both are the log, not the radar:
+  b1 t=1719.08, where the radar stopped mid-cycle at the end of the drive, and aa t=1026.51, where the log keeps one
+  CAN batch every 20.5 s from t=903 on.
 - **A held `NEW_TRACK`.** The audit read `NEW_TRACK` on two frames in a row as one object given a new trackId twice, and
   proposed a new id on a rising edge only. Measured: of 1,467 such repeats on 6 routes the second frame is ANOTHER new
   object 92% of the time (its range or lateral position 1 m or more off the first's path, 72% by 10 m or more), and the
@@ -868,8 +876,10 @@ replay identically or with explained, harmless differences. HONDA_ELESYS only; t
   when it stays set on a frame that does not continue the slot's object (`elesys_same_object()`: range within 1 m of the
   last frame's moved on at its vRel, lateral within 1 m, vRel within 2 m/s; 94.5-97.5% of frames without `NEW_TRACK`
   meet it, 1.4-5.5% of rising ones). A held flag on the same object (8%; route 113 t=87.8) keeps its id, and with it
-  radard's Kalman filter and the clutter guard's per-track history. The rising-edge-only rule was replayed as well
-  (below) and is not taken.
+  radard's Kalman filter and the clutter guard's per-track history. A rising `NEW_TRACK` is always a new id, even on a
+  frame that continues the slot's object (2.4% of rising edges on an occupied slot, 1,936 of 81,539 on 126 routes;
+  route dd t=2647.96), as push12 and upstream give it: the same-object check is for held flags only. The rising-edge-only
+  rule was replayed as well (below) and is not taken.
 - **`COASTING`** (byte 2 bit 6, `FLAG_B22` until now): the radar extrapolated the track that cycle instead of measuring
   it. RadarPoint's measured flag is its inverse. Upstream moved that field into `RadarPoint.deprecated` (its #3546)
   because nothing used it; nothing here reads it either (radard, the clutter guard, `held_lead.py`, the planner, the UI,
@@ -890,7 +900,7 @@ messages).
 | FCW frames | 0 and 0 | 0 and 0 | 0 and 0 | 0 and 0 |
 | new phantom (a firmer plan on a return the car drove through) | 0 | 0 | 0 | **23** (holds, disengaged) |
 | plan differences over 0.05 m/s^2, frames (engaged) | 247 (71) | 179 (71) | 68 (0) | 978 (297) |
-| largest engaged | +0.95 softer (1f, below); firmest -0.11 | the same | none | **-3.46** (129 t=2464.7, 21 m/s, 1.25 s) |
+| largest on an engaged frame | +0.62 softer (1f t=1598.56, below); firmest -0.11 (1f t=1600.61) | the same | 0.03 | **-3.46** (129 t=2464.7, 21 m/s, 1.25 s) |
 | leadOne differences, episodes (engaged) | 137 (40) | 130 (40) | 7 (0), all the hold 0.1 s apart | 100 (4) |
 
 - **A -> D, the trigger.** Every leadOne difference falls on a frame where the two decoders hand radard different radar
@@ -898,10 +908,16 @@ messages).
   cycle and C's previous one (52,000 frames, 2.6%). 1,866 frames are the same object a cycle apart; 72 episodes pick
   another source (camera or another track) for one to three frames, 35 of them engaged. Engaged plan episodes: 15, of
   which 14 are within 0.12 m/s^2 (11 of those with the gas pressed). The one larger is route 1f t=1598.4-1599.9
-  (9.7 m/s, engaged from 1598.5): on its fresher cycle push12 matched a stationary return 49 m ahead and 1.6 m to the
-  left to the camera's moving lead (1.3 m to the right) for one frame, and its plan reached -1.40 then eased over 1.45 s; this change did not
-  take that return and planned -0.45. The 255 m returns (change 1) never reach a lead: the camera's lead stops at
-  about 127 m.
+  (9.7 m/s, engaged from 1598.51), and it is the timing, not a better decode. Two stationary returns, one after the
+  other (52-49 m ahead and 1.6-1.7 m to the left; then 46 m down to 29 m and 0.5-0.9 m to the left), matched the
+  camera's moving lead (5-11 m/s at 36-59 m, up to 1.2 m to the right) inside the clutter guard's speed tolerance at
+  that range (0.15 m/s per m of camera range: 7.5 m/s at 50 m). BOTH decoders' radard took the first as leadOne at
+  1598.21, before engagement, and the second on and off from 1598.81 to 1600.56 (16 frames each); the car drove through
+  the second's point at 9 m/s, engaged, at t=1603.8. push12 also took the first at 1598.41, on the radar cycle it had
+  10 ms sooner, and planned -1.40 at 1598.46 (0.05 s before engagement; this change -0.45) and -1.16 at 1598.56 (this
+  change -0.54), the largest difference on an engaged frame. From 1598.81 both planned between -1.05 and 0. The
+  stationary match is push12's and is unchanged here (a question for the guard's tolerance at 30-60 m, not for this
+  change). The 255 m returns (change 1) never reach a lead: the camera's lead stops at about 127 m.
 - **D -> C, the held `NEW_TRACK`.** Nothing engaged. A kept trackId keeps radard's Kalman filter (plan within 0.16 m/s^2,
   disengaged, 9 episodes) and the guard's hold count (the hold on 7 returns at 2.9-4.0 m/s starts 0.1 s earlier, no
   plan change but one 0.16 softer).
@@ -914,6 +930,17 @@ messages).
 
 So the gate is met: the differences are the update's timing (change 3) and the kept trackIds (change 2), both small, and
 none is a new phantom or lock. Open loop, as every replay here: the car's speed is the logged one.
+
+**The review (2026-10-24).** It found no defect in the code. Its own replay harness (each decoder with its own push12
+radard and planner, each radard counting its own radar updates) gave the numbers above on all 69 routes and the same 15
+engaged plan episodes; on the 14 clutter routes 89 plan frames over 0.05 m/s^2 (8 engaged, largest 0.088), locks 3 and
+3, FCW 0, no new phantom; push12's decoder reproduced route 143's logged `radarTracks` (9,132 of 9,132 messages).
+Its mutation check found one rule no test pinned: the same-object check applied to rising edges too passed all 11 tests.
+opendbc `149a024e` adds that test (route dd t=2647.96; 12 tests, and every one-line mutant now fails one) and corrects
+the 0x424 wording; it changes no code (`radar_interface.py`'s syntax tree is identical once comments and docstrings are
+set aside). The 1f paragraph and the table's "largest engaged" above are the review's corrections. Re-run on
+`149a024e` with the reviewer's harness, all 69 routes replay row for row identically to the reviewer's run of
+`ae090281`: 1,998,743 radard frames, radar updates 1,004,113 (push12) and 1,004,112.
 
 ---
 
