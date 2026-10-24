@@ -480,7 +480,7 @@ Re-apply: keep the `radar_type` switch and the three Elesys branches. `test_eles
   - **A held lead is a lead for the MPC only.** It is marked with `radarTrackId` = -2 - the track's id (`held_lead.py`; a track's id is 0 or more, and a vision-only lead's is -1, cereal's default). Everything else that reads `leadOne` skips it through `held_lead.real_lead()`. DEC: any lead would switch it to ACC and take e2e's stop away; the DEC-on what-if over the 13 routes is in the CHANGELOG. `longitudinalPlan.hasLead`: so a hold shows **no lead icon** on the dash (`HUD_LEAD`), and it sends no 0x500 `LEAD_VISIBLE` and no shadow_learn launch-with-lead sample. The other consumers that skip it: the e2e alerts (green light, lead departure); the onroad chevrons and path length in both renderers; the developer UI's lead distance; the comma 4 rail's planned stop and its standstill banner; and `brake_route_check.py`. To find holds in a route, look for `radarState.leadOne.radarTrackId <= -2`. A hold leaves `dRel` = 6 + 1.25 `vEgo`, `vLead` = `vEgo`, `vRel` = 0 and `aLeadK` = 0 as well; a tool that reads those as a car must check the mark first.
 - **Long range (round 8, 2026-10-20, proposal 3): a stopped car the camera finds far ahead but reads as moving** (`long_range_track()`, `long_range_agrees()`). leadOne only, and only on a frame where radard has **fallen back to the camera's lead** (its match found no track, with `ready` and the filtered prob above 0.5). Then radard takes a stationary track (raw `|vLead|` under `LR_V_STATIONARY`, 1.5 m/s) within `LR_D_SHARE` (20%) of the camera's range and `LR_Y_TOL` (1 m) of its lateral position, with the car above `LR_V_EGO` (5 m/s), the camera's lead at `LR_D_MIN` (50 m) or more and radard's filtered prob for it at `LR_PROB` (0.9) or more, once the same track has met that for `LR_FRAMES` (6, 0.3 s) radard frames in a row. A frame where radard's own match took that track continues the run. Every other frame is decided as before; this bypasses upstream's `vel_sane` and the guard's tolerance for that case only. Upstream's sane-first matching (R1) is not needed for it and is not part of it. Since the round 8 review two more limits: a frame with a **moving** track (raw `vLead` above `LR_V_MOVING`, 3 m/s) within `LR_MOVING_D_SHARE` (30%) of the camera's range and `LR_MOVING_Y_TOL` (1.5 m) of its side takes nothing and breaks the run (`long_range_moving_near()`), and the rule runs only with openpilot longitudinal and stock ACC mode off (`long_range_applies()`, `RadarD.long_range`; the planner's re-entry ramp has the same gate), so in stock ACC mode radard is the clutter guard as before round 8.
   - **The veto, why** (round 8 review). "Fell back" means radard's one best match failed upstream's range or speed check, not that no radar car is there: at long range the camera's range runs short, so a real moving car at its true range fails the 25% range check and radard falls back with that car still on the radar. Route 0e1 t=887.18-887.28 (engaged, 16 m/s, just off the gas): the car it had been following, 101 m ahead at 18 m/s, against the camera's 79 m; a stationary return at 74 m, 0.7 m off the camera lead's side, met the rule on 3 frames in a row, and the car drove through its point 4.4 s later. At 6 frames it would have been a stopped car 74 m ahead at 16 m/s: full brake. Route 08 t=946.0 was the same at 15 m/s (a return at 80 m, the moving car 26% beyond the camera's 73 m). Replayed on 69 routes (the 14 clutter routes, `13d`, `141`, `142`, `143` and the review's 51): the veto ends those two runs - the only engaged runs of 3 frames or more on a return the car then drove through - and changes radard's lead on no frame of any route against the rule without it. Without the veto in stock ACC mode the rule could still change radarState and the planner's FCW, which selfdrived raises whenever openpilot is enabled.
-  - **Why.** Route 143 t=168.3-170.1 (Mon 00:46:03, at night, 58 km/h): radar track 272 had a vehicle stopped in the lane at 94 -> 73 m from t=168.32, but the camera read it at 10-16 m/s, so `vel_sane` (and from 67 m the guard's own 10 m/s) set it aside, and the plan stayed at -0.3 to -0.9 m/s^2 until t=170.1; at full brake (about -1.8 m/s^2) the car then needed the driver, who braked with 11 m left.
+  - **Why.** Route 143 t=168.3-170.1 (Mon 00:46:03, at night, 58 km/h): radar track 272 had a vehicle stopped in the lane at 94 -> 73 m from t=168.32, but the camera read it at 10-16 m/s, so `vel_sane` (and from 67 m the guard's own 10 m/s) set it aside, and the plan stayed at -0.3 to -0.9 m/s^2 until t=170.1; at full brake (255 counts: -1.65 to -1.92 m/s^2 there, a ~5% downhill; -2.45 on the level, measured in 7.13 - this said "about -1.8", corrected 2026-10-24) the car then needed the driver, who braked with 11 m left.
   - **Replayed** (RadarInterface, radard and the planner, open loop) on the 14 clutter routes of this section and on `13d`, `141`, `142` and `143`. On 143 it takes the stopped car from t=169.13 (00:46:04, track 272 at 82.6 m): the plan reaches -1.0 m/s^2 0.40 s earlier (t=169.73), -1.5 0.55 s earlier (170.13) and -1.8 0.10 s earlier (170.88), at most 0.54 m/s^2 firmer. Not the 0.7 s the analysis's trust-the-radar upper bound gave: this rule cannot start until the camera's prob reaches 0.9 (t=168.88). On the 14 clutter routes (about 210 engaged min): no new engaged phantom brake, no FCW, the plan's dips per minute identical on every route; radard's lead changed on one route only, c0 t=254.5-256.0, engaged, 5 frames on the real stopped queue the car then stopped 5 m behind, at most 0.10 m/s^2 firmer. On the new drives it fired engaged only on 143; disengaged on 141 t=1557.4 (6 frames, a car 86-88 m ahead pulling away from a stop) and 142 t=959.5/959.8 (3 frames, a car stopped 72-77 m ahead that then drove off); never on 13d. On the round 8 review's 51 further routes (1.42 M frames, 498 engaged minutes) it fired engaged once: d4 t=89.89-90.99, 22 frames, the plan at most -1.51 for -0.98, on a vehicle crawling at 0.4-0.7 m/s 80 m ahead that then pulled away; no FCW anywhere. **`13e`/`13f` have qlogs only, which carry no radar CAN, and cannot be replayed** (a coarse qlog check finds 10 s and 1.8 s of engaged time where it could even have applied): the owner's condition included them, so the rule is offered on condition that their rlogs, once on disk, replay clean.
   - **Where it lets go** (the 143 replay, round 8 review). The camera's range jitters, so the run breaks twice (t=170.13, the camera 21% short of the track; t=170.58, radard's own match on another return of the car for a frame) and radard falls back to the camera's moving lead for 3 frames each time (170.13-170.23 and 170.68-170.78). The plan holds -1.55 and -1.70 to -1.74 there (push9: -1.01 to -1.07 and -1.54 to -1.58). It then reaches -2.0 m/s^2 at t=171.28, 0.10 s after push9's 171.18, and is at most 0.06 m/s^2 softer than push9 from there: the planner's own speed integrates its earlier, firmer plan while the replayed car keeps push9's speed, an open-loop artifact (on the road the car would have been slower too). Holding the run through those breaks would widen the rule's reach and is not built.
   - **The fallback condition is what makes it narrow.** Without it the same test replaced a MOVING car the radar matched with a stationary return near it 8 times while engaged, at 42-110 km/h; 6 of them planned -1.8 to -3.5 m/s^2 where radard's own plan was -1.2 to 0.0 (08 t=945.5, c8 t=615.0 and t=1157.8, c9 t=1104.6, 10f t=2068.2, 142 t=998.5), with an FCW on c8. The 20% window is wide on purpose: at 55-80 m the camera's range runs 8-17% short of the radar's, and a 10% window with a 0.5 s run first fired at t=170.9 on 143, after the brake was nearly full.
@@ -1060,6 +1060,14 @@ is 320 with the pump bit on; above 320 it only ever sends pump-off release step-
 m/s^2, inside ISO 15622's -3.5. "Full brake is -1.8 to -2.0", which `reentry_ramp.py` and `elesys_radar_guard.py`
 said, was wrong (143's -1.65 to -1.92 was full brake on a ~5% downhill); both comments now carry the measured numbers.
 
+**What it buys: less impact speed, not a guaranteed stop.** On route 143 (the stopped car at night, a ~5% downhill)
+brake320 would have stopped about 1-4 m short instead of needing the driver, replayed open loop on 143's own trajectory -
+but only because the plan had already been braking hard since t~170. A plan that first reacts at the radar's firm ranges
+there (64-73 m at 52-57 km/h) still hits at 10-20 km/h with the brake as measured on 143 (push12: 25-31 km/h), and on
+that slope a 58 km/h stop needs about 80-90 m of warning (review closed-loop sim, 2026-10-24). On the level a stopped car
+70 m ahead at 60 km/h goes from an 18.8 km/h impact to a stop 1.4 m short; 80 km/h with 70-90 m still hits either way
+(Proofs, below).
+
 **What changed**
 
 | where | before | now | why |
@@ -1068,15 +1076,18 @@ said, was wrong (143's -1.65 to -1.92 was full brake on a ~5% downhill); both co
 | `HondaSafetyFlags` | - | `ELESYS_BRAKE_320 = 128`, set beside 32 in `interface.py`; stock ACC mode clears it with 32 | the car's param is **164** (4\|32\|128), 36 before; stock ACC mode is still 68 |
 | CarController ceiling | `NIDEC_BRAKE_MAX - 1` (255) | `brake_ceiling.panda_max_brake(CP)`: honda.h's rule on the same param (320 here), 255 on every other car, 255 after the VSA fallback | the car side can never send what panda refuses: a refused 0x1FA is a gap, and the VSA answers a ~1 s gap with BRAKE_ERROR |
 | `NIDEC_BRAKE_MAX` (scale) | 256 | **256, unchanged** | 2.6 m/s^2 per 256 counts is the measured slope; 256 -> 320 would make every request 25% harder, more than the learner can take back (floor 0.85) |
-| brake fraction clip (`compute_gb_honda_elesys()`, the brake block) | 1.0 | **earned**: 1.0 up to a request of -2.45 m/s^2, rising linearly to 1.25 (320 / 256) at a full request (-3.25 net) | a request beyond the old ceiling now asks for more; an ordinary one is clipped exactly as before |
-| count clip | 255 | **earned**: 255 up to a request of -2.45, rising linearly to 320 at a brake fraction of 1.24 (`BRAKE_LAST_MAX_320`, what `actuator_hysteresis()` leaves of a full request) | bounds the learned gain: see below |
+| brake fraction clip (`compute_gb_honda_elesys()`, the brake block) | 1.0 | **earned**, in the pid state only: 1.0 up to a request of -2.45 m/s^2, rising linearly to 1.25 (320 / 256) at a full request (-3.25 net); 1.0 in every other state | a request beyond the old ceiling now asks for more; an ordinary one is clipped exactly as before |
+| count clip | 255 | **earned**, in the pid state only: 255 up to a request of -2.45, rising linearly to 320 at a brake fraction of 1.24 (`BRAKE_LAST_MAX_320`, what `actuator_hysteresis()` leaves of a full request); 255 in every other state | bounds the learned gain, and keeps a standstill hold at 255 or less: see below |
 | `ELESYS_FULL_BRAKE` (credit out) | 0.99 | **0.99, unchanged** | 7.11: it is the old full brake, where the credit leaves; moving it would brake less than before between the ceilings |
 | full brake on the wire | 253 (gain 1.0), 255 from gain 1.0062 | 317 (gain 1.0), 320 from gain 1.0081 | `int(1.24 x gain x 256)` |
 | `ELESYS_PID_ACCEL_MIN` | -3.2 | **-3.25** | 7.12 |
-| `SOFT_STOP_DONE_CB` | 255, "the highest command the brake block can send" | the default stays 255; the CarController passes its own ceiling (`done_cb`, 320 or 255) | out of the way means at the real top; on any command up to 255 the stop is the same frame for frame (test) |
-| brake learner (`dynamic_tuning.brake_gain()`) | weight = the fraction (<= 1.0) | the fraction capped at 1.0 for the learner; the shadow learners get it whole | never a heavier weight than before; beyond the old ceiling its input is 1.0 where push12's was at most 0.99, so the learned gain can end a hair apart (replay: +1 count on 219 later sends). The shadow learner's 256 is the scale, unchanged, and now sees counts above 256 |
+| `SOFT_STOP_DONE_CB` | 255, "the highest command the brake block can send" | the default stays 255; the CarController passes its own ceiling (`done_cb`, 320 or 255) | out of the way means at the real top; on any command up to 255 the stop is the same frame for frame (test). In the stopping state, the only place it acts, nothing earns above 255, so between 255 and 320 it never binds |
+| brake learner (`dynamic_tuning.brake_gain()`) | weight = the fraction (<= 0.99 in practice) | the fraction capped at `BRAKE_LEARN_FRAC_MAX`, 0.99 - the most any Honda's brake block ever handed it; the shadow learners get it whole | up to the old ceiling its input is exactly what it was, and beyond it the same 0.99 push12 fed it there, so it learns what push12's learned. Capped at 1.0, as first built, the gain came out a hair apart and later ordinary braking differed by a count either way for minutes (review 2026-10-24). The shadow learner's 256 is the scale, unchanged, and now sees counts above 256 |
 | `REENTRY_RAMP_MPC_FLOOR` | -2.0 | **-2.0, unchanged**; the comment corrected | the ramp only ever takes braking away; giving way 0.45-0.95 m/s^2 before the brake's reach is the safe side |
 | release limiter (32 counts a send), both pump rules | - | unchanged | 317 -> 0 in ten sends; above 200 counts while moving both pumps run continuously, 320 included (tests) |
+| 0x1FA `FCW`/`CHIME` (review fix) | openpilot's own FCW alert only | also the radar's warning (its 0x1FA `FCW` >= 2) while openpilot sends more than 255 | a CMBS brake of 256-319 below openpilot's no longer reaches the car with its warning; this carries it (AEB passthrough, below) |
+| VSA fallback mid-brake (review fix) | - | walks down to 255 through the release limiter, 32 a send | not a 65-count cut in one send (the fallback, below) |
+| brake hysteresis state (review fix) | at most 0.99 by construction | clamped to 0.99 (`BRAKE_STEADY_MAX_255`) on any frame that earns nothing | coming down from above 1.0 it settled at 1.01: 255 where push12 sent 253, e.g. a whole standstill after a hard stop; with it every frame after an episode is push12's once the limiter has walked down |
 
 **The request, and the learned gain.** Both clips are earned by `request_fraction()`: -(the plan's accel plus the pitch
 feedforward) / 2.6, without the creep offset. Up to 2.45 / 2.6 (`EARN_START_FRAC`, the old ceiling's measured -2.45) they
@@ -1086,10 +1097,35 @@ The learned brake gain (up to 1.6x) used to be bounded by the 255 clip too; with
 an ordinary request still stops at 255, and beyond -2.45 gets only what the request earns (267 counts for -2.6, 320
 from -3.22).
 
+**Only the pid state earns** (review fix, 2026-10-24). LongControl's stopping state holds its last output when that is
+already below `stopAccel`, and the pitch term is 0 there, so as first built a stop entered from a hard brake went on
+"earning" at a standstill: 267-317 counts held for the whole stop, pure hold pressure on the VSA that logged the fault.
+On the logged plans that was 8 of 373 stops (routes 03, 0f, 69, 6e, 6f, 71, 89, 8a; held -2.62 to -3.02, 13-34 s each;
+18% of all beyond-the-old-ceiling frames). Now the CarController passes `longControlState == pid` to
+`ElesysBrakeCeiling.set_request()`, and in any other state the request earns nothing: the clips are 1.0 and 255, and on
+such a frame the brake hysteresis state is clamped to the old ceiling's 0.99 (`BRAKE_STEADY_MAX_255`; coming down from
+above 1.0 it would otherwise settle at 1.01 and hold 255), so the hold is push12's, frame for frame (253 at a gain of
+1.0). The same clamp makes every frame after a beyond episode push12's once the release limiter has walked down. Stopping
+starts below 0.8 m/s (`stopping_tune.STOPPING_SPEED`), where the extra brake was worth about 2 cm of stopping distance,
+and the soft stop caps a stop entered below 1.2 m/s at 105 anyway. Test: `test_a_hard_stop_holds_no_more_than_255`.
+
+**Two limits that stay** (review, 2026-10-24; no change). Full brake is `int(1.24 x gain x 256)` up to the earned ceiling:
+317 at a gain of 1.0, 320 from 1.0081, but 269 at the learner's 0.85 floor (push12 215 there) - the -3.25 PID floor is
+exactly full brake at a gain of 1.0, so nothing asks for more. The car's gains have been 0.997-1.018, and the live learner
+winds out of a low gain in a long saturated brake (the review's replay at a forced 0.85: route 143 still reached 320).
+And above 255 the count is not smoothed beyond the brake law's own: at a learned gain above 1 it follows
+`earned_ceiling()` of the request, as fast as the plan moves (on the way down the 32-a-send limiter still applies). On
+logged plans at a forced 1.6 gain that was at most +13/-8 counts a send; only a noisy synthetic plan (sigma 0.1 m/s^2 at
+20 Hz) flaps it 25-36 counts a send. Today's plans are smooth enough that no rate limit is added.
+
 **The VSA fallback** (`Brake320Fallback`, in `CarStateExt._update_vsa_fault()` on every CarState frame from card's
 start, so a fault before controls start counts too). Any of these, once, takes the ceiling back to 255 for the rest of
-the drive - card's life, i.e. the key cycle; the CarController reads it as `CS.brake320_fallback`, and from the latch
-frame on every 0x1FA is the 255 controller's, byte for byte (test):
+the drive - card's life, i.e. the key cycle; the CarController reads it as `CS.brake320_fallback`. Latched before any
+braking above 255, every 0x1FA from then on is the 255 controller's, byte for byte (test). Latched mid-brake above 255,
+the command walks down to the 255 controller's through the release limiter, 32 counts a send (320 -> 288 -> 256 -> 255
+at a high learned gain; without the tuner, which has no limiter, at once); as first built it cut 320 to 255 in one send, about -0.5 m/s^2 in 20 ms mid-brake (review
+fix 2026-10-24, `ElesysBrakeCeiling.wire_ceiling()`, test `test_a_fallback_mid_brake_steps_down_through_the_limiter`).
+panda allows 320 for the whole drive, so the walk is never refused. The signals:
 
 - `carStateSP.vsaFault` or `vsaStoredFault` (6.6), counted at once (they handle start-up themselves);
 - `carState.accFaulted` (0x1B0 `BRAKE_ERROR`) or `espDisabled` (0x1A4 `ESP_DISABLED`, the VSA lamp), counted only once
@@ -1114,7 +1150,22 @@ fallback=` logMessage line for every second that sent above 255. No Params I/O.
 openpilot brake, and refuses openpilot's while it does. openpilot's ceiling is now the radar's own request ceiling, so a
 CMBS brake at its ceiling (320) is forwarded over openpilot's 320; below it, openpilot's harder brake continues until it
 brakes less (tests: `test_cmbs_at_the_radars_ceiling_is_forwarded_over_openpilots_320`,
-`test_cmbs_is_forwarded_once_openpilot_brakes_less`).
+`test_cmbs_is_forwarded_once_openpilot_brakes_less`). That is the one intended change (review, 2026-10-24): with
+openpilot capped at 255 every CMBS request of 256 or more won the comparison, and 6 of the 27 logged CMBS events at 256 or
+more peaked below 320 (262-318). Now, while openpilot brakes harder than such a request, panda keeps sending openpilot's
+frame - the stronger brake reaches the car either way, up to the 20 ms comparison lag - and the radar's own frame, with
+its FCW and CHIME bits, waits until openpilot brakes less. Nothing else would have warned the driver then: today's
+`stockAeb` rule (CMBS_BRAKE, AEB_REQ_3, AEB_REQ_2 or AEB_STATUS 1, since 2026-08-05) fires on none of those 27 events -
+their radar frames carry FCW=2, a CHIME of 1-2 on 24 of them, and the brake, nothing else (`brake320/fix/win/cmbs_bits.py`;
+the 24 that logged `stockAeb` in June-July ran the older rule) - and `stockFcw` raises no alert. So, review fix: while
+openpilot sends more than 255, its own 0x1FA carries the radar's FCW (2) and CHIME whenever the radar's 0x1FA has FCW >= 2
+(the bit panda reads as stock AEB; `ElesysBrakeCeiling.fcw_on_the_wire()`, through upstream's
+`hondacan.create_brake_command()`, which already copies the radar's CHIME for openpilot's own FCW). Up to 255, and with
+no radar warning, the frame is push12's (test `test_the_radars_warning_rides_on_openpilots_frame`). The `stockAeb` rule
+missing these FCW brakes is older than brake320 and not changed here. And a
+release above 320 cannot take the brake from openpilot mid-brake in the data: of the 111 pump-off release step-downs in
+`push13/brakecap/release_flashes.csv` only 3 carry FCW=2, all right after a 320 hold, so forwarding had already latched
+(a data check, the review's, not a proof of what the radar can do).
 
 **How the car's panda gets it.** honda.h is compiled into the panda's firmware: `panda/SConscript` builds
 `panda/board/obj/panda_h7.bin.signed` from `panda/board/main.c` with `opendbc.INCLUDE_PATH` on the include path, which
@@ -1145,6 +1196,24 @@ panda, and a panda still on the old firmware never runs the car mode. Do not han
   an episode (the release limiter walking down from the higher command), and 504 later - the PID integrator under the
   -3.25 floor (a6, c8: +1 to +6 counts for up to 7 s, at most 0.044 m/s^2) and the brake learner a hair apart (143, 9e:
   +1 count on 219 sends). 150 has qlogs only (no CAN): its logged request crossed -2.45 once, for 0.5 s.
+- *Re-run after the review fixes* (scratch `brake320/fix/`; the bullets above are brake320 as first built).
+  - The review's open-loop CarController replay of every engaged span of 164 routes (21.23 engaged h, 4,648,666 sends;
+    `fix/diffrep_fin.py`, `fix/cmp_fix.py`): against push12, 26,207 sends differ - 26,205 while the request is beyond
+    -2.45, 2 in the 0.5 s after, **none later and none with less brake**; no send above 255 at a standstill; one in the
+    stopping state, the limiter walking down at its entry (route 03: 302 -> 270 -> 254). The gas frame 0x200 is
+    identical. As first built: 50,719 differ, 283 with a count less (up to 14 min after an episode), 12,870 later, and
+    6,461 sends above 255 standing still (129 s; the 8 stops above).
+  - `b320replay.py` (CAN -> CarState, the real LongControl and CarInterface) on the nine routes above plus 07 and 1f
+    (5.38 h, 2.93 engaged, 967,945 sends; `fix/win/repcmp.py`): 2,497 differ, 1,570 beyond, 142 within 0.5 s, 785 later;
+    **0 with less brake**, 0 above 255 at a standstill or outside the pid state; 14c and 14d none; at most +66 counts.
+    Every later one comes from the -3.25 PID floor (its integrator after a saturated brake, and the brake learner
+    weighting that slightly different output): the same code with the floor at -3.2 differs from push12 on 143, 9e, a6
+    and 07 only on frames whose request is beyond -2.45 (`fix/win/f32cmp.py`).
+  - The closed-loop sim (`fix/b320sim_fix.py`, the builder's with a standstill hold, the largest send-to-send drop while
+    moving, and the VSA fallback injected mid-brake): every stop and lead case ends exactly as brake320 first built did
+    (the 60 km/h, 90 m, 5% downhill stop 5.47 m short instead of 5.48). The fallback injected at 319 counts now steps
+    down at most 32 a send (was 64 in one send); a stop at 60 km/h with 70 m then still hits at 7.1-13.0 km/h (push12
+    18.8) - the price of falling back mid-brake.
 
 **Tests.** Panda: `HondaElesysBrake320` over the stand-down classes with and without the pedal (`TestHondaElesysBrake320Safety`,
 `...NoInterceptorSafety`: every inherited Nidec test at MAX_BRAKE 320 - 0-320 sent, 321 refused - plus the contract
@@ -1157,12 +1226,30 @@ beyond only more brake, the runaway gain, creep never earning it, the release li
 frames, the telemetry, other Hondas unchanged), `test_elesys_stop.py` (+1, `done_cb`), `test_dynamic_tuning.py` [17],
 and the updated `test_elesys.py` (`TestElesysFullBrakeNoWindCredit` now pins the 255 controller), `test_elesys_stock_acc.py`
 (164) and `test_dynamic_tuning_integration.py` (the legal range is panda's). sunnypilot: `test_brake320_log.py` (6) and
-`test_elesys_pid_floor.py` (-3.25).
+`test_elesys_pid_floor.py` (-3.25). After the review (2026-10-24) `test_elesys_brake320.py` has 32, each new one failing on
+brake320 as first built (`fix/pre.log`): `test_a_hard_stop_holds_no_more_than_255` (the standstill hold is push12's frame
+for frame), `test_after_a_beyond_episode_the_learned_gain_is_push12s`, `test_the_radars_warning_rides_on_openpilots_frame`,
+`test_a_fallback_mid_brake_steps_down_through_the_limiter`, and `test_beyond_it_only_more_brake` without its 2-count
+slack; `test_dynamic_tuning.py` [17] pins the learner's 0.99.
 
 **On the first drives** (the owner, from the qlog): `pandaStates.safetyParam` 164; `customReserved14` once a second with
 `allowedCounts` 320, `ceilingCounts` 320, `vsaFallback` false; after a hard stop `maxCountsDrive` above 255 and a
 `hondabrake max=` line in the rlog; no `BRAKE_ERROR`. Any `hondabrake fallback=` error line means the ceiling went back
 to 255 for that drive: look at the VSA bits (6.6) first.
+
+`safetyParam` 164 does not prove the panda runs brake320's firmware: the panda echoes whatever param it was given
+(`main_comms.h`, `health->safety_param_pkt = current_safety_param`), so old firmware would show 164 too and refuse every
+0x1FA above 255 (review, 2026-10-24). Two checks that do prove it:
+
+- `pandaStates.safetyTxBlocked` must not grow in any second where `customReserved14.maxCountsLastSecond` is above 255. A
+  refused 0x1FA counts there (`main_comms.h`, `safety_tx_blocked`), and the VSA's `BRAKE_ERROR` would follow about 1 s
+  later (6.6). Any growth in such a second: stop using openpilot longitudinal and check the firmware.
+- pandad's start-up line in the rlog, `Panda <serial> connected, version: ..., signature <16 hex>, expected <16 hex>`
+  (`pandad.py` `flash_panda()`): after the update's first start the two must match, followed by no "Version mismatch
+  after flashing" line. A signature still equal to push12's (`b023b54a...`) is the old firmware.
+
+(In practice `flash_panda()` never starts the car mode on a signature mismatch, so old firmware should not get as far as
+a 0x1FA; these checks are how a drive shows it.)
 
 ## 8. Panda safety (`opendbc/safety/modes/honda.h`)
 
@@ -1873,7 +1960,7 @@ command steps from what the car is doing straight to the plan, and the only smoo
 the published plan may fall by at most 1.5 m/s^3 x `DT_MDL` per frame, from `min(aEgo, 0)` on the first frame back
 (what the car was doing, never a request to keep accelerating). It only raises the plan (`max(plan, limit)`), so a plan
 above the limit passes bit for bit. It stops for the rest of that re-entry, passing the plan as it is, on the planner's
-FCW, on the MPC's crash flag (`crash_cnt > 0`), on an MPC plan under -2.0 (about this car's full brake) - its
+FCW, on the MPC's crash flag (`crash_cnt > 0`), on an MPC plan under -2.0 (urgent braking, well inside this car's full brake: -2.45 m/s^2 at 255 counts and about -2.95 at 320, measured; 7.13 - this said "about this car's full brake", corrected 2026-10-24) - its
 action-time value or any point of its trajectory over the next 2.5 s -, on the plan itself (any candidate, e2e too)
 under -2.0, on a lead braking harder than -2.0 (`lead_decel()`: the lowest `aLeadK` of the present leads; a present lead
 without a finite one counts as braking hard), or a non-finite plan. An engagement with no gas in the last 0.5 s is not a
