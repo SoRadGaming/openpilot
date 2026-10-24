@@ -39,8 +39,13 @@ largest of those curvatures.
 
 MODES (BendEaseMode): 0 off; 1 shadow, the default for push13 - it works out and logs the speed it would set and changes
 nothing; 2 live - once the planner has picked the lowest of its targets (cruise, SCC-V, SCC-M, SLA), a lower bend speed
-takes over as sccVision (curve control), keeping the chosen source's accel for the MPC's start, and the planner's min()
-over the cruise, MPC and e2e accels still has the last word.
+takes over as sccVision (curve control). Only the speed changes: the accel the MPC starts from stays the one the planner
+chose (for cruise, its own last accel), and the planner's min() over the cruise, MPC and e2e accels still has the last
+word. So the ease only ever LOWERS THE CRUISE TARGET - but it does not bound the plan from above. The planner's own
+speed (v_desired_filter) follows the eased plan, and behind a lead the MPC plans the lead from that lower speed, so for a
+while the plan can be HIGHER than without the ease: open loop on 14c t=1977.1-1978.3 and 1990.5-1994.7 (110 frames, up
+to +0.22 m/s^2) and on fd (86 frames, up to +0.22), a lead on every such frame. Handing the MPC the bend's accel
+instead does the same (+0.24 on 14c). In the car, which really is slower, the gap to the lead is larger too.
 
 BUILT ONLY for HONDA_ELESYS with openpilot longitudinal and stock ACC mode off (bend_tune()). Every other car, and stock
 ACC mode, get no tune: nothing is computed, nothing published, the plan is upstream's. It never touches the ACC
@@ -62,9 +67,7 @@ curve (52 km/h) gets nothing, as expected. Thresholds 1.0/1.0 ease 11 (3 to 1.1)
 15 (6) and slow 15. Shadow mode (the default) changes no plan: the planner replayed open loop on 14c and 14d (55,913
 and 52,232 frames) is bit-identical to push12's on every frame, longitudinalPlan and longitudinalPlanSP. Live, open
 loop: the plan differs on 3,047 and 4,158 frames; wherever the ease leads and the plan is under -0.6 m/s^2, push12's
-was too (the e2e plan or the MPC). On 14c t=1975-1978 it is up to 0.22 higher than push12's for 4.8 s behind a lead:
-the planner's own speed (v_desired_filter) has eased, and the MPC follows the lead from it - in the car, where the car
-really is slower, the gap to the lead is larger too.
+was too (the e2e plan or the MPC). Behind a lead it is also higher than push12's at times (MODES above).
 
 LOGGED: plannerd publishes customReserved11 (CustomReserved11) every planner frame on this car - mode, the episode,
 predLatAccel, the bend's own speed, the target (0 when none), how far ahead it binds, the accel it implies, whether it is
@@ -334,9 +337,11 @@ class BendEase:
 
   def apply(self, source, v_target: float):
     """After the planner's min() over its targets: in live mode a lower bend speed takes over, as sccVision (curve
-    control). Only the speed changes - the accel the planner starts its MPC from stays the chosen source's, so the bend
-    can only lower the plan (14c t=1977: taking SLA's accel too raised it 0.22 m/s^2 for 4.8 s). Shadow and off return
-    their inputs; `limiting` says whether it took over (live) or would have (shadow)."""
+    control). Only the speed changes - the accel the planner starts its MPC from stays the chosen source's. That keeps
+    the bend to lowering the cruise target; it does not keep the plan from rising behind a lead, where the MPC plans from
+    the planner's eased speed (module docstring, MODES). Shadow and off return their inputs; `limiting` says whether it
+    took over (live) or would have (shadow) - also when only the accel cap binds (target at or over vEgo), which holds
+    the car's accel rather than slows it."""
     self.limiting = False
     if self.tune is None or self.v_target >= V_CRUISE_UNSET or not self.v_target < v_target:
       return source, v_target

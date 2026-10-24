@@ -4,9 +4,10 @@ TestBendEaseStep pins the rule on plain inputs: the start (1.0 m/s^2 at today's 
 the end (under 0.9 at the start speed for 1 s), the target (the brake curve to 1.1 m/s^2, never under 55 km/h, 15 km/h
 off the start speed or vEgo - 0.6), and the gates (openpilot steering, its longitudinal engaged, the gas and 2 s after,
 lane changes). TestBendEasePlanner drives the real LongitudinalPlanner (MPC included): shadow mode leaves every
-planner output bit-identical to the planner without it, live mode eases at 0.6 m/s^2 at most through sccVision, and
-every other car and stock ACC mode get no tune and publish nothing. The rest: the param, the service, the struct, the
-sunnylink setting and plannerd's PubMaster.
+planner output bit-identical to the planner without it, live mode eases at 0.6 m/s^2 at most through sccVision, a lower
+SCC-V or SLA target stays as it is, only the speed changes (the MPC starts from the chosen source's accel), behind a
+lead the plan rises only where the planner's own speed has eased, and every other car and stock ACC mode get no tune
+and publish nothing. The rest: the param, the service, the struct, the sunnylink setting and plannerd's PubMaster.
 """
 import math
 import os
@@ -205,6 +206,30 @@ class TestBendEaseStep(OpenpilotTestCase):
     self.assertLess(after[hold - 1], V_CRUISE_UNSET)
     self.assertTrue(e.b.active, "the same episode")
 
+  def test_after_the_gas_the_hold_starts_again_from_the_brake_curve(self):
+    # a tight bend held the curve at 18.2 m/s (300 m); the driver takes it on the gas into a gentler part (450 m, 22.2):
+    # once the 2 s are up the held curve is the brake curve now, not the pre-gas hold rising at 0.3 m/s per s
+    e = Ease()
+    e.run(10, 25.0, 300.0)
+    self.assertAlmostEqual(e.b.v_hold, math.sqrt(1.1 * 300.0), places=4)
+    e.run(10, 25.5, 450.0, gas=True)
+    after = e.run(round(TUNE.gas_hold_s / DT_MDL), 22.5, 450.0)
+    self.assertTrue(e.b.active, "the same episode")
+    self.assertAlmostEqual(e.b.v_hold, math.sqrt(1.1 * 450.0), places=4)
+    self.assertAlmostEqual(after[-1], math.sqrt(1.1 * 450.0), places=4, msg="the target is the brake curve's, in the bounds")
+
+  def test_one_frame_over_does_not_restart_the_end_count(self):
+    # the end counter is leaky too: 10 frames under 0.9, one over (the model's flicker), then 11 more end it - 22 in all,
+    # not 10 + 1 + 20
+    e = Ease()
+    e.run(10, 25.0, 450.0)
+    e.run(10, 25.0, None)
+    e.run(1, 25.0, 25.0 ** 2 / 0.95)   # 0.95 at the start speed: over 0.9 for one frame
+    e.run(10, 25.0, None)
+    self.assertTrue(e.b.active)
+    self.assertEqual(e.run(1, 25.0, None), [V_CRUISE_UNSET])
+    self.assertFalse(e.b.active)
+
   def test_the_gas_at_the_start_of_a_bend(self):
     e = Ease()
     self.assertEqual(e.run(20, 25.0, 400.0, gas=True), [V_CRUISE_UNSET] * 20)
@@ -336,10 +361,17 @@ class _SM(dict):
     return True
 
 
-def build_sm(v: float, radius: float | None, at: float = 0.0, lat=True, gas=False, lc=0, e2e=0.0, cruise_kph=110.0) -> _SM:
+def build_sm(v: float, radius: float | None, at: float = 0.0, lat=True, gas=False, lc=0, e2e=0.0, cruise_kph=110.0,
+             lead: tuple[float, float] | None = None) -> _SM:
+  """lead: (dRel m, vLead m/s), a radar lead holding its speed."""
   services = {}
   for service in ("vehicleParameters", "carStateSP", "liveMapDataSP", "gpsLocationExternal", "gpsLocation", "radarState"):
     services[service] = getattr(messaging.new_message(service), service)
+  if lead is not None:
+    lo = services['radarState'].leadOne
+    lo.present, lo.radar, lo.modelProb, lo.radarTrackId = True, True, 1.0, 7
+    lo.dRel, lo.vLead, lo.vLeadK, lo.vRel = lead[0], lead[1], lead[1], lead[1] - v
+    lo.aLeadK, lo.aLeadTau = 0.0, 1.5
   cs = messaging.new_message('carState')
   cs.carState.vEgo, cs.carState.aEgo = v, 0.0
   cs.carState.vCruise = cs.carState.vCruiseCluster = cruise_kph
@@ -375,6 +407,37 @@ def planner(fingerprint=CAR.HONDA_ACCORD_9G_AU, without=False, flags=0):
   if without:
     pl.bend_ease = BendEase(car_params(CAR.HONDA_CIVIC), sp_params())   # the inert one every other car gets
   return pl
+
+
+def with_lower(pl, which: str, v: float = 18.0, a: float = -0.3):
+  """The planner with SCC-V ('vision') or SLA ('sla') asking for v (m/s) with accel a after its own update: a
+  competing target under the bend's."""
+  host, target = (pl.scc, pl.scc.vision) if which == 'vision' else (pl.sla, pl.sla)
+  update = host.update
+
+  def lowered(*args, **kwargs):
+    update(*args, **kwargs)
+    target.output_v_target, target.output_a_target = v, a
+  host.update = lowered
+  return pl
+
+
+def spy_starts(pl) -> list[tuple[int, float, float]]:
+  """Per frame: (the source the planner's min() chose, that source's accel, the accel the MPC was started from)."""
+  rec: list[tuple[int, float, float]] = []
+  apply, set_cur_state = pl.bend_ease.apply, pl.mpc.set_cur_state
+
+  def apply_spy(source, v_target):
+    acc = {LongitudinalPlanSource.cruise: pl.output_a_target, LongitudinalPlanSource.sccVision: pl.scc.vision.output_a_target,
+           LongitudinalPlanSource.sccMap: pl.scc.map.output_a_target, LongitudinalPlanSource.speedLimitAssist: pl.sla.output_a_target}
+    rec.append((int(source), float(acc[source]), math.nan))
+    return apply(source, v_target)
+
+  def set_cur_state_spy(v, a):
+    rec[-1] = rec[-1][:2] + (float(a),)
+    return set_cur_state(v, a)
+  pl.bend_ease.apply, pl.mpc.set_cur_state = apply_spy, set_cur_state_spy
+  return rec
 
 
 def drive(pl, frames, sent=None):
@@ -428,6 +491,62 @@ class TestBendEasePlanner(OpenpilotTestCase):
     self.assertTrue(all(o[0] <= r[0] + 1e-9 for o, r in zip(out, ref, strict=True)), "it only ever lowers the plan")
     steps = np.diff([0.0] + accels)
     self.assertGreaterEqual(steps.min(), -0.8 * DT_MDL - 1e-6, "the planner's cruise jerk limit shapes the onset")
+
+  def test_live_a_lower_scc_v_or_sla_target_stays(self):
+    # SCC-V or SLA asking for less than the bend's speed: the planner's min() chose it, and the bend leaves the source
+    # and the target alone - every output as the planner without it
+    Params().put(be.PARAM, 2)
+    for which, src in (('vision', LongitudinalPlanSource.sccVision), ('sla', LongitudinalPlanSource.speedLimitAssist)):
+      pl, sent = with_lower(planner(), which), {}
+      out = drive(pl, ROUTE, sent)
+      self.assertEqual(out, drive(with_lower(planner(without=True), which), ROUTE), which)
+      self.assertEqual({(o[2], o[3]) for o in out}, {(int(src), 18.0)}, which)
+      logs = [m.customReserved11 for m in sent['customReserved11']]
+      self.assertGreater(sum(b.vTarget > 18.0 for b in logs), 50, "the bend had its own (higher) speed")
+      self.assertFalse(any(b.limiting for b in logs), which)
+
+  def test_live_only_the_speed_changes(self):
+    # the accel the MPC starts from is the one the planner's min() chose (cruise: the planner's own last accel), also on
+    # every frame the bend takes over. Handing the MPC the bend's accel instead does not keep the plan from rising
+    # behind a lead (14c t=1977: up to +0.24 m/s^2 either way), and it is not the design
+    Params().put(be.PARAM, 2)
+    for lead in (None, (30.0, 25.0)):
+      pl = planner()
+      rec = spy_starts(pl)
+      frames = [(n, dict(kw, lead=lead)) for n, kw in ROUTE]
+      out = drive(pl, frames)
+      self.assertEqual(len(rec), len(out))
+      took = [i for i, o in enumerate(out) if o[2] == int(LongitudinalPlanSource.sccVision) and rec[i][0] != o[2]]
+      self.assertGreater(len(took), 30, lead)
+      for i, (_, chosen_a, start_a) in enumerate(rec):
+        self.assertEqual(start_a, chosen_a, (lead, i))
+
+  def test_live_behind_a_lead(self):
+    # a lead 30 m ahead at the car's speed through the bend (open loop: the car and the lead keep 25 m/s). The bend's
+    # own accel never takes the plan under -0.6 m/s^2 where the planner without it was not. But the plan CAN be higher
+    # than without it, for a while: the planner's own speed (v_desired_filter) follows the eased plan, and the MPC plans
+    # the lead from that lower speed. So every such frame is one where the planner without it was following the lead
+    # (the MPC's lead0/lead1 was its plan) and the planner's own speed is under that one's. In the car, which really is
+    # slower, the gap to the lead is larger too.
+    Params().put(be.PARAM, 2)
+    plan_source = log.LongitudinalPlan.LongitudinalPlanSource
+    frames = [(n, dict(kw, lead=(30.0, 25.0))) for n, kw in ROUTE]
+    pl, ref_pl = planner(), planner(without=True)
+    out, ref, vdf, ref_vdf = [], [], [], []
+    for n, kw in frames:
+      for _ in range(n):
+        out += drive(pl, [(1, kw)])
+        ref += drive(ref_pl, [(1, kw)])
+        vdf.append(float(pl.v_desired_filter.x))
+        ref_vdf.append(float(ref_pl.v_desired_filter.x))
+    self.assertLess(min(o[0] - r[0] for o, r in zip(out, ref, strict=True)), -0.3, "it eases the plan")
+    raised = [i for i, (o, r) in enumerate(zip(out, ref, strict=True)) if o[0] > r[0] + 1e-6]
+    self.assertTrue(raised, "the documented rise behind a lead (bend_ease.apply)")
+    for i, (o, r) in enumerate(zip(out, ref, strict=True)):
+      self.assertGreaterEqual(o[0], min(r[0], -0.6) - 1e-6, i)
+    for i in raised:
+      self.assertTrue(ref[i][1] in (int(plan_source.lead0), int(plan_source.lead1)), i)
+      self.assertLess(vdf[i - 1], ref_vdf[i - 1], i)
 
   def test_live_the_gas_wins(self):
     Params().put(be.PARAM, 2)
