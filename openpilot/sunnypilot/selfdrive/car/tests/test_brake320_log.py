@@ -59,7 +59,7 @@ class TestBrake320Log(OpenpilotTestCase):
     self.assertTrue(svc.should_log)
     self.assertEqual(svc.frequency, 1.)
     self.assertEqual(svc.decimation, 1)
-    self.assertIn("customReserved14", log.Event.schema.fields)
+    assert "customReserved14" in log.Event.schema.fields
 
   def test_the_struct_is_the_status(self):
     self.assertEqual(tuple(custom.CustomReserved14.schema.fieldnames), FIELDS)
@@ -118,8 +118,8 @@ class TestBrake320Log(OpenpilotTestCase):
     tree = ast.parse(CARD.read_text(encoding="utf-8"))
     car = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Car")
     meth = {n.name: ast.unparse(n) for n in car.body if isinstance(n, ast.FunctionDef)}
-    self.assertIn("self.brake320_log = Brake320Log.create(self.CI)", meth["__init__"])
-    self.assertIn("if self.brake320_log is not None:\n        self.brake320_log.update()", meth["state_publish"])
+    assert "self.brake320_log = Brake320Log.create(self.CI)" in meth["__init__"]
+    assert "if self.brake320_log is not None:\n        self.brake320_log.update()" in meth["state_publish"]
     for name in ("state_publish", "state_update", "step", "controls_update"):
       self.assertNotIn("brake320_log.create", meth[name].lower().replace("brake320log.create", "x"))
     src = (ROOT / "sunnypilot/selfdrive/car/brake320_log.py").read_text(encoding="utf-8")
