@@ -2493,6 +2493,26 @@
               "type": "offroad_only"
             }
           ]
+        },
+        {
+          "key": "BendEaseMode",
+          "widget": "multiple_button",
+          "title": "Ease Off for Bends",
+          "description": "Slows gently for a motorway bend or ramp sharper than this car's steering can hold - about 1.1 m/s^2 sideways at today's speed - so openpilot is not left at full steering with the steering-required alarm. At most 0.6 m/s^2 of braking and 15 km/h off, never under 55 km/h, only while openpilot steers and drives the speed, and nothing while you press the gas or for 2 s after. Shadow works out the speed it would set and logs it for the next review without changing anything. 2013-15 Accord (Elesys) with sunnypilot longitudinal only.",
+          "options": [
+            {
+              "value": 0,
+              "label": "Off"
+            },
+            {
+              "value": 1,
+              "label": "Shadow"
+            },
+            {
+              "value": 2,
+              "label": "Live"
+            }
+          ]
         }
       ]
     },

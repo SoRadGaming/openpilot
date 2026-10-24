@@ -728,7 +728,19 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
 struct CustomReserved10 @0xcb9fd56c7057593a {
 }
 
+# FORK(BENDS): ease off for bends the EPS can't hold (sunnypilot/selfdrive/controls/lib/smart_cruise_control/bend_ease.py).
+# plannerd publishes it as customReserved11 every planner frame on HONDA_ELESYS only.
 struct CustomReserved11 @0xc2243c65e0340384 {
+  mode @0 :UInt8;            # BendEaseMode: 0 off, 1 shadow (computes and logs, changes nothing), 2 live
+  active @1 :Bool;           # an episode is running: a bend of 1.0 m/s^2 or more ahead at today's speed
+  vTarget @2 :Float32;       # m/s: the speed it sets (live) or would set (shadow); 0 when none
+  predLatAccel @3 :Float32;  # m/s^2: the bend ahead at today's speed (vEgo^2 x the plan's largest curvature)
+  vBend @4 :Float32;         # m/s: the speed that takes the tightest point at 1.1 m/s^2 (0: no curvature)
+  distance @5 :Float32;      # m: how far ahead the point that sets the brake curve is
+  aTarget @6 :Float32;       # m/s^2: the accel vTarget implies (vTarget - vEgo, from -1.2), before the planner's jerk limit
+  limiting @7 :Bool;         # vTarget is the planner's limiting target (live) or would be (shadow)
+  reason @8 :UInt8;          # bend_ease.Reason: 0 off, 1 idle, 2 active, 3 gas, 4 not steering, 5 long off, 6 slow, 7 lane change
+  vStart @9 :Float32;        # m/s: the speed the episode began at (or the driver left it at); 0 outside one
 }
 
 struct CustomReserved12 @0x9ccdc8676701b412 {

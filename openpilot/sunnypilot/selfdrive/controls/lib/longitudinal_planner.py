@@ -13,6 +13,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
+from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.bend_ease import BendEase  # FORK(BENDS)
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.change_hold import SpeedLimitChangeHold  # FORK(SPEED-LIMIT)
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver
@@ -30,6 +31,7 @@ class LongitudinalPlannerSP:
     self.resolver = SpeedLimitResolver()
     self.dec = DynamicExperimentalController(CP, mpc)
     self.scc = SmartCruiseControl()
+    self.bend_ease = BendEase(CP, CP_SP)  # FORK(BENDS): HONDA_ELESYS only; inert on every other car
     self.resolver = SpeedLimitResolver()
     self.sla = SpeedLimitAssist(CP, CP_SP)
     self.limit_hold = SpeedLimitChangeHold()  # FORK(SPEED-LIMIT): what SLA, card and the UI take as the limit
@@ -57,6 +59,8 @@ class LongitudinalPlannerSP:
 
     # Smart Cruise Control
     self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
+    # FORK(BENDS): ease off for bends this car's EPS can't hold (smart_cruise_control/bend_ease.py)
+    self.bend_ease.update(sm, long_enabled, long_override)
 
     # Speed Limit Resolver
     self.resolver.update(v_ego, sm)
@@ -82,6 +86,9 @@ class LongitudinalPlannerSP:
 
     self.source = min(targets, key=lambda k: targets[k][0])
     self.output_v_target, self.output_a_target = targets[self.source]
+    # FORK(BENDS): live mode only - a lower bend speed takes over as sccVision; the accel the MPC starts from stays the
+    # chosen source's. Shadow and off: whether it would have (logged), nothing changed.
+    self.source, self.output_v_target = self.bend_ease.apply(self.source, self.output_v_target)
     return self.output_v_target, self.output_a_target
 
   def update_now_window(self, sm: messaging.SubMaster) -> None:
@@ -184,3 +191,4 @@ class LongitudinalPlannerSP:
     e2eAlerts.leadDepartAlert = self.e2e_alerts_helper.lead_depart_alert
 
     pm.send('longitudinalPlanSP', plan_sp_send)
+    self.bend_ease.publish(pm)  # FORK(BENDS): customReserved11, HONDA_ELESYS only
