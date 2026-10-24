@@ -27,7 +27,9 @@ def main():
 
   ldw = LaneDepartureWarning()
   longitudinal_planner = LongitudinalPlanner(CP, CP_SP)
-  pm = messaging.PubMaster(['longitudinalPlan', 'driverAssistance', 'longitudinalPlanSP'])
+  # FORK(LEAD-BRAKE): customReserved13 only where the planner built the lead brake assist (HONDA_ELESYS, mode 1 or 2)
+  pm = messaging.PubMaster(['longitudinalPlan', 'driverAssistance', 'longitudinalPlanSP'] +
+                          (['customReserved13'] if longitudinal_planner.lead_brake is not None else []))
   sm = messaging.SubMaster(['carControl', 'carState', 'controlsState', 'vehicleParameters', 'radarState', 'modelV2', 'selfdriveState',
                             'liveMapDataSP', 'carStateSP', 'selfdriveStateSP', gps_location_service],
                            poll='modelV2', ignore_alive=ignore_services, ignore_avg_freq=ignore_services, ignore_valid=ignore_services)

@@ -93,6 +93,7 @@ _services: dict[str, tuple] = {
   "liveMapDataSP": (True, 1., 1),
   "modelDataV2SP": (True, 20., None, QueueSize.BIG),
   "liveLocationKalman": (True, 20.),
+  "customReserved13": (True, 20., 5),  # FORK(LEAD-BRAKE): lead brake assist, plannerd (HONDA_ELESYS, mode 1/2 only)
 
   # debug
   "uiDebug": (True, 0., 1),

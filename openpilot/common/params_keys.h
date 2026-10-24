@@ -199,6 +199,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // from the first stock-mode start until they are put back (sunnypilot/selfdrive/car/honda_stock_acc.py).
     {"HondaElesysStockAcc", {PERSISTENT, BOOL, "0"}},
     {"HondaElesysStockAccSaved", {PERSISTENT, JSON}},
+    // FORK(LEAD-BRAKE): brake sooner when the lead brakes hard (lead_brake_assist.py): 0 off, 1 shadow (computes and logs in
+    // customReserved13, changes nothing), 2 live. Read once by plannerd when it starts (each drive). No UI. Not BACKUP: a
+    // sunnylink restore must never turn it live behind the driver's back.
+    {"LeadBrakeAssistMode", {PERSISTENT, INT, "1"}},
     // FORK(HUD): the comma 4 HUD, one setting per piece (sunnylink Visuals > HUD). Every toggle defaults on; all off is
     // the stock screen. Read by the UI at most once a second. HudPlannedStop / HudCurve: the right strip (hud_rail.py);
     // HudCompact*: named normal alerts small (hud_model.COMPACT_TYPES); HudApproachingLimit: the coming limit in MAX's

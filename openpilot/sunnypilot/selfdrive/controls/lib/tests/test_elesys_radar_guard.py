@@ -425,7 +425,8 @@ class TestHeldLeadConsumers(unittest.TestCase):
       sm['radarState'] = rs.radarState
       with mock.patch.object(pl, 'publish_longitudinal_plan_sp'):  # sunnypilot's own plan: not what this tests
         pl.publish(cast(Any, sm), cast(Any, pm))
-      self.assertEqual(out[-1].longitudinalPlan.hasLead, want)
+      plan = next(m for m in reversed(out) if m.which() == 'longitudinalPlan')  # FORK(LEAD-BRAKE) also publishes customReserved13
+      self.assertEqual(plan.longitudinalPlan.hasLead, want)
 
   def test_dec_does_not_switch_to_acc_for_a_held_lead(self):
     # With DEC on, any lead requests ACC ahead of the slow-down check; ACC would take e2e's stop away from a held lead
