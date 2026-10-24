@@ -1628,7 +1628,9 @@ Cars not in the table keep upstream's single-frame rule. `NUDGE_FIRM` does not c
 
 **3. `LANE_CHANGE_SPEED_FLOOR`: no lane change starts below 52 km/h** (push13). The board asks the EPS for torque from
 52.00 km/h and lets go under 51.00 (`GW_EPS_ACK_CPH` / `GW_EPS_KEEP_CPH`; the EPS itself drops out at 50.2-50.8), and
-`vEgo` reads the board's `XMISSION_SPEED` within 0.1 km/h there (median +0.04, routes 12b and 141). A lane change started
+`vEgo` tracks the board's `XMISSION_SPEED` (0x158) closely there: between 45 and 60 km/h the median offset is +0.01 to
++0.04 km/h and 90% of frames are within -0.19 to +0.23 km/h (routes 12a, 12b and 141; a rare frame is up to 2.3 km/h
+off), so at the floor a change can start about 0.06 s (at 1 m/s²) before the board starts asking. A lane change started
 below it is the driver's hands alone, and the change is one desire pulse to the model, which goes on with it once the car
 is back over the floor and the board has the wheel - after an intersection turn as much as after a lane change.
 
@@ -1646,15 +1648,33 @@ is back over the floor and the board has the wheel - after an intersection turn 
   nudge and the auto lane change starting it only at the floor; `laneChangeStarting` is untouched, so a running change
   finishes. Ending it was the other choice and is worse: modeld feeds the model the desire's rising edge only, so the
   model would carry on with the change and the state would only hide it.
-- As upstream, the blinker's rising edge is what arms a change: one switched on below the floor arms nothing when the car
-  gets above it. An "arm when crossing the floor with the blinker held" rule was left out for the owner to decide (none
-  of the logged changes at 52 or above needed it).
+- As upstream, only the blinker's rising edge arms a change. One switched on below the floor arms nothing when the car
+  gets above it, and neither does one still on after its waiting change was dropped under 51 km/h: the driver switches
+  it off and on again above 52. That is what costs the 3 replayed starts at 52 or above (below). 7 of 590 logged holds
+  (4 of 273 on 10f-152) came on below 52 and were still on at 52.
+- Arming when the car crosses the floor with the blinker held was replayed too (the same 67 routes, `prev_one_blinker`
+  cleared below the floor) and is left for the owner (push13 review). It adds 6 starts, none below 52, and changes no
+  lcfloor start. 3 are those lost changes back (ab 1373.97 and 1374.86, 130 986.15; push12 made them at 1374.21,
+  1374.86 and 986.15). The other 3 are merges begun by hand below 52 (b0 432.30, 129 488.49, 12a 2175.63): the blinker
+  came on at 44-45 km/h and push12 started the change at 44-46; the variant arms at 52.1-52.2 and starts on the next
+  frame, the driver already pushing 2900-3300 counts. That is a fresh desire pulse 1.1-1.7 s into a lane change the car
+  is already making, and whether the model finishes it or takes it as a second lane change cannot be told offline.
+  Re-arming only a hold first armed at or above 52 would give the 3 back without the merges.
+- Between 51 and 52 km/h a waiting change keeps its prompt, but a nudge there is not a refused nudge (no chime, no
+  lane-block tile: those are for a blind spot or a road edge). It starts the change only if it is still held when the
+  car reaches 52 (d3 977.25, below); a nudge let go in the band is gone. Starting down to 51 a change armed at 52 or
+  above that has not been under 51 since is the other choice, also left for the owner. The start test is the floor and
+  not the drop speed so that no change starts where the board may not be steering.
+- A merge begun by hand below 52 now gets no lane change from openpilot. The board still engages at 52 on speed alone
+  (it never reads openpilot's lane-change state) and follows the model's lane, which may be the old one while the car
+  is still across the line; a push against the board fades it. README first drive, step 7.
 - Replay (`DesireHelper` push12 and lcfloor on the logged inputs of every route with rlogs and a lane-change state, 67
   routes, 22.7 h: `carState`, `latActive`, `driverTorqueStale`, the frame's `desireState` and RELC's edge blocks; on
   routes 10f-152 push12's replay agrees with the logged state on 99.96% of frames and 194 of its 197 starts are within
   0.25 s of a logged one): 438 starts become 265. The 174 that go: 171 started below 52 km/h (89 at 32-40, 45 at 40-45,
-  23 at 45-50, 10 at 50-51, 4 at 51-52; 13 were still running above 52.5) and 3 were a second change in the same blinker
-  hold after one of those (ab 1374.2 and 1374.9, 130 986.2). One moves: d3 977.25 at 51.8 km/h starts 0.45 s later at
+  23 at 45-50, 10 at 50-51, 4 at 51-52; 13 were still running above 52.5) and 3 were a later change in a blinker hold
+  whose waiting change lcfloor had dropped under 51 km/h, the car coming back above 52 with the blinker still on (ab
+  1374.2 at 53.3 km/h and 1374.9 at 55.3, 130 986.2 at 58.0; push12 had started one of those in between). One moves: d3 977.25 at 51.8 km/h starts 0.45 s later at
   52.0. Every one of the 288 waiting changes a blinker armed at 52 or above is armed on the same frame.
 
 Test: `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_speed_floor.py` (16 tests; README inventory).

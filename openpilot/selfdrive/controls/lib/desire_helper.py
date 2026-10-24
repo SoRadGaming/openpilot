@@ -79,9 +79,12 @@ NUDGE_REFUSED_GAP_FRAMES = int(2.0 / DT_MDL)
 #     the model had its one pulse when the change started and finishes it
 #     whatever this state says, so ending the state would only hide a lane
 #     change that is still happening.
-# As upstream, a blinker switched on below the floor arms nothing until it is
-# switched on again above it. Every car not in the table keeps
-# LANE_CHANGE_SPEED_MIN exactly.
+# As upstream, only the blinker's rising edge arms a change: one switched on
+# below the floor, or still on after its waiting change was dropped under the
+# hysteresis, arms nothing until it is switched on again at the floor. In the
+# band a nudge is not a refused one (no chime, no tile); it waits for the floor.
+# Both are left for the owner (CAR doc 10.2 rule 3 has the replayed
+# alternatives). Every car not in the table keeps LANE_CHANGE_SPEED_MIN exactly.
 LANE_CHANGE_SPEED_FLOOR = {
   "HONDA_ACCORD_9G_AU": 52. * CV.KPH_TO_MS,
 }

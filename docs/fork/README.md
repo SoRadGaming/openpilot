@@ -285,11 +285,16 @@ A change already waiting for its nudge is kept down to 51 km/h, so a small dip d
 starts at 52 or above. A change already running finishes, as upstream's does below its own 20 mph minimum: the model has
 had its one desire pulse and completes the change whatever the state says. It is upstream's `LANE_CHANGE_SPEED_MIN` rule
 with this car's number (`LANE_CHANGE_SPEED_FLOOR`, keyed by the fingerprint, which its test pins to `HONDA_ELESYS`);
-every other car keeps 20 mph exactly. As upstream, a blinker switched on below the floor has to be switched on again
-above it. Replayed over 67 routes (22.7 h, `DesireHelper` push12 against lcfloor on the logged inputs): 174 of push12's
-438 lane-change starts go - 171 started below 52 km/h, 3 were a second change in the same blinker hold after one of
-those - one moves 0.45 s later (51.8 to 52.0 km/h), and nothing that started or was armed at 52 or above changes
-otherwise ([CAR-HONDA-ACCORD-9G-AU.md](CAR-HONDA-ACCORD-9G-AU.md) 10.2, rule 3).
+every other car keeps 20 mph exactly. As upstream, only switching the blinker on arms a change: one switched on below
+52, or still on after its waiting change was dropped under 51, has to be switched off and on again above 52. Between 51
+and 52 the prompt stays up but a nudge just waits for 52 - no chime or lane-block tile, which are for blind spots and
+road edges. Replayed over 67 routes (22.7 h, `DesireHelper` push12 against lcfloor on the logged inputs): 174 of push12's
+438 lane-change starts go - 171 started below 52 km/h, and 3 at 53-58 km/h were a later change in a blinker hold whose
+waiting change had been dropped under 51 - one moves 0.45 s later (51.8 to 52.0 km/h), and nothing that started or was
+armed at 52 or above changes otherwise. Arming when the car crosses 52 with the blinker held would give those 3 back,
+but it also starts 3 merges begun by hand below 52 again at 52, 1.1-1.7 s into the change; that choice, and starting
+a waiting change down to 51, are left for the owner ([CAR-HONDA-ACCORD-9G-AU.md](CAR-HONDA-ACCORD-9G-AU.md) 10.2,
+rule 3).
 
 Area **UPD** is the comma 4 software page of 2026-10-01: the download progress and the highlighted "download update" button. Not car-specific and not gated (it is a display, every device gets it), markers `FORK(UPDATER)`.
 
@@ -472,7 +477,7 @@ the four events - is in [CAR-HONDA-ACCORD-9G-AU.md](CAR-HONDA-ACCORD-9G-AU.md) s
 | A | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_reentry_ramp.py` | C | Round 8: the re-entry ramp alone (window, rate, start, the exceptions, the speed gate, a new override, the engagement, non-finite inputs, the log line, the gate) and through the real planner and MPC (here only, every frame outside the window bit-identical); since the round 8 review the gas gate, the plan, trajectory and lead exceptions and `lead_decel()` (27 tests). | - | new (round 8) |
 | A | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py` | C (+B) | `NUDGE_FIRM` rules; a stale torque confirms nothing; `driver_torque_stale` comes after the road edges (9 tests). | 0 | new→moved |
 | A | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_nudge_refused.py` | HUD | `DesireHelper.nudge_refused` (18 tests): once per nudge into a road edge or blind spot, held while the nudge lasts (route 120's 50 ms dip), re-armed after a release, at most once in 2 s (`NUDGE_REFUSED_GAP_FRAMES`; route d8's wobble, a pulsing hand), a push the board fell silent under still one push, never for an allowed change, without a block or from a stale torque, NUDGE_FIRM's hold, a new blinker, other cars. | 0 | new |
-| A | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_speed_floor.py` | C | push13: the lane-change floor (16 tests): the table is exactly `HONDA_ELESYS` at 52/51 km/h; other cars keep 20 mph with no hysteresis; below, at and above 52 km/h; a blinker held up through the floor arms nothing; the 51-52 km/h band (a waiting change kept, nothing started in it, no chatter); dropped under 51; a running change finishes; 300 random drives 19.8 km/h faster give this car the states another car has at upstream's minimum; the auto lane change; an engagement with the blinker on; both modelds pass the fingerprint. | - | new (push13) |
+| A | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_speed_floor.py` | C | push13: the lane-change floor (16 tests): the table is exactly `HONDA_ELESYS` at 52/51 km/h; other cars keep 20 mph with no hysteresis; below, at and above 52 km/h; a blinker held up through the floor arms nothing; the 51-52 km/h band (a waiting change kept, nothing started in it, a nudge there not a refused one, no chatter); dropped under 51; a running change finishes; 300 random drives 19.8 km/h faster give this car the states another car has at upstream's minimum; the auto lane change; an engagement with the blinker on; both modelds pass the fingerprint. | - | new (push13) |
 | A | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_gateway_hold.py` | B | The hold through the torque-controller extension with Lateral Jerk on (4 tests). | 0 | added in the merge |
 | A | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_latcontrol_reported_torque.py` | B | The zero torque the Honda `CarController` reports while the board is not actuating keeps `_check_saturation` from firing (closed loop through the real `CarController`, both torque controllers), and a real saturation still alerts while actuating; since 2026-10-12 also under the board's blinker ceiling, through `steerSaturated` to `0x500 OP_SATURATED` (11 tests). | 0 | new |
 | A | `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_steer_saturated.py` | B | 2026-10-12: `steer_saturated.py` against a verbatim copy of upstream's selfdrived block (each condition, the 2 s window, a 20 000-frame fuzz), selfdrived calling it, and `controlsd_ext` filling `steerSaturated` rather than the raw timer (9 tests). | 0 | new |
@@ -1236,7 +1241,11 @@ First drive:
 6. **Brake.** With lateral active, a brake press walks the command to zero in about 0.2 s.
 7. **Lane change.** A brush with the blinker on does not start a lane change; a firm tug or a held push does. Below
    52 km/h the blinker shows no lane-change prompt and a nudge starts nothing (push13); `modelV2.meta.laneChangeState`
-   stays `off` there. A change started at 52 or above that slows below it still finishes.
+   stays `off` there. A change started at 52 or above that slows below it still finishes. A blinker switched on below
+   52 and held past it gives no prompt until it is switched on again. Watch a lane change made by hand while speeding
+   up through 52 (a merge): openpilot gives it no lane change, and when the board engages at 52 it follows the model's
+   lane, which may pull back toward the old lane while the car is still across the line - a push against it should
+   fade the board.
 8. **Longitudinal.**
    * With `HondaElesysStockAcc` off (the default), stock ACC stays stood down (`pandaStates.safetyParam == 36`).
    * `shouldStop` asserts at about 0.8 m/s approaching a stop, and stops hold at `stopAccel` without rolling.

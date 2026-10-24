@@ -41,12 +41,13 @@ def _cs(kph: float, blinker: bool = True, torque: float = 0.0, left: bool = True
 
 
 class Drive:
-  """One DesireHelper fed model frames; records the lane-change state and the desire per frame."""
+  """One DesireHelper fed model frames; records the lane-change state, the desire and nudge_refused per frame."""
   def __init__(self, fingerprint: str = CAR, left: bool = True):
     self.dh = DesireHelper(fingerprint)
     self.left = left
     self.states: list = []
     self.desires: list = []
+    self.refused: list = []
 
   def step(self, kph: float, blinker: bool = True, nudge: float = 0.0, prob: float = 1.0, lat: bool = True, n: int = 1,
            ms: float | None = None):
@@ -55,6 +56,7 @@ class Drive:
       self.dh.update(_cs(kph, blinker, nudge if self.left else -nudge, self.left, ms=ms), lat, prob)
       self.states.append(self.dh.lane_change_state)
       self.desires.append(self.dh.desire)
+      self.refused.append(self.dh.nudge_refused)
     return self
 
   @property
@@ -131,8 +133,15 @@ class TestLaneChangeSpeedFloor(OpenpilotTestCase):
     """A waiting change is kept down to 51 km/h but started only at 52: a nudge in between waits for the floor."""
     d = Drive().step(53).step(51.5, nudge=FIRM, n=10)
     assert set(d.states) == {PRE} and set(d.desires) == {log.Desire.none}
+    # and it is not a refused nudge: no chime and no lane-block tile, which are for a blind spot or a road edge only
+    # (review of push13: the prompt stays up and the nudge just waits for the floor - the owner's call, CAR doc 10.2)
+    assert not any(d.refused)
     d.step(FLOOR_KPH, nudge=FIRM)   # the push still held as the car comes back to the floor
     assert d.state == STARTING
+    # a nudge let go inside the band is gone: the change waits for the next one at the floor
+    d = Drive().step(53).step(51.5, nudge=FIRM, n=10).step(51.5, n=10).step(FLOOR_KPH, n=10)
+    assert set(d.states) == {PRE} and not any(d.refused)
+    assert d.step(FLOOR_KPH, nudge=FIRM).state == STARTING
 
   def test_a_waiting_change_is_dropped_under_the_band(self):
     d = Drive().step(53)
