@@ -476,7 +476,7 @@ def spy_starts(pl) -> list[tuple[int, float, float]]:
     return apply(source, v_target)
 
   def set_cur_state_spy(v, a):
-    rec[-1] = rec[-1][:2] + (float(a),)
+    rec[-1] = (rec[-1][0], rec[-1][1], float(a))
     return set_cur_state(v, a)
   pl.bend_ease.apply, pl.mpc.set_cur_state = apply_spy, set_cur_state_spy
   return rec

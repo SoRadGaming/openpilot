@@ -63,6 +63,9 @@ stop before a curve, and what a missing message does:
                         the car's speed (it appears 2 km/h under, goes 3 km/h over: the car is slowing for it).
                         The driver taking over (smart cruise control overriding, or carControl.longActive off) hides it
                         on the frame.
+  customReserved11      FORK(BENDS): the bend ease (bend_ease.py, the Elesys Accord only). Live, it takes over the
+                        cruise target AS sccVision, whatever SCC-V's own state - so while it says it is live, limiting
+                        and in an episode, the curve is its vGoal (the speed its target is heading for), not SCC-V's.
   carState              standstill: nothing (the stopwatch has it); vEgo, for the curve.
 Missing or stale (not this drive, or no longer arriving): modelV2, radarState or carState - no stop; longitudinalPlanSP
 or carState - no curve; carControl or longitudinalPlan - the stop can still be shown, but only grey. Nothing ever says
@@ -572,17 +575,44 @@ def curve_left(model) -> bool | None:
   return rate[i] < 0.0
 
 
+# FORK(BENDS): the bend ease's log (sunnypilot/selfdrive/controls/lib/smart_cruise_control/bend_ease.py), published by
+# plannerd on the Elesys Accord only. In live mode the ease takes over the planner's target as sccVision, and SCC-V may
+# be idle or asking for more meanwhile: replayed live (fd 6-10, c8 32-36) the curve item showed nothing on all 908 /
+# 1260 frames it took over (SCC-V idle, or its own number - a median 12.7 / 14.9 km/h over the ease's - over the car's
+# speed); with this, the ease's speed on 811 / 926 (the rest: the accel cap only, or the item's threshold and debounce).
+BEND_SERVICE = 'customReserved11'
+BEND_LIVE = 2   # CustomReserved11.mode (BendEaseMode): 0 off, 1 shadow, 2 live
+
+
+def bend_target(sm, started_frame: int) -> float | None:
+  """FORK(BENDS): the speed (m/s) the bend ease is slowing the car to, while it is live, in an episode and the target
+  that limits the cruise speed: its vGoal, where its target is heading - not vTarget, which stays within 0.6 m/s of the
+  car's speed. None otherwise, and always on every other car (nothing is published) and in shadow mode (it changes
+  nothing there)."""
+  if not fresh(sm, BEND_SERVICE, started_frame):
+    return None
+  b = sm[BEND_SERVICE]
+  if int(b.mode) != BEND_LIVE or not b.limiting or not b.active:
+    return None
+  v = float(b.vGoal)
+  return v if 0.0 < v < CURVE_V_MAX_MS else None
+
+
 def curve_target(sm, started_frame: int) -> float | None:
   """openpilot's target speed (m/s) for a curve it is slowing for or about to, else None. Smart cruise control, while
   it is the target that limits the cruise speed (longitudinalPlanSP.longitudinalPlanSource): vision entering or turning
-  (not leaving - that is speeding up again), or the map turning."""
+  (not leaving - that is speeding up again), or the map turning. FORK(BENDS): or the bend ease, live, which takes over
+  as sccVision (bend_target)."""
   if not fresh(sm, 'longitudinalPlanSP', started_frame):
     return None
   p = sm['longitudinalPlanSP']
   scc, src = p.smartCruiseControl, _enum(p.longitudinalPlanSource)
   v = None
-  if src == PlanSourceSP.sccVision and scc.vision.active and _enum(scc.vision.state) in (VisionState.entering,
-                                                                                         VisionState.turning):
+  bend = bend_target(sm, started_frame) if src == PlanSourceSP.sccVision else None  # FORK(BENDS)
+  if bend is not None:
+    v = bend
+  elif src == PlanSourceSP.sccVision and scc.vision.active and _enum(scc.vision.state) in (VisionState.entering,
+                                                                                           VisionState.turning):
     v = float(scc.vision.vTarget)
   elif src == PlanSourceSP.sccMap and scc.map.active and _enum(scc.map.state) == MapState.turning:
     v = float(scc.map.vTarget)

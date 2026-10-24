@@ -45,7 +45,9 @@ word. So the ease only ever LOWERS THE CRUISE TARGET - but it does not bound the
 speed (v_desired_filter) follows the eased plan, and behind a lead the MPC plans the lead from that lower speed, so for a
 while the plan can be HIGHER than without the ease: open loop on 14c t=1977.1-1978.3 and 1990.5-1994.7 (110 frames, up
 to +0.22 m/s^2) and on fd (86 frames, up to +0.22), a lead on every such frame. Handing the MPC the bend's accel
-instead does the same (+0.24 on 14c). In the car, which really is slower, the gap to the lead is larger too.
+instead does the same (+0.24 on 14c). In the car, which really is slower, the gap to the lead is larger too. Live, the
+comma 4's curve item shows vGoal (below) while the ease limits (hud_model.bend_target): longitudinalPlanSP alone cannot
+tell its sccVision from SCC-V's own.
 
 BUILT ONLY for HONDA_ELESYS with openpilot longitudinal and stock ACC mode off (bend_tune()). Every other car, and stock
 ACC mode, get no tune: nothing is computed, nothing published, the plan is upstream's. It never touches the ACC
