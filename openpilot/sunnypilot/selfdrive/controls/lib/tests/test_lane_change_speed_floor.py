@@ -13,6 +13,7 @@ finishes, as upstream's does below its minimum. Every other car keeps upstream's
 import random
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from openpilot.cereal import log
 from openpilot.common.constants import CV
@@ -195,7 +196,7 @@ class TestLaneChangeSpeedFloor(OpenpilotTestCase):
     offset = FLOOR_KPH - MIN_KPH
     rng = random.Random(1234)
     for _ in range(300):
-      frames = []
+      frames: list[dict[str, Any]] = []
       kph = rng.uniform(MIN_KPH - 6, MIN_KPH + 15)
       for _ in range(rng.randint(5, 120)):
         kph = min(max(kph + rng.uniform(-1.5, 1.5), 5.), 70.)
@@ -213,7 +214,7 @@ class TestLaneChangeSpeedFloor(OpenpilotTestCase):
   def test_the_auto_lane_change_waits_for_the_floor_too(self):
     for kph_wait, starts in ((51.5, False), (45, False), (53, True)):
       d = Drive()
-      d.dh.alc.update_params = lambda: None
+      d.dh.alc.update_params = lambda: None  # ty: ignore[invalid-assignment]  # the test sets the mode itself
       d.dh.alc.lane_change_set_timer = AutoLaneChangeMode.NUDGELESS
       d.step(53 if kph_wait == 51.5 else kph_wait).step(kph_wait, n=40)   # 2 s, well past the 0.05 s timer
       assert (d.state == STARTING) == starts, kph_wait

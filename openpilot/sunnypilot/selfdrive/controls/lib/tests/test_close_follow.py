@@ -69,7 +69,7 @@ def model(v=7., a=0., n=ModelConstants.IDX_N, lead_v=None, **kw) -> ModelView:
 
 
 def inputs(v=7., lead_one=None, lead_two=NO_LEAD, md=None, **kw) -> Inputs:
-  base = {'engaged': True, 'is_e2e': True, 'v_ego': v, 'personality': AGGRESSIVE,
+  base: dict[str, Any] = {'engaged': True, 'is_e2e': True, 'v_ego': v, 'personality': AGGRESSIVE,
           'lead_one': lead(v=v, v_ego=v) if lead_one is None else lead_one, 'lead_two': lead_two, 'held': False,
           'gas': False, 'brake': False, 'standstill': False, 'car_fcw': False, 'force_decel': False, 'steer_lat_accel': 0.,
           'allow_throttle': True, 'model': model(v) if md is None else md}

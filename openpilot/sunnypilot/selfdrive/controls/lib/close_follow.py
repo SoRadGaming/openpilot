@@ -341,7 +341,7 @@ class LeadSpeedWindow:
     if n < LEAD_SLOWING_MIN_N:
       self.slope = 0.
       return False
-    t = np.arange(n) * self.dt
+    t = np.arange(n, dtype=np.float64) * self.dt
     t -= t.mean()
     v = np.asarray(self.v)
     self.slope = float(np.dot(t, v - v.mean()) / np.dot(t, t))

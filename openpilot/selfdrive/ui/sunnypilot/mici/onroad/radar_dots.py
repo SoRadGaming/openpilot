@@ -41,6 +41,7 @@ import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import pyray as rl
@@ -182,7 +183,7 @@ class RadarDots:
     self._clock = clock
     self._sock = None
     self._tracks = None              # the message track_arrays() last read
-    self._arrays: tuple = ([], None, None)
+    self._arrays: tuple[Any, Any, Any] = ([], None, None)
     self._inputs: tuple = ()
     self.dots: list[Dot] = []
     self._draw: list[tuple] = []     # (Vector2, r, mark) per dot, made once per layout

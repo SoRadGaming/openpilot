@@ -24,6 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest import mock
 
 import numpy as np
@@ -108,7 +109,7 @@ class FakeSock:
 
 def dots_of(on=True, msg=None, clock=None):
   sock, made = FakeSock(), []
-  dots = RD.RadarDots(settings=FakeSettings(on), sock_factory=lambda: made.append(sock) or sock,
+  dots = RD.RadarDots(settings=cast(Any, FakeSettings(on)), sock_factory=lambda: made.append(sock) or sock,
                       clock=clock or (lambda: 100.0))
   if msg is not None:
     sock.feed(msg)
@@ -301,7 +302,8 @@ class TestSubscription(OpenpilotTestCase):
 
   def test_off_again_drops_the_socket(self):
     settings, made = FakeSettings(True), []
-    dots = RD.RadarDots(settings=settings, sock_factory=lambda: made.append(FakeSock()) or made[-1], clock=lambda: 1.0)
+    dots = RD.RadarDots(settings=cast(Any, settings), sock_factory=lambda: made.append(FakeSock()) or made[-1],
+                        clock=lambda: 1.0)
     assert step(dots) == [] and len(made) == 1, "on: a socket, nothing received yet"
     made[0].feed(tracks_msg((1, 20.0, 0.0)))
     assert len(step(dots)) == 1

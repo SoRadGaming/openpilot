@@ -74,7 +74,7 @@ Rules (all timings are seconds of the mono_time the caller passes, never fix cou
 import datetime as _dt
 import json
 import math
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -2096,7 +2096,7 @@ class Matcher:
   def _live_path(self, H, fwd):
     """The road ahead of the last match: from the snapped point along the matched line in direction `fwd` and on
     through unique continuations, up to H m. -> (lat e6, lon e6, part of each vertex, walked m, why it stopped)."""
-    ctx = self._ctx
+    ctx = cast(dict[str, Any], self._ctx)  # its callers have checked there is a match
     L = self.L['b']
     pv0 = L['part_v0']
     vlat, vlon = L['vlat'], L['vlon']
@@ -2190,7 +2190,7 @@ class Matcher:
   def _dr_path(self, h, H):
     """The road ahead along dead-reckoning hypothesis h: the rest of its built path, then unique continuations, up to
     H m. -> (lat e6, lon e6, part of each vertex, walked m, why it stopped), or None."""
-    along = self._odo - self._last_good[3]
+    along = self._odo - cast(tuple, self._last_good)[3]  # its callers have checked there is a last good match
     s0 = (h['scale'] or 1.0) * along
     cum = np.asarray(h['cum'])
     if len(cum) < 2:
@@ -2248,7 +2248,7 @@ class Matcher:
       if path is None:
         out['camera_stop'] = 'no path'
         return out
-      found = self._camera_on_path(*path[:3], H)
+      found = self._camera_on_path(path[0], path[1], path[2], H)
       # the search looks no further than H, even where the walk took a whole line beyond it
       searched = round(min(float(path[3]), H), 1)
       # CameraHold may end a hold on this, so it counts only a live walk that starts the way the car is going (review of
@@ -2292,7 +2292,7 @@ class Matcher:
     """The first camera along a walked path (micro-degree float arrays, the part of each vertex) whose home entry is
     a line of the path, standing within camera_lat_m of that line's stretch of the path, ahead of its start and within
     H, and checking the traffic travelling along it. -> (distance along the path m, camera row) or None."""
-    C = self.C
+    C = cast(dict[str, Any], self.C)  # only called with a camera layer loaded
     if len(la) < 2:
       return None
     parts = np.unique(pp.astype(np.int64))
