@@ -70,9 +70,19 @@ loop: the plan differs on 3,047 and 4,158 frames; wherever the ease leads and th
 was too (the e2e plan or the MPC). Behind a lead it is also higher than push12's at times (MODES above).
 
 LOGGED: plannerd publishes customReserved11 (CustomReserved11) every planner frame on this car - mode, the episode,
-predLatAccel, the bend's own speed, the target (0 when none), how far ahead it binds, the accel it implies, whether it is
-(live) or would be (shadow) the planner's limiting target, and why there is no target. One cloudlog line per episode,
-at error level so the qlog carries it: 'bendease ...'.
+predLatAccel, the bend's own speed, the target (0 when none), where the target is heading (vGoal), how far ahead it
+binds, the accel it implies, whether it is (live) or would be (shadow) the planner's limiting target, and why there is
+no target. One cloudlog line per episode, at error level so the qlog carries it: 'bendease end=... s= v0= pred= tgt=
+goal= lim= slow= gas='.
+READING A SHADOW LOG. `limiting` (and the line's lim=) counts every frame the target is under the planner's chosen one,
+including frames where only the 0.5 m/s^2 accel cap binds (target at or over vEgo): those hold the car's accel, they do
+not slow it (fd segments 6-10: 65 of 908 limiting frames; c8 32-36: 438 of 1260). 'Would slow the car' is limiting and
+aTarget < 0 (the line's slow=). And since in shadow the car never slows, vTarget stays pinned near vEgo - 0.6 frame after
+frame (755 of fd's 843 'would slow' frames), so its minimum (tgt=) is not the cut it would have made: vGoal (goal=) is
+where the target was heading - the held brake curve within the episode's bounds - and vStart - vGoal the most it would
+take off. What it would really reach depends on the distance left, and only the closed-loop replay says that: fd t=539,
+logged in shadow (open loop) as tgt=74.4 goal=66.6 km/h, reached 67.4 in the replay. On c8 segments 32-36 one episode
+logged lim=14.9 slow=0.0: the accel cap only, for 15 s.
 """
 import math
 from dataclasses import dataclass
@@ -187,6 +197,7 @@ class BendEase:
     self.curv_max = 0.        # 1/m
     self.v_ego = 0.
     self.v_target = V_CRUISE_UNSET   # m/s: the target, live or shadow (V_CRUISE_UNSET: none)
+    self.v_goal = 0.          # m/s: where the target is heading - the held brake curve in the episode's bounds (0: none)
     self.reason = Reason.OFF
     self.limiting = False
     self._above = 0.
@@ -243,6 +254,7 @@ class BendEase:
     assert t is not None
     self.v_ego = v_ego = max(0., float(v_ego))
     self.v_target = V_CRUISE_UNSET
+    self.v_goal = 0.
     if self.mode == Mode.OFF:
       self._end("off")
       self.reason = Reason.OFF
@@ -272,7 +284,8 @@ class BendEase:
         self.reason = Reason.IDLE
         return self.v_target
       self.active, self.v_start, self._below, self.v_hold = True, v_ego, 0., math.inf
-      self._ep = {"v0": v_ego, "pred": self.pred_lat, "tgt": math.inf, "lim": 0, "n": 0, "gas": False}
+      self._ep = {"v0": v_ego, "pred": self.pred_lat, "tgt": math.inf, "goal": math.inf, "lim": 0, "slow": 0, "n": 0,
+                  "gas": False}
     else:
       v_ref = max(v_ego, self.v_start)
       bend_at_ref = v_ref ** 2 * self.curv_max
@@ -305,8 +318,12 @@ class BendEase:
       return self.v_target   # nothing curved ahead and no hold yet: no target
     lo = max(t.min_speed, self.v_start - t.max_cut, v_ego - t.decel)
     self.v_target = min(V_CRUISE_UNSET, max(lo, min(self.v_hold, v_ego + t.accel_cap)))
+    # the same without the per-frame vEgo - decel floor and vEgo + accel_cap: where the target is heading. In shadow the
+    # car never slows, so v_target stays near vEgo - decel; this is the size of the cut it would ask for
+    self.v_goal = min(V_CRUISE_UNSET, max(t.min_speed, self.v_start - t.max_cut, self.v_hold))
     if ep is not None:
       ep["tgt"] = min(ep["tgt"], self.v_target)
+      ep["goal"] = min(ep["goal"], self.v_goal)
     return self.v_target
 
   def _predict(self, v_ego: float, curv: np.ndarray, dist: np.ndarray) -> None:
@@ -329,10 +346,13 @@ class BendEase:
   def _end(self, why: str) -> None:
     ep = self._ep
     if self.active and ep is not None:
-      tgt = ep["tgt"]
+      tgt, goal = ep["tgt"], ep["goal"]
+      # tgt: the lowest target; goal: the lowest vGoal; lim: s it was (would be) limiting; slow: s of those it slowed (would
+      # slow) the car, the target under vEgo - the rest only the accel cap bound
       cloudlog.error(f"{LOG_TAG} end={why} mode={int(self.mode)} s={ep['n'] * self.dt:.1f} v0={ep['v0'] * CV.MS_TO_KPH:.1f} " +
                      f"pred={ep['pred']:.2f} tgt={(tgt * CV.MS_TO_KPH if math.isfinite(tgt) else 0.):.1f} " +
-                     f"lim={ep['lim'] * self.dt:.1f} gas={int(ep['gas'])}")
+                     f"goal={(goal * CV.MS_TO_KPH if math.isfinite(goal) else 0.):.1f} " +
+                     f"lim={ep['lim'] * self.dt:.1f} slow={ep['slow'] * self.dt:.1f} gas={int(ep['gas'])}")
     self._reset_episode()
 
   def apply(self, source, v_target: float):
@@ -348,6 +368,8 @@ class BendEase:
     self.limiting = True
     if self._ep is not None:
       self._ep["lim"] += 1
+      if self.v_target < self.v_ego:
+        self._ep["slow"] += 1
     if self.live:
       return LongitudinalPlanSource.sccVision, self.v_target
     return source, v_target
@@ -369,4 +391,5 @@ class BendEase:
     b.limiting = bool(self.limiting)
     b.reason = int(self.reason)
     b.vStart = float(self.v_start)
+    b.vGoal = float(self.v_goal) if has else 0.
     pm.send('customReserved11', msg)

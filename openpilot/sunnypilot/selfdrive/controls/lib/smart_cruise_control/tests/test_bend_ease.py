@@ -299,6 +299,48 @@ class TestBendEaseStep(OpenpilotTestCase):
     self.assertTrue(line.startswith("bendease end=bend mode=1 "), line)
     self.assertTrue(" v0=90.0 " in line, line)
 
+  def test_the_episode_line_tells_slowing_from_the_accel_cap(self):
+    # 6 frames limiting with the target under vEgo (the 0.6 floor: it would slow the car), then 10 limiting at the
+    # accel cap (a gentler part at 23 m/s: the target is vEgo + 0.5, which holds the accel and slows nothing)
+    cruise = LongitudinalPlanSource.cruise
+    e = Ease()
+    with mock.patch.object(be.cloudlog, 'error') as err:
+      for _ in range(11):
+        e.run(1, 25.0, 400.0)
+        e.b.apply(cruise, 30.0)
+      e.b.v_hold = math.inf
+      for _ in range(10):
+        e.run(1, 23.0, 25.0 ** 2 / 0.95)
+        e.b.apply(cruise, 30.0)
+        self.assertTrue(e.b.limiting)
+        self.assertGreaterEqual(e.b.v_target, e.b.v_ego)
+      e.run(30, 23.0, None)
+    self.assertEqual(err.call_count, 1)
+    line = err.call_args[0][0]
+    # tgt: the lowest target (the cap's 84.6 km/h); goal: the lowest vGoal (the 400 m bend's own 75.5); lim 16 frames,
+    # slow 6 of them
+    self.assertTrue(" tgt=84.6 goal=75.5 lim=0.8 slow=0.3 gas=0" in line, line)
+
+  def test_in_shadow_vtarget_is_pinned_and_vgoal_is_the_cut(self):
+    # the car keeps 25 m/s (in shadow nothing slows it) on a 300 m bend: vTarget is vEgo - 0.6 frame after frame, and
+    # vGoal where it is heading - here the 15 km/h cap off the start speed (the bend's own 65 km/h is under it)
+    e = Ease()
+    sent: list = []
+    pm = SimpleNamespace(send=lambda name, msg: sent.append(msg))
+    for _ in range(60):
+      e.run(1, 25.0, 300.0)
+      e.b.apply(LongitudinalPlanSource.cruise, 30.0)
+      e.b.publish(pm)
+    b = sent[-1].customReserved11
+    self.assertTrue(b.limiting)
+    self.assertAlmostEqual(b.vTarget, 25.0 - 0.6, places=5)
+    self.assertAlmostEqual(b.aTarget, -0.6, places=5)
+    self.assertAlmostEqual(b.vGoal, 25.0 - 15 * KPH, places=4)
+    self.assertEqual([m.customReserved11.vGoal for m in sent[:5]], [0.0] * 5, "no target, no goal")
+    e = Ease()
+    e.run(10, 16.5, 150.0)   # 59.4 km/h on 150 m: the bend wants 46 km/h, the floor is 55
+    self.assertAlmostEqual(e.b.v_goal, 55 * KPH, places=6)
+
   def test_off_sets_nothing(self):
     e = Ease(Mode.OFF)
     self.assertEqual(e.run(50, 25.0, 300.0), [V_CRUISE_UNSET] * 50)
@@ -471,6 +513,7 @@ class TestBendEasePlanner(OpenpilotTestCase):
     self.assertEqual(sum(b.active for b in logs[100:]), round(TUNE.end_s / DT_MDL) - 1, "it ends 1 s after the bend")
     self.assertTrue(all(b.mode == 1 and b.limiting and 0 < b.vTarget < 25.0 for b in eased))
     self.assertTrue(all(-0.6 - 1e-6 <= b.aTarget < 0 for b in eased))
+    self.assertTrue(all(0 < b.vGoal <= b.vTarget + 1e-4 for b in eased), "slowing: the goal is at or under the target")
     self.assertEqual({b.reason for b in logs[:5]}, {Reason.IDLE})
 
   def test_off_changes_nothing_either(self):
@@ -576,7 +619,8 @@ class TestWiring(OpenpilotTestCase):
 
   def test_the_struct(self):
     b = messaging.new_message('customReserved11').customReserved11
-    for f in ('mode', 'active', 'vTarget', 'predLatAccel', 'vBend', 'distance', 'aTarget', 'limiting', 'reason', 'vStart'):
+    for f in ('mode', 'active', 'vTarget', 'predLatAccel', 'vBend', 'distance', 'aTarget', 'limiting', 'reason', 'vStart',
+              'vGoal'):
       self.assertTrue(hasattr(b, f), f)
 
   def test_plannerd_publishes_it(self):
