@@ -7,8 +7,10 @@ See the LICENSE.md file in the root directory for more details.
 FORK(HUD): the radar dots (radar_dots.py, push13) - HudRadarDots, off by default, on the comma 4's toggles page and in
 sunnylink Visuals > HUD; what radard made of each track (lead, second lead, held, the rest); where a track lands on the
 screen; that with the toggle off no socket is opened and nothing is laid out or drawn, and that on it lays the dots out
-again only when an input changed. The pixels: the real mici ModelRenderer drawn in a headless raylib child process -
-nothing at all with the toggle off, the dots where the projection puts them with it on.
+again only when an input changed, and draws only what this frame laid out. The pixels, in a headless raylib child
+process: the real mici ModelRenderer - nothing at all with the toggle off, the dots where the projection puts them with
+it on, and each dot's dark rim on a light 'sky'; and the real mici AugmentedRoadView - tracks 8 and 9 m away, under its
+bottom fade's dark rows, drawn over the fade at full strength, and nothing else on the screen changed.
 
 The settings pages are parsed, never imported (they pull in the whole mici UI).
 """
@@ -22,6 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 
@@ -36,6 +39,7 @@ ROOT = Path(__file__).parents[3]   # openpilot/
 PARAMS_KEYS = ROOT / "common/params_keys.h"
 TOGGLES = ROOT / "selfdrive/ui/mici/layouts/settings/toggles.py"
 MODEL_RENDERER = ROOT / "selfdrive/ui/mici/onroad/model_renderer.py"
+ROAD_VIEW = ROOT / "selfdrive/ui/mici/onroad/augmented_road_view.py"
 RADARD = ROOT / "selfdrive/controls/radard.py"
 UI_STATE = ROOT / "selfdrive/ui/ui_state.py"
 VISUALS_YAML = ROOT / "sunnypilot/sunnylink/settings_ui_src/pages/visuals.yaml"
@@ -362,6 +366,31 @@ class TestSubscription(OpenpilotTestCase):
       assert after is not before, change
     assert step(dots, radar_state(), transform, path)[0].mark == RD.OTHER
 
+  def test_draws_only_what_this_frame_laid_out(self):
+    # the model renderer lays out (update()), the road view draws (draw()): a frame the model renderer left early (no
+    # model or calibration yet) has no update() and draws no dots, not the last frame's
+    dots, _, _ = dots_of(on=True, msg=tracks_msg((1, 20.0, 0.0), (2, 40.0, 1.0)))
+    drawn = []
+    with mock.patch.object(RD, "draw_dot", lambda center, r, mark: drawn.append((center.x, center.y, r, mark))):
+      dots.draw()
+      assert drawn == [], "nothing laid out yet"
+      laid = step(dots, radar_state(one=2))
+      dots.draw()
+      assert len(drawn) == len(laid) == 2
+      for (x, y, r, mark), d in zip(drawn, laid, strict=True):   # Vector2 holds float32
+        assert abs(x - d.x) < 1e-3 and abs(y - d.y) < 1e-3 and (r, mark) == (d.r, d.mark), "the layout, in its order"
+      drawn.clear()
+      dots.draw()
+      assert drawn == [], "no update() this frame: nothing"
+      step(dots, radar_state(one=2))
+      dots.draw()
+      assert len(drawn) == 2, "the next frame's layout"
+      drawn.clear()
+      dots._settings.on = False
+      step(dots)
+      dots.draw()
+      assert drawn == [], "off: nothing"
+
   def test_not_in_the_shared_submaster(self):
     # the UI's SubMaster is built once for every frame of every drive: radarTracks stays out of it (radar_dots.py)
     assert '"radarTracks"' not in UI_STATE.read_text(encoding="utf-8")
@@ -370,22 +399,39 @@ class TestSubscription(OpenpilotTestCase):
 
 # ------------------------------------------------------------------------------------------- the hook
 class TestHook(OpenpilotTestCase):
-  def test_the_model_renderer_hook_is_marked(self):
-    marked(MODEL_RENDERER, ("radar_dots import RadarDots", "self._radar_dots = RadarDots()", "self._radar_dots.render("))
+  def test_the_hooks_are_marked(self):
+    marked(MODEL_RENDERER, ("radar_dots import RadarDots", "self.radar_dots = RadarDots()", "self.radar_dots.update("))
+    marked(ROAD_VIEW, ("self._model_renderer.radar_dots.draw()",), window=0)
 
-  def test_drawn_over_the_path_engaged_or_not(self):
+  def test_laid_out_after_the_path_engaged_or_not(self):
     src = MODEL_RENDERER.read_text(encoding="utf-8")
     render = src[src.index("  def _render(self, rect"):src.index("  def _update_raw_points")]
-    call = render.index("self._radar_dots.render(rect, self._car_space_transform, self._path.raw_points")
-    assert render.index("self._draw_path(sm)") < call, "over the path"
+    call = render.index("self.radar_dots.update(rect, self._car_space_transform, self._path.raw_points")
+    assert render.index("self._draw_path(sm)") < call, "after the path"
     line = render[render.rindex("\n", 0, call) + 1:call]
     assert line == "    ", "at the method's own level: not inside the DISENGAGED branch"
     assert "radar_state)" in render[call:call + 200]
+    assert render.count("radar_dots") == 1, "laid out once; drawn by the road view"
+
+  def test_drawn_over_the_bottom_fade_under_the_alerts(self):
+    # review finding 1 (push13): drawn under the fade, a track nearer than ~10-12 m was dimmed to nothing
+    src = ROAD_VIEW.read_text(encoding="utf-8")
+    start = src.index("  def _render(self, _):", src.index("class AugmentedRoadView"))
+    render = src[start:src.index("  def _switch_stream_if_needed")]
+    call = render.index("self._model_renderer.radar_dots.draw()")
+    fade = render.index("rl.draw_texture_ex(self._fade_texture")
+    assert render.index("self._model_renderer.render(self._content_rect)") < fade < call, "after the model and the fade"
+    assert call < render.index("self._alert_renderer.render(") and call < render.index("self._hud_renderer.render("), \
+      "under the alerts and the HUD"
+    assert call < render.index("rl.end_scissor_mode()"), "inside the camera's scissor"
+    line = render[render.rindex("\n", 0, call) + 1:call]
+    assert line == "    " and sum("radar_dots" in ln for ln in render.splitlines()) == 1, "every frame, once"
 
 
 # ------------------------------------------------------------------------------------------- the pixels
 CHILD = r'''
 import json
+import math
 import numpy as np
 import pyray as rl
 from openpilot.system.ui.lib.application import gui_app
@@ -455,28 +501,30 @@ def grab():
   return arr
 
 
-def frame(mr, on):
+def frame(mr, on, bg=rl.BLACK):
+  # the model renderer lays the dots out, and here (as the road view does after its fade) they are drawn
   settings.on = on
   rl.begin_drawing()
   rl.begin_texture_mode(rt)
-  rl.clear_background(rl.BLACK)
+  rl.clear_background(bg)
   mr.render(rect)
+  mr.radar_dots.draw()
   rl.end_texture_mode()
   rl.end_drawing()
   return grab()
 
 
 mr = ModelRenderer()
-mr._radar_dots = RD.RadarDots(settings=settings, sock_factory=lambda: made.append(1) or Sock(tm.as_reader()),
-                              clock=lambda: 0.1)
+mr.radar_dots = RD.RadarDots(settings=settings, sock_factory=lambda: made.append(1) or Sock(tm.as_reader()),
+                             clock=lambda: 0.1)
 mr.set_transform(PINHOLE)
 off = frame(mr, False)
 on = frame(mr, True)
-dots = [dataclasses.asdict(d) for d in mr._radar_dots.dots]
+dots = [dataclasses.asdict(d) for d in mr.radar_dots.dots]
 off2 = frame(mr, False)
 from openpilot.selfdrive.locationd.calibrationd import HEIGHT_INIT
 res = {"height": float(HEIGHT_INIT[0]), "off_lit": int((off.sum(axis=2) > 0).sum()), "off2_lit": int((off2.sum(axis=2) > 0).sum()), "made": len(made),
-       "dots": dots, "subscribed_after_off": mr._radar_dots.subscribed, "px": {}}
+       "dots": dots, "subscribed_after_off": mr.radar_dots.subscribed, "px": {}}
 for d in dots:
   # pixel i covers [i, i + 1): the pixel whose center is nearest the dot's center, and the one half a ring in from its edge
   x, y = int(d["x"]), int(d["y"])
@@ -484,6 +532,72 @@ for d in dots:
   res["px"][str(d["track_id"])] = {"center": on[y, x].tolist(), "ring": on[y, ring].tolist(),
                                    "lit": int((on[y - 8:y + 9, x - 8:x + 9].sum(axis=2) > 0).sum())}
 res["on_lit"] = int((on.sum(axis=2) > 0).sum())
+
+# the rim (review finding 2): on black it cannot be seen, so the same dots on a light grey sky. The pixels whose centers
+# lie 0.2 px outside a dot's fill up to 0.2 px inside its rim's edge (16-gons: both stay within 2% of the radius)
+light = frame(mr, True, rl.Color(220, 220, 220, 255))
+yy, xx = np.mgrid[0:H, 0:W] + 0.5
+brightest = light.max(axis=2)
+res["light"] = {}
+for d in dots:
+  dist = np.hypot(xx - d["x"], yy - d["y"])
+  rim = (dist >= d["r"] + 0.2) & (dist <= d["r"] + RD.RIM - 0.2)
+  res["light"][str(d["track_id"])] = {"rim_px": int(rim.sum()), "rim_dark": int((brightest[rim] < 150).sum()),
+                                      "center": light[int(d["y"]), int(d["x"])].tolist(), "sky": light[5, 5].tolist()}
+
+# over the fade (review finding 1): the real road view, its model renderer's dots on near tracks. No camera frame, so the
+# view never sets the transform: a pinhole that puts 8-9 m on the screen's bottom rows, where the fade is ~200/255 dark
+from openpilot.selfdrive.ui.mici.onroad.augmented_road_view import AugmentedRoadView
+from openpilot.system.ui.lib.application import ASSETS_DIR
+rl.get_time = lambda: 100.0   # nothing animates between the frames compared
+ui_state.started = True
+sm.recv_frame["selfdriveState"], sm.updated["selfdriveState"] = 5, True   # selfdrived is up: no 'waiting to start' alert
+fade = rl.load_image(str(ASSETS_DIR.joinpath("icons_mici/onroad/onroad_fade.png")))
+road_tm = messaging.new_message("radarTracks")
+for p, (tid, d, y) in zip(road_tm.radarTracks.init("points", 3), ((11, 8.0, 0.8), (12, 9.0, -0.8), (13, 30.0, 0.0)),
+                          strict=True):
+  p.trackId, p.dRel, p.yRel = tid, d, y
+road_rs = messaging.new_message("radarState")
+road_rs.radarState.leadOne.present, road_rs.radarState.leadOne.radarTrackId = True, held_id(12)   # the held ring, near
+road_rs.radarState.leadTwo.present, road_rs.radarState.leadTwo.radarTrackId = True, 13
+sm.data["radarState"] = road_rs.as_reader().radarState
+view = AugmentedRoadView()
+view.set_rect(rect)
+road_settings = Settings()
+view._model_renderer.radar_dots = RD.RadarDots(settings=road_settings, sock_factory=lambda: Sock(road_tm.as_reader()),
+                                               clock=lambda: 0.1)
+view._model_renderer.set_transform(np.array([[238.0, 600.0, 0.0], [150.0, 0.0, 600.0], [1.0, 0.0, 0.0]], dtype=np.float32))
+
+
+def road(on):
+  road_settings.on = on
+  rl.begin_drawing()
+  rl.begin_texture_mode(rt)
+  rl.clear_background(rl.BLACK)
+  view.render(rect)
+  rl.end_texture_mode()
+  rl.end_drawing()
+  return grab()
+
+
+for _ in range(30):   # let the view settle
+  road(False)
+road_off = road(False)
+road_on = road(True)
+road_dots = [dataclasses.asdict(d) for d in view._model_renderer.radar_dots.dots]
+road_off2 = road(False)
+changed = (road_on != road_off).any(axis=2) | (road_on != road_off2).any(axis=2)
+boxes = np.zeros((H, W), dtype=bool)
+rv = {"dots": road_dots, "px": {}, "inside": {}, "off_same": bool((road_off == road_off2).all())}
+for d in road_dots:
+  x, y, k = int(d["x"]), int(d["y"]), int(math.ceil(d["r"] + RD.RIM)) + 1
+  box = (slice(max(y - k, 0), y + k + 1), slice(max(x - k, 0), x + k + 1))
+  boxes[box] = True
+  rv["inside"][str(d["track_id"])] = int(changed[box].sum())
+  rv["px"][str(d["track_id"])] = {"center": road_on[y, x].tolist(), "ring": road_on[y, int(d["x"] + d["r"] - RD.RING / 2)].tolist(),
+                                  "fade": int(rl.get_image_color(fade, x, y).a)}
+rv["outside"] = int((changed & ~boxes).sum())
+res["road"] = rv
 print("RESULT " + json.dumps(res), flush=True)
 '''
 
@@ -534,3 +648,31 @@ class TestRadarDotsRender(OpenpilotTestCase):
     assert sum(px["3"]["center"]) < 60, f"the held track: hollow (its dark rim inside) {px['3']}"
     for tid in ("1", "2", "3"):
       assert 15 <= px[tid]["lit"] <= 160, f"{tid}: small {px[tid]}"
+
+  def test_the_rim_reads_on_a_bright_sky(self):
+    # review finding 2 (push13): every dot's rim darker than a light grey sky all the way round, and the held ring's
+    # middle (its dark disc) too
+    light = self.r["light"]
+    assert sorted(light) == ["1", "2", "3"]
+    for tid, p in light.items():
+      assert min(p["sky"]) >= 210, f"the sky {p}"
+      assert p["rim_px"] >= 10 and p["rim_dark"] >= 0.9 * p["rim_px"], f"{tid}: a dark rim round it {p}"
+    assert max(light["3"]["center"]) < 150, f"the held ring's middle: its dark disc, not the sky {light['3']}"
+    assert min(light["1"]["center"]) > 230 and light["2"]["center"][0] < 60, "the fills drawn over the rim"
+
+  def test_near_tracks_over_the_bottom_fade(self):
+    # review finding 1 (push13): the real road view; tracks 8 and 9 m away sit on rows its bottom fade darkens by
+    # ~200/255. Drawn under the fade (before the fix) the white dot's center came out 43 of 235
+    rv = self.r["road"]
+    assert sorted(str(d["track_id"]) for d in rv["dots"]) == ["11", "12", "13"], rv["dots"]
+    px = rv["px"]
+    assert px["11"]["fade"] >= 150 and px["12"]["fade"] >= 150, f"the near tracks are under the fade's dark rows {px}"
+    r, g, b = px["11"]["center"]
+    assert min(r, g, b) > 200, f"a track at 8 m: full white {px['11']}"
+    r, g, b = px["12"]["ring"]
+    assert r < 60 and g > 150 and b > 200, f"a held track at 9 m: a full cyan ring {px['12']}"
+    r, g, b = px["13"]["center"]
+    assert r < 60 and g > 150 and b > 200, f"the second lead at 30 m: cyan {px['13']}"
+    assert rv["off_same"], "the view drew the same frame twice with the dots off"
+    assert rv["outside"] == 0, f"on vs off: {rv['outside']} pixels changed away from the dots"
+    assert all(n > 0 for n in rv["inside"].values()), rv["inside"]

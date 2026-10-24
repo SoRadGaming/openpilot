@@ -86,7 +86,7 @@ class ModelRenderer(Widget, ModelRendererSP):
 
     self._counter = -1
     self._camera_offset = ui_state.params.get("CameraOffset", return_default=True) if ui_state.active_bundle else 0.0
-    self._radar_dots = RadarDots()  # FORK(HUD): the radar's tracks as dots, off unless HudRadarDots (radar_dots.py)
+    self.radar_dots = RadarDots()  # FORK(HUD): the radar's tracks as dots, off unless HudRadarDots (radar_dots.py)
 
     self._exp_gradient = Gradient(
       start=(0.0, 1.0),  # Bottom of path
@@ -157,9 +157,10 @@ class ModelRenderer(Widget, ModelRendererSP):
       self._draw_lane_lines()
       self._draw_path(sm)
 
-    # FORK(HUD): every radar track as a dot over the path, engaged or not; HudRadarDots off: no socket, nothing drawn
-    self._radar_dots.render(rect, self._car_space_transform, self._path.raw_points, self._path_offset_z,
-                            self._camera_offset, radar_state)
+    # FORK(HUD): every radar track as a dot, engaged or not, laid out here and drawn by the road view over its bottom
+    # fade (augmented_road_view.py); HudRadarDots off: no socket, nothing laid out or drawn
+    self.radar_dots.update(rect, self._car_space_transform, self._path.raw_points, self._path_offset_z,
+                           self._camera_offset, radar_state)
 
     # if render_lead_indicator and radar_state:
     #   self._draw_lead_indicator()

@@ -23,13 +23,19 @@ chevron is - and projected through the model renderer's car-space transform. The
 matrix times the points), so it does not depend on the model renderer keeping _map_to_screen (upstream's lead-bar
 change removes it).
 
+When. The model renderer lays the dots out (update(), where the transform and the path are), and the road view draws
+them (draw(), mici augmented_road_view.py) right after its bottom fade, still inside the camera's scissor and under the
+alerts. Drawn under the fade, a track nearer than about 10-12 m - exactly the range where the clutter guard holds one
+and a stopped queue sits - was dimmed to nothing (review, push13). draw() draws only what update() laid out since the
+last draw, so a frame the model renderer leaves early (no model or calibration yet) draws no dots.
+
 Cost. With the toggle off the UI does no work for it: radarTracks is NOT in the UI's shared SubMaster, no socket is
 open, nothing is parsed, projected or drawn - one cached settings read a frame (hud_settings, re-read from the params
 at most once a second). On, it reads radarTracks from its own conflated socket without a poller (a SubMaster's
 update(0) costs ~0.1 ms a frame on a PC even with nothing new; this read ~0.2 us), takes the points out of each message
 once, projects them again only when the tracks, the leads, the model path, the camera transform or the rect changed,
-and draws two circles a dot (at most ~13 ELESYS points). Off again closes the socket. No message for STALE_S (as a
-SubMaster's alive), or a message card marked invalid (a radar error): no dots.
+and draws two circles a dot (at most ~13 ELESYS points). Off again closes the socket. No message for STALE_S (what a
+SubMaster's alive would allow radarTracks), or a message card marked invalid (a radar error): no dots.
 """
 import math
 import time
@@ -45,7 +51,9 @@ from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import held_track_id,
 
 SERVICE = "radarTracks"
 RADAR_TO_CAMERA = 1.52   # radard.RADAR_TO_CAMERA: the radar is this far ahead of the model's origin (test pins the two)
-STALE_S = 0.5            # SubMaster's alive for a 20 Hz service: 10 periods
+# a SubMaster's alive for radarTracks (10 periods of services.py's 20 Hz). The ELESYS radar sends at 10 Hz (its 0x423
+# trigger; owner routes: median gap 0.100 s, 99th percentile 0.11 s), so here it is 5 of its periods.
+STALE_S = 0.5
 
 OTHER, LEAD, LEAD2, HELD = 0, 1, 2, 3   # what radard made of a track
 
@@ -165,7 +173,8 @@ class TracksSocket:
 
 
 class RadarDots:
-  """The model renderer's hook (mici model_renderer.py): render() once a frame, after the path."""
+  """The hooks: update() from the model renderer once a frame, after the path (mici model_renderer.py), and draw() from
+  the road view after its bottom fade (mici augmented_road_view.py)."""
   def __init__(self, settings: HudSettingsReader = hud_settings, sock_factory: Callable = TracksSocket,
                clock: Callable[[], float] = time.monotonic):
     self._settings = settings
@@ -177,6 +186,7 @@ class RadarDots:
     self._inputs: tuple = ()
     self.dots: list[Dot] = []
     self._draw: list[tuple] = []     # (Vector2, r, mark) per dot, made once per layout
+    self._fresh = False              # update() ran since the last draw()
 
   @property
   def subscribed(self) -> bool:
@@ -186,6 +196,7 @@ class RadarDots:
     self._tracks, self._arrays, self._inputs, self.dots, self._draw = None, ([], None, None), (), [], []
 
   def update(self, rect, transform, path, z_offset: float, camera_offset: float, radar_state) -> list[Dot]:
+    self._fresh = True
     if not self._settings.get().radar_dots:
       if self._sock is not None:   # off: drop the socket and the dots
         self._sock = None
@@ -211,7 +222,10 @@ class RadarDots:
       self._draw = [(rl.Vector2(d.x, d.y), d.r, d.mark) for d in self.dots]
     return self.dots
 
-  def render(self, rect, transform, path, z_offset: float, camera_offset: float, radar_state) -> None:
-    self.update(rect, transform, path, z_offset, camera_offset, radar_state)
+  def draw(self) -> None:
+    """The dots update() laid out, over the bottom fade; nothing on a frame update() did not run."""
+    if not self._fresh:
+      return
+    self._fresh = False
     for center, r, mark in self._draw:
       draw_dot(center, r, mark)
