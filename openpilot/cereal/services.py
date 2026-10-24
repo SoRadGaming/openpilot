@@ -93,6 +93,8 @@ _services: dict[str, tuple] = {
   "liveMapDataSP": (True, 1., 1),
   "modelDataV2SP": (True, 20., None, QueueSize.BIG),
   "liveLocationKalman": (True, 20.),
+  # FORK(CLOSE-FOLLOW): close follow in queues, from plannerd at plan rate; 2 Hz in the qlog (close_follow.py)
+  "customReserved10": (True, 20., 10),
 
   # debug
   "uiDebug": (True, 0., 1),

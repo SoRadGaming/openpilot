@@ -261,8 +261,9 @@ class LongitudinalMpc:
     for i in range(N):
       self.solver.cost_set(i, 'Zl', Zl)
 
-  def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard):
-    jerk_factor = get_jerk_factor(personality)
+  def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard, jerk_factor=None):
+    # FORK(CLOSE-FOLLOW): jerk_factor overrides the personality's (close follow's own MPC, close_follow.py); None is upstream
+    jerk_factor = get_jerk_factor(personality) if jerk_factor is None else jerk_factor
     a_change_cost = A_CHANGE_COST if prev_accel_constraint else 0
     cost_weights = [X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST, jerk_factor * a_change_cost, jerk_factor * J_EGO_COST]
     constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
@@ -307,8 +308,9 @@ class LongitudinalMpc:
     lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
     return lead_xv
 
-  def update(self, radarstate, personality=log.LongitudinalPersonality.standard):
-    t_follow = get_T_FOLLOW(personality)
+  def update(self, radarstate, personality=log.LongitudinalPersonality.standard, t_follow=None):
+    # FORK(CLOSE-FOLLOW): t_follow overrides the personality's (close follow's own MPC, close_follow.py); None is upstream
+    t_follow = get_T_FOLLOW(personality) if t_follow is None else t_follow
 
     lead_xv_0 = self.process_lead(radarstate.leadOne)
     lead_xv_1 = self.process_lead(radarstate.leadTwo)
