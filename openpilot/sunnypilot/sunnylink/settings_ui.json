@@ -1758,6 +1758,12 @@
               "description": "Top of the right strip - a curve arrow and openpilot's target speed for the curve, in 5 km/h (5 mph) steps, while Smart Cruise Control is slowing the car for it. It goes as soon as you take over the speed. A planned stop takes the place first."
             },
             {
+              "key": "HudCloseFollow",
+              "widget": "toggle",
+              "title": "Close Follow Mark",
+              "description": "Bottom of the right strip - a small mark of two cars, one close behind the other, while Close Follow (Vehicle > Honda) is on and openpilot is holding the closer gap behind the car ahead, in slow traffic. It goes when Close Follow steps out (a car braking, a short time to collision, a downhill, a warning, your pedals) and at a stop. The confidence ball covers it when it comes down that far. Display only."
+            },
+            {
               "key": "HudRadarDots",
               "widget": "toggle",
               "title": "Radar Dots",
@@ -2479,6 +2485,13 @@
               "type": "offroad_only"
             }
           ]
+        },
+        {
+          "key": "CloseFollow",
+          "widget": "toggle",
+          "title": "Close Follow",
+          "description": "In slow traffic openpilot follows the car ahead more closely, so cars cannot cut into the gap - 6 m at a stop, about 1 s behind at 15 km/h - and the gap grows back to your driving personality's by 17-22 km/h. It works by itself whenever openpilot drives the speed behind a car the radar tracks, and steps out at once for a car braking (3 s after a hard brake), a short time to collision, a downhill steeper than 3 %, any collision warning, a new car, or your gas or brake. Off - it only logs what it would do. 2013-15 Accord (Elesys) with sunnypilot longitudinal only.",
+          "details": "A small two-car mark on the comma 4's right edge shows while it is holding the closer gap. Takes effect within 3 s, also while driving."
         },
         {
           "key": "LeadBrakeAssistMode",

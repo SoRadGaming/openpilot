@@ -29,6 +29,10 @@ the stock MAX number's place (HudApproachingLimit, hud_model.ApproachState).
 FORK(NSW-CAMERAS) push13: HudCameraAlerts - 'camera (map)' right of that place, before a fixed speed, red-light or
 school-zone camera on the road ahead (hud_model.CameraState). Display only; no chime (a chime needs a selfdrived event,
 which this batch may not add to cereal).
+
+FORK(CLOSE-FOLLOW) release13: HudCloseFollow - a small two-car mark at the foot of the right strip while close follow is
+live and holding the closer gap (hud_model.CloseFollowCue, customReserved10); the planned stop and the curve keep the
+strip's top, and the confidence ball draws over the mark when it comes down that far.
 """
 import math
 import time
@@ -51,6 +55,7 @@ PARAM_LANE_BLOCK = "HudLaneBlock"
 PARAM_LIMIT_STYLE = "HudLimitStyle"         # INT: how the coming limit and the confirm are drawn there (STYLES)
 PARAM_RADAR_DOTS = "HudRadarDots"           # every radar track as a dot on the road (radar_dots.py); defaults OFF
 PARAM_CAMERA = "HudCameraAlerts"            # FORK(NSW-CAMERAS): 'camera (map)' before a camera on the road ahead
+PARAM_CLOSE_FOLLOW = "HudCloseFollow"       # FORK(CLOSE-FOLLOW): the right strip's foot - close follow holding the gap
 
 STYLE_SPLIT, STYLE_STOCK_PLUS = 0, 1        # D3 'split card' (the default), D1 'stock-plus'
 STYLES = (STYLE_SPLIT, STYLE_STOCK_PLUS)
@@ -60,7 +65,8 @@ FIELDS = {PARAM_STOPPED_TIMER: "stopped_timer", PARAM_STOPPED_BANNER: "stopped_b
           PARAM_PLANNED_STOP: "planned_stop", PARAM_CURVE: "curve", PARAM_COMPACT_LIMIT: "compact_limit",
           PARAM_COMPACT_DISENGAGE: "compact_disengage", PARAM_COMPACT_TURN: "compact_turn",
           PARAM_APPROACHING_LIMIT: "approaching_limit", PARAM_LANE_BLOCK: "lane_block",
-          PARAM_CAMERA: "camera"}  # FORK(NSW-CAMERAS)
+          PARAM_CAMERA: "camera",  # FORK(NSW-CAMERAS)
+          PARAM_CLOSE_FOLLOW: "close_follow"}  # FORK(CLOSE-FOLLOW)
 ALL_PARAMS = tuple(FIELDS)   # the toggles that default on
 KEYS = ALL_PARAMS + (PARAM_LIMIT_STYLE, PARAM_RADAR_DOTS)   # every HUD key: those toggles, the style and the radar dots
 
@@ -77,6 +83,7 @@ class HudSettings:
   approaching_limit: bool = False
   lane_block: bool = False
   camera: bool = False  # FORK(NSW-CAMERAS)
+  close_follow: bool = False  # FORK(CLOSE-FOLLOW)
   limit_style: int = STYLE_SPLIT
   radar_dots: bool = False
 

@@ -1,6 +1,7 @@
 from collections.abc import Callable
 
 from openpilot.cereal import log
+from opendbc.car.honda.values import HONDA_ELESYS  # FORK(CLOSE-FOLLOW)
 
 from openpilot.system.ui.widgets.scroller import NavScroller
 from openpilot.selfdrive.ui.mici.widgets.button import BigParamControl, BigMultiParamToggle, BigToggle, GreyBigButton
@@ -44,6 +45,10 @@ class TogglesLayoutMici(NavScroller):
     self._personality_toggle = BigMultiParamToggle("driving personality", "LongitudinalPersonality", ["aggressive", "standard", "relaxed"])
     self._experimental_btn = BigToggle("experimental mode", initial_state=ui_state.params.get_bool("ExperimentalMode"),
                                        toggle_callback=self._on_experimental_mode)
+    # FORK(CLOSE-FOLLOW): close follow in queues (close_follow.py): on, it follows closer below ~20 km/h; off, it only
+    # logs what it would do. The Elesys Accord with openpilot longitudinal only (_update_toggles). Also in sunnylink
+    # Vehicle > Honda. plannerd re-reads it within 3 s, so it may change while driving.
+    self._close_follow_toggle = BigParamControl("close follow", "CloseFollow")
     is_metric_toggle = BigParamControl("use metric units", "IsMetric")
     # FORK(HUD): every radar track as a dot on the road view, a diagnostic, off by default (radar_dots.py); also in
     # sunnylink Visuals > HUD. The road view re-reads it within a second, so it may change while driving.
@@ -57,6 +62,7 @@ class TogglesLayoutMici(NavScroller):
     self._scroller.add_widgets([
       self._personality_toggle,
       self._experimental_btn,
+      self._close_follow_toggle,  # FORK(CLOSE-FOLLOW)
       is_metric_toggle,
       radar_dots_toggle,  # FORK(HUD)
       ldw_toggle,
@@ -69,6 +75,7 @@ class TogglesLayoutMici(NavScroller):
     # Toggle lists
     self._refresh_toggles = (
       ("ExperimentalMode", self._experimental_btn),
+      ("CloseFollow", self._close_follow_toggle),  # FORK(CLOSE-FOLLOW)
       ("IsMetric", is_metric_toggle),
       ("HudRadarDots", radar_dots_toggle),  # FORK(HUD)
       ("IsLdwEnabled", ldw_toggle),
@@ -115,6 +122,10 @@ class TogglesLayoutMici(NavScroller):
         self._experimental_btn.set_checked(False)
         self._personality_toggle.set_visible(False)
         ui_state.params.remove("ExperimentalMode")
+
+    # FORK(CLOSE-FOLLOW): only where close follow runs - the Elesys Accord with openpilot longitudinal (not stock ACC)
+    self._close_follow_toggle.set_visible(ui_state.CP is not None and ui_state.CP.carFingerprint in HONDA_ELESYS and
+                                          ui_state.has_longitudinal_control)
 
     # Refresh toggles from params to mirror external changes
     for key, item in self._refresh_toggles:

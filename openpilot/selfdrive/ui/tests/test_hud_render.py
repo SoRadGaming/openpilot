@@ -15,6 +15,9 @@ FORK(HUD): the comma 4 onroad view, drawn for real in a headless raylib window, 
     no longer draws the limit in its arrow's box;
   * the right rail: its item only in the ball's strip, white or grey as openpilot drives the plan or not, the ball held
     under it and back where the stock one is once it has gone, and with its two settings off the stock strip;
+  * FORK(CLOSE-FOLLOW) release13: close follow's mark at the strip's foot only while customReserved10 says live and
+    tightening - the planned stop above it and the ball pixel for pixel where they are without it; nothing in shadow,
+    nothing with HudCloseFollow off;
   * compact alerts: 'set speed changed' pixel-identical to no alert (and the MAX number free to show), the disengage
     and turn banners top left, nothing below them, a critical alert exactly stock, each group's setting off exactly
     stock;
@@ -146,7 +149,8 @@ ui_state.speed_limit_mode = 1
 ui_state.status = UIStatus.ENGAGED
 sm = ui_state.sm
 SERVICES = ("carState", "selfdriveState", "controlsState", "longitudinalPlanSP", "liveMapDataSP", "radarState")
-RAIL_SERVICES = ("modelV2", "carControl", "longitudinalPlan")  # the right rail's own; a fresh default every scene
+RAIL_SERVICES = ("modelV2", "carControl", "longitudinalPlan",  # the right rail's own; a fresh default every scene
+                 "customReserved10")  # FORK(CLOSE-FOLLOW): close follow's log, for the mark at the strip's foot
 
 
 def stopping_plan(stop_m):
@@ -173,12 +177,12 @@ def put(svc, fill, frame=5):
 
 def scene(v=110 / KPH, limit=110, ahead=0, ahead_dist=0.0, ahead_valid=True, nsw_state=2, source="map",
           standstill=False, alert=None, assist="active", set_kph=110, lead=None, lp=True, cs=True, offset=0, rail=None,
-          map_frame=5, enabled=True, now_key=None, armed=None):
+          map_frame=5, enabled=True, now_key=None, armed=None, cf=None):
   """rail = dict(stop_m, solid, curve_kph, confident): the right rail's messages (modelV2's plan, carControl,
   longitudinalPlan, smart cruise control) - none of them otherwise. No limit ahead unless ahead > 0. enabled=False:
   openpilot not engaged (selfdriveState), the set speed kept as this non-PCM car keeps it. sla-flash: now_key =
   (key, limit, target), the planner's offer (assist.nowKey / nowLimit / nowTarget); armed = (limit, target), the press
-  it holds (assist.armedLimit / armedTarget / armedSpeed)."""
+  it holds (assist.armedLimit / armedTarget / armedSpeed). cf = (live, tightening): close follow's customReserved10."""
   for svc in SERVICES + RAIL_SERVICES:
     sm.seen[svc] = sm.alive[svc] = sm.updated[svc] = False
     sm.recv_frame[svc] = 0
@@ -195,6 +199,10 @@ def scene(v=110 / KPH, limit=110, ahead=0, ahead_dist=0.0, ahead_valid=True, nsw
     put("modelV2", model)
     put("carControl", lambda c: setattr(c, "longActive", rail.get("solid", True)))
     put("longitudinalPlan", lambda p: setattr(p, "longitudinalPlanSource", "e2e" if rail.get("solid", True) else "cruise"))
+  if cf is not None:
+    def close_follow(c):
+      c.mode, c.live, c.tightening, c.switchOn = 2 if cf[0] else 1, cf[0], cf[1], cf[0]
+    put("customReserved10", close_follow)
 
   def car(c):
     c.vEgo = c.vEgoCluster = v
@@ -884,6 +892,35 @@ out["rail_seq"] = {"strip_vs_stock": [strip_diff(a, b) for a, b in zip(seq_on, s
                    "balllo_green": [count(g, BALL_LOW, "green") for g in seq_on],
                    "stock_ballhi_green": [count(g, BALL_HIGH, "green") for g in seq_stock]}
 
+# FORK(CLOSE-FOLLOW): close follow's mark at the strip's foot - with the planned stop up (it stays where it is), cruising
+# behind a car, in shadow (nothing), with its setting off (nothing), and its fade in and out
+CF_FOOT = (476, 180, 536, 240)
+cf_r = {}
+for name, base, cf, prm in (("stop", "rail_stop", (True, True), ON), ("cruise", "cruise_slow", (True, True), ON),
+                            ("shadow", "rail_stop", (False, False), ON), ("live_not_tightening", "rail_stop", (True, False), ON),
+                            ("setting_off", "rail_stop", (True, True), {**ON, HS.PARAM_CLOSE_FOLLOW: False})):
+  kw = dict(states[base])
+  if "rail" not in kw:
+    kw["rail"] = dict(stop_m=None, confident=True)
+  ref_scene = dict(kw)
+  scene(**ref_scene)
+  ref = render(f"cf_{name}_ref", prm)
+  scene(**kw, cf=cf)
+  img = render(f"cf_{name}_on", prm)
+  cf_r[name] = {"vs_ref": same(img, ref), "box": diff_box(img, ref), "strip_vs_ref": strip_diff(img, ref),
+                "foot_white": count(img, CF_FOOT, "white"), "foot_grey": count(img, CF_FOOT, "grey"),
+                "foot_lit": int((box(img, *CF_FOOT).max(axis=2) > 120).sum()),
+                "rail_vs_ref": same(box(img, *RAIL), box(ref, *RAIL)),
+                "ball_vs_ref": same(box(img, *BALL_LOW), box(ref, *BALL_LOW)) + same(box(img, *BALL_HIGH), box(ref, *BALL_HIGH))}
+# the debounce and the fade (after 5 s for the ball to settle): 0.4 s in nothing yet; drawn by 1 s; still there 0.8 s
+# after it stops; gone 1.5 s after
+CF_ON = dict(states["rail_stop"], cf=(True, True))
+CF_OFF = dict(states["rail_stop"], cf=(True, False))
+seq = run(ON, [(CF_OFF, 100, "cf_seq_1"), (CF_ON, 8, "cf_seq_2_debounce"), (CF_ON, 12, "cf_seq_3_shown"),
+               (CF_OFF, 16, "cf_seq_4_held"), (CF_OFF, 14, "cf_seq_5_gone")])
+cf_r["seq_lit"] = [int((box(g, *CF_FOOT).max(axis=2) > 120).sum()) for g in seq]
+out["close_follow"] = cf_r
+
 # the stop time's size: full up to 59:59, shrunk beyond
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_cluster import timer_size
 out["timer_size"] = {t: round(timer_size(t), 3) for t in ("0:30", "59:59", "1:02:05")}
@@ -1515,6 +1552,22 @@ class TestHudRender(OpenpilotTestCase):
                 "rail_both_both_off"):
       assert t[key]["strip_vs_stock"] == 0, f"{key}: the stock strip, pixel for pixel"
     assert t["rail_both_stop_off"]["strip_vs_curve"] == 0, "the stop off: the curve takes its place"
+
+  # ----------------------------------------------------------------------------------------- FORK(CLOSE-FOLLOW)
+  def test_close_follows_mark_at_the_strips_foot(self):
+    c = self.r["close_follow"]
+    for name in ("stop", "cruise"):
+      r = c[name]
+      assert r["foot_lit"] > 60, f"{name}: the two-car mark drawn at the strip's foot {r}"
+      x0, y0, x1, y1 = r["box"]
+      assert x0 >= STRIP_X and y0 >= 180, f"{name}: only at the strip's foot {r}"
+      assert r["rail_vs_ref"] == 0 and r["ball_vs_ref"] == 0, f"{name}: the item and the ball where they were {r}"
+    for name in ("shadow", "live_not_tightening", "setting_off"):
+      assert c[name]["vs_ref"] == 0, f"{name}: nothing drawn {c[name]}"
+    lit = c["seq_lit"]
+    assert lit[0] == 0 and lit[1] == 0, f"not tightening, then its first 0.4 s: nothing {lit}"
+    assert lit[2] > 60 and lit[3] > 60, f"shown, and held 0.8 s after it stops tightening {lit}"
+    assert lit[4] == 0, f"then gone {lit}"
 
   def test_the_rail_through_a_drive(self):
     s = self.r["rail_seq"]

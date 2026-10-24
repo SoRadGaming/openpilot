@@ -909,3 +909,28 @@ def camera_badge(x: float, y: float, dist_text: str, label: str, kind: int, alph
   text_ink(label, CAM_LABEL, x + CAM_PAD_X, y + CAM_PAD_Y + row1 + CAM_ROW_GAP + lh / 2, rl.Color(255, 255, 255, int(210 * alpha)),
            w=FontWeight.MEDIUM, anchor="left")
   return x, y, x + w, y + h
+
+
+# ------------------------------------------------------------------------------------------- FORK(CLOSE-FOLLOW): the mark
+def close_follow_glyph(cx: float, bottom: float, w: float, col: rl.Color):
+  """Close follow holding the closer gap: two cars seen from behind, the far one smaller, one close behind the other -
+  a queue - in a w x 0.9w box whose bottom edge is at `bottom`, centered on cx. Opaque, like the rail's other glyphs
+  (the strip is black: a fade is col dimmed toward black)."""
+  k = w / 100.0
+  top = bottom - 90 * k
+
+  def car(x0: float, y0: float, cw: float, ch: float):
+    """A car from behind in a cw x ch box: the roof and rear window, the body, two wheels under it."""
+    roof_w, roof_h = cw * 0.62, ch * 0.36
+    rl.draw_rectangle_rounded(rl.Rectangle(cx + x0 + (cw - roof_w) / 2, y0, roof_w, roof_h + ch * 0.1), 0.45, 6, col)
+    win_w, win_h = roof_w * 0.66, roof_h * 0.48
+    rl.draw_rectangle_rounded(rl.Rectangle(cx + x0 + (cw - win_w) / 2, y0 + roof_h * 0.3, win_w, win_h), 0.4, 6,
+                              rl.Color(0, 0, 0, 255))
+    body_y, body_h = y0 + roof_h, ch * 0.46
+    rl.draw_rectangle_rounded(rl.Rectangle(cx + x0, body_y, cw, body_h), 0.42, 8, col)
+    wheel_w, wheel_h = cw * 0.17, ch * 0.18
+    for wx in (cw * 0.08, cw - cw * 0.08 - wheel_w):
+      rl.draw_rectangle_rounded(rl.Rectangle(cx + x0 + wx, body_y + body_h - 1, wheel_w, wheel_h), 0.3, 4, col)
+  # the car ahead, smaller and higher; ours, close behind it
+  car(-29 * k, top, 58 * k, 40 * k)
+  car(-46 * k, top + 42 * k, 92 * k, 48 * k)

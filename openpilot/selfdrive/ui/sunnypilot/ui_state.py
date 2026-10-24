@@ -39,6 +39,7 @@ class UIStateSP:
       "gpsLocation", "lateralTorqueParameters", "carStateSP", "liveMapDataSP", "carParamsSP", "lateralDelay",
       "modelDataV2SP",  # FORK(HUD): the road-edge block and the refused nudge, for the comma 4's lane-block tile
       "customReserved12",  # FORK(NSW-CAMERAS): the camera ahead, for the comma 4's 'camera (map)'
+      "customReserved10",  # FORK(CLOSE-FOLLOW): close follow, live and tightening, for the comma 4's right-strip mark
     ]
 
     self.sunnylink_state = SunnylinkState()

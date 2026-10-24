@@ -1,12 +1,14 @@
 """FORK(LEAD-BRAKE) + FORK(CLOSE-FOLLOW), the merge guard: the lead brake assist (leadbrake) and close follow
 (closefollow) in one planner.
 
-Below 35 km/h close follow solves its own MPC and, live, blends it into the plan's trajectory by the gap's authority.
-These pin how the two meet, behind a lead that brakes hard at -4 m/s^2 from 8 m/s:
+Below its hand-back close follow solves its own MPC and, live, blends it into the plan's trajectory by the gap's
+authority. These pin how the two meet, behind a lead that brakes hard at -4 m/s^2 from 4.5 m/s (release13: inside the
+safe limit; the leadbrake branch ran it at 8 m/s, inside push13's 35 km/h band):
   * close follow's MPC is handed the lead brake's view of the lead (radar_state), not sm['radarState'];
-  * close follow's own guard drops the gap at once for a lead braking harder than -0.5 (GAP_LEAD_BRAKE), and the lead
-    brake's raw decel needs radard's aLeadK under -1.0, so on every frame the projection is active close follow has no
-    authority: the projection is never diluted, and the lead brake's comparison solve is never skipped;
+  * close follow's own guard drops the gap at once for a lead braking harder than -0.5 (GAP_LEAD_BRAKE; and holds it
+    out 3 s after a hard brake), and the lead brake's raw decel needs radard's aLeadK under -1.0, so on every frame the
+    projection is active close follow has no authority: the projection is never diluted, and the lead brake's
+    comparison solve is never skipped;
   * the lead brake in shadow (mode 1) is still the plan without it, bit for bit, whatever close follow's mode.
 Skipped until close_follow.py is in the tree; written and run on a scratch merge of closefollow d34ccbb70 and leadbrake,
 where it fails if close follow's MPC still reads sm['radarState'] (the merge's resolution, docs/fork/README.md LBA).
@@ -15,6 +17,7 @@ import unittest
 from typing import Any, cast
 from unittest import mock
 
+from openpilot.common.params import Params
 from openpilot.common.test import OpenpilotTestCase
 import openpilot.selfdrive.controls.lib.longitudinal_planner as LP
 from openpilot.sunnypilot.selfdrive.controls.lib import lead_brake_assist as lba
@@ -24,12 +27,16 @@ try:
 except ImportError:
   cf = None   # branch closefollow not merged yet
 
-V = 8.0   # m/s: inside close follow's speed range
+V = 4.5   # m/s (16.2 km/h): inside close follow's safe limit (release13: aggressive hands back at 17.2)
 
 
 def planner(lb_mode, cf_mode):
-  with mock.patch.object(LP, 'read_mode', return_value=cf_mode), mock.patch.object(lba, 'read_mode', return_value=lb_mode):
-    return tl.planner(lb_mode)
+  # (the planner starts at this test's speed: tl.planner's init_v is tl.V0)
+  with mock.patch.object(LP, 'read_mode', return_value=cf_mode), mock.patch.object(lba, 'read_mode', return_value=lb_mode),        mock.patch.object(tl, 'V0', V):
+    pl = tl.planner(lb_mode)
+  # release13: close follow re-reads its switch at the first engage - the switch says the mode this test wants
+  Params().put_bool("CloseFollow", cf_mode == cf.MODE_LIVE, block=True)
+  return pl
 
 
 def frames():

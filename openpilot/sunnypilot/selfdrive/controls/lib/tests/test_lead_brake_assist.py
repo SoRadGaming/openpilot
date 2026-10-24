@@ -557,6 +557,8 @@ def planner(mode, fingerprint=CAR.HONDA_ACCORD_9G_AU, cfg=None, flags=0):
   CP.longitudinalActuatorDelay = 0.5
   CP_SP = custom.CarParamsSP.new_message()
   CP_SP.flags = flags
+  # FORK(CLOSE-FOLLOW): the lead brake alone - close follow in shadow (test_lead_brake_close_follow.py has both)
+  Params().put_bool("CloseFollow", False, block=True)
   with mock.patch.object(lba, 'read_mode', return_value=mode):
     pl = LongitudinalPlanner(CP, CP_SP.as_reader(), init_v=V0)
   if pl.lead_brake is not None and cfg is not None:

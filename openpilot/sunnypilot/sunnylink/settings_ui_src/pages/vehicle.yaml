@@ -41,6 +41,19 @@ sections:
       ECON and S tables will be fitted from) is only counted while that toggle is on.
     enablement:
     - $ref: '#/macros/offroad'
+  # FORK(CLOSE-FOLLOW): CloseFollow, re-read by plannerd every 3 s (close_follow.py), so not offroad-only. On (the
+  # default) live, off shadow (logged only). Also on the comma 4's Toggles page.
+  - key: CloseFollow
+    widget: toggle
+    title: Close Follow
+    description: In slow traffic openpilot follows the car ahead more closely, so cars cannot cut into the gap - 6 m at a
+      stop, about 1 s behind at 15 km/h - and the gap grows back to your driving personality's by 17-22 km/h. It works
+      by itself whenever openpilot drives the speed behind a car the radar tracks, and steps out at once for a car
+      braking (3 s after a hard brake), a short time to collision, a downhill steeper than 3 %, any collision warning,
+      a new car, or your gas or brake. Off - it only logs what it would do. 2013-15 Accord (Elesys) with sunnypilot
+      longitudinal only.
+    details: A small two-car mark on the comma 4's right edge shows while it is holding the closer gap. Takes effect
+      within 3 s, also while driving.
   # FORK(LEAD-BRAKE): LeadBrakeAssistMode, read once when plannerd starts (lead_brake_assist.py), so offroad only.
   # 0 off, 1 shadow (the default), 2 live. The owner's only switch: there is no SSH to the car.
   - key: LeadBrakeAssistMode

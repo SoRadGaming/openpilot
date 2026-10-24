@@ -53,6 +53,8 @@ def main():
       msg.driverAssistance.leftLaneDeparture = ldw.left
       msg.driverAssistance.rightLaneDeparture = ldw.right
       pm.send('driverAssistance', msg)
+      # FORK(CLOSE-FOLLOW): close follow's deferred (shadow) work and customReserved10, after every message above is out
+      longitudinal_planner.publish_deferred(pm)
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.stopping_tune import STOPPING_S
 from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import real_lead  # FORK(HONDA_ACCORD_9G_AU)
 from openpilot.sunnypilot.selfdrive.controls.lib.reentry_ramp import ReentryRamp, lead_decel, reentry_ramp_applies  # FORK(HONDA_ACCORD_9G_AU)
 from openpilot.common.params import Params  # FORK(CLOSE-FOLLOW)
-from openpilot.sunnypilot.selfdrive.controls.lib.close_follow import MODE_OFF, CloseFollow, close_follow_applies, read_mode  # FORK(CLOSE-FOLLOW)
+from openpilot.sunnypilot.selfdrive.controls.lib.close_follow import CloseFollow, close_follow_applies, read_mode  # FORK(CLOSE-FOLLOW)
 from openpilot.sunnypilot.selfdrive.controls.lib.lead_brake_assist import lead_brake_planner  # FORK(LEAD-BRAKE)
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
@@ -79,12 +79,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     # FORK(HONDA_ACCORD_9G_AU): the ramp-in after the driver lifts off the gas (reentry_ramp.py); None on every other
     # car and in stock ACC mode, which keeps upstream's plan bit for bit.
     self.reentry_ramp = ReentryRamp(dt) if reentry_ramp_applies(CP, CP_SP) else None
-    # FORK(CLOSE-FOLLOW): close follow in queues (close_follow.py), CloseFollowMode read once here: 1 shadow (logged
-    # only), 2 live. None on every other car, in stock ACC mode and in mode 0: upstream's plan bit for bit.
+    # FORK(CLOSE-FOLLOW): close follow in queues (close_follow.py): live while the user's CloseFollow switch is on (the
+    # default), shadow (logged only) while it is off - read here, then every 3 s and at every engage by close follow
+    # itself. None on every other car and in stock ACC mode: upstream's plan bit for bit.
     self.close_follow = None
     if close_follow_applies(CP, CP_SP):
-      cf_mode = read_mode(Params())
-      self.close_follow = CloseFollow(cf_mode, dt) if cf_mode != MODE_OFF else None
+      params = Params()
+      self.close_follow = CloseFollow(read_mode(params), dt, params=params)
     # FORK(LEAD-BRAKE): brake sooner when the lead brakes hard (lead_brake_assist.py). None on every other car, in stock
     # ACC mode and with LeadBrakeAssistMode 0, which keeps upstream's plan bit for bit.
     self.lead_brake = lead_brake_planner(CP, CP_SP, dt)
@@ -158,9 +159,9 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     a_prev = self.output_a_target
 
     action_t =  self.CP.longitudinalActuatorDelay + DT_MDL
-    # FORK(CLOSE-FOLLOW): close follow's own MPC (a closer follow time below 35 km/h) beside the plan's, from the same
-    # state. Live (mode 2) blends its trajectory in by the gap's authority - the plan's own while it is out; shadow
-    # (mode 1) only records the call and runs it in publish(), after the plan is sent, and only logs it (close_follow.py).
+    # FORK(CLOSE-FOLLOW): close follow's own MPC (a closer follow time below the hand-back, 17-22 km/h) beside the plan's,
+    # from the same state. Live blends its trajectory in by the gap's authority - the plan's own while it is out; shadow
+    # only records the call and runs it in publish_deferred(), after plannerd's sends, and only logs it (close_follow.py).
     if self.close_follow is not None:
       cf_trajectories = self.close_follow.update_mpc(sm, reset_state, self.v_desired_filter.x, self.output_a_target,
                                                      prev_accel_constraint, self.fcw, self.mpc,
@@ -242,10 +243,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     pm.send('longitudinalPlan', plan_send)
 
     self.publish_longitudinal_plan_sp(sm, pm)
-    # FORK(CLOSE-FOLLOW): shadow runs close follow here, once the plan is out (its second MPC solve never delays
-    # longitudinalPlan; live it ran inline in update()), then customReserved10, what close follow did (would do)
+    if self.lead_brake is not None:  # FORK(LEAD-BRAKE)
+      self.lead_brake.publish(pm, plan_send.valid, self.output_a_target)
+
+  def publish_deferred(self, pm):
+    """FORK(CLOSE-FOLLOW): plannerd calls this once longitudinalPlan, longitudinalPlanSP and driverAssistance are sent.
+    Shadow runs close follow here (its second MPC solve never delays a message controlsd acts on; live it ran inline in
+    update()), then customReserved10, what close follow did (would do)."""
     if self.close_follow is not None:
       self.close_follow.run_deferred()
       self.close_follow.publish(pm)
-    if self.lead_brake is not None:  # FORK(LEAD-BRAKE)
-      self.lead_brake.publish(pm, plan_send.valid, self.output_a_target)

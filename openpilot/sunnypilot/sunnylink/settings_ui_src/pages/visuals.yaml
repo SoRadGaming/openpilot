@@ -159,6 +159,14 @@ sections:
     description: Top of the right strip - a curve arrow and openpilot's target speed for the curve, in 5 km/h (5 mph)
       steps, while Smart Cruise Control is slowing the car for it. It goes as soon as you take over the speed. A
       planned stop takes the place first.
+  # FORK(CLOSE-FOLLOW): HudCloseFollow (release13) - close follow's mark at the foot of the right strip
+  - key: HudCloseFollow
+    widget: toggle
+    title: Close Follow Mark
+    description: Bottom of the right strip - a small mark of two cars, one close behind the other, while Close Follow
+      (Vehicle > Honda) is on and openpilot is holding the closer gap behind the car ahead, in slow traffic. It goes when
+      Close Follow steps out (a car braking, a short time to collision, a downhill, a warning, your pedals) and at a
+      stop. The confidence ball covers it when it comes down that far. Display only.
   # FORK(HUD): HudRadarDots (push13) - the radar's tracks as dots (radar_dots.py), the one HUD toggle that defaults off
   - key: HudRadarDots
     widget: toggle

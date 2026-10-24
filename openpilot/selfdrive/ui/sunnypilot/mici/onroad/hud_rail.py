@@ -15,6 +15,10 @@ FORK(HUD): the comma 4's right rail - the top of the 60 px strip that holds the 
 A planned stop wins over a curve. Never a reason: no message knows whether the plan stops for a light, a sign or a queue
 the radar has not locked onto, so there are no light or sign icons. The rules are hud_model.RailState; this file draws.
 
+FORK(CLOSE-FOLLOW) release13: the strip's FOOT has close follow's mark - two cars, one close behind the other - while close
+follow is live and holding the closer gap (hud_model.CloseFollowCue, HudCloseFollow). It fades like the items, never
+moves them or the ball, and the ball (drawn after) covers it when low confidence brings the ball that far down.
+
 The approved style-B rail (2026-10-03 mockups): a 48 px glyph from y 6, ~18 px figures under it. While an item shows,
 the stock confidence ball - same size, math and colors - rides only the strip below it: its center is held at or
 below BALL_FLOOR, so it moves down only when it would otherwise reach the item. An item fades in over FADE_S while the
@@ -26,7 +30,8 @@ import pyray as rl
 
 from openpilot.selfdrive.ui.mici.onroad import SIDE_PANEL_WIDTH
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad import hud_draw as hd
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import RailFrame, RailState, RAIL_NONE, RAIL_STOP
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_model import (CloseFollowCue, RailFrame, RailState, RAIL_NONE,
+                                                                     RAIL_STOP)
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.hud_settings import HudSettings, hud_settings
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.widgets import Widget
@@ -43,6 +48,10 @@ BALL_GAP = 14           # clear space between the item and the ball's top; > 11 
                         # (radius 35) never reaches the item either
 BALL_FLOOR = ITEM_BOTTOM + BALL_GAP + BALL_R    # 114: the ball's center is never above this while an item shows
 FADE_S = 0.15           # an item fades in (out) over this while the ball eases down (back up), on the UI's clock
+# FORK(CLOSE-FOLLOW): the mark at the strip's foot
+CUE_W = 34              # px: the two-car mark's width (0.9 x as tall)
+CUE_BOTTOM = 8          # px above the strip's bottom edge
+CUE_LEVEL = 0.85        # drawn a little under full white: a quiet mark, not an alert
 
 
 def ease(p: float) -> float:
@@ -62,6 +71,10 @@ class HudRail(Widget):
     self._dt = 0.0
     self.settings: HudSettings = hud_settings.settings
     self.frame = RailFrame()
+    self._cue = CloseFollowCue()  # FORK(CLOSE-FOLLOW)
+    self._cue_presence = 0.0
+    self.cue_on = False
+    self.cue_rect: tuple | None = None   # where the mark was drawn this frame (tests)
 
   def _update_state(self):
     now = rl.get_time()
@@ -70,6 +83,8 @@ class HudRail(Widget):
     self.settings = hud_settings.get()
     self.frame = self._state.update(ui_state.sm, self.settings, started_frame=ui_state.started_frame, now=now,
                                     is_metric=ui_state.is_metric)
+    # FORK(CLOSE-FOLLOW)
+    self.cue_on = self._cue.update(ui_state.sm, self.settings, started_frame=ui_state.started_frame, now=now)
 
   def _step_presence(self, shown: bool) -> float:
     """One frame of the fade; returns the eased presence, 0..1."""
@@ -84,7 +99,21 @@ class HudRail(Widget):
     if self._ball is not None:
       self._ball.hud_floor_y = rect.y + BALL_FLOOR * k
 
+  def _render_cue(self, rect: rl.Rectangle):
+    """FORK(CLOSE-FOLLOW): close follow's mark at the strip's foot, faded in and out over FADE_S."""
+    step = self._dt / FADE_S
+    self._cue_presence = min(1.0, self._cue_presence + step) if self.cue_on else max(0.0, self._cue_presence - step)
+    k = ease(self._cue_presence)
+    self.cue_rect = None
+    if k <= 0.0:
+      return
+    cx = rect.x + rect.width - SIDE_PANEL_WIDTH / 2 - 1
+    bottom = rect.y + rect.height - CUE_BOTTOM
+    hd.close_follow_glyph(cx, bottom, CUE_W, hd.dim(hd.WHITE, CUE_LEVEL * k))
+    self.cue_rect = (cx - CUE_W / 2, bottom - 0.9 * CUE_W, cx + CUE_W / 2, bottom)
+
   def _render(self, rect: rl.Rectangle):
+    self._render_cue(rect)  # FORK(CLOSE-FOLLOW): the strip's foot - first, so the items and the ball draw over it
     f = self.frame
     if f.kind != RAIL_NONE:
       self._last = f

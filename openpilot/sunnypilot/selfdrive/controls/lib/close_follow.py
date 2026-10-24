@@ -1,82 +1,96 @@
 """
-FORK(CLOSE-FOLLOW): close follow in queues (push13; the owner's round-5 request: "close up in motorway queues so cars
-can't cut in, gap grows back with speed"). SHADOW in push13: CloseFollowMode 1 computes and logs everything below every
-plan and changes nothing - not the plan, the accel sent, the HUD or a CAN frame. Mode 2 (live) is built and tested but
-no UI can set it, and the on-switch is not decided (CloseFollowSwitch).
+FORK(CLOSE-FOLLOW): close follow in queues (the owner's round-5 request: "close up in motorway queues so cars can't cut
+in, gap grows back with speed"). push13 built it in shadow; release13 makes it LIVE (owner, 2026-10-24: "Automatic in
+queues", "Live now, with a safety limit", "Safe limit only").
+
+THE SWITCH: one user setting, CloseFollow (a BOOL, default ON; comma 4 Settings > Toggles 'close follow', sunnylink
+Vehicle > Honda 'Close Follow'). ON: live - close follow shapes the plan. OFF: shadow - it computes and logs everything
+below every plan and changes nothing (the plan, the accel sent, the HUD, every CAN frame are as without it). The planner
+reads it when plannerd starts, again every SWITCH_READ_S (3 s) and at every engage (reads only, never a write), and a
+change applies on that frame: switched ON, the gap and the lift start from nothing (the 1 s hold, then the ramp);
+switched OFF, close follow drops out at once, as on any trip. A switch that cannot be read is OFF (shadow).
+
+ACTIVATION is automatic (CloseFollowSwitch: wanted whenever openpilot longitudinal is engaged, off at every disengage):
+it switches itself in and out by the guards below - engaged, a real radar lead, under the hand-back speed.
 
 WHY. In a queue at 10-30 km/h openpilot sat 13-20 m behind (round 5, 95 routes: median 13.2 m at 10-20 km/h, 19.6 m at
 20-30) against the owner's own 9.4 / 13.4 m, and cars cut into gaps over 9-12 m. Two things hold the gap open:
   * the MPC's follow time, 1.25 s on aggressive (long_mpc.get_T_FOLLOW), plus its 6 m stop distance;
   * in experimental mode the model's own e2e plan, which keeps a longer gap than any personality and which the planner
     takes whenever it is the lowest candidate (49% of the owner's low-speed following, round 5).
-So close follow does two things, both only below CF_FADE_KPH (35 km/h), both with a real (not held) lead:
+So close follow does two things, both only with a real (not held) lead and only where its follow time is under the
+personality's:
 
 1. THE GAP (after theo886's Traffic Mode, sunnypilot `accord-hybrid-9g` e83f724d0, from FrogPilot's traffic follow):
-   a second LongitudinalMpc beside the plan's own, with a follow time of 0.5 s at a stop rising to 1.0 s at 18 km/h
-   (CF_T_FOLLOW_BP/_V) and - this car's change - fading back to the selected personality's by CF_FADE_KPH, and the
-   jerk factor 0.5 (the aggressive personality's: quicker to react) faded the same way. STOP_DISTANCE is compiled into
-   the solver and untouched: the stopped gap stays 6 m. Its candidate is blended into the plan's by gapAuthority:
-   a = a_plan_mpc + authority * (a_close_mpc - a_plan_mpc), the trajectories alike. Authority drops to 0 AT ONCE on any
-   trip, so on that frame the MPC candidate is the plan's own MPC, push12's, exactly. It waits out GAP_HOLD_S (1 s) of
-   clean frames (the close MPC warms up), then rises at GAP_RISE (0.5/s). Trips: no real lead (or a held one, radard's
-   clutter guard), lead modelProb under 0.8, a vision-only lead above CF_VISION_SPEED (2 m/s; the radar sees nothing
-   at a stop and little under 2 m/s, where t*v is under 1 m), a braking lead (any real lead's aLeadK under -0.5 m/s^2,
-   or leadOne's own speed falling faster than that over the last 0.5 s with aLeadK below 0 - aLeadK is a filter and
-   trails the onset), a new car
-   (leadOne 3 m off where it should be), FCW (the planner's, the close MPC's own crash flag, or the car's FCW/AEB,
-   held FCW_HOLD_S = 5 s), gas or brake, forceDecel.
+   a second LongitudinalMpc beside the plan's own with a shorter follow time - THE SAFE LIMIT (release13, the cfenv
+   study and its skeptic, skeptic_schedule.json): CF_T_FOLLOW_V over CF_T_FOLLOW_BP, 0.5 s at a stop, 0.88 s at
+   13.5 km/h, 1.0 s at 15, 1.34 s at 18 and 1.8 s at 22 km/h, evaluated at max(vEgo, the real lead's vLead) and never
+   above the personality's (close_t_follow). So it hands back to the personality by itself - at 17.2 / 19.0 / 21.6 km/h
+   on aggressive / standard / relaxed - with no separate fade, and never closes up while the lead pulls away faster.
+   It was sized so that behind a lead braking at -4 m/s^2 from anywhere in the band this car keeps 2 m with its DESIGN
+   brake (-1.8 m/s^2 after a 0.36 s dead time: the 255-count ceiling, the p90 weak end of the logged full brakes);
+   with brake320's 320 counts it is conservative. The jerk factor is max(1.0, the personality's) (CF_JERK_FACTOR_MIN:
+   not the aggressive 0.5, which the envelope showed reacts later to a braking lead). STOP_DISTANCE is compiled into the
+   solver and untouched: the stopped gap stays 6 m. CF_FADE_SPEED (22 km/h, the schedule's last point) is the one
+   eligibility bound: the close MPC solves below it + CF_MPC_MARGIN, and above the hand-back it is the plan's own.
+   Its candidate is blended into the plan's by gapAuthority: a = a_plan_mpc + authority * (a_close_mpc - a_plan_mpc),
+   the trajectories alike. Authority drops to 0 AT ONCE on any trip, so on that frame the MPC candidate is the plan's
+   own MPC, push12's, exactly. It waits out GAP_HOLD_S (1 s) of clean frames (the close MPC warms up), then rises at
+   GAP_RISE (0.5/s). Trips: no real lead (or a held one, radard's clutter guard), lead modelProb under 0.8, a vision-only
+   lead above CF_VISION_SPEED (2 m/s; the radar sees nothing at a stop and little under 2 m/s, where t*v is under 1 m),
+   a braking lead (any real lead's aLeadK under -0.5 m/s^2, or leadOne's own speed falling faster than that over the
+   last 0.5 s with aLeadK below 0 - aLeadK is a filter and trails the onset), a new car (leadOne 3 m off where it should
+   be), FCW (the planner's, the close MPC's own crash flag, or the car's FCW/AEB, held FCW_HOLD_S = 5 s), gas or brake,
+   forceDecel, and since release13 three more: a HARD-braking lead (leadOne's own speed falling faster than 2.0 m/s^2
+   over 0.5 s, or any real lead's aLeadK under -1.5) holds it out HARD_BRAKE_HOLD_S (3 s); a downhill steeper than 3 %
+   (carControl.orientationNED pitch, filtered over PITCH_TAU_S, under DOWNHILL_PITCH); a closing lead with a time to
+   collision under TTC_MIN_S (3 s, closing faster than 0.5 m/s).
 
 2. THE LIFT (adapted from zoompilot's Lead Follow Assist, E2ELeadGapController, MIT - notice below): in experimental
    mode the model's e2e accel is lifted toward the close MPC's candidate when the leads are 3-10 m (GAP_BP) beyond the
    close gap: e2e = a_model + boost, boost <= authority * gain * weight * min(CAP, headroom), headroom =
    min(a_mpc_close, a_cruise) - a_model. It can at most tie that candidate - NEVER PAST the radar plan - so the
-   planner's min() never follows closer than the close MPC itself would. Fades in at 18-29 km/h (LIFT_SPEED_BP, the
-   crawl stays the model's) and out by CF_FADE_KPH. CAP 0.5 / 0.4 / 0.3 m/s^2 for aggressive / standard / relaxed,
-   rising at 0.25 m/s^3. HARD trips drop it to nothing on the same frame - a braking lead (as for the gap, or the
-   model's lead forecast losing 1 m/s within 3 s), FCW (for as long as the gap's FCW_HOLD_S hold lasts: the lift never
-   comes back before the gap), a new car (distance jump or radar track swap), gas or brake, no lead or a held one, a
-   vision-only lead, forceDecel, the model's hard-brake flag or a stop in its plan. Soft trips (lead uncertain or under
-   5 m/s, the model braking under -0.5 or its plan slowing, over 1 m/s^2 of lateral accel, coasting, a lane change,
-   under 5 m/s) let it fall at 4/s. Then a 3 s hold (LIFT_HOLD_S, with its authority at 0 after a hard trip) and a
-   0.5/s rise, as zoompilot.
+   planner's min() never follows closer than the close MPC itself would. Fades in over 9-12.6 km/h (LIFT_SPEED_BP, the
+   crawl stays the model's) and is zero wherever the close follow time is not under the personality's (it fades out
+   over the last LIFT_T_FADE of it). CAP 0.5 / 0.4 / 0.3 m/s^2 for aggressive / standard / relaxed, rising at
+   0.25 m/s^3. HARD trips drop it to nothing on the same frame - a braking lead (as for the gap, or the model's lead
+   forecast losing 1 m/s within 3 s), FCW (for as long as the gap's FCW_HOLD_S hold lasts: the lift never comes back
+   before the gap), a hard-braking lead (for as long as the gap's 3 s hold), a downhill, a short time to collision, a
+   new car (distance jump or radar track swap), gas or brake, no lead or a held one, a vision-only lead, forceDecel, the
+   model's hard-brake flag or a stop in its plan. Soft trips (lead uncertain or under LEAD_MIN_SPEED 2.5 m/s, the model
+   braking under -0.5 or its plan slowing, over 1 m/s^2 of lateral accel, coasting, a lane change, under 2.5 m/s) let it
+   fall at 4/s. Then a 3 s hold (LIFT_HOLD_S, with its authority at 0 after a hard trip) and a 0.5/s rise, as zoompilot.
 
-THE ON-SWITCH is not decided (a distance-button hold, or automatic below ~30 km/h with a radar lead: the owner's
-choice). CloseFollowSwitch is the one place it goes. Until then it says "requested" whenever openpilot longitudinal
-is engaged: that is what the shadow measures (the most close follow could do), and it is off at every disengage.
+NOT CHANGED for close follow: LongControl's kiV, the PID floor and the brake's rise limiter are the car's, as without it.
 
 GATED: HONDA_ELESYS with openpilot longitudinal and stock ACC mode off (close_follow_applies(), the re-entry ramp's
-gate), CloseFollowMode 1 or 2, read once when plannerd starts. Mode 0, every other car and stock ACC mode never build
-it: upstream's planner bit for bit, no second MPC, no customReserved10.
+gate). Every other car and stock ACC mode never build it: upstream's planner bit for bit, no second MPC, no
+customReserved10.
 
-LOGGED (the owner has no SSH): customReserved10 (CustomReserved10 in custom.capnp) every plan, 2 Hz in the qlog, and
-at most one `closefollow` cloudlog event at error level per SUMMARY_S (10 s), only when there was a chance to act
-(engaged, a real lead, under the fade speed): the share of those frames with the gap and the lift in, the mean follow
-time and gap change, the most it lifted the plan, the top reasons it was out, and `brk`, the frames where it lifted the
-plan while a lead braked - by construction 0; a non-zero `brk` in a route is a bug - and `smax` / `xmax`, the slowest
-close-MPC solve and the slowest whole close-follow step of those 10 s, in ms (mpcSolveTime / stepTime, every plan).
+LOGGED (the owner has no SSH): customReserved10 (CustomReserved10 in custom.capnp) every plan, 2 Hz in the qlog -
+since release13 with switchOn (the user switch as last read), live and tightening (live AND closing the gap or
+lifting: what the comma 4's right-rail cue shows) - and at most one `closefollow` cloudlog event at error level per
+SUMMARY_S (10 s), only when there was a chance to act (engaged, a real lead, under the eligibility bound): `mode` (1
+shadow, 2 live), `sw` (the switch), the share of those frames with the gap and the lift in, `live` (the share
+tightening live), the mean follow time and gap change, the most it lifted the plan, the top reasons it was out, and
+`brk`, the frames where it lifted the plan while a lead braked - by construction 0; a non-zero `brk` in a route is a
+bug - and `smax` / `xmax`, the slowest close-MPC solve and the slowest whole close-follow step of those 10 s, in ms
+(mpcSolveTime / stepTime, every plan). A switch change is one `closefollow switch` line.
 
-COST: a second MPC solve only while eligible: requested, engaged, a real lead, under the fade speed + CF_MPC_MARGIN.
+COST: a second MPC solve only while eligible: requested, engaged, a real lead, under CF_FADE_SPEED + CF_MPC_MARGIN.
 On the device the plan's own solve on such frames is 0.6 ms at the median but has a long tail (p95 7.6-13 ms, max
 ~23 ms on routes 14c, 141, 142, 14d), and this one is the same solver. So in SHADOW the planner's three calls are only
-recorded (defer) and all of close follow runs in LongitudinalPlanner.publish() after longitudinalPlan and
-longitudinalPlanSP are sent (run_deferred): its cost never delays the plan controlsd acts on. Live it runs inline - it
-has to, it shapes the plan. Its cost reaches the route either way (mpcSolveTime, stepTime, smax, xmax above).
+recorded (defer) and all of close follow runs in LongitudinalPlanner.publish_deferred(), which plannerd calls once
+longitudinalPlan, longitudinalPlanSP and driverAssistance are sent (run_deferred): its cost never delays a message
+controlsd acts on. Live it runs inline - it has to, it shapes the plan. Its cost reaches the route either way
+(mpcSolveTime, stepTime, smax, xmax above).
 
-REPLAYED (push13, shadow; the real planner open loop on 20 of the owner's routes: 0x130-0x152, after the radar speed
-fix, and 14, 1f, c0, c9, d5, 12a with vRel doubled; 290 engaged minutes, 61 of them engaged behind a real lead under
-35 km/h, about 40 of those at a standstill and 21 moving). The replayed plans match the logged ones (median 0.000,
-p95 under 0.02 m/s^2).
-The closer gap would have been in for 48 / 43 / 35 / 28 % of the time at 2-7 / 7-18 / 18-29 / 29-35 km/h, out mostly
-for a braking lead and the 1 s hold after it; the lift for 5-9 % at 18-35 km/h (a braking lead, its 3 s hold, a
-vision lead, a stop in the model's plan). Close follow would have raised the plan by more than 0.01 m/s^2 for 3.9 of
-the 61 minutes (12-22 % of the moving time), median +0.03..0.09, p95 +0.13..0.38. The gap it aims for in steady
-following: 9.4 m at 7-18 km/h (aggressive 10.5, driven 11.4) and 12.9 m at 18-29 (13.5, driven 17.2 - the model's own
-gap in experimental mode, which the lift seldom overrules). By its own braking test it never raised the plan while a
-lead braked; a look-ahead test (the lead's speed over +-0.5 s, which no controller can see) finds 43 onset frames,
-max +0.024 m/s^2 on the routes after the radar fix (+0.46 on route 14, where aLeadK is rebuilt from the half-scale
-radar). Never during any of the 76 engaged FCW frames, and the lift was never in within 12 s after one: after the
-review's fixes (the lift's FCW hold, the deferred shadow) the 13 routes with an FCW-type frame replay identically, so
-none of these numbers changed.
+REPLAYED (push13, shadow, with push13's schedule - 1.0 s at 18 km/h faded to the personality's by 35 km/h - on 20 of
+the owner's routes: 0x130-0x152, after the radar speed fix, and 14, 1f, c0, c9, d5, 12a with vRel doubled; 290 engaged
+minutes, 61 of them engaged behind a real lead under 35 km/h). The replayed plans match the logged ones (median 0.000,
+p95 under 0.02 m/s^2). By its own braking test it never raised the plan while a lead braked, never during any of the
+76 engaged FCW frames, and the lift was never in within 12 s after one. release13's numbers - the safe limit, live -
+are in docs/fork/README.md (CF) and docs/CHANGELOG_SERIAL_STEERING.md.
 
 The lift is adapted from zoompilot (github.com/zoompilot/zoompilot, develop 5b87a72b,
 openpilot/sunnypilot/selfdrive/controls/lib/e2e_lead_gap/controller.py), under this notice:
@@ -91,7 +105,8 @@ openpilot/sunnypilot/selfdrive/controls/lib/e2e_lead_gap/controller.py), under t
   HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
   ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 Changes from it: the ceiling is close follow's MPC candidate; hard trips cut it on the same frame; a vision-only or held
-lead is no lead; it fades out by CF_FADE_KPH; its constants are inlined (zoompilot's set-speed nudge is not here).
+lead is no lead; it is zero wherever close follow's follow time is the personality's; its constants are inlined
+(zoompilot's set-speed nudge is not here).
 """
 import math
 import time
@@ -119,19 +134,20 @@ LaneChangeState = log.LaneChangeState
 Personality = log.LongitudinalPersonality
 PlanSource = log.LongitudinalPlan.LongitudinalPlanSource
 
-# CloseFollowMode (params_keys.h): 0 off, 1 shadow (log only), 2 live. Read once when plannerd starts.
-MODE_PARAM = "CloseFollowMode"
-MODE_OFF, MODE_SHADOW, MODE_LIVE = 0, 1, 2
+# CloseFollow (params_keys.h, BOOL, default "1"): the user's switch. ON live, OFF shadow (computed and logged only).
+SWITCH_PARAM = "CloseFollow"
+SWITCH_READ_S = 3.0             # s: plannerd re-reads it this often (and at every engage); reads only, never a write
+MODE_SHADOW, MODE_LIVE = 1, 2   # customReserved10.mode
 SERVICE = "customReserved10"
 
-# --- the gap (theo886 Traffic Mode's schedule, faded back to the personality on this car) ---
-CF_T_FOLLOW_BP = [0., 5.]       # m/s: a stop, 18 km/h
-CF_T_FOLLOW_V = [0.5, 1.0]      # s
-CF_FADE_KPH = 35.               # km/h: THE fade speed - the personality's own gap (and jerk) by here, and no lift
-CF_FADE_SPEED = CF_FADE_KPH * CV.KPH_TO_MS
-CF_JERK_FACTOR = 0.5            # the aggressive personality's: quicker reactions
+# --- the gap: the safe limit (release13; cfenv's skeptic, skeptic_schedule.json) ---
+CF_T_FOLLOW_BP = [0., 3.75, 4.167, 5.0, 6.111]   # m/s: 0, 13.5, 15, 18, 22 km/h
+CF_T_FOLLOW_V = [0.50, 0.88, 1.00, 1.34, 1.80]   # s, at max(vEgo, the real lead's vLead); never above the personality's
+CF_FADE_SPEED = CF_T_FOLLOW_BP[-1]  # m/s: the one eligibility bound (22 km/h); every personality hands back below it
+CF_FADE_KPH = 22.               # km/h, the same
+CF_JERK_FACTOR_MIN = 1.0        # the close MPC's jerk factor: max(this, the personality's) - not aggressive's 0.5
 CF_VISION_SPEED = 2.0           # m/s: above it the gap needs a radar lead
-CF_MPC_MARGIN = 1.5             # m/s: the close MPC keeps running this far past the fade, so slowing back is seamless
+CF_MPC_MARGIN = 1.5             # m/s: the close MPC keeps running this far past CF_FADE_SPEED, so slowing back is seamless
 GAP_LEAD_BRAKE = -0.5           # m/s^2: a real lead's aLeadK under this drops the gap (and the lift) at once
 # radard's aLeadK is a filter and trails a lead that starts braking: replayed on 20 routes, leadOne's own speed fell
 # faster than 0.5 m/s^2 over 0.5 s on 127 occasions while aLeadK still read -0.1 (median). So leadOne's own speed
@@ -145,10 +161,19 @@ GAP_RISE = 0.5                  # 1/s
 FCW_HOLD_S = 5.0                # s: an FCW (any) keeps close follow out this long
 LEAD_PROB = 0.8
 LEAD_JUMP = 3.0                 # m off where last frame's leadOne should be: a new car
+# release13, the safe limit's three extra trips (the gap and the lift alike, both hard)
+HARD_BRAKE_SLOPE = -2.0         # m/s^2: leadOne's own speed over the last LEAD_SLOWING_T falling faster than this ...
+HARD_BRAKE_ALEAD = -1.5         # ... or any real lead's aLeadK under this: a hard-braking lead ...
+HARD_BRAKE_HOLD_S = 3.0         # ... keeps close follow out this long after the last such frame
+DOWNHILL_PITCH = -0.03          # rad (nose-up positive, carControl.orientationNED[1]): steeper than 3 % downhill, out
+PITCH_TAU_S = 1.0               # s: the pitch's filter, so a brake's nose dive is not a hill
+TTC_MIN_S = 3.0                 # s: leadOne's time to collision under this, out ...
+TTC_CLOSING = 0.5               # m/s: ... while closing on it faster than this
 
 # --- the lift (zoompilot Lead Follow Assist) ---
 GAP_BP = [3., 10.]              # m beyond the close gap: the lift opens over this
-LIFT_SPEED_BP = [5., 8.]        # m/s (18 -> 29 km/h): the lift fades in; out from LIFT_SPEED_BP[1] to CF_FADE_SPEED
+LIFT_SPEED_BP = [2.5, 3.5]      # m/s (9 -> 12.6 km/h): the lift fades in (the crawl stays the model's)
+LIFT_T_FADE = 0.1               # s: and out over the last 0.1 s of follow time before the personality's - zero from it
 CAP = {int(Personality.aggressive): 0.5, int(Personality.standard): 0.4, int(Personality.relaxed): 0.3}  # m/s^2
 GAIN_BP = [-0.4, -0.1]          # m/s^2 of the model's own accel: the lift fades out as the model starts braking
 MODEL_BRAKE_ACCEL = -0.5        # m/s^2
@@ -159,13 +184,15 @@ LAT_HORIZON = 10.0              # s
 STOP_SPEED = 2.0                # m/s: a model plan dipping under this is a stop
 LEAD_SLOWDOWN = 1.0             # m/s a lead's forecast loses within LEAD_SLOWDOWN_T
 LEAD_SLOWDOWN_T = 3.0           # s
-LEAD_MIN_SPEED = 5.0            # m/s
+LEAD_MIN_SPEED = 2.5            # m/s (release13: 5.0 in push13, the old lift band's floor)
 BOOST_RISE = 0.25               # m/s^3
 LIFT_HOLD_S = 3.0               # s after the last trip
 AUTHORITY_RISE = 0.5            # 1/s
 AUTHORITY_FALL = 4.0            # 1/s, soft trips
 
 SUMMARY_S = 10.0                # s: at most one closefollow cloudlog event per this
+TIGHT_GAP_M = 0.5               # m: live, the gap held at least this much shorter than the personality's ...
+TIGHT_LIFT = 0.02               # m/s^2: ... or the model's accel lifted by this: tightening (the HUD cue, the log)
 _EPS = 1e-9
 
 T_IDXS = np.asarray(ModelConstants.T_IDXS)
@@ -175,9 +202,14 @@ SLOWDOWN_MASK = T_IDXS <= PLAN_SLOWDOWN_T
 LEAD_SLOWDOWN_MASK = LEAD_T_IDXS <= LEAD_SLOWDOWN_T
 
 HARD_LIFT_TRIPS = frozenset({Inhibit.noLead, Inhibit.visionLead, Inhibit.leadBraking, Inhibit.leadChanged, Inhibit.fcw,
-                             Inhibit.driver, Inhibit.forceDecel, Inhibit.hardBrake, Inhibit.stop})
+                             Inhibit.driver, Inhibit.forceDecel, Inhibit.hardBrake, Inhibit.stop, Inhibit.leadHardBrake,
+                             Inhibit.downhill, Inhibit.closing})
 
-assert CF_FADE_SPEED > LIFT_SPEED_BP[1] > LIFT_SPEED_BP[0] and CF_FADE_SPEED > CF_T_FOLLOW_BP[-1]
+# the schedule rises with speed (np.interp needs an increasing x), and every personality hands back below its end
+assert all(b > a for a, b in zip(CF_T_FOLLOW_BP, CF_T_FOLLOW_BP[1:], strict=False))
+assert all(b >= a for a, b in zip(CF_T_FOLLOW_V, CF_T_FOLLOW_V[1:], strict=False))
+assert CF_T_FOLLOW_V[-1] >= get_T_FOLLOW(Personality.relaxed) and abs(CF_FADE_KPH - CF_FADE_SPEED * CV.MS_TO_KPH) < 0.01
+assert CF_FADE_SPEED > LIFT_SPEED_BP[1] > LIFT_SPEED_BP[0] >= LEAD_MIN_SPEED
 
 
 def close_follow_applies(CP, CP_SP) -> bool:
@@ -190,13 +222,23 @@ def close_follow_applies(CP, CP_SP) -> bool:
     return False
 
 
-def read_mode(params) -> int:
-  """CloseFollowMode as 0/1/2. Anything unreadable or out of range is OFF: an unknown mode must not run."""
+def read_switch(params) -> bool:
+  """The user's CloseFollow switch (a key nobody has written yet is its params_keys.h default, ON). Anything unreadable
+  is OFF: an unknown switch never makes it live."""
   try:
-    mode = int(params.get(MODE_PARAM, return_default=True))
-  except (TypeError, ValueError):
-    return MODE_OFF
-  return mode if mode in (MODE_OFF, MODE_SHADOW, MODE_LIVE) else MODE_OFF
+    v = params.get(SWITCH_PARAM, return_default=True)
+    if isinstance(v, bool):
+      return v
+    if isinstance(v, bytes):
+      v = v.decode(errors='ignore')
+    return str(v).strip() == "1"
+  except Exception:
+    return False
+
+
+def read_mode(params) -> int:
+  """The mode the switch asks for: MODE_LIVE when it is on, MODE_SHADOW otherwise (read_switch)."""
+  return MODE_LIVE if read_switch(params) else MODE_SHADOW
 
 
 def _personality(p) -> int:
@@ -210,26 +252,39 @@ def _finite(*xs) -> bool:
     return False
 
 
-def close_t_follow(v_ego: float, t_personality: float) -> float:
-  """The close follow time: 0.5 s at a stop, 1.0 s at 18 km/h, the personality's from CF_FADE_KPH. Never above the
-  personality's."""
-  t = float(np.interp(v_ego, CF_T_FOLLOW_BP + [CF_FADE_SPEED], CF_T_FOLLOW_V + [t_personality]))
+def schedule_speed(v_ego: float, v_lead: float | None = None) -> float:
+  """The speed the schedule is read at: max(vEgo, the real lead's vLead) - no closer gap while the lead pulls away
+  faster than the car. A missing or non-finite vLead is vEgo's."""
+  if v_lead is None or not _finite(v_lead):
+    return float(v_ego)
+  return max(float(v_ego), float(v_lead))
+
+
+def close_t_follow(v_ego: float, t_personality: float, v_lead: float | None = None) -> float:
+  """The close follow time (the safe limit): CF_T_FOLLOW_V over CF_T_FOLLOW_BP at schedule_speed(), never above the
+  personality's - so it is the personality's from where the schedule reaches it (aggressive 17.2, standard 19.0,
+  relaxed 21.6 km/h)."""
+  t = float(np.interp(schedule_speed(v_ego, v_lead), CF_T_FOLLOW_BP, CF_T_FOLLOW_V))
   return min(t, t_personality)
 
 
-def close_jerk_factor(v_ego: float, j_personality: float) -> float:
-  """CF_JERK_FACTOR up to 18 km/h, the personality's from CF_FADE_KPH."""
-  return float(np.interp(v_ego, [CF_T_FOLLOW_BP[-1], CF_FADE_SPEED], [CF_JERK_FACTOR, j_personality]))
+def close_jerk_factor(j_personality: float) -> float:
+  """max(CF_JERK_FACTOR_MIN, the personality's): 1.0 on every personality today."""
+  return max(CF_JERK_FACTOR_MIN, float(j_personality))
 
 
-def speed_weight(v_ego: float) -> float:
-  """How much of the closer gap is left at this speed: 1 up to 18 km/h, 0 from CF_FADE_KPH."""
-  return float(np.interp(v_ego, [CF_T_FOLLOW_BP[-1], CF_FADE_SPEED], [1., 0.]))
+def speed_weight(t_close: float, t_personality: float) -> float:
+  """How much of the closer gap there is: 1 wherever the close follow time is under the personality's, 0 from the
+  hand-back on (there the close MPC would only differ by its jerk factor, which is not close follow's to change)."""
+  return 1. if t_close < t_personality - 1e-6 else 0.
 
 
-def lift_speed_weight(v_ego: float) -> float:
-  """The lift's speed window: in over 18 -> 29 km/h, out by CF_FADE_KPH."""
-  return float(np.interp(v_ego, LIFT_SPEED_BP, [0., 1.]) * np.interp(v_ego, [LIFT_SPEED_BP[1], CF_FADE_SPEED], [1., 0.]))
+def lift_speed_weight(v_ego: float, t_close: float, t_personality: float) -> float:
+  """The lift's window: in over LIFT_SPEED_BP (9 -> 12.6 km/h), and out over the last LIFT_T_FADE of the close follow
+  time before the personality's - zero wherever t_close >= t_personality (above the hand-back the e2e plan is push12's)."""
+  fade_in = float(np.interp(v_ego, LIFT_SPEED_BP, [0., 1.]))
+  fade_out = min(1., max(0., (t_personality - t_close) / LIFT_T_FADE))
+  return fade_in * fade_out
 
 
 def desired_gap(v_ego: float, v_lead: float, t_follow: float) -> float:
@@ -296,6 +351,17 @@ class Inputs(NamedTuple):
   allow_throttle: bool
   model: ModelView
   lead_slowing: bool = False  # leadOne's own speed falling faster than LEAD_SLOWING_ACCEL (LeadSpeedWindow)
+  pitch: float = math.nan     # carControl.orientationNED[1], rad, nose-up positive (NaN without a calibrated pose)
+  lead_hard: bool = False     # a hard-braking lead now or within HARD_BRAKE_HOLD_S (CloseFollow fills it)
+  downhill: bool = False      # the filtered pitch under DOWNHILL_PITCH (CloseFollow fills it)
+
+
+def _pitch(cc) -> float:
+  try:
+    ned = list(cc.orientationNED)
+    return float(ned[1]) if len(ned) == 3 else math.nan
+  except Exception:
+    return math.nan
 
 
 def inputs_from_sm(sm, reset_state: bool, is_e2e: bool, allow_throttle: bool) -> Inputs:
@@ -307,7 +373,7 @@ def inputs_from_sm(sm, reset_state: bool, is_e2e: bool, allow_throttle: bool) ->
                 standstill=bool(cs.standstill), car_fcw=bool(cs.stockFcw) or bool(cs.stockAeb),
                 force_decel=bool(sm['controlsState'].forceDecel),
                 steer_lat_accel=float(sm['controlsState'].curvature) * float(cs.vEgo) ** 2,
-                allow_throttle=bool(allow_throttle), model=model_view(sm['modelV2']))
+                allow_throttle=bool(allow_throttle), model=model_view(sm['modelV2']), pitch=_pitch(sm['carControl']))
 
 
 def _leads(inp: Inputs) -> list[Lead]:
@@ -318,6 +384,23 @@ def lead_braking(inp: Inputs) -> bool:
   """Any real lead braking harder than GAP_LEAD_BRAKE (a non-finite aLeadK counts as braking), or leadOne's own speed
   falling as fast over the last LEAD_SLOWING_T."""
   return inp.lead_slowing or any(not (_finite(ld.a_lead) and ld.a_lead >= GAP_LEAD_BRAKE) for ld in _leads(inp))
+
+
+def lead_hard_now(inp: Inputs, slope: float) -> bool:
+  """A hard-braking lead this frame: leadOne's own speed slope (LeadSpeedWindow, over LEAD_SLOWING_T) under
+  HARD_BRAKE_SLOPE, or any real lead's aLeadK under HARD_BRAKE_ALEAD (a non-finite aLeadK counts)."""
+  return slope < HARD_BRAKE_SLOPE or any(not (_finite(ld.a_lead) and ld.a_lead >= HARD_BRAKE_ALEAD) for ld in _leads(inp))
+
+
+def time_to_collision(lead: Lead) -> float:
+  """leadOne's time to collision in s while closing on it faster than TTC_CLOSING; inf otherwise."""
+  if not lead.present or not _finite(lead.d_rel, lead.v_rel) or -lead.v_rel <= TTC_CLOSING:
+    return math.inf
+  return max(0., lead.d_rel) / -lead.v_rel
+
+
+def ttc_short(lead: Lead) -> bool:
+  return time_to_collision(lead) < TTC_MIN_S
 
 
 class LeadSpeedWindow:
@@ -349,11 +432,11 @@ class LeadSpeedWindow:
 
 
 class CloseFollowSwitch:
-  """THE ON-SWITCH - not decided; the owner chooses later (a distance-button hold, or automatic below ~30 km/h with a
-  radar lead). Whatever it becomes it answers one question per plan - does the driver want close follow now? - and it
-  is off at every disengage. A button hold would be read where the presses are (selfdrived, 100 Hz) and reach this
-  through a field the planner subscribes to; automatic needs nothing more than the guards close follow already has.
-  Until then: requested whenever openpilot longitudinal is engaged (SWITCH_ASSUMED), what the shadow measures."""
+  """THE ACTIVATION, decided 2026-10-24 ("Automatic in queues"): close follow is wanted whenever openpilot longitudinal
+  is engaged, and off at every disengage; it then switches itself in and out by its own guards (a real radar lead,
+  under the hand-back, every trip). It answers one question per plan - does the driver want close follow now? - and is
+  the one place a manual on-switch (a distance-button hold) would go. The user's CloseFollow setting is not this: it
+  picks live or shadow (CloseFollow.set_mode)."""
   SWITCH_ASSUMED = True
 
   def __init__(self):
@@ -427,10 +510,16 @@ class GapGuard:
       return Inhibit.leadUncertain
     if inp.v_ego >= CF_VISION_SPEED and not lead.radar:
       return Inhibit.visionLead
+    if inp.lead_hard:
+      return Inhibit.leadHardBrake
     if lead_braking(inp):
       return Inhibit.leadBraking
     if math.isfinite(expected) and not (abs(lead.d_rel - expected) < LEAD_JUMP):
       return Inhibit.leadChanged
+    if ttc_short(lead):
+      return Inhibit.closing
+    if inp.downhill:
+      return Inhibit.downhill
     if self.fcw_left > 0:
       return Inhibit.fcw
     if inp.gas or inp.brake:
@@ -510,7 +599,10 @@ class LeadFollowLift:
 
     leads = _leads(inp)
     self.gap_excess = min(ld.d_rel - desired_gap(v_ego, ld.v_lead, t_follow) for ld in leads) if leads else 0.
-    self.weight = float(np.interp(self.gap_excess, GAP_BP, [0., 1.])) * lift_speed_weight(v_ego)
+    # zero wherever close follow's own follow time is the personality's (above the hand-back the e2e plan is push12's)
+    t_personality = get_T_FOLLOW(inp.personality)
+    t_close = close_t_follow(v_ego, t_personality, lead.v_lead if lead.present else None)
+    self.weight = float(np.interp(self.gap_excess, GAP_BP, [0., 1.])) * lift_speed_weight(v_ego, t_close, t_personality)
     self.gain = float(np.interp(a_model, GAIN_BP, [0., 1.]))
     ceiling = min(a_mpc, a_cruise)
     headroom = max(0., ceiling - a_model)
@@ -532,6 +624,8 @@ class LeadFollowLift:
     if not lead.radar:
       return Inhibit.visionLead
     leads = _leads(inp)
+    if inp.lead_hard:
+      return Inhibit.leadHardBrake
     if lead_braking(inp):
       return Inhibit.leadBraking
     # each present lead's own forecast from the model, its lowest point within LEAD_SLOWDOWN_T
@@ -544,6 +638,8 @@ class LeadFollowLift:
             return Inhibit.leadBraking
     if track_changed or (math.isfinite(expected) and not (abs(lead.d_rel - expected) < LEAD_JUMP)):
       return Inhibit.leadChanged
+    if ttc_short(lead):
+      return Inhibit.closing
     if any(ld.prob < LEAD_PROB for ld in leads):
       return Inhibit.leadUncertain
     if any(ld.v_lead < LEAD_MIN_SPEED for ld in leads):
@@ -559,6 +655,8 @@ class LeadFollowLift:
       return Inhibit.driver
     if inp.force_decel:
       return Inhibit.forceDecel
+    if inp.downhill:
+      return Inhibit.downhill
     if md.hard_brake:
       return Inhibit.hardBrake
     if md.should_stop or plan_min_v < STOP_SPEED:
@@ -581,23 +679,37 @@ class LeadFollowLift:
 class CloseFollow:
   """The planner's handle. Per plan: update_mpc() right after the plan's own MPC solve and FCW, update_lift() once the
   cruise candidate is known, finish() with the min() the plan took, publish() with the plan. Live, the planner takes
-  update_mpc()'s trajectories and update_lift()'s e2e candidate. In shadow (defer, the default for mode 1) those three
-  calls only record their arguments and hand back the plan's own values, and run_deferred() - which the planner calls
-  in publish(), once longitudinalPlan is sent - runs them: the second MPC solve never delays the plan. A tool that
-  wants the values right after update() sets defer = False (the values are the same, only computed earlier).
+  update_mpc()'s trajectories and update_lift()'s e2e candidate. In shadow (defer, the default for MODE_SHADOW) those
+  three calls only record their arguments and hand back the plan's own values, and run_deferred() - which the planner
+  calls in publish_deferred(), once plannerd has sent longitudinalPlan, longitudinalPlanSP and driverAssistance - runs
+  them: the second MPC solve never delays a message controlsd acts on. A tool that wants the values right after update()
+  sets defer = False (the values are the same, only computed earlier).
+  mode: MODE_LIVE or MODE_SHADOW (read_mode() of the user's switch); with `params`, update_mpc() re-reads the switch
+  every SWITCH_READ_S and at every engage and applies a change on that frame (set_mode).
   An exception anywhere in close follow never reaches plannerd: it is logged once (cloudlog.exception, error level),
   close follow is off for the rest of the drive, and every call hands back the plan's own values (push12's)."""
 
-  def __init__(self, mode: int, dt: float = DT_MDL, mpc_factory=None, defer: bool | None = None):
-    self.mode = mode
-    self.defer = (mode != MODE_LIVE) if defer is None else bool(defer)
+  def __init__(self, mode: int, dt: float = DT_MDL, mpc_factory=None, defer: bool | None = None, params=None):
+    self.mode = MODE_LIVE if mode == MODE_LIVE else MODE_SHADOW
+    self._defer_forced = defer
+    self.defer = (self.mode != MODE_LIVE) if defer is None else bool(defer)
     self._pending: list | None = None
     self.failed = False
     self.dt = dt
+    self.params = params
+    self.switch_on = self.mode == MODE_LIVE   # the user's CloseFollow switch as last read
+    self.switch_changes = 0
+    self._read_frames = max(1, int(round(SWITCH_READ_S / dt)))
+    self._read_left = self._read_frames
+    self._was_engaged = False
     self.switch = CloseFollowSwitch()
     self.gap = GapGuard(dt)
     self.lift = LeadFollowLift(dt)
     self.lead_window = LeadSpeedWindow(dt)
+    self.hard_frames = int(round(HARD_BRAKE_HOLD_S / dt))
+    self.hard_left = 0            # frames the hard-brake hold has left
+    self.pitch_f = 0.             # the filtered pitch (PITCH_TAU_S), from a level road
+    self._pitch_k = dt / (PITCH_TAU_S + dt)
     self._mpc_factory = mpc_factory
     self.mpc = None
     self.mpc_warm = False
@@ -624,6 +736,40 @@ class CloseFollow:
   @property
   def live(self) -> bool:
     return self.mode == MODE_LIVE
+
+  def set_mode(self, mode: int) -> None:
+    """Live or shadow, from the user's switch. A change applies on this frame: the gap and the lift start again from
+    nothing (authority 0, their holds) - switched on, close follow ramps in as after any trip; switched off, it drops
+    out at once, the plan's own on this frame. The FCW and hard-brake holds carry over."""
+    mode = MODE_LIVE if mode == MODE_LIVE else MODE_SHADOW
+    self.switch_on = mode == MODE_LIVE
+    if mode == self.mode:
+      return
+    self.mode = mode
+    if self._defer_forced is None:
+      self.defer = mode != MODE_LIVE
+    self._pending = None
+    self.gap._reset(Inhibit.notRequested)
+    self.lift._reset(Inhibit.notRequested)
+    self.g = 0.
+    self.a_model_lifted = self.a_model
+    self.switch_changes += 1
+    try:
+      cloudlog.event("closefollow switch", error=True, mode=int(mode), on=bool(self.switch_on), changes=self.switch_changes)
+    except Exception:
+      pass
+
+  def _poll_switch(self, engaged: bool) -> None:
+    """Re-read the user's switch every SWITCH_READ_S and on every engage (reads only; never a write)."""
+    if self.params is None:
+      return
+    self._read_left -= 1
+    engage = engaged and not self._was_engaged
+    self._was_engaged = engaged
+    if self._read_left > 0 and not engage:
+      return
+    self._read_left = self._read_frames
+    self.set_mode(read_mode(self.params))
 
   def _close_mpc(self):
     if self.mpc is None:
@@ -656,7 +802,13 @@ class CloseFollow:
     """After the plan's own MPC solve. v_state, a_state: what the plan's MPC was set to (set_cur_state); fcw: the
     planner's FCW this frame; trajectories: the plan's (v, a, j) at control_t_idxs. Returns the trajectories with close
     follow blended in by the gap's authority - the very same arrays while it is out, and always in shadow (defer),
-    where the call is only recorded for run_deferred()."""
+    where the call is only recorded for run_deferred(). First the user's switch, when it is due (_poll_switch): live or
+    shadow is decided for the whole plan here."""
+    if not self.failed:
+      try:
+        self._poll_switch(not reset_state)
+      except Exception:
+        self._fail('switch')
     args = (sm, reset_state, v_state, a_state, prev_accel_constraint, fcw, plan_mpc, trajectories, control_t_idxs,
             action_t, is_e2e, allow_throttle, inputs, radar_state)
     if self.defer:
@@ -684,14 +836,21 @@ class CloseFollow:
     self.frame += 1
     inp = inputs if inputs is not None else inputs_from_sm(sm, reset_state, is_e2e, allow_throttle)
     inp = inp._replace(lead_slowing=self.lead_window.update(inp.lead_one))
+    # the safe limit's holds: a hard-braking lead keeps it out HARD_BRAKE_HOLD_S; the pitch is filtered from a level
+    # road (a brake's nose dive is not a hill) and kept through a frame without a calibrated pose
+    self.hard_left = self.hard_frames if lead_hard_now(inp, self.lead_window.slope) else max(0, self.hard_left - 1)
+    if _finite(inp.pitch):
+      self.pitch_f += self._pitch_k * (inp.pitch - self.pitch_f)
+    inp = inp._replace(lead_hard=self.hard_left > 0, downhill=self.pitch_f < DOWNHILL_PITCH)
     self.inputs = inp
     self.requested = self.switch.update(sm, inp.engaged)
     v_ego = inp.v_ego
     self.t_personality = get_T_FOLLOW(inp.personality)
     j_personality = get_jerk_factor(inp.personality)
-    self.weight = speed_weight(v_ego) if _finite(v_ego) else 0.
-    self.t_follow = close_t_follow(v_ego, self.t_personality) if _finite(v_ego) else self.t_personality
-    self.jerk = close_jerk_factor(v_ego, j_personality) if _finite(v_ego) else j_personality
+    v_lead = inp.lead_one.v_lead if inp.lead_one.present else None
+    self.t_follow = close_t_follow(v_ego, self.t_personality, v_lead) if _finite(v_ego) else self.t_personality
+    self.weight = speed_weight(self.t_follow, self.t_personality) if _finite(v_ego) else 0.
+    self.jerk = close_jerk_factor(j_personality)
     v_traj, a_traj, j_traj = trajectories
     self.a_mpc = float(get_accel_from_plan(v_traj, a_traj, control_t_idxs, action_t=action_t))
 
@@ -818,6 +977,16 @@ class CloseFollow:
   def active(self) -> bool:
     return self.gap_active or self.lifting > _EPS
 
+  @property
+  def tightening(self) -> bool:
+    """Live AND actually closing up: the gap in and at least TIGHT_GAP_M shorter than the personality's at this speed,
+    or the lift raising the model's accel by TIGHT_LIFT or more. What the comma 4's right-rail cue shows."""
+    inp = self.inputs
+    if not self.live or self.failed or inp is None or not _finite(inp.v_ego):
+      return False
+    closer = self.g > 0. and (self.t_personality - self.t_follow_used) * max(inp.v_ego, 0.) >= TIGHT_GAP_M
+    return closer or self.lifting >= TIGHT_LIFT
+
   def _gap_inhibit(self):
     if self.gap.inhibit in (Inhibit.none, Inhibit.hold) and self.weight <= 0. and self.gap.authority > 0.:
       return Inhibit.speed
@@ -863,6 +1032,13 @@ class CloseFollow:
     msg.sourceClose = int(self.source_close)
     msg.mpcSolveTime = float(self.mpc_solve_time)
     msg.stepTime = float(self.step_time)
+    msg.switchOn = bool(self.switch_on)
+    msg.live = bool(self.live)
+    msg.tightening = bool(self.tightening)
+    msg.pitchFiltered = float(self.pitch_f)
+    ttc = time_to_collision(lead)
+    msg.ttc = float(ttc) if math.isfinite(ttc) else -1.
+    msg.hardBrakeHold = float(self.hard_left * self.dt)
 
   def publish(self, pm) -> None:
     """customReserved10, once per plan; nothing after a failure (the cloudlog line says why)."""
@@ -880,7 +1056,7 @@ class CloseFollow:
 
   @staticmethod
   def _new_window() -> dict:
-    return {'n': 0, 'gap': 0, 'lift': 0, 't': 0., 'dg': 0., 'v': 0., 'lmax': 0., 'up': 0., 'brk': 0, 'fcw': 0,
+    return {'n': 0, 'gap': 0, 'lift': 0, 'live': 0, 't': 0., 'dg': 0., 'v': 0., 'lmax': 0., 'up': 0., 'brk': 0, 'fcw': 0,
             'smax': 0., 'xmax': 0., 'why': Counter()}
 
   def _account(self) -> None:
@@ -901,8 +1077,13 @@ class CloseFollow:
       if self.lifting > _EPS:
         w['lift'] += 1
         w['lmax'] = max(w['lmax'], self.lifting)
+      if self.tightening:
+        w['live'] += 1
       w['up'] = max(w['up'], self.a_target_close - self.a_target)
-      if lead_braking(inp) and (self.lifting > _EPS or self.a_target_close > self.a_target + 1e-6):
+      # (live, the plan's min() already holds close follow's candidates: the MPC candidate against the plan's own says
+      # whether it raised the plan)
+      if lead_braking(inp) and (self.lifting > _EPS or self.a_target_close > self.a_target + 1e-6 or
+                                self.a_mpc_close > self.a_mpc + 1e-6):
         w['brk'] += 1
       if self.gap.inhibit == Inhibit.fcw:
         w['fcw'] += 1
@@ -917,8 +1098,8 @@ class CloseFollow:
       n, g = w['n'], w['gap']
       names = {v: k for k, v in Inhibit.schema.enumerants.items()}
       why = ",".join(f"{names.get(int(k), int(k))}:{c}" for k, c in w['why'].most_common(3))
-      cloudlog.event("closefollow", error=True, mode=int(self.mode), n=n, v=round(w['v'] / n, 1),
-                     gap=round(g / n, 2), lift=round(w['lift'] / n, 2),
+      cloudlog.event("closefollow", error=True, mode=int(self.mode), sw=int(self.switch_on), n=n, v=round(w['v'] / n, 1),
+                     gap=round(g / n, 2), lift=round(w['lift'] / n, 2), live=round(w['live'] / n, 2),
                      t=round(w['t'] / g, 2) if g else None, dg=round(w['dg'] / g, 1) if g else None,
                      lmax=round(w['lmax'], 2), up=round(w['up'], 2), brk=w['brk'], fcw=w['fcw'], why=why,
                      smax=round(w['smax'] * 1e3, 1), xmax=round(w['xmax'] * 1e3, 1))

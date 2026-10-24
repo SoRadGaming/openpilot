@@ -725,20 +725,22 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
   }
 }
 
-# FORK(CLOSE-FOLLOW): close follow in queues (sunnypilot/selfdrive/controls/lib/close_follow.py, push13). plannerd
-# publishes it as customReserved10 once per plan (20 Hz) on HONDA_ELESYS with openpilot longitudinal while
-# CloseFollowMode is 1 (shadow) or 2 (live). In shadow every value is what close follow WOULD do; the plan, the
-# accel sent, the HUD and every CAN frame are push12's. The name stays CustomReserved10 so the service keeps its name.
+# FORK(CLOSE-FOLLOW): close follow in queues (sunnypilot/selfdrive/controls/lib/close_follow.py; push13 shadow,
+# release13 live). plannerd publishes it as customReserved10 once per plan (20 Hz) on HONDA_ELESYS with openpilot
+# longitudinal: mode 2 (live) while the user's CloseFollow switch is on, 1 (shadow) while it is off. In shadow every value
+# is what close follow WOULD do; the plan, the accel sent, the HUD and every CAN frame are as without it. The name stays
+# CustomReserved10 so the service keeps its name.
 struct CustomReserved10 @0xcb9fd56c7057593a {
-  mode @0 :UInt8;                    # CloseFollowMode: 1 shadow, 2 live
+  mode @0 :UInt8;                    # 1 shadow (the CloseFollow switch off), 2 live (on)
   requested @1 :Bool;                # the on-switch (close_follow.CloseFollowSwitch); off at every disengage
   active @2 :Bool;                   # close follow shapes (would shape) the plan: gapActive or lift > 0
   gapActive @3 :Bool;                # gapAuthority > 0 and speedWeight > 0
   gapInhibit @4 :CloseFollowInhibit; # why the closer gap is out (none while it is in, hold while it waits)
   gapAuthority @5 :Float32;          # 0..1: 0 at once on any trip, back up at 0.5/s after a 1 s clean hold
-  speedWeight @6 :Float32;           # 1 up to 18 km/h, 0 from CF_FADE_KPH (35 km/h)
-  tFollow @7 :Float32;               # s, the close-follow MPC's follow time (0.5 at a stop, 1.0 at 18 km/h, the
-                                     # personality's by 35 km/h)
+  speedWeight @6 :Float32;           # 1 while tFollow is under the personality's, 0 from the hand-back (release13;
+                                     # push13: 1 up to 18 km/h, 0 from 35)
+  tFollow @7 :Float32;               # s, the close-follow MPC's follow time: release13's safe limit at max(vEgo, vLead),
+                                     # 0.5 at a stop .. 1.8 at 22 km/h, never above the personality's
   tFollowPersonality @8 :Float32;    # s, the selected personality's (what the plan's own MPC uses)
   jerkFactor @9 :Float32;            # the close-follow MPC's jerk factor
   desiredGap @10 :Float32;           # m, the gap the close-follow MPC settles at behind leadOne
@@ -755,7 +757,7 @@ struct CustomReserved10 @0xcb9fd56c7057593a {
   lift @21 :Float32;                 # m/s^2, aModelLifted - aModel: never past min(aMpcClose, cruise)
   liftInhibit @22 :CloseFollowInhibit;
   liftAuthority @23 :Float32;
-  liftWeight @24 :Float32;           # gap excess x speed (18 -> 29 km/h in, out by 35 km/h)
+  liftWeight @24 :Float32;           # gap excess x speed (release13: in over 9 -> 12.6 km/h, zero from the hand-back)
   liftGain @25 :Float32;             # fades the lift as the model starts braking
   gapExcess @26 :Float32;            # m, the real leads' distance beyond the close-follow MPC's gap (the lower one)
   isE2e @27 :Bool;                   # the plan has an e2e candidate (experimental mode)
@@ -766,6 +768,14 @@ struct CustomReserved10 @0xcb9fd56c7057593a {
                                      # longitudinalPlan.solverExecutionTime); 0 when it did not run
   stepTime @32 :Float32;             # s, wall time of all of close follow this plan (its MPC, the lift, the min()). In
                                      # shadow it runs after longitudinalPlan is sent, so it never delays the plan
+  # release13
+  switchOn @33 :Bool;                # the user's CloseFollow switch as last read (every 3 s and at every engage)
+  live @34 :Bool;                    # close follow shapes the plan this frame (mode 2)
+  tightening @35 :Bool;              # live AND closing up: the gap in and >= 0.5 m shorter than the personality's, or
+                                     # the lift >= 0.02 m/s^2 - the comma 4's right-rail cue
+  pitchFiltered @36 :Float32;        # rad, carControl.orientationNED pitch filtered over 1 s (nose-up positive; 0 unknown)
+  ttc @37 :Float32;                  # s, leadOne's time to collision while closing faster than 0.5 m/s; -1 otherwise
+  hardBrakeHold @38 :Float32;        # s left of the hard-braking lead's hold (3 s)
 
   enum CloseFollowInhibit {
     none @0;
@@ -776,7 +786,7 @@ struct CustomReserved10 @0xcb9fd56c7057593a {
     noLead @5;         # no lead, or only a held lead (radard's clutter guard)
     leadUncertain @6;  # modelProb under 0.8
     visionLead @7;     # not a radar lead (the gap: above 2 m/s; the lift: always)
-    leadSlow @8;       # lift only: a lead under 5 m/s
+    leadSlow @8;       # lift only: a lead under 2.5 m/s (push13: 5 m/s)
     leadBraking @9;    # a real lead's aLeadK under -0.5, or leadOne's own speed falling faster over the last
                        # 0.5 s with aLeadK under 0 (lift: or the model's lead forecast slowing)
     leadChanged @10;   # a new car (distance jump, lift: or a radar track swap)
@@ -793,6 +803,10 @@ struct CustomReserved10 @0xcb9fd56c7057593a {
     laneChange @20;    # lift only
     notE2e @21;        # lift only: no e2e candidate (chill, DEC in ACC)
     invalid @22;       # non-finite inputs
+    leadHardBrake @23; # release13: a lead braking hard (its own speed over 0.5 s under -2.0, or aLeadK under -1.5),
+                       # now or in the 3 s after: the gap and the lift both out
+    downhill @24;      # release13: the filtered pitch under -0.03 (steeper than 3 % downhill)
+    closing @25;       # release13: leadOne's time to collision under 3 s, closing faster than 0.5 m/s
   }
 }
 

@@ -158,10 +158,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CarParamsSPPersistent", {PERSISTENT, BYTES}},
     {"CarPlatformBundle", {PERSISTENT | BACKUP, JSON}},
     {"ChevronInfo", {PERSISTENT | BACKUP, INT, "4"}},
-    // FORK(CLOSE-FOLLOW): close follow in queues (close_follow.py, HONDA_ELESYS with openpilot longitudinal): 0 off,
-    // 1 shadow (computed and logged as customReserved10, the plan untouched), 2 live. Read once when plannerd starts.
-    // No UI sets it and it is not BACKUP: a sunnylink restore must never turn live close follow on.
-    {"CloseFollowMode", {PERSISTENT, INT, "1"}},
+    // FORK(CLOSE-FOLLOW): close follow in queues (close_follow.py, HONDA_ELESYS with openpilot longitudinal), the user's
+    // switch (comma 4 Toggles 'close follow', sunnylink Vehicle > Honda): on (the default) live, off shadow - computed
+    // and logged as customReserved10, the plan untouched. plannerd re-reads it every 3 s and at every engage. Replaces
+    // push13's CloseFollowMode (0/1/2, never set by any UI), which is no longer registered.
+    {"CloseFollow", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"CompletedSunnylinkConsentVersion", {PERSISTENT, STRING, "0"}},
     {"CustomAccIncrementsEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"CustomAccLongPressIncrement", {PERSISTENT | BACKUP, INT, "5"}},
@@ -219,6 +220,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // FORK(NSW-CAMERAS): HudCameraAlerts - 'camera (map)' before a fixed speed / red-light / school-zone camera on the
     // road ahead (OSM, via the NSW zones index; customReserved12). Display only.
     {"HudCameraAlerts", {PERSISTENT | BACKUP, BOOL, "1"}},
+    // FORK(HUD): HudCloseFollow (release13) - close follow's cue at the foot of the right strip while it is live and
+    // holding the closer gap (hud_rail.py; customReserved10)
+    {"HudCloseFollow", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCompactDisengage", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCompactLimitPrompts", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudCompactTurn", {PERSISTENT | BACKUP, BOOL, "1"}},

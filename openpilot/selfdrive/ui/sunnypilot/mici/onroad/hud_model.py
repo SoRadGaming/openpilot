@@ -70,6 +70,8 @@ stop before a curve, and what a missing message does:
 Missing or stale (not this drive, or no longer arriving): modelV2, radarState or carState - no stop; longitudinalPlanSP
 or carState - no curve; carControl or longitudinalPlan - the stop can still be shown, but only grey. Nothing ever says
 WHY the plan stops (a light, a sign, a queue the radar has not locked onto): no message knows.
+FORK(CLOSE-FOLLOW) release13: the strip's FOOT, not its top, has close follow's mark (CloseFollowCue, HudCloseFollow)
+from customReserved10 - while close follow is live and holding the closer gap; the items above never move for it.
 The figures are held so they can be read: the stop's distance counts down freely but up only by 5 m or more, the
 curve's target moves in 5 km/h (5 mph) steps with a margin before it changes.
 """
@@ -862,3 +864,29 @@ class RailState:
       return RailFrame(kind=RAIL_CURVE, curve_v=curve, curve_left=self._curve_left, num=str(self._curve_fig),
                        unit=speed_unit(is_metric))
     return RailFrame()
+
+
+# ------------------------------------------------------------------------------------------- FORK(CLOSE-FOLLOW): the mark
+CLOSE_FOLLOW_SERVICE = 'customReserved10'   # plannerd's close follow log (close_follow.py), 20 Hz, Elesys Accord only
+CUE_ON_S = 0.5      # live and tightening this long before the mark shows ...
+CUE_OFF_S = 1.0     # ... and not tightening this long before it goes: a 20 Hz flag must never blink it
+
+
+class CloseFollowCue:
+  """Whether the right strip's foot shows close follow's mark (HudCloseFollow): customReserved10 this drive's and still
+  arriving, close follow LIVE and TIGHTENING (close_follow.CloseFollow.tightening: the gap in and at least 0.5 m
+  shorter than the personality's, or its lift raising the plan) - debounced CUE_ON_S / CUE_OFF_S. Never in shadow (the
+  user's CloseFollow off), never at a standstill (nothing tightens there), never on another car (nothing is published).
+  A stale or missing message, or the setting off, hides it on the frame. update() is idempotent within a frame."""
+  def __init__(self):
+    self._on = Debounce(CUE_ON_S, CUE_OFF_S)
+
+  def reset(self) -> None:
+    self._on.reset()
+
+  def update(self, sm, s: HudSettings, *, started_frame: int, now: float) -> bool:
+    if not s.close_follow or not fresh(sm, CLOSE_FOLLOW_SERVICE, started_frame):
+      self.reset()
+      return False
+    c = sm[CLOSE_FOLLOW_SERVICE]
+    return self._on.update(bool(c.live) and bool(c.tightening), now)
