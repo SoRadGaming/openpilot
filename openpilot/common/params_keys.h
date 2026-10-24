@@ -220,6 +220,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"HudLaneBlock", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudLimitStyle", {PERSISTENT | BACKUP, INT, "0"}},
     {"HudPlannedStop", {PERSISTENT | BACKUP, BOOL, "1"}},
+    // FORK(HUD): HudRadarDots (push13, 2026-10-24) - every radar track as a dot on the comma 4's road view, a diagnostic;
+    // the one HUD toggle that defaults OFF (radar_dots.py)
+    {"HudRadarDots", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"HudStoppedBanner", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"HudStoppedTimer", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"IntelligentCruiseButtonManagement", {PERSISTENT | BACKUP , BOOL}},

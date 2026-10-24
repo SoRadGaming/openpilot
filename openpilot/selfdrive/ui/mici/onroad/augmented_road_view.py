@@ -227,6 +227,7 @@ class AugmentedRoadView(CameraView):
 
     # Fade out bottom of overlays for looks
     rl.draw_texture_ex(self._fade_texture, rl.Vector2(self._content_rect.x, self._content_rect.y), 0.0, 1.0, rl.WHITE)
+    self._model_renderer.radar_dots.draw()  # FORK(HUD): over the fade, so a near track stays lit (radar_dots.py)
 
     alert_to_render, not_animating_out = self._alert_renderer.will_render()
 

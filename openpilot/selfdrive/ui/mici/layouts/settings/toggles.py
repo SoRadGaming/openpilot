@@ -45,6 +45,9 @@ class TogglesLayoutMici(NavScroller):
     self._experimental_btn = BigToggle("experimental mode", initial_state=ui_state.params.get_bool("ExperimentalMode"),
                                        toggle_callback=self._on_experimental_mode)
     is_metric_toggle = BigParamControl("use metric units", "IsMetric")
+    # FORK(HUD): every radar track as a dot on the road view, a diagnostic, off by default (radar_dots.py); also in
+    # sunnylink Visuals > HUD. The road view re-reads it within a second, so it may change while driving.
+    radar_dots_toggle = BigParamControl("radar dots", "HudRadarDots")
     ldw_toggle = BigParamControl("lane departure warnings", "IsLdwEnabled")
     always_on_dm_toggle = BigParamControl("always-on driver monitor", "AlwaysOnDM")
     record_front = BigParamControl("record & upload cabin camera", "RecordFront", toggle_callback=restart_needed_callback)
@@ -55,6 +58,7 @@ class TogglesLayoutMici(NavScroller):
       self._personality_toggle,
       self._experimental_btn,
       is_metric_toggle,
+      radar_dots_toggle,  # FORK(HUD)
       ldw_toggle,
       always_on_dm_toggle,
       record_front,
@@ -66,6 +70,7 @@ class TogglesLayoutMici(NavScroller):
     self._refresh_toggles = (
       ("ExperimentalMode", self._experimental_btn),
       ("IsMetric", is_metric_toggle),
+      ("HudRadarDots", radar_dots_toggle),  # FORK(HUD)
       ("IsLdwEnabled", ldw_toggle),
       ("AlwaysOnDM", always_on_dm_toggle),
       ("RecordFront", record_front),
