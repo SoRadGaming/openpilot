@@ -120,7 +120,7 @@ Signal positions are written `start:length` below, which is the DBC `start|lengt
 | `openpilot/selfdrive/pandad/pandad.cc`, `openpilot/selfdrive/pandad/panda_safety.cc`, `openpilot/selfdrive/pandad/pandad.h`, `openpilot/selfdrive/pandad/SConscript`, `openpilot/selfdrive/pandad/.gitignore` | M (2026-10-19) | the stay-stock path (leave or hold back the car mode) and fix 2's bus-off latch (16.4) | - |
 | `openpilot/selfdrive/pandad/car_bus_guard.h`, `openpilot/selfdrive/pandad/tests/test_car_bus_guard.cc` | A (2026-10-19) | `CarBusGuard`, header-only, and its native test (16.4, 16.7) | - |
 | `openpilot/sunnypilot/selfdrive/car/tests/test_diag_tool_guard.py`, `.../test_card_diag_hook.py`, `.../test_diag_tool_guard_replay.py`, `.../tests/fixtures/ktuner/*.npz`, `openpilot/sunnypilot/selfdrive/pandad/tests/` (`test_car_bus_guard.py`, `test_stock_wiring.py`, `fixtures/ktuner/*.npz`), `openpilot/sunnypilot/selfdrive/selfdrived/tests/test_car_stock_alert.py`, `openpilot/sunnypilot/tools/ktuner_fixtures.py` | A (2026-10-19) | all (16.7) | - |
-| `openpilot/selfdrive/controls/lib/desire_helper.py`, `openpilot/selfdrive/modeld/modeld.py`, `openpilot/sunnypilot/modeld_v2/modeld.py` | M | `NUDGE_FIRM` | B: `driver_torque_stale` |
+| `openpilot/selfdrive/controls/lib/desire_helper.py`, `openpilot/selfdrive/modeld/modeld.py`, `openpilot/sunnypilot/modeld_v2/modeld.py` | M | `NUDGE_FIRM`, `LANE_CHANGE_SPEED_FLOOR` (push13) | B: `driver_torque_stale` |
 | `openpilot/sunnypilot/mads/mads.py`, `openpilot/sunnypilot/mads/state.py` | M | `mads.py` in stock ACC mode only: MADS on at any speed, and the drop-out's `speedTooLow` alert (15.5, 2026-10-04); 10.7 notes one rule that applies to every car | B |
 | `openpilot/selfdrive/ui/sunnypilot/layouts/settings/vehicle/brands/honda.py` | M | Honda brand page; the stock ACC toggle (15.6) | - |
 | `openpilot/selfdrive/ui/sunnypilot/mici/layouts/vehicle.py` | A | mici vehicle page; the stock ACC toggle (15.6) | - |
@@ -241,6 +241,7 @@ Cars without a bundle are unchanged. On this car nothing FW-derived is used, so 
 - `STEER_THRESHOLD` (`values.py`)
 - `minEnableSpeed` (`interface.py`; its gas-interceptor exemption tests the category)
 - `NUDGE_FIRM` (`desire_helper.py`, keyed by the string)
+- `LANE_CHANGE_SPEED_FLOOR` (`desire_helper.py`, keyed by the string; its test checks the keys are `HONDA_ELESYS`)
 - `STOPPING_SPEED` and `STOPPING_DECEL_RATE` (`stopping_tune.py`, keyed by the string)
 - `override.toml` (torque prior), `car_list.json` and `routes.py`
 
@@ -1597,7 +1598,7 @@ Test: `openpilot/selfdrive/controls/tests/test_stopping_debounce.py`, two `Openp
 
 ### 10.2 Lane-change nudge (`openpilot/selfdrive/controls/lib/desire_helper.py`, both `modeld.py`)
 
-This car has two rules, on top of upstream's lane-change logic. Since the 2026-09 merge that logic is upstream's rewrite (`7d325d665`, `4532320fb`, `2d859a8ca`): no `DESIRES` table, no `laneChangeFinishing` state, at least 0.5 s in `laneChangeStarting`, a blinker already on at engagement enters `preLaneChange` at once (it still waits for the nudge), and an opt-in road-edge block (`RoadEdgeLaneChangeEnabled`, off by default). A replay of `DesireHelper` on route `00000103`'s inputs gives both of that route's lane changes (471.34 s left, 487.64 s right) at the same instants as the fork.
+This car has three rules, on top of upstream's lane-change logic. Since the 2026-09 merge that logic is upstream's rewrite (`7d325d665`, `4532320fb`, `2d859a8ca`): no `DESIRES` table, no `laneChangeFinishing` state, at least 0.5 s in `laneChangeStarting`, a blinker already on at engagement enters `preLaneChange` at once (it still waits for the nudge), and an opt-in road-edge block (`RoadEdgeLaneChangeEnabled`, off by default). A replay of `DesireHelper` on route `00000103`'s inputs gives both of that route's lane changes (471.34 s left, 487.64 s right) at the same instants as the fork.
 
 **1. `STEER_THRESHOLD` of 600** (`values.py`, `CAR.HONDA_ACCORD_9G_AU: 600`). `steeringPressed` is `abs(steeringTorque) > STEER_THRESHOLD`, where the default threshold is 1200.
 
@@ -1624,6 +1625,39 @@ This car has two rules, on top of upstream's lane-change logic. Since the 2026-0
 The commit message says its figures came from driving the real `desire_helper` over the windows. I could not tell which set describes the code as committed. If the replay is re-run, fix the comment to match.
 
 Cars not in the table keep upstream's single-frame rule. `NUDGE_FIRM` does not change `steeringPressed`, so DM and the lateral controller still see a light hand on the wheel (debounced, item 1).
+
+**3. `LANE_CHANGE_SPEED_FLOOR`: no lane change starts below 52 km/h** (push13). The board asks the EPS for torque from
+52.00 km/h and lets go under 51.00 (`GW_EPS_ACK_CPH` / `GW_EPS_KEEP_CPH`; the EPS itself drops out at 50.2-50.8), and
+`vEgo` reads the board's `XMISSION_SPEED` within 0.1 km/h there (median +0.04, routes 12b and 141). A lane change started
+below it is the driver's hands alone, and the change is one desire pulse to the model, which goes on with it once the car
+is back over the floor and the board has the wheel - after an intersection turn as much as after a lane change.
+
+- Evidence (the logs, check-first): on routes 10f-152, 66 of 222 lane changes started below 52 km/h, 34 of them with the
+  wheel past 90 degrees within 8 s (turns), and 6 of the 62 started below 50 were still running above 52.5; over all
+  the sunny_logs routes 165 of 438 (10 of the 153 below 50 still running above 52.5), and 25 started between 50 and
+  55 km/h (11 on 10f-152). No change that started
+  at 52 or above had its blinker switched on below 52, and 7 of 590 blinker holds (4 of 273 on 10f-152) came on below 52
+  and were still on at 52.
+- Module constants: `LANE_CHANGE_SPEED_FLOOR = {"HONDA_ACCORD_9G_AU": 52 km/h}` and `LANE_CHANGE_FLOOR_HYST = 1 km/h`.
+  `DesireHelper.__init__` sets `lane_change_speed_min` (the floor) and `lane_change_speed_drop` (the floor less the
+  hysteresis); a car not in the table gets upstream's `LANE_CHANGE_SPEED_MIN` for both.
+- Upstream's rule at the new numbers: the blinker arms `preLaneChange` only at or above the floor; a waiting change is
+  dropped under `lane_change_speed_drop` (upstream drops it under its minimum) and in the 51-52 km/h band it waits, the
+  nudge and the auto lane change starting it only at the floor; `laneChangeStarting` is untouched, so a running change
+  finishes. Ending it was the other choice and is worse: modeld feeds the model the desire's rising edge only, so the
+  model would carry on with the change and the state would only hide it.
+- As upstream, the blinker's rising edge is what arms a change: one switched on below the floor arms nothing when the car
+  gets above it. An "arm when crossing the floor with the blinker held" rule was left out for the owner to decide (none
+  of the logged changes at 52 or above needed it).
+- Replay (`DesireHelper` push12 and lcfloor on the logged inputs of every route with rlogs and a lane-change state, 67
+  routes, 22.7 h: `carState`, `latActive`, `driverTorqueStale`, the frame's `desireState` and RELC's edge blocks; on
+  routes 10f-152 push12's replay agrees with the logged state on 99.96% of frames and 194 of its 197 starts are within
+  0.25 s of a logged one): 438 starts become 265. The 174 that go: 171 started below 52 km/h (89 at 32-40, 45 at 40-45,
+  23 at 45-50, 10 at 50-51, 4 at 51-52; 13 were still running above 52.5) and 3 were a second change in the same blinker
+  hold after one of those (ab 1374.2 and 1374.9, 130 986.2). One moves: d3 977.25 at 51.8 km/h starts 0.45 s later at
+  52.0. Every one of the 288 waiting changes a blinker armed at 52 or above is armed on the same frame.
+
+Test: `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lane_change_speed_floor.py` (16 tests; README inventory).
 
 Wiring: `openpilot/selfdrive/modeld/modeld.py` and `openpilot/sunnypilot/modeld_v2/modeld.py` construct `DesireHelper(CP.carFingerprint)`, subscribe to `carStateSP`, and call `DH.update(..., left_edge, right_edge, driver_torque_stale=sm['carStateSP'].driverTorqueStale)`. That argument is area B: a latched torque cannot confirm a nudge (`torque_applied = carstate.steeringPressed and not driver_torque_stale and ...`). It is the last parameter and passed by keyword, because upstream put its two road-edge parameters in the slot the fork used to fill positionally. The hunks carry `FORK(HONDA_ACCORD_9G_AU)` (the constructor) and `FORK(LKAS-GATEWAY)` (the rest).
 
@@ -2108,7 +2142,7 @@ File by file:
 
 | kind | identifier |
 |---|---|
-| platform | `CAR.HONDA_ACCORD_9G_AU`. The string `HONDA_ACCORD_9G_AU` is also a key in `desire_helper.NUDGE_FIRM`, `stopping_tune.STOPPING_SPEED` and `STOPPING_DECEL_RATE`, `car_list.json`, `override.toml` (and a comment in `substitute.toml`) and the tests |
+| platform | `CAR.HONDA_ACCORD_9G_AU`. The string `HONDA_ACCORD_9G_AU` is also a key in `desire_helper.NUDGE_FIRM`, `desire_helper.LANE_CHANGE_SPEED_FLOOR`, `stopping_tune.STOPPING_SPEED` and `STOPPING_DECEL_RATE`, `car_list.json`, `override.toml` (and a comment in `substitute.toml`) and the tests |
 | flags | `HondaFlags.ELESYS = 1024`; `HondaSafetyFlags.ELESYS_SCM_STANDDOWN = 32`; `HONDA_PARAM_ELESYS_SCM_STANDDOWN = 32`; `honda_elesys_scm_standdown` |
 | sets | `HONDA_ELESYS` |
 | DBC names | `honda_accord_au_2015_can` (becomes `_generated`), `honda_accord_2015au_radar`, and the fragments in 4.1 |
