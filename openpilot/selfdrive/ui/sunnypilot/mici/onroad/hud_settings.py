@@ -31,8 +31,8 @@ school-zone camera on the road ahead (hud_model.CameraState). Display only; no c
 which this batch may not add to cereal).
 
 FORK(CLOSE-FOLLOW) release13: HudCloseFollow - a small two-car mark at the foot of the right strip while close follow is
-live and holding the closer gap (hud_model.CloseFollowCue, customReserved10); the planned stop and the curve keep the
-strip's top, and the confidence ball draws over the mark when it comes down that far.
+live and raising the plan, so following closer (hud_model.CloseFollowCue, customReserved10); the planned stop and the
+curve keep the strip's top, and the confidence ball draws over the mark when it comes down that far.
 """
 import math
 import time
@@ -55,7 +55,7 @@ PARAM_LANE_BLOCK = "HudLaneBlock"
 PARAM_LIMIT_STYLE = "HudLimitStyle"         # INT: how the coming limit and the confirm are drawn there (STYLES)
 PARAM_RADAR_DOTS = "HudRadarDots"           # every radar track as a dot on the road (radar_dots.py); defaults OFF
 PARAM_CAMERA = "HudCameraAlerts"            # FORK(NSW-CAMERAS): 'camera (map)' before a camera on the road ahead
-PARAM_CLOSE_FOLLOW = "HudCloseFollow"       # FORK(CLOSE-FOLLOW): the right strip's foot - close follow holding the gap
+PARAM_CLOSE_FOLLOW = "HudCloseFollow"       # FORK(CLOSE-FOLLOW): the right strip's foot - close follow following closer
 
 STYLE_SPLIT, STYLE_STOCK_PLUS = 0, 1        # D3 'split card' (the default), D1 'stock-plus'
 STYLES = (STYLE_SPLIT, STYLE_STOCK_PLUS)

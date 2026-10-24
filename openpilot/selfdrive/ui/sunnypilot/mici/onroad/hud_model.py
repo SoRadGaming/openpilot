@@ -71,7 +71,8 @@ Missing or stale (not this drive, or no longer arriving): modelV2, radarState or
 or carState - no curve; carControl or longitudinalPlan - the stop can still be shown, but only grey. Nothing ever says
 WHY the plan stops (a light, a sign, a queue the radar has not locked onto): no message knows.
 FORK(CLOSE-FOLLOW) release13: the strip's FOOT, not its top, has close follow's mark (CloseFollowCue, HudCloseFollow)
-from customReserved10 - while close follow is live and holding the closer gap; the items above never move for it.
+from customReserved10 - while close follow is live and raising the plan (following closer than without it); gone on the
+frame close follow drops out or openpilot disengages. The items above never move for it.
 The figures are held so they can be read: the stop's distance counts down freely but up only by 5 m or more, the
 curve's target moves in 5 km/h (5 mph) steps with a margin before it changes.
 """
@@ -869,15 +870,20 @@ class RailState:
 # ------------------------------------------------------------------------------------------- FORK(CLOSE-FOLLOW): the mark
 CLOSE_FOLLOW_SERVICE = 'customReserved10'   # plannerd's close follow log (close_follow.py), 20 Hz, Elesys Accord only
 CUE_ON_S = 0.5      # live and tightening this long before the mark shows ...
-CUE_OFF_S = 1.0     # ... and not tightening this long before it goes: a 20 Hz flag must never blink it
+CUE_OFF_S = 1.0     # ... and, while close follow is still in, not tightening this long before it goes: the tightening
+                    # threshold's own flicker must never blink it (close follow OUT hides it on the frame)
 
 
 class CloseFollowCue:
   """Whether the right strip's foot shows close follow's mark (HudCloseFollow): customReserved10 this drive's and still
-  arriving, close follow LIVE and TIGHTENING (close_follow.CloseFollow.tightening: the gap in and at least 0.5 m
-  shorter than the personality's, or its lift raising the plan) - debounced CUE_ON_S / CUE_OFF_S. Never in shadow (the
-  user's CloseFollow off), never at a standstill (nothing tightens there), never on another car (nothing is published).
-  A stale or missing message, or the setting off, hides it on the frame. update() is idempotent within a frame."""
+  arriving, close follow LIVE and TIGHTENING (close_follow.CloseFollow.tightening: it raises the plan this frame - the
+  plan with it is at least 0.02 m/s^2 above the plan without it) - debounced CUE_ON_S / CUE_OFF_S. HIDDEN ON THE FRAME
+  (release13 review): close follow out - not live, not requested (a disengage), or doing nothing at all (not active:
+  the gap out on any trip - a braking lead, a pedal, an FCW, a downhill - with no lift left) - or openpilot not engaged
+  (selfdriveState); the off-debounce is only for the tightening threshold flickering while close follow is in. Never in
+  shadow (the user's CloseFollow off), never at a standstill (nothing tightens there), never on another car (nothing is
+  published). A stale or missing message, or the setting off, hides it on the frame. update() is idempotent within a
+  frame."""
   def __init__(self):
     self._on = Debounce(CUE_ON_S, CUE_OFF_S)
 
@@ -889,4 +895,8 @@ class CloseFollowCue:
       self.reset()
       return False
     c = sm[CLOSE_FOLLOW_SERVICE]
-    return self._on.update(bool(c.live) and bool(c.tightening), now)
+    disengaged = fresh(sm, 'selfdriveState', started_frame) and not sm['selfdriveState'].enabled
+    if not (c.live and c.requested and c.active) or disengaged:
+      self.reset()
+      return False
+    return self._on.update(bool(c.tightening), now)

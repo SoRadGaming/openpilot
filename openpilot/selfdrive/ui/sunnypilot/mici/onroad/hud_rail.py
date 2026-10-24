@@ -16,8 +16,9 @@ A planned stop wins over a curve. Never a reason: no message knows whether the p
 the radar has not locked onto, so there are no light or sign icons. The rules are hud_model.RailState; this file draws.
 
 FORK(CLOSE-FOLLOW) release13: the strip's FOOT has close follow's mark - two cars, one close behind the other - while close
-follow is live and holding the closer gap (hud_model.CloseFollowCue, HudCloseFollow). It fades like the items, never
-moves them or the ball, and the ball (drawn after) covers it when low confidence brings the ball that far down.
+follow is live and raising the plan (hud_model.CloseFollowCue, HudCloseFollow); it starts fading out on the frame close
+follow drops out or openpilot disengages. It fades like the items, never moves them or the ball, and the ball (drawn
+after) covers it when low confidence brings the ball that far down.
 
 The approved style-B rail (2026-10-03 mockups): a 48 px glyph from y 6, ~18 px figures under it. While an item shows,
 the stock confidence ball - same size, math and colors - rides only the strip below it: its center is held at or

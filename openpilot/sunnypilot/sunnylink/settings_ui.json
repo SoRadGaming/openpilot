@@ -1761,7 +1761,7 @@
               "key": "HudCloseFollow",
               "widget": "toggle",
               "title": "Close Follow Mark",
-              "description": "Bottom of the right strip - a small mark of two cars, one close behind the other, while Close Follow (Vehicle > Honda) is on and openpilot is holding the closer gap behind the car ahead, in slow traffic. It goes when Close Follow steps out (a car braking, a short time to collision, a downhill, a warning, your pedals) and at a stop. The confidence ball covers it when it comes down that far. Display only."
+              "description": "Bottom of the right strip - a small mark of two cars, one close behind the other, while Close Follow (Vehicle > Honda) is on and has openpilot following the car ahead closer than it otherwise would, in slow traffic. It goes the moment Close Follow steps out (a car braking, a short time to collision, a downhill, a warning, your pedals, a disengage) and at a stop. The confidence ball covers it when it comes down that far. Display only."
             },
             {
               "key": "HudRadarDots",
@@ -2490,8 +2490,8 @@
           "key": "CloseFollow",
           "widget": "toggle",
           "title": "Close Follow",
-          "description": "In slow traffic openpilot follows the car ahead more closely, so cars cannot cut into the gap - 6 m at a stop, about 1 s behind at 15 km/h - and the gap grows back to your driving personality's by 17-22 km/h. It works by itself whenever openpilot drives the speed behind a car the radar tracks, and steps out at once for a car braking (3 s after a hard brake), a short time to collision, a downhill steeper than 3 %, any collision warning, a new car, or your gas or brake. Off - it only logs what it would do. 2013-15 Accord (Elesys) with sunnypilot longitudinal only.",
-          "details": "A small two-car mark on the comma 4's right edge shows while it is holding the closer gap. Takes effect within 3 s, also while driving."
+          "description": "In slow traffic openpilot follows the car ahead more closely while moving, so cars cannot cut into the gap - about 1 s behind at 15 km/h, and never more than 1 m closer than your driving personality's gap - and hands the gap back to your personality's by 17-22 km/h, sooner when the traffic ahead speeds up. It works by itself whenever openpilot drives the speed behind a car the radar tracks, and steps out at once for a car braking (3 s after a hard brake), a short time to collision, a downhill steeper than 3 %, any collision warning, a new car, or your gas or brake. It still aims for 6 m at a stop, but after a gentle stop the car ends up about 1 m closer than without it. Off - it only logs what it would do. 2013-15 Accord (Elesys) with sunnypilot longitudinal only.",
+          "details": "A small two-car mark on the comma 4's right edge shows while it has openpilot following closer than it otherwise would, and goes the moment it steps out. Takes effect within 3 s, also while driving."
         },
         {
           "key": "LeadBrakeAssistMode",

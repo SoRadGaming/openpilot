@@ -738,9 +738,10 @@ struct CustomReserved10 @0xcb9fd56c7057593a {
   gapInhibit @4 :CloseFollowInhibit; # why the closer gap is out (none while it is in, hold while it waits)
   gapAuthority @5 :Float32;          # 0..1: 0 at once on any trip, back up at 0.5/s after a 1 s clean hold
   speedWeight @6 :Float32;           # 1 while tFollow is under the personality's, 0 from the hand-back (release13;
-                                     # push13: 1 up to 18 km/h, 0 from 35)
-  tFollow @7 :Float32;               # s, the close-follow MPC's follow time: release13's safe limit at max(vEgo, vLead),
-                                     # 0.5 at a stop .. 1.8 at 22 km/h, never above the personality's
+                                     # push13: 1 up to 18 km/h, 0 from 35). The hand-back resets gapAuthority (review)
+  tFollow @7 :Float32;               # s, the close-follow MPC's follow time: release13's safe limit at scheduleSpeed,
+                                     # 0.5 at a stop .. 1.8 at 22 km/h, never more than 1 m of gap under the
+                                     # personality's (review) and never above it
   tFollowPersonality @8 :Float32;    # s, the selected personality's (what the plan's own MPC uses)
   jerkFactor @9 :Float32;            # the close-follow MPC's jerk factor
   desiredGap @10 :Float32;           # m, the gap the close-follow MPC settles at behind leadOne
@@ -771,18 +772,25 @@ struct CustomReserved10 @0xcb9fd56c7057593a {
   # release13
   switchOn @33 :Bool;                # the user's CloseFollow switch as last read (every 3 s and at every engage)
   live @34 :Bool;                    # close follow shapes the plan this frame (mode 2)
-  tightening @35 :Bool;              # live AND closing up: the gap in and >= 0.5 m shorter than the personality's, or
-                                     # the lift >= 0.02 m/s^2 - the comma 4's right-rail cue
+  tightening @35 :Bool;              # live, engaged AND following closer this frame: raised >= 0.02 m/s^2 - the comma 4's
+                                     # right-rail cue (release13 review; it was: the gap in and >= 0.5 m shorter, or the
+                                     # lift >= 0.02 - now gapCloser)
   pitchFiltered @36 :Float32;        # rad, carControl.orientationNED pitch filtered over 1 s (nose-up positive; 0 unknown)
   ttc @37 :Float32;                  # s, leadOne's time to collision while closing faster than 0.5 m/s; -1 otherwise
   hardBrakeHold @38 :Float32;        # s left of the hard-braking lead's hold (3 s)
+  # release13 review
+  raised @39 :Float32;               # m/s^2, what close follow does to the plan: aTargetClose - the min() of the plan's own
+                                     # candidates (aMpc, cruise, aModel); 0 while it is out, in shadow what it would
+  gapCloser @40 :Bool;               # the gap in and >= 0.5 m shorter than the personality's (release13's first
+                                     # 'tightening': the target is closer, the plan may still be the model's or cruise)
+  scheduleSpeed @41 :Float32;        # m/s, where the schedule was read: max(vEgo, vLead + 2 s x (aLeadK - 0.3)+)
 
   enum CloseFollowInhibit {
     none @0;
     hold @1;           # clean, waiting out the hold before rising
     notRequested @2;   # the on-switch is off
     inactive @3;       # openpilot longitudinal is not engaged
-    speed @4;          # above the fade (CF_FADE_KPH) or the lift's band
+    speed @4;          # above the fade (CF_FADE_KPH) or the lift's band; the gap: also from the hand-back on (review)
     noLead @5;         # no lead, or only a held lead (radard's clutter guard)
     leadUncertain @6;  # modelProb under 0.8
     visionLead @7;     # not a radar lead (the gap: above 2 m/s; the lift: always)

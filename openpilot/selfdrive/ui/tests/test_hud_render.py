@@ -182,7 +182,8 @@ def scene(v=110 / KPH, limit=110, ahead=0, ahead_dist=0.0, ahead_valid=True, nsw
   longitudinalPlan, smart cruise control) - none of them otherwise. No limit ahead unless ahead > 0. enabled=False:
   openpilot not engaged (selfdriveState), the set speed kept as this non-PCM car keeps it. sla-flash: now_key =
   (key, limit, target), the planner's offer (assist.nowKey / nowLimit / nowTarget); armed = (limit, target), the press
-  it holds (assist.armedLimit / armedTarget / armedSpeed). cf = (live, tightening): close follow's customReserved10."""
+  it holds (assist.armedLimit / armedTarget / armedSpeed). cf = (live, tightening[, active[, requested]]): close
+  follow's customReserved10 (active and requested default True: close follow in, engaged)."""
   for svc in SERVICES + RAIL_SERVICES:
     sm.seen[svc] = sm.alive[svc] = sm.updated[svc] = False
     sm.recv_frame[svc] = 0
@@ -202,6 +203,7 @@ def scene(v=110 / KPH, limit=110, ahead=0, ahead_dist=0.0, ahead_valid=True, nsw
   if cf is not None:
     def close_follow(c):
       c.mode, c.live, c.tightening, c.switchOn = 2 if cf[0] else 1, cf[0], cf[1], cf[0]
+      c.active, c.requested = (tuple(cf[2:]) + (True, True))[:2]
     put("customReserved10", close_follow)
 
   def car(c):
@@ -919,6 +921,15 @@ CF_OFF = dict(states["rail_stop"], cf=(True, False))
 seq = run(ON, [(CF_OFF, 100, "cf_seq_1"), (CF_ON, 8, "cf_seq_2_debounce"), (CF_ON, 12, "cf_seq_3_shown"),
                (CF_OFF, 16, "cf_seq_4_held"), (CF_OFF, 14, "cf_seq_5_gone")])
 cf_r["seq_lit"] = [int((box(g, *CF_FOOT).max(axis=2) > 120).sum()) for g in seq]
+# release13 review: close follow OUT (a trip: not active) or the planner's disengage (not requested) starts the fade on
+# that frame - gone 0.2 s later, and nothing comes back while it stays out (no 1 s hold, no mark alone after a disengage)
+CF_OUT = dict(states["rail_stop"], cf=(True, False, False))
+CF_STALE = dict(states["rail_stop"], cf=(True, True, False))   # a stale tightening flag with close follow out
+CF_UNREQ = dict(states["rail_stop"], cf=(True, False, False, False))
+seq = run(ON, [(CF_OFF, 100, "cf_out_1"), (CF_ON, 20, "cf_out_2_shown"), (CF_OUT, 4, "cf_out_3_out"),
+               (CF_STALE, 24, "cf_out_4_stays_out"), (CF_ON, 20, "cf_out_5_shown"), (CF_UNREQ, 4, "cf_out_6_disengaged"),
+               (CF_UNREQ, 24, "cf_out_7_stays_out")])
+cf_r["out_lit"] = [int((box(g, *CF_FOOT).max(axis=2) > 120).sum()) for g in seq]
 out["close_follow"] = cf_r
 
 # the stop time's size: full up to 59:59, shrunk beyond
@@ -1568,6 +1579,11 @@ class TestHudRender(OpenpilotTestCase):
     assert lit[0] == 0 and lit[1] == 0, f"not tightening, then its first 0.4 s: nothing {lit}"
     assert lit[2] > 60 and lit[3] > 60, f"shown, and held 0.8 s after it stops tightening {lit}"
     assert lit[4] == 0, f"then gone {lit}"
+    # release13 review: close follow out, or a disengage, and the mark is gone 0.2 s later - not 1.15 s - and stays gone
+    out = c["out_lit"]
+    assert out[1] > 60 and out[4] > 60, f"shown before each {out}"
+    assert out[2] == 0 and out[3] == 0, f"close follow out: gone within 0.2 s and nothing back while it stays out {out}"
+    assert out[5] == 0 and out[6] == 0, f"disengaged: gone within 0.2 s, never back alone {out}"
 
   def test_the_rail_through_a_drive(self):
     s = self.r["rail_seq"]

@@ -932,6 +932,47 @@ class TestRailRules(OpenpilotTestCase):
       [("7", "ft"), ("80", "ft"), ("400", "ft"), ("0.7", "mi")]
 
 
+# ------------------------------------------------------------------------------------------- FORK(CLOSE-FOLLOW): the mark
+def cf_sm(live=True, tightening=True, active=True, requested=True, enabled=True):
+  sm = FakeSM()
+  c = sm.put(HM.CLOSE_FOLLOW_SERVICE)
+  c.mode, c.live, c.switchOn = 2 if live else 1, live, live
+  c.tightening, c.active, c.requested = tightening, active, requested
+  sm.put('selfdriveState').enabled = enabled
+  return sm
+
+
+class TestCloseFollowCue(OpenpilotTestCase):
+  def run_cue(self, cue, sm, seconds, t):
+    out = []
+    for _ in range(int(round(seconds / 0.05))):
+      t[0] += 0.05
+      out.append(cue.update(sm, HS.ALL_ON, started_frame=STARTED, now=t[0]))
+    return out
+
+  def test_debounced_while_close_follow_is_in(self):
+    cue, t = HM.CloseFollowCue(), [100.0]
+    on = self.run_cue(cue, cf_sm(), 1.0, t)
+    assert not any(on[:9]) and all(on[10:]), f"on after {HM.CUE_ON_S} s {on}"
+    # still in, just not raising the plan this moment: held CUE_OFF_S
+    held = self.run_cue(cue, cf_sm(tightening=False), 1.5, t)
+    assert all(held[:19]) and not any(held[20:]), f"held {HM.CUE_OFF_S} s {held}"
+
+  def test_gone_on_the_frame_close_follow_drops_out_or_openpilot_disengages(self):
+    # the release13 review: 1.15 s after a trip or a disengage, and back alone on a disengaged screen
+    for why, kw in (("a trip (close follow does nothing)", {'tightening': False, 'active': False}),
+                    ("a stale tightening flag with close follow out", {'active': False}),
+                    ("the planner's disengage", {'tightening': False, 'active': False, 'requested': False}),
+                    ("openpilot disengaged", {'enabled': False}),
+                    ("shadow", {'live': False})):
+      cue, t = HM.CloseFollowCue(), [100.0]
+      assert self.run_cue(cue, cf_sm(), 1.0, t)[-1]
+      out = self.run_cue(cue, cf_sm(**kw), 2.0, t)
+      assert not any(out), f"{why}: gone on the first frame and never back {out}"
+      back = self.run_cue(cue, cf_sm(), 1.0, t)
+      assert not any(back[:9]) and back[-1], f"{why}: back in again only after the on-debounce {back}"
+
+
 # ------------------------------------------------------------------------------------------- the alerts' rules
 def alert(kind="manualRestart/warning", text1="TAKE CONTROL", text2="Resume Driving Manually"):
   return SimpleNamespace(alert_type=kind, text1=text1, text2=text2)

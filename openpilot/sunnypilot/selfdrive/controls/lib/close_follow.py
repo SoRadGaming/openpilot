@@ -24,14 +24,28 @@ personality's:
 1. THE GAP (after theo886's Traffic Mode, sunnypilot `accord-hybrid-9g` e83f724d0, from FrogPilot's traffic follow):
    a second LongitudinalMpc beside the plan's own with a shorter follow time - THE SAFE LIMIT (release13, the cfenv
    study and its skeptic, skeptic_schedule.json): CF_T_FOLLOW_V over CF_T_FOLLOW_BP, 0.5 s at a stop, 0.88 s at
-   13.5 km/h, 1.0 s at 15, 1.34 s at 18 and 1.8 s at 22 km/h, evaluated at max(vEgo, the real lead's vLead) and never
-   above the personality's (close_t_follow). So it hands back to the personality by itself - at 17.2 / 19.0 / 21.6 km/h
-   on aggressive / standard / relaxed - with no separate fade, and never closes up while the lead pulls away faster.
-   It was sized so that behind a lead braking at -4 m/s^2 from anywhere in the band this car keeps 2 m with its DESIGN
-   brake (-1.8 m/s^2 after a 0.36 s dead time: the 255-count ceiling, the p90 weak end of the logged full brakes);
-   with brake320's 320 counts it is conservative. The jerk factor is max(1.0, the personality's) (CF_JERK_FACTOR_MIN:
-   not the aggressive 0.5, which the envelope showed reacts later to a braking lead). STOP_DISTANCE is compiled into the
-   solver and untouched: the stopped gap stays 6 m. CF_FADE_SPEED (22 km/h, the schedule's last point) is the one
+   13.5 km/h, 1.0 s at 15, 1.34 s at 18 and 1.8 s at 22 km/h, evaluated at the speed the queue is heading for -
+   max(vEgo, the real lead's vLead + LEAD_AHEAD_S x its aLeadK over LEAD_AHEAD_DEADBAND) - never more than
+   GAP_DEFICIT_MAX (1 m) under the personality's gap at this speed and never above the personality's (close_t_follow).
+   So it hands back to the personality by itself - at 17.2 / 19.0 / 21.6 km/h on aggressive / standard / relaxed, and
+   sooner when the queue pulls away - with no separate fade, and never closes up while the lead pulls away faster.
+   It was sized so that behind a lead braking at -4 m/s^2 from STEADY following anywhere in the band this car keeps 2 m
+   with its DESIGN brake (-1.8 m/s^2 after a 0.36 s dead time: the 255-count ceiling, the p90 weak end of the logged
+   full brakes); with brake320's 320 counts it is conservative. THE RELEASE13 REVIEW found where that sizing did not
+   hold: a queue speeding up from a crawl and then braking hard. The gap closed at a crawl does not reopen while the
+   queue pulls away (the MPC tracks the lead's speed; its desired gap shrinks while the lead is faster), and the
+   schedule, read at the radar's lagging vLead, kept the closer gap in as the car accelerated - so a lead braking at -4
+   or -6 just after it touched in 65 of 648 sim runs where push12 stopped short (11 with the closer gap still in).
+   Three rules since: the schedule is read ahead of a lead that accelerates (LEAD_AHEAD_S), so it hands back while the
+   queue is still speeding up; the deficit against the personality's gap is capped (GAP_DEFICIT_MAX), so what a crawl
+   closes up is at most 1 m to reopen; and the hand-back (speedWeight 0) resets the authority, so the closer gap never
+   snaps back in at full authority when the lead slows (the schedule speed falls the moment a lead brakes). Left: the
+   closer gap is still up to 1 m less room in such a wave; where push12 itself stops within about 0.9 m, that can be a
+   touch at 2-5 km/h (docs/CHANGELOG_SERIAL_STEERING.md, push13). The jerk factor is max(1.0, the personality's)
+   (CF_JERK_FACTOR_MIN: not the aggressive 0.5, which the envelope showed reacts later to a braking lead).
+   STOP_DISTANCE is compiled into the solver and untouched: the plan still aims for 6 m at a standstill, as push12's -
+   but arriving at the stop from a closer gap, the car stops about 0.5-1.3 m closer than push12 after a gentle stop (the
+   release13 review's sim: 3.7-4.3 m against 4.3-5.1). CF_FADE_SPEED (22 km/h, the schedule's last point) is the one
    eligibility bound: the close MPC solves below it + CF_MPC_MARGIN, and above the hand-back it is the plan's own.
    Its candidate is blended into the plan's by gapAuthority: a = a_plan_mpc + authority * (a_close_mpc - a_plan_mpc),
    the trajectories alike. Authority drops to 0 AT ONCE on any trip, so on that frame the MPC candidate is the plan's
@@ -68,11 +82,14 @@ gate). Every other car and stock ACC mode never build it: upstream's planner bit
 customReserved10.
 
 LOGGED (the owner has no SSH): customReserved10 (CustomReserved10 in custom.capnp) every plan, 2 Hz in the qlog -
-since release13 with switchOn (the user switch as last read), live and tightening (live AND closing the gap or
-lifting: what the comma 4's right-rail cue shows) - and at most one `closefollow` cloudlog event at error level per
+since release13 with switchOn (the user switch as last read), live, raised (how far its candidates raise the plan's
+min() over the plan's own: what it does to the plan, or would in shadow), tightening (live, engaged and raised by
+TIGHT_RAISE or more: what the comma 4's right-rail cue shows - the release13 review: not merely the gap in while the
+model's plan or cruise is the lower candidate) and gapCloser (the gap in and 0.5 m shorter: release13's first
+'tightening') - and at most one `closefollow` cloudlog event at error level per
 SUMMARY_S (10 s), only when there was a chance to act (engaged, a real lead, under the eligibility bound): `mode` (1
 shadow, 2 live), `sw` (the switch), the share of those frames with the gap and the lift in, `live` (the share
-tightening live), the mean follow time and gap change, the most it lifted the plan, the top reasons it was out, and
+tightening live), the mean follow time and gap change, `up` (the most it raised the plan), the top reasons it was out, and
 `brk`, the frames where it lifted the plan while a lead braked - by construction 0; a non-zero `brk` in a route is a
 bug - and `smax` / `xmax`, the slowest close-MPC solve and the slowest whole close-follow step of those 10 s, in ms
 (mpcSolveTime / stepTime, every plan). A switch change is one `closefollow switch` line.
@@ -144,6 +161,10 @@ SERVICE = "customReserved10"
 CF_T_FOLLOW_BP = [0., 3.75, 4.167, 5.0, 6.111]   # m/s: 0, 13.5, 15, 18, 22 km/h
 CF_T_FOLLOW_V = [0.50, 0.88, 1.00, 1.34, 1.80]   # s, at max(vEgo, the real lead's vLead); never above the personality's
 CF_FADE_SPEED = CF_T_FOLLOW_BP[-1]  # m/s: the one eligibility bound (22 km/h); every personality hands back below it
+# the release13 review: a queue pulling away from a crawl, then braking hard
+LEAD_AHEAD_S = 2.0              # s: the schedule is read at the lead's speed this far ahead on its acceleration ...
+LEAD_AHEAD_DEADBAND = 0.3       # m/s^2: ... above this (a creeping queue's swell is not a pull-away)
+GAP_DEFICIT_MAX = 1.0           # m: the closer gap is never more than this under the personality's at this speed
 CF_FADE_KPH = 22.               # km/h, the same
 CF_JERK_FACTOR_MIN = 1.0        # the close MPC's jerk factor: max(this, the personality's) - not aggressive's 0.5
 CF_VISION_SPEED = 2.0           # m/s: above it the gap needs a radar lead
@@ -191,8 +212,8 @@ AUTHORITY_RISE = 0.5            # 1/s
 AUTHORITY_FALL = 4.0            # 1/s, soft trips
 
 SUMMARY_S = 10.0                # s: at most one closefollow cloudlog event per this
-TIGHT_GAP_M = 0.5               # m: live, the gap held at least this much shorter than the personality's ...
-TIGHT_LIFT = 0.02               # m/s^2: ... or the model's accel lifted by this: tightening (the HUD cue, the log)
+TIGHT_RAISE = 0.02              # m/s^2: live and raising the plan by at least this (raised): tightening - the HUD cue
+TIGHT_GAP_M = 0.5               # m: the gap in and at least this much shorter than the personality's: gapCloser (log)
 _EPS = 1e-9
 
 T_IDXS = np.asarray(ModelConstants.T_IDXS)
@@ -252,19 +273,29 @@ def _finite(*xs) -> bool:
     return False
 
 
-def schedule_speed(v_ego: float, v_lead: float | None = None) -> float:
-  """The speed the schedule is read at: max(vEgo, the real lead's vLead) - no closer gap while the lead pulls away
-  faster than the car. A missing or non-finite vLead is vEgo's."""
+def schedule_speed(v_ego: float, v_lead: float | None = None, a_lead: float = 0.) -> float:
+  """The speed the schedule is read at - where the queue is heading: max(vEgo, the real lead's vLead + LEAD_AHEAD_S x
+  its aLeadK over LEAD_AHEAD_DEADBAND). No closer gap while the lead pulls away faster than the car, and a lead
+  speeding up hands it back before the queue gets there (the release13 review). A missing or non-finite vLead is vEgo's;
+  a non-finite aLeadK reads ahead nothing."""
   if v_lead is None or not _finite(v_lead):
     return float(v_ego)
-  return max(float(v_ego), float(v_lead))
+  ahead = LEAD_AHEAD_S * max(float(a_lead) - LEAD_AHEAD_DEADBAND, 0.) if _finite(a_lead) else 0.
+  return max(float(v_ego), float(v_lead) + ahead)
 
 
-def close_t_follow(v_ego: float, t_personality: float, v_lead: float | None = None) -> float:
-  """The close follow time (the safe limit): CF_T_FOLLOW_V over CF_T_FOLLOW_BP at schedule_speed(), never above the
-  personality's - so it is the personality's from where the schedule reaches it (aggressive 17.2, standard 19.0,
-  relaxed 21.6 km/h)."""
-  t = float(np.interp(schedule_speed(v_ego, v_lead), CF_T_FOLLOW_BP, CF_T_FOLLOW_V))
+def schedule_t_follow(v: float) -> float:
+  """The safe limit's schedule itself: CF_T_FOLLOW_V over CF_T_FOLLOW_BP at v."""
+  return float(np.interp(v, CF_T_FOLLOW_BP, CF_T_FOLLOW_V))
+
+
+def close_t_follow(v_ego: float, t_personality: float, v_lead: float | None = None, a_lead: float = 0.) -> float:
+  """The close follow time (the safe limit): the schedule at schedule_speed(), never more than GAP_DEFICIT_MAX of gap
+  under the personality's at vEgo, and never above the personality's - so it is the personality's from where the
+  schedule reaches it (aggressive 17.2, standard 19.0, relaxed 21.6 km/h; sooner behind a lead speeding up)."""
+  t = schedule_t_follow(schedule_speed(v_ego, v_lead, a_lead))
+  if _finite(v_ego) and v_ego > _EPS:
+    t = max(t, t_personality - GAP_DEFICIT_MAX / float(v_ego))
   return min(t, t_personality)
 
 
@@ -451,7 +482,10 @@ class CloseFollowSwitch:
 
 
 class GapGuard:
-  """The closer gap's authority (0..1): 0 at once on any trip, GAP_HOLD_S of clean frames, then up at GAP_RISE."""
+  """The closer gap's authority (0..1): 0 at once on any trip, GAP_HOLD_S of clean frames, then up at GAP_RISE. The
+  hand-back (speed weight 0: the close follow time is the personality's) resets it too (release13 review): before, the
+  authority stayed up past the hand-back, so the moment the schedule speed fell again - a lead starting to brake - the
+  closer gap was back at full authority on that frame, until the braking trip caught it 0.2-0.4 s later."""
 
   def __init__(self, dt: float = DT_MDL):
     self.dt = dt
@@ -466,8 +500,9 @@ class GapGuard:
     self.inhibit = reason
     self.last_d_rel = math.nan
 
-  def update(self, inp: Inputs, requested: bool, fcw: bool) -> float:
-    """fcw: the planner's FCW or the close MPC's crash flag this frame (the car's own is read from inp)."""
+  def update(self, inp: Inputs, requested: bool, fcw: bool, weight: float = 1.) -> float:
+    """fcw: the planner's FCW or the close MPC's crash flag this frame (the car's own is read from inp); weight: the
+    speed weight (speed_weight), 0 from the hand-back."""
     if fcw or inp.car_fcw:
       self.fcw_left = self.fcw_frames
     elif self.fcw_left > 0:
@@ -486,6 +521,8 @@ class GapGuard:
       return 0.
 
     trip = self._trip(inp)
+    if trip is None and not weight > 0.:
+      trip = Inhibit.speed   # the hand-back: out, and back in only by the hold and the ramp
     if trip is not None:
       self.authority = 0.
       self.hold_left = self.hold_frames
@@ -601,7 +638,8 @@ class LeadFollowLift:
     self.gap_excess = min(ld.d_rel - desired_gap(v_ego, ld.v_lead, t_follow) for ld in leads) if leads else 0.
     # zero wherever close follow's own follow time is the personality's (above the hand-back the e2e plan is push12's)
     t_personality = get_T_FOLLOW(inp.personality)
-    t_close = close_t_follow(v_ego, t_personality, lead.v_lead if lead.present else None)
+    t_close = close_t_follow(v_ego, t_personality, lead.v_lead if lead.present else None,
+                             lead.a_lead if lead.present else 0.)
     self.weight = float(np.interp(self.gap_excess, GAP_BP, [0., 1.])) * lift_speed_weight(v_ego, t_close, t_personality)
     self.gain = float(np.interp(a_model, GAIN_BP, [0., 1.]))
     ceiling = min(a_mpc, a_cruise)
@@ -723,10 +761,12 @@ class CloseFollow:
     self.g = 0.
     self.weight = 0.
     self.t_follow = self.t_personality = get_T_FOLLOW(Personality.standard)
+    self.v_schedule = 0.          # m/s, the speed the schedule was read at (schedule_speed)
     self.jerk = 1.
     self.a_mpc = self.a_mpc_close = 0.
     self.a_model = self.a_model_lifted = 0.
     self.a_target = self.a_target_close = 0.
+    self.raised = 0.           # m/s^2, the plan with close follow's candidates minus the plan without them (_run_finish)
     self.source_close = PlanSource.cruise
     self.frame = 0
     self.summary_frames = int(round(SUMMARY_S / dt))
@@ -848,7 +888,9 @@ class CloseFollow:
     self.t_personality = get_T_FOLLOW(inp.personality)
     j_personality = get_jerk_factor(inp.personality)
     v_lead = inp.lead_one.v_lead if inp.lead_one.present else None
-    self.t_follow = close_t_follow(v_ego, self.t_personality, v_lead) if _finite(v_ego) else self.t_personality
+    a_lead = inp.lead_one.a_lead if inp.lead_one.present else 0.
+    self.v_schedule = schedule_speed(v_ego, v_lead, a_lead) if _finite(v_ego) else 0.
+    self.t_follow = close_t_follow(v_ego, self.t_personality, v_lead, a_lead) if _finite(v_ego) else self.t_personality
     self.weight = speed_weight(self.t_follow, self.t_personality) if _finite(v_ego) else 0.
     self.jerk = close_jerk_factor(j_personality)
     v_traj, a_traj, j_traj = trajectories
@@ -878,7 +920,7 @@ class CloseFollow:
     else:
       self.mpc_warm = False
 
-    authority = self.gap.update(inp, self.requested, bool(fcw) or self.mpc_crash)
+    authority = self.gap.update(inp, self.requested, bool(fcw) or self.mpc_crash, self.weight)
     self.g = authority if (close is not None and self.weight > 0.) else 0.
     if self.g <= 0. or close is None:
       self.g = 0.
@@ -944,6 +986,10 @@ class CloseFollow:
       if is_e2e:
         candidates.append((self.a_model_lifted, PlanSource.e2e))
       self.a_target_close, self.source_close = min(candidates, key=lambda c: c[0])
+      # what close follow does to the plan: its min() against the min() of the plan's own candidates (live, a_target is
+      # already the former; in shadow the latter) - 0 exactly while it is out, whatever the gap and the lift say
+      a_off = min(self.a_mpc, float(a_cruise), self.a_model) if is_e2e else min(self.a_mpc, float(a_cruise))
+      self.raised = self.a_target_close - a_off
       self.step_time += time.monotonic() - t0
       self._account()
     except Exception:
@@ -978,18 +1024,27 @@ class CloseFollow:
     return self.gap_active or self.lifting > _EPS
 
   @property
-  def tightening(self) -> bool:
-    """Live AND actually closing up: the gap in and at least TIGHT_GAP_M shorter than the personality's at this speed,
-    or the lift raising the model's accel by TIGHT_LIFT or more. What the comma 4's right-rail cue shows."""
+  def gap_closer(self) -> bool:
+    """The gap in and at least TIGHT_GAP_M shorter than the personality's at this speed (live or not): what release13
+    first called tightening. It says the target is closer, not that the plan is - the model's e2e plan or cruise may be
+    the lower candidate (the release13 review: 40 % of those frames on the owner's routes), so it is the log's only."""
     inp = self.inputs
-    if not self.live or self.failed or inp is None or not _finite(inp.v_ego):
+    if self.failed or inp is None or not _finite(inp.v_ego):
       return False
-    closer = self.g > 0. and (self.t_personality - self.t_follow_used) * max(inp.v_ego, 0.) >= TIGHT_GAP_M
-    return closer or self.lifting >= TIGHT_LIFT
+    return self.g > 0. and (self.t_personality - self.t_follow_used) * max(inp.v_ego, 0.) >= TIGHT_GAP_M
+
+  @property
+  def tightening(self) -> bool:
+    """Live AND actually following closer this frame: engaged, close follow in, and the plan with its candidates at
+    least TIGHT_RAISE above the plan without them (raised) - not merely its gap in while the model's e2e plan or cruise
+    sets the plan (the release13 review). What the comma 4's right-rail cue shows."""
+    inp = self.inputs
+    if not self.live or self.failed or inp is None or not inp.engaged or not self.active:
+      return False
+    return self.raised >= TIGHT_RAISE
 
   def _gap_inhibit(self):
-    if self.gap.inhibit in (Inhibit.none, Inhibit.hold) and self.weight <= 0. and self.gap.authority > 0.:
-      return Inhibit.speed
+    # (the hand-back is the guard's own 'speed' since the release13 review: it resets the authority)
     return self.gap.inhibit
 
   def fill(self, msg) -> None:
@@ -1035,10 +1090,13 @@ class CloseFollow:
     msg.switchOn = bool(self.switch_on)
     msg.live = bool(self.live)
     msg.tightening = bool(self.tightening)
+    msg.raised = float(self.raised)
+    msg.gapCloser = bool(self.gap_closer)
     msg.pitchFiltered = float(self.pitch_f)
     ttc = time_to_collision(lead)
     msg.ttc = float(ttc) if math.isfinite(ttc) else -1.
     msg.hardBrakeHold = float(self.hard_left * self.dt)
+    msg.scheduleSpeed = float(self.v_schedule)
 
   def publish(self, pm) -> None:
     """customReserved10, once per plan; nothing after a failure (the cloudlog line says why)."""
@@ -1079,7 +1137,7 @@ class CloseFollow:
         w['lmax'] = max(w['lmax'], self.lifting)
       if self.tightening:
         w['live'] += 1
-      w['up'] = max(w['up'], self.a_target_close - self.a_target)
+      w['up'] = max(w['up'], self.raised)   # (a_target_close - a_target is 0 live: a_target already has close follow)
       # (live, the plan's min() already holds close follow's candidates: the MPC candidate against the plan's own says
       # whether it raised the plan)
       if lead_braking(inp) and (self.lifting > _EPS or self.a_target_close > self.a_target + 1e-6 or
