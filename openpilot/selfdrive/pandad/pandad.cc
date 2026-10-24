@@ -184,7 +184,8 @@ static bool is_car_safety_mode(uint8_t m) {
 }
 
 // FORK(HONDA_ACCORD_9G_AU): HondaSafetyFlags.ELESYS_SCM_STANDDOWN | ELESYS_STOCK_ACC (opendbc honda/values.py,
-// test_stock_wiring.py pins the two equal). hondaNidec with either bit set is HONDA_ACCORD_9G_AU, and only it.
+// test_stock_wiring.py pins the two equal). hondaNidec with either bit set is HONDA_ACCORD_9G_AU, and only it. brake320's
+// bit 128 is only ever set beside 32 (param 164), so it needs no place here.
 static constexpr uint16_t ELESYS_PARAM_BITS = 32U | 64U;
 
 // FORK(HONDA_ACCORD_9G_AU): KTuner fix 2 - one poll of the car-bus guard (car_bus_guard.h), and its param. The latch

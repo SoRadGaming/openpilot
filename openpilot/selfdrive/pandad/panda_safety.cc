@@ -31,7 +31,7 @@ void PandaSafety::configureSafetyMode(bool is_onroad, bool stay_stock, bool igni
     }
   } else if (is_onroad && stay_stock) {
     // FORK(HONDA_ACCORD_9G_AU): send_panda_states() forced NO_OUTPUT this pass. Re-arm, so the release re-sends 0xdf
-    // (accepted only outside a car mode) and 0xdc from the same CarParams: 36, or 68 in stock ACC mode.
+    // (accepted only outside a car mode) and 0xdc from the same CarParams: 164 (36 before brake320), or 68 in stock ACC mode.
     safety_configured_ = false;
     stock_held_ = true;
   } else if (!is_onroad) {

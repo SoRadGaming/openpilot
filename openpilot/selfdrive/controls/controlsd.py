@@ -139,7 +139,7 @@ class Controls(ControlsExt):
 
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, self.CP_SP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
-    # FORK(HONDA_ACCORD_9G_AU): -3.2 on the level; on a climb lowered by g*sin(pitch), which the car controller's pitch
+    # FORK(HONDA_ACCORD_9G_AU): -3.25 on the level (-3.2 before brake320); on a climb lowered by g*sin(pitch), which the car controller's pitch
     # feedforward adds back after the PID, never below upstream's -4.0; -4.0 without a pose
     if self.elesys_pid_floor:
       pitch = self.calibrated_pose.orientation.y if self.calibrated_pose is not None else None

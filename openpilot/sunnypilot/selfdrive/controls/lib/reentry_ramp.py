@@ -22,17 +22,22 @@ An engagement is NOT a lift-off: reset_state also turns false when longitudinal 
 It is skipped, and stays off for the rest of that re-entry, the first frame any of these holds:
   * the planner's FCW (mpc.crash_cnt > 2);
   * the MPC's crash flag (crash_cnt > 0: a collision course with a confident lead in the next second);
-  * the MPC's plan below REENTRY_RAMP_MPC_FLOOR (-2.0), about this car's full brake (-1.8 to -2.0): its action-time
-    value OR any point of its trajectory over the next 2.5 s (the planner passes the lower of the two). Its action-time
-    value is itself jerk-limited and takes 0.4-0.85 s to pass -2.0 behind a hard-braking lead;
+  * the MPC's plan below REENTRY_RAMP_MPC_FLOOR (-2.0), well inside this car's full brake (corrected 2026-10-24, below):
+    its action-time value OR any point of its trajectory over the next 2.5 s (the planner passes the lower of the two). Its
+    action-time value is itself jerk-limited and takes 0.4-0.85 s to pass -2.0 behind a hard-braking lead;
   * the plan itself (the min of every candidate, e2e included) below -2.0 (round 8 review: 0dd t=296.8, an e2e plan of
     -2.05 held back by 1.73 m/s^2 while the MPC sat above -2.0);
   * a lead braking harder than REENTRY_RAMP_LEAD_DECEL (-2.0): the lowest radarState aLeadK of leadOne and leadTwo
     (lead_decel(); a present lead without a finite aLeadK counts as braking hard).
 On that frame the plan is passed as it is, and from there the brake's own 1.0/s rise limit is the only smoothing.
-Why the last three (round 8 review): the car is already at full brake around -1.9, so braking the ramp holds back
-is never recovered. In the closed-loop sim below, the ramp with only the first three turned 11 of 192 near-misses
-behind a lead braking at -3 to -6 m/s^2 into collisions.
+Why the last three (round 8 review): it was written believing the car is at full brake around -1.9, so braking the ramp
+holds back is never recovered. Measured (brake320 study, 2026-10-24, steady decel on the level), full brake is -2.45
+m/s^2 at 255 counts and about -2.95 at 320 (brake320, opendbc brake_ceiling.py); 143's -1.65 to -1.92 was full brake
+on a ~5% downhill. The floor stays -2.0 by decision: it is where the ramp stops holding braking back, and the ramp only
+ever takes braking away, so giving way 0.45-0.95 m/s^2 before the brake's reach is the safe side. Moved toward the new
+ceiling it would hold back up to 0.95 m/s^2 more behind a hard-braking lead - the case below. In the closed-loop sim
+below, the ramp with only the first three turned 11 of 192 near-misses behind a lead braking at -3 to -6 m/s^2 into
+collisions.
 
 It arms only at REENTRY_RAMP_MIN_SPEED (3 m/s) or faster on the first frame back. All 92 measured re-entries were
 above 3 m/s. Below it, re-entry is the stop-and-go creep behind a close lead, where nothing was measured and the
@@ -65,7 +70,7 @@ gap it settles to is up to 1.6 m shorter (of 10-28 m), the cost of braking later
 
 COST: when the driver lifts off behind a car that is slowing but not braking harder than -2.0, and the plan stays
 above -2.0, braking starts up to about 0.2-0.5 s later and the closest approach can be up to about 1.6 m shorter.
-The ramp reaches -2.25 m/s^2 from 0 inside its 1.5 s, which is past this car's full brake.
+The ramp reaches -2.25 m/s^2 from 0 inside its 1.5 s: about the old ceiling's measured -2.45, short of brake320's -2.95.
 
 One line per re-entry where the ramp bound goes to cloudlog (`reentryramp ...`, a logMessage on the route). It
 records the start, the deepest the plan fell below the ramp, and why the ramp ended (end=time, override, fcw, crash,
@@ -80,7 +85,8 @@ from openpilot.common.swaglog import cloudlog
 
 REENTRY_RAMP_S = 1.5             # s after reset_state turns false
 REENTRY_RAMP_JERK = 1.5          # m/s^3: the most the plan may fall per second inside the window
-REENTRY_RAMP_MPC_FLOOR = -2.0    # m/s^2: the MPC's plan, or the plan itself, below this skips the ramp (full brake)
+REENTRY_RAMP_MPC_FLOOR = -2.0    # m/s^2: the MPC's plan, or the plan itself, below this skips the ramp (urgent braking;
+                                 # full brake measured -2.45 at 255 counts, -2.95 at 320 - kept -2.0, see the docstring)
 REENTRY_RAMP_LEAD_DECEL = -2.0   # m/s^2: a lead braking harder than this (radarState aLeadK) skips the ramp
 REENTRY_RAMP_MIN_SPEED = 3.0     # m/s (vEgo) on the first frame back: slower re-entries are upstream's
 REENTRY_RAMP_GAS_S = 0.5         # s: arms only if the gas was pressed this recently (a lift-off, not an engagement)

@@ -1,4 +1,5 @@
-"""FORK(HONDA_ACCORD_9G_AU): the longitudinal PID's floor on HONDA_ELESYS, -3.2 instead of -4.0 (round 8, proposal 9).
+"""FORK(HONDA_ACCORD_9G_AU): the longitudinal PID's floor on HONDA_ELESYS, -3.2 instead of -4.0 (round 8, proposal 9);
+-3.25 since brake320 (2026-10-24), exactly the new full brake (a brake fraction of 1.25, 320 counts).
 
 opendbc's test_elesys.py pins get_pid_accel_limits() and elesys_pid_accel_min() itself. This drives the real
 LongControl with those limits: the integrator stops winding at -3.2 minus the plan while the brake is railed (route 143
@@ -70,7 +71,7 @@ def _run(floor, frames):
 class TestElesysPidFloor(OpenpilotTestCase):
   def test_the_limits_controlsd_passes(self):
     self.assertEqual(_limits(15.0)[0], ELESYS_PID_ACCEL_MIN)
-    self.assertEqual(ELESYS_PID_ACCEL_MIN, -3.2)
+    self.assertEqual(ELESYS_PID_ACCEL_MIN, -3.25)
 
   def test_full_brake_windup_stops_at_the_floor_minus_the_plan(self):
     # 143 t172.9-174.6: plan -2.1 to -2.9, the car at -1.65 to -1.92 on full brake; here -2.7 against -1.85 at 16 m/s,
@@ -80,11 +81,15 @@ class TestElesysPidFloor(OpenpilotTestCase):
     # the anti-windup stops the integrator on the last step that keeps it inside the limit (within one 0.006 step)
     self.assertAlmostEqual(old[-1][0], -4.0, delta=0.01)
     self.assertAlmostEqual(old[-1][1], -1.3, delta=0.01)    # wound to -4.0 - (-2.7)
-    self.assertAlmostEqual(new[-1][0], -3.2, delta=0.01)
-    self.assertAlmostEqual(new[-1][1], -0.5, delta=0.01)    # stops at -3.2 - (-2.7)
-    # the brake is railed the whole time either way: no braking is lost
+    self.assertAlmostEqual(new[-1][0], -3.25, delta=0.01)
+    self.assertAlmostEqual(new[-1][1], -0.55, delta=0.01)   # stops at -3.25 - (-2.7)
+    # the brake is railed the whole time either way, at brake320's ceiling (1.25) and at the old one (1.0, the VSA
+    # fallback): no braking is lost
     for (o_old, _), (o_new, _) in zip(old, new, strict=True):
       self.assertEqual(compute_gb_honda_elesys(o_old, 16.0), compute_gb_honda_elesys(o_new, 16.0))
+      # at 1.25 the anti-windup leaves the output within one integrator step of the floor: under a count apart
+      self.assertAlmostEqual(compute_gb_honda_elesys(o_old, 16.0, 1.25)[1], compute_gb_honda_elesys(o_new, 16.0, 1.25)[1],
+                             delta=0.003)
 
   def test_the_release_after_it_is_quicker(self):
     # the plan lets go to -1.0 after the saturated stretch while the car is still at -1.85: the old integrator holds
@@ -92,7 +97,7 @@ class TestElesysPidFloor(OpenpilotTestCase):
     n = 300
     frames = [(-2.7, -1.85, 16.0)] * n + [(-1.0, -1.85, 14.0)] * 300
     old, new = _run(UPSTREAM_FLOOR, frames), _run(ELESYS_PID_ACCEL_MIN, frames)
-    self.assertAlmostEqual(new[n][0] - old[n][0], 0.8, delta=0.02)   # on the release frame: 0.8 m/s^2 less windup
+    self.assertAlmostEqual(new[n][0] - old[n][0], 0.75, delta=0.02)   # on the release frame: 0.75 m/s^2 less windup
 
     def settle(seq):  # frames after the release until the command is within 0.1 of the plan
       return next(k for k in range(n, len(seq)) if seq[k][0] >= -1.0 - 0.1) - n
@@ -125,8 +130,10 @@ class TestElesysPidFloor(OpenpilotTestCase):
       self.assertEqual(compute_gb_honda_elesys(new[-1][0] + hill, 17.0)[1], compute_gb_honda_elesys(old[-1][0] + hill, 17.0)[1])
       if grade <= 8.0:
         self.assertEqual(compute_gb_honda_elesys(new[-1][0] + hill, 17.0)[1], 1.0, grade)
+      if grade <= 7.0:   # brake320's full brake (1.25) up to where -4.0 binds (about 7.6%)
+        self.assertAlmostEqual(compute_gb_honda_elesys(new[-1][0] + hill, 17.0, 1.25)[1], 1.25, delta=0.005, msg=grade)
     flat = _run(ELESYS_PID_ACCEL_MIN, [(-3.5, -1.9, 17.0)] * 300)[-1][0]
-    self.assertAlmostEqual(flat, -3.2, delta=0.01)
+    self.assertAlmostEqual(flat, -3.25, delta=0.01)
     self.assertLess(compute_gb_honda_elesys(flat + ACCELERATION_DUE_TO_GRAVITY * math.sin(math.atan(0.10)), 17.0)[1], 0.9,
                     "the flat floor's shortfall on a 10% climb, which the pitch removes")
 
