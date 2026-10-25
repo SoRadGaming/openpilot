@@ -26,7 +26,8 @@ personality's:
    study and its skeptic, skeptic_schedule.json): CF_T_FOLLOW_V over CF_T_FOLLOW_BP, 0.5 s at a stop, 0.88 s at
    13.5 km/h, 1.0 s at 15, 1.34 s at 18 and 1.8 s at 22 km/h, evaluated at the speed the queue is heading for -
    max(vEgo, the real lead's vLead + LEAD_AHEAD_S x its aLeadK over LEAD_AHEAD_DEADBAND) - never more than
-   GAP_DEFICIT_MAX (1 m) under the personality's gap at this speed and never above the personality's (close_t_follow).
+   GAP_DEFICIT_MAX (1 m) under the personality's gap at that same speed and never above the personality's
+   (close_t_follow) - and since round 2 (below) never while the gap the radar measures is already REAL_GAP_MAX short.
    So it hands back to the personality by itself - at 17.2 / 19.0 / 21.6 km/h on aggressive / standard / relaxed, and
    sooner when the queue pulls away - with no separate fade, and never closes up while the lead pulls away faster.
    It was sized so that behind a lead braking at -4 m/s^2 from STEADY following anywhere in the band this car keeps 2 m
@@ -39,13 +40,51 @@ personality's:
    Three rules since: the schedule is read ahead of a lead that accelerates (LEAD_AHEAD_S), so it hands back while the
    queue is still speeding up; the deficit against the personality's gap is capped (GAP_DEFICIT_MAX), so what a crawl
    closes up is at most 1 m to reopen; and the hand-back (speedWeight 0) resets the authority, so the closer gap never
-   snaps back in at full authority when the lead slows (the schedule speed falls the moment a lead brakes). Left: the
-   closer gap is still up to 1 m less room in such a wave; where push12 itself stops within about 0.9 m, that can be a
-   touch at 2-5 km/h (docs/CHANGELOG_SERIAL_STEERING.md, push13). The jerk factor is max(1.0, the personality's)
-   (CF_JERK_FACTOR_MIN: not the aggressive 0.5, which the envelope showed reacts later to a braking lead).
-   STOP_DISTANCE is compiled into the solver and untouched: the plan still aims for 6 m at a standstill, as push12's -
-   but arriving at the stop from a closer gap, the car stops about 0.5-1.3 m closer than push12 after a gentle stop (the
-   release13 review's sim: 3.7-4.3 m against 4.3-5.1). CF_FADE_SPEED (22 km/h, the schedule's last point) is the one
+   snaps back in at full authority when the lead slows (the schedule speed falls the moment a lead brakes). The review
+   said what was left was the closer gap itself: at most 1 m less room in such a wave.
+   THE RELEASE13 VERIFICATION (round 2) showed that was the TARGET (the follow time x vEgo), not the gap the car really
+   keeps. In a gentle pull-away from a crawl (0.6-0.8 m/s^2, under the look-ahead's dead band, the commonest kind) the
+   closer gap stayed in at full authority while the car sped up and the real gap fell to 1.4 m short of push12's
+   (touches at up to 5.1 km/h where push12 had kept up to 0.8 m); stop-and-go waves stacked the offset (up to 2.7 m less
+   room, standstill gaps up to 2.5 m shorter); a slower car cutting in within LEAD_JUMP of the old lead's range kept the
+   closer gap. Since round 2:
+   * THE REAL GAP: leadOne's radar gap against the personality's own desired gap - desired_gap() at vEgo and vLead with
+     the personality's follow time, what push12's MPC aims for - filtered over REAL_GAP_TAU_S, per car (realDeficit).
+     From REAL_GAP_MAX (0.9 m) short close follow raises nothing - neither the gap nor the lift - and it fades out over
+     the REAL_GAP_FADE (0.25 m) before that, so there is no on/off at the line (real_weight, realWeight; the gap held out
+     by it alone logs realGap). 0.9 m and not 1: push12 itself settles 0.1-0.2 m past its desired gap, so 0.9 m short of
+     the desired gap is about 1 m short of the gap push12 really keeps. It bounds what stop-and-go waves stack up, and
+     the stop: a car following closer arrives at the stop no more than that much closer.
+   * A QUEUE PULLING AWAY - leadOne's aLeadK over PULL_AWAY_ACCEL (0.3 m/s^2) for PULL_AWAY_T (0.5 s), the same car - is
+     a soft trip (pullAway): nothing tightens, the gap's authority falls at PULL_AWAY_FALL (1/s) and the lift's at its
+     own 4/s, then their holds. (Chosen over a smaller look-ahead dead band, 0.1, by the verifier's
+     own sims: on its gentle pull-aways the dead band still touched at up to 3.2 km/h where push12 kept 0.45 m and cost
+     up to 0.9 m at the closest; the rule 1.2 km/h where push12 kept 0.12 m, and 0.5 m.)
+   * The 1 m cap is held at the speed the queue is heading for (schedule_speed), not at vEgo: capped at a crawl's own
+     speed, a launch planned its whole horizon at the crawl's short follow time.
+   * The close follow time shortens at most T_FOLLOW_FALL (0.1 s per s) and lengthens at once: under the hand-back, a
+     lead that stopped accelerating dropped it from the look-ahead's to the crawl's on one frame, at full authority.
+   * A radar track swap is a new car for the gap (leadChanged), as it was for the lift; the hand-back resets the lift as
+     it resets the gap (the lift was back before the gap's 1 s hold); the mark never shows at a standstill.
+   * The closer gap fades in over CF_SPEED_IN_BP (3.6 -> 7.2 km/h): at a standstill, creeping into a stop and through a
+     launch the plan is push12's. A car that comes to rest a moment sooner also sets off a moment sooner (LongControl's
+     stopping state), and in stop-and-go waves that put it up to 1.8 m off push12; under 7 km/h the closer gap was worth
+     under a meter anyway (0.8 m at 5 km/h on aggressive). gapInhibit says speed there.
+   Measured in the verifier's own closed-loop sim (9,960 runs in 14 kinds of traffic, each against push12's plan with
+   close follow absent; docs/CHANGELOG_SERIAL_STEERING.md, push13): 43 touches where push12 stopped short (92 before),
+   none with the closer gap in (1), all where push12 itself kept 0.63 m or less, at up to 4.4 km/h (5.1); where both stop
+   short, at most 0.97 m less room when the lead brakes (2.9) and 0.74 m at the closest point (2.7) - but for a hard
+   brake 3-5 s after a launch from a stop, 2.1 m (p95 0.84). That one is the launch's own timing: a car that comes to
+   rest a moment sooner sets off a moment sooner, and push12 itself, moved 0.2 / 0.4 m closer as the lead begins to slow
+   (close follow's car was at most 0.38 m closer there), comes 1.4 / 2.6 m closer at that point. Before a brake the real
+   gap is at most 1.03 m short of push12's at the same moment (p95 0.84; 3 cm over while push12's own gap swung 0.26 m
+   past its target).
+   The jerk factor is max(1.0, the personality's) (CF_JERK_FACTOR_MIN: not the aggressive 0.5, which the envelope showed
+   reacts later to a braking lead). STOP_DISTANCE is compiled into the solver and untouched: the plan still aims for 6 m
+   at a standstill, as push12's. Arriving from a closer gap the car stopped closer than push12 (the release13 review's
+   sim: 0.5-1.3 m after a gentle stop; the verification: up to 2.5 m after stop-and-go waves); since round 2 the real
+   gap bounds it and under 3.6 km/h the closer gap is out: at most 0.13 m closer in the verifier's sim (p95 0.08).
+   CF_FADE_SPEED (22 km/h, the schedule's last point) is the one
    eligibility bound: the close MPC solves below it + CF_MPC_MARGIN, and above the hand-back it is the plan's own.
    Its candidate is blended into the plan's by gapAuthority: a = a_plan_mpc + authority * (a_close_mpc - a_plan_mpc),
    the trajectories alike. Authority drops to 0 AT ONCE on any trip, so on that frame the MPC candidate is the plan's
@@ -54,11 +93,13 @@ personality's:
    lead above CF_VISION_SPEED (2 m/s; the radar sees nothing at a stop and little under 2 m/s, where t*v is under 1 m),
    a braking lead (any real lead's aLeadK under -0.5 m/s^2, or leadOne's own speed falling faster than that over the
    last 0.5 s with aLeadK below 0 - aLeadK is a filter and trails the onset), a new car (leadOne 3 m off where it should
-   be), FCW (the planner's, the close MPC's own crash flag, or the car's FCW/AEB, held FCW_HOLD_S = 5 s), gas or brake,
-   forceDecel, and since release13 three more: a HARD-braking lead (leadOne's own speed falling faster than 2.0 m/s^2
-   over 0.5 s, or any real lead's aLeadK under -1.5) holds it out HARD_BRAKE_HOLD_S (3 s); a downhill steeper than 3 %
-   (carControl.orientationNED pitch, filtered over PITCH_TAU_S, under DOWNHILL_PITCH); a closing lead with a time to
-   collision under TTC_MIN_S (3 s, closing faster than 0.5 m/s).
+   be, or since round 2 its radar track swapped), FCW (the planner's, the close MPC's own crash flag, or the car's
+   FCW/AEB, held FCW_HOLD_S = 5 s), gas or brake, forceDecel, and since release13 three more: a HARD-braking lead
+   (leadOne's own speed falling faster than 2.0 m/s^2 over 0.5 s, or any real lead's aLeadK under -1.5) holds it out
+   HARD_BRAKE_HOLD_S (3 s); a downhill steeper than 3 % (carControl.orientationNED pitch, filtered over PITCH_TAU_S,
+   under DOWNHILL_PITCH); a closing lead with a time to collision under TTC_MIN_S (3 s, closing faster than 0.5 m/s).
+   Round 2's two are not trips of the guard's kind: the queue pulling away fades the authority (above), and the real
+   gap scales whatever authority there is (g = authority x realWeight).
 
 2. THE LIFT (adapted from zoompilot's Lead Follow Assist, E2ELeadGapController, MIT - notice below): in experimental
    mode the model's e2e accel is lifted toward the close MPC's candidate when the leads are 3-10 m (GAP_BP) beyond the
@@ -71,9 +112,12 @@ personality's:
    forecast losing 1 m/s within 3 s), FCW (for as long as the gap's FCW_HOLD_S hold lasts: the lift never comes back
    before the gap), a hard-braking lead (for as long as the gap's 3 s hold), a downhill, a short time to collision, a
    new car (distance jump or radar track swap), gas or brake, no lead or a held one, a vision-only lead, forceDecel, the
-   model's hard-brake flag or a stop in its plan. Soft trips (lead uncertain or under LEAD_MIN_SPEED 2.5 m/s, the model
-   braking under -0.5 or its plan slowing, over 1 m/s^2 of lateral accel, coasting, a lane change, under 2.5 m/s) let it
-   fall at 4/s. Then a 3 s hold (LIFT_HOLD_S, with its authority at 0 after a hard trip) and a 0.5/s rise, as zoompilot.
+   model's hard-brake flag or a stop in its plan, and (round 2) the hand-back: from where close follow's own follow time
+   is the personality's, the lift is out with its authority at 0, as the gap is. Soft trips (lead uncertain or under
+   LEAD_MIN_SPEED 2.5 m/s, the model braking under -0.5 or its plan slowing, over 1 m/s^2 of lateral accel, coasting, a
+   lane change, under 2.5 m/s, and since round 2 the queue pulling away) let it fall at 4/s. Then a 3 s hold
+   (LIFT_HOLD_S, with its authority at 0 after a hard trip) and a 0.5/s rise, as zoompilot. Since round 2 it is also
+   scaled by the real gap (realWeight), as the gap is.
 
 NOT CHANGED for close follow: LongControl's kiV, the PID floor and the brake's rise limiter are the car's, as without it.
 
@@ -86,13 +130,15 @@ since release13 with switchOn (the user switch as last read), live, raised (how 
 min() over the plan's own: what it does to the plan, or would in shadow), tightening (live, engaged and raised by
 TIGHT_RAISE or more: what the comma 4's right-rail cue shows - the release13 review: not merely the gap in while the
 model's plan or cruise is the lower candidate) and gapCloser (the gap in and 0.5 m shorter: release13's first
-'tightening') - and at most one `closefollow` cloudlog event at error level per
+'tightening'), and since round 2 realDeficit (the personality's desired gap minus the radar gap, filtered), realWeight
+(how much of it may still raise the plan) and pullAway - and at most one `closefollow` cloudlog event at error level per
 SUMMARY_S (10 s), only when there was a chance to act (engaged, a real lead, under the eligibility bound): `mode` (1
 shadow, 2 live), `sw` (the switch), the share of those frames with the gap and the lift in, `live` (the share
-tightening live), the mean follow time and gap change, `up` (the most it raised the plan), the top reasons it was out, and
-`brk`, the frames where it lifted the plan while a lead braked - by construction 0; a non-zero `brk` in a route is a
-bug - and `smax` / `xmax`, the slowest close-MPC solve and the slowest whole close-follow step of those 10 s, in ms
-(mpcSolveTime / stepTime, every plan). A switch change is one `closefollow switch` line.
+tightening live), the mean follow time and gap change, `up` (the most it raised the plan), the top reasons it was out
+(round 2 adds realGap and pullAway), `brk`, the frames where it lifted the plan while a lead braked - by construction 0;
+a non-zero `brk` in a route is a bug - `smax` / `xmax`, the slowest close-MPC solve and the slowest whole close-follow
+step of those 10 s, in ms (mpcSolveTime / stepTime, every plan), and (round 2) `rmax`, the largest realDeficit while the
+gap was in - above REAL_GAP_MAX is a bug. A switch change is one `closefollow switch` line.
 
 COST: a second MPC solve only while eligible: requested, engaged, a real lead, under CF_FADE_SPEED + CF_MPC_MARGIN.
 On the device the plan's own solve on such frames is 0.6 ms at the median but has a long tail (p95 7.6-13 ms, max
@@ -164,7 +210,22 @@ CF_FADE_SPEED = CF_T_FOLLOW_BP[-1]  # m/s: the one eligibility bound (22 km/h); 
 # the release13 review: a queue pulling away from a crawl, then braking hard
 LEAD_AHEAD_S = 2.0              # s: the schedule is read at the lead's speed this far ahead on its acceleration ...
 LEAD_AHEAD_DEADBAND = 0.3       # m/s^2: ... above this (a creeping queue's swell is not a pull-away)
-GAP_DEFICIT_MAX = 1.0           # m: the closer gap is never more than this under the personality's at this speed
+GAP_DEFICIT_MAX = 1.0           # m: the closer gap is never more than this under the personality's, at the speed the
+                                # queue is heading for (schedule_speed) - the MPC plans the launch at that speed
+# the release13 verification (round 2): GAP_DEFICIT_MAX bounds the TARGET; the gap the car really keeps drifted further
+# (a gentle pull-away, stop-and-go waves). So close follow also reads the REAL gap, and leaves a queue pulling away alone
+REAL_GAP_MAX = 0.9              # m: the radar gap this far under the personality's own desired gap (long_mpc's
+                                # distance at vEgo and vLead): close follow raises nothing - neither the gap nor the lift.
+                                # 0.1 m inside the 1 m it promises: push12 itself settles 0.1-0.2 m past its desired gap
+REAL_GAP_FADE = 0.25            # m: ... and fades out over the last this before it (no on/off chatter at the line)
+REAL_GAP_TAU_S = 0.5            # s: the real deficit's filter (dRel and vLead are the radar's raw values)
+PULL_AWAY_ACCEL = 0.3           # m/s^2: leadOne's aLeadK above this ...
+PULL_AWAY_T = 0.5               # s: ... this long (the same car): the queue pulls away - no new tightening ...
+PULL_AWAY_FALL = 1.0            # 1/s: ... and the closer gap fades out at this (then the 1 s hold once it is over)
+T_FOLLOW_FALL = 0.1             # s per s: the close follow time shortens no faster than this (it lengthens at once)
+CF_SPEED_IN_BP = [1.0, 2.0]     # m/s (3.6 -> 7.2 km/h): the closer gap fades in over this - at a standstill, creeping
+                                # into a stop and through a launch the plan is push12's (a stop a moment sooner sets off
+                                # the launch a moment sooner: stop-and-go waves up to 1.8 m apart)
 CF_FADE_KPH = 22.               # km/h, the same
 CF_JERK_FACTOR_MIN = 1.0        # the close MPC's jerk factor: max(this, the personality's) - not aggressive's 0.5
 CF_VISION_SPEED = 2.0           # m/s: above it the gap needs a radar lead
@@ -291,11 +352,14 @@ def schedule_t_follow(v: float) -> float:
 
 def close_t_follow(v_ego: float, t_personality: float, v_lead: float | None = None, a_lead: float = 0.) -> float:
   """The close follow time (the safe limit): the schedule at schedule_speed(), never more than GAP_DEFICIT_MAX of gap
-  under the personality's at vEgo, and never above the personality's - so it is the personality's from where the
-  schedule reaches it (aggressive 17.2, standard 19.0, relaxed 21.6 km/h; sooner behind a lead speeding up)."""
-  t = schedule_t_follow(schedule_speed(v_ego, v_lead, a_lead))
-  if _finite(v_ego) and v_ego > _EPS:
-    t = max(t, t_personality - GAP_DEFICIT_MAX / float(v_ego))
+  under the personality's at that same speed - where the queue is heading, at least vEgo (round 2: capped at vEgo alone,
+  a launch from a crawl planned its whole horizon at the crawl's follow time and set off ahead of push12) - and never
+  above the personality's. So it is the personality's from where the schedule reaches it (aggressive 17.2, standard
+  19.0, relaxed 21.6 km/h; sooner behind a lead speeding up)."""
+  v_s = schedule_speed(v_ego, v_lead, a_lead)
+  t = schedule_t_follow(v_s)
+  if _finite(v_s) and v_s > _EPS:
+    t = max(t, t_personality - GAP_DEFICIT_MAX / float(v_s))
   return min(t, t_personality)
 
 
@@ -321,6 +385,15 @@ def lift_speed_weight(v_ego: float, t_close: float, t_personality: float) -> flo
 def desired_gap(v_ego: float, v_lead: float, t_follow: float) -> float:
   """The gap long_mpc's obstacle cost settles at behind a lead at v_lead with this follow time."""
   return t_follow * v_ego + STOP_DISTANCE + (v_ego ** 2 - v_lead ** 2) / (2 * COMFORT_BRAKE)
+
+
+def real_weight(deficit: float) -> float:
+  """How much close follow may still raise the plan, from the real deficit (m: the personality's desired gap minus the
+  radar gap, filtered): 1 up to REAL_GAP_MAX - REAL_GAP_FADE, 0 from REAL_GAP_MAX on, linear between. A non-finite
+  deficit is 0."""
+  if not _finite(deficit):
+    return 0.
+  return min(1., max(0., (REAL_GAP_MAX - float(deficit)) / REAL_GAP_FADE))
 
 
 class Lead(NamedTuple):
@@ -499,10 +572,12 @@ class GapGuard:
     self.hold_left = self.hold_frames
     self.inhibit = reason
     self.last_d_rel = math.nan
+    self.last_track_id = -1
 
-  def update(self, inp: Inputs, requested: bool, fcw: bool, weight: float = 1.) -> float:
+  def update(self, inp: Inputs, requested: bool, fcw: bool, weight: float = 1., pull_away: bool = False) -> float:
     """fcw: the planner's FCW or the close MPC's crash flag this frame (the car's own is read from inp); weight: the
-    speed weight (speed_weight), 0 from the hand-back."""
+    speed weight (speed_weight), 0 from the hand-back; pull_away: the queue pulls away (round 2) - a soft trip: the
+    authority does not rise and falls at PULL_AWAY_FALL, and once it is over the 1 s hold and the ramp again."""
     if fcw or inp.car_fcw:
       self.fcw_left = self.fcw_frames
     elif self.fcw_left > 0:
@@ -523,7 +598,12 @@ class GapGuard:
     trip = self._trip(inp)
     if trip is None and not weight > 0.:
       trip = Inhibit.speed   # the hand-back: out, and back in only by the hold and the ramp
-    if trip is not None:
+    if trip is None and pull_away:
+      # a soft trip: no new tightening, the closer gap fades out (the queue reopens the gap by itself), then the hold
+      self.authority = max(0., self.authority - PULL_AWAY_FALL * self.dt)
+      self.hold_left = self.hold_frames
+      self.inhibit = Inhibit.pullAway
+    elif trip is not None:
       self.authority = 0.
       self.hold_left = self.hold_frames
       self.inhibit = trip
@@ -538,7 +618,11 @@ class GapGuard:
   def _trip(self, inp: Inputs):
     lead = inp.lead_one
     expected = self.last_d_rel + lead.v_rel * self.dt
+    # round 2: a radar car's track swapping to another car is a new car, as for the lift - a slower car cutting in within
+    # LEAD_JUMP of the old one's range kept the closer gap
+    track_changed = lead.present and lead.radar and self.last_track_id >= 0 and lead.track_id != self.last_track_id
     self.last_d_rel = lead.d_rel if lead.present else math.nan
+    self.last_track_id = lead.track_id if lead.present and lead.radar else -1
     if not lead.present or inp.held:
       return Inhibit.noLead
     if not _finite(lead.d_rel, lead.v_lead, lead.v_rel, lead.prob):
@@ -551,7 +635,7 @@ class GapGuard:
       return Inhibit.leadHardBrake
     if lead_braking(inp):
       return Inhibit.leadBraking
-    if math.isfinite(expected) and not (abs(lead.d_rel - expected) < LEAD_JUMP):
+    if track_changed or (math.isfinite(expected) and not (abs(lead.d_rel - expected) < LEAD_JUMP)):
       return Inhibit.leadChanged
     if ttc_short(lead):
       return Inhibit.closing
@@ -590,9 +674,14 @@ class LeadFollowLift:
     self.last_d_rel = math.nan
     self.last_track_id = -1
 
-  def update(self, inp: Inputs, requested: bool, a_mpc: float, a_cruise: float, fcw: bool, t_follow: float) -> float:
+  def update(self, inp: Inputs, requested: bool, a_mpc: float, a_cruise: float, fcw: bool, t_follow: float,
+             pull_away: bool = False, real_w: float = 1., t_close: float | None = None) -> float:
     """Returns the e2e candidate: inp.model.a unchanged whenever the lift is idle. a_mpc: close follow's MPC candidate
-    (the plan's own while the gap is out); t_follow: the follow time of that candidate."""
+    (the plan's own while the gap is out); t_follow: the follow time of that candidate; pull_away: the queue pulls away
+    (a soft trip, round 2); real_w: real_weight() of the real gap (the lift scales by it); t_close: close follow's own
+    follow time (CloseFollow.t_follow; None: close_t_follow() here). From the hand-back on (t_close at the
+    personality's) the lift is out with its authority at 0 - it comes back only by its 3 s hold and its ramp, after the
+    gap (round 2: it kept its authority and was back before the gap's 1 s hold)."""
     md = inp.model
     a_model = md.a
     if not requested:
@@ -623,6 +712,15 @@ class LeadFollowLift:
     else:
       trip = other_trip
     hard = trip in HARD_LIFT_TRIPS
+    # zero wherever close follow's own follow time is the personality's (above the hand-back the e2e plan is push12's)
+    t_personality = get_T_FOLLOW(inp.personality)
+    if t_close is None:
+      t_close = close_t_follow(v_ego, t_personality, lead.v_lead if lead.present else None,
+                               lead.a_lead if lead.present else 0.)
+    if trip is None and not speed_weight(t_close, t_personality) > 0.:
+      trip, hard = Inhibit.speed, True    # the hand-back resets it, as the gap's (round 2)
+    elif trip is None and pull_away:
+      trip = Inhibit.pullAway             # soft: falls at AUTHORITY_FALL, then the 3 s hold
     if trip is not None:
       self.authority = 0. if hard else max(0., self.authority - AUTHORITY_FALL * self.dt)
       self.hold_left = self.hold_frames
@@ -636,11 +734,8 @@ class LeadFollowLift:
 
     leads = _leads(inp)
     self.gap_excess = min(ld.d_rel - desired_gap(v_ego, ld.v_lead, t_follow) for ld in leads) if leads else 0.
-    # zero wherever close follow's own follow time is the personality's (above the hand-back the e2e plan is push12's)
-    t_personality = get_T_FOLLOW(inp.personality)
-    t_close = close_t_follow(v_ego, t_personality, lead.v_lead if lead.present else None,
-                             lead.a_lead if lead.present else 0.)
-    self.weight = float(np.interp(self.gap_excess, GAP_BP, [0., 1.])) * lift_speed_weight(v_ego, t_close, t_personality)
+    self.weight = (float(np.interp(self.gap_excess, GAP_BP, [0., 1.])) * lift_speed_weight(v_ego, t_close, t_personality) *
+                   min(1., max(0., float(real_w))))
     self.gain = float(np.interp(a_model, GAIN_BP, [0., 1.]))
     ceiling = min(a_mpc, a_cruise)
     headroom = max(0., ceiling - a_model)
@@ -748,6 +843,16 @@ class CloseFollow:
     self.hard_left = 0            # frames the hard-brake hold has left
     self.pitch_f = 0.             # the filtered pitch (PITCH_TAU_S), from a level road
     self._pitch_k = dt / (PITCH_TAU_S + dt)
+    # round 2: the real gap, the pull-away and the close follow time's fall limit
+    self.real_deficit = math.nan  # m, the personality's desired gap minus leadOne's radar gap, filtered (REAL_GAP_TAU_S)
+    self.real_w = 0.              # real_weight(real_deficit): how much close follow may still raise the plan
+    self._real_k = dt / (REAL_GAP_TAU_S + dt)
+    self._real_key = None         # the car the filter is on
+    self.pull_frames = 0          # frames leadOne's aLeadK has been over PULL_AWAY_ACCEL (the same car)
+    self.pull_away = False
+    self._pull_n = max(1, int(round(PULL_AWAY_T / dt)))
+    self._t_prev = math.nan       # last plan's close follow time (T_FOLLOW_FALL)
+    self.speed_in = 0.            # the closer gap's fade-in over CF_SPEED_IN_BP at vEgo
     self._mpc_factory = mpc_factory
     self.mpc = None
     self.mpc_warm = False
@@ -887,11 +992,37 @@ class CloseFollow:
     v_ego = inp.v_ego
     self.t_personality = get_T_FOLLOW(inp.personality)
     j_personality = get_jerk_factor(inp.personality)
-    v_lead = inp.lead_one.v_lead if inp.lead_one.present else None
-    a_lead = inp.lead_one.a_lead if inp.lead_one.present else 0.
+    lead = inp.lead_one
+    v_lead = lead.v_lead if lead.present else None
+    a_lead = lead.a_lead if lead.present else 0.
     self.v_schedule = schedule_speed(v_ego, v_lead, a_lead) if _finite(v_ego) else 0.
-    self.t_follow = close_t_follow(v_ego, self.t_personality, v_lead, a_lead) if _finite(v_ego) else self.t_personality
+    t_raw = close_t_follow(v_ego, self.t_personality, v_lead, a_lead) if _finite(v_ego) else self.t_personality
+    # round 2: it shortens no faster than T_FOLLOW_FALL - a lead that stops accelerating under the hand-back no longer
+    # drops it to the crawl's follow time on one frame at full authority; it lengthens at once
+    if _finite(self._t_prev) and t_raw < self._t_prev:
+      t_raw = max(t_raw, self._t_prev - T_FOLLOW_FALL * self.dt)
+    self.t_follow = self._t_prev = min(t_raw, self.t_personality)
     self.weight = speed_weight(self.t_follow, self.t_personality) if _finite(v_ego) else 0.
+    # round 2: the real gap against the personality's own desired gap (what push12 aims for), filtered, per car
+    key = (lead.radar, lead.track_id) if lead.present and not inp.held else None
+    raw = (desired_gap(v_ego, lead.v_lead, self.t_personality) - lead.d_rel
+           if key is not None and _finite(v_ego, lead.v_lead, lead.d_rel) else math.nan)
+    if not _finite(raw):
+      key = None
+    same_car = key is not None and key == self._real_key
+    self._real_key = key
+    if key is None:
+      self.real_deficit = math.nan
+    elif not same_car or not _finite(self.real_deficit):
+      self.real_deficit = raw
+    else:
+      self.real_deficit += self._real_k * (raw - self.real_deficit)
+    self.real_w = real_weight(self.real_deficit)
+    self.speed_in = float(np.interp(v_ego, CF_SPEED_IN_BP, [0., 1.])) if _finite(v_ego) else 0.
+    # round 2: the queue pulls away - leadOne's aLeadK over PULL_AWAY_ACCEL for PULL_AWAY_T, the same car
+    pulling = key is not None and _finite(lead.a_lead) and lead.a_lead > PULL_AWAY_ACCEL
+    self.pull_frames = (self.pull_frames + 1 if same_car else 1) if pulling else 0
+    self.pull_away = self.pull_frames >= self._pull_n
     self.jerk = close_jerk_factor(j_personality)
     v_traj, a_traj, j_traj = trajectories
     self.a_mpc = float(get_accel_from_plan(v_traj, a_traj, control_t_idxs, action_t=action_t))
@@ -920,8 +1051,10 @@ class CloseFollow:
     else:
       self.mpc_warm = False
 
-    authority = self.gap.update(inp, self.requested, bool(fcw) or self.mpc_crash, self.weight)
-    self.g = authority if (close is not None and self.weight > 0.) else 0.
+    authority = self.gap.update(inp, self.requested, bool(fcw) or self.mpc_crash, self.weight, self.pull_away)
+    # round 2: scaled by the real gap - nothing from REAL_GAP_MAX under the personality's own desired gap - and faded in
+    # over CF_SPEED_IN_BP: nothing at a standstill, creeping into a stop or through a launch
+    self.g = authority * self.real_w * self.speed_in if (close is not None and self.weight > 0.) else 0.
     if self.g <= 0. or close is None:
       self.g = 0.
       self.a_mpc_close = self.a_mpc
@@ -959,7 +1092,8 @@ class CloseFollow:
       # (FCW_HOLD_S), then the lift's own LIFT_HOLD_S: it never comes back before the gap does
       lift_fcw = bool(fcw) or self.mpc_crash or self.gap.fcw_left > 0
       self.a_model_lifted = float(self.lift.update(inp, self.requested, self.a_mpc_close, float(a_cruise), lift_fcw,
-                                                   self.t_follow_used))
+                                                   self.t_follow_used, pull_away=self.pull_away, real_w=self.real_w,
+                                                   t_close=self.t_follow))
       return self.a_model_lifted
     except Exception:
       self._fail('update_lift')
@@ -1041,10 +1175,19 @@ class CloseFollow:
     inp = self.inputs
     if not self.live or self.failed or inp is None or not inp.engaged or not self.active:
       return False
+    # round 2: never at a standstill - a raise there (a lead creeping a few meters ahead) moves nothing closer
+    if inp.standstill:
+      return False
     return self.raised >= TIGHT_RAISE
 
   def _gap_inhibit(self):
-    # (the hand-back is the guard's own 'speed' since the release13 review: it resets the authority)
+    # (the hand-back is the guard's own 'speed' since the release13 review: it resets the authority; round 2: the gap
+    # in by its guard but faded out under CF_SPEED_IN_BP is speed too, and by the real gap realGap)
+    if self.gap.inhibit == Inhibit.none and self.weight > 0.:
+      if not self.speed_in > 0.:
+        return Inhibit.speed
+      if not self.real_w > 0.:
+        return Inhibit.realGap
     return self.gap.inhibit
 
   def fill(self, msg) -> None:
@@ -1097,6 +1240,9 @@ class CloseFollow:
     msg.ttc = float(ttc) if math.isfinite(ttc) else -1.
     msg.hardBrakeHold = float(self.hard_left * self.dt)
     msg.scheduleSpeed = float(self.v_schedule)
+    msg.realDeficit = float(self.real_deficit) if _finite(self.real_deficit) else 0.
+    msg.realWeight = float(self.real_w)
+    msg.pullAway = bool(self.pull_away)
 
   def publish(self, pm) -> None:
     """customReserved10, once per plan; nothing after a failure (the cloudlog line says why)."""
@@ -1115,7 +1261,7 @@ class CloseFollow:
   @staticmethod
   def _new_window() -> dict:
     return {'n': 0, 'gap': 0, 'lift': 0, 'live': 0, 't': 0., 'dg': 0., 'v': 0., 'lmax': 0., 'up': 0., 'brk': 0, 'fcw': 0,
-            'smax': 0., 'xmax': 0., 'why': Counter()}
+            'smax': 0., 'xmax': 0., 'rmax': -math.inf, 'why': Counter()}
 
   def _account(self) -> None:
     inp = self.inputs
@@ -1132,6 +1278,8 @@ class CloseFollow:
         w['gap'] += 1
         w['t'] += self.t_follow_used
         w['dg'] += (self.t_follow_used - self.t_personality) * inp.v_ego
+        if _finite(self.real_deficit):
+          w['rmax'] = max(w['rmax'], self.real_deficit)
       if self.lifting > _EPS:
         w['lift'] += 1
         w['lmax'] = max(w['lmax'], self.lifting)
@@ -1160,6 +1308,7 @@ class CloseFollow:
                      gap=round(g / n, 2), lift=round(w['lift'] / n, 2), live=round(w['live'] / n, 2),
                      t=round(w['t'] / g, 2) if g else None, dg=round(w['dg'] / g, 1) if g else None,
                      lmax=round(w['lmax'], 2), up=round(w['up'], 2), brk=w['brk'], fcw=w['fcw'], why=why,
-                     smax=round(w['smax'] * 1e3, 1), xmax=round(w['xmax'] * 1e3, 1))
+                     smax=round(w['smax'] * 1e3, 1), xmax=round(w['xmax'] * 1e3, 1),
+                     rmax=round(w['rmax'], 2) if math.isfinite(w['rmax']) else None)
     except Exception:
       pass

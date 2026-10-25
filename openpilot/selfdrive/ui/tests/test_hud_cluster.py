@@ -933,12 +933,14 @@ class TestRailRules(OpenpilotTestCase):
 
 
 # ------------------------------------------------------------------------------------------- FORK(CLOSE-FOLLOW): the mark
-def cf_sm(live=True, tightening=True, active=True, requested=True, enabled=True):
+def cf_sm(live=True, tightening=True, active=True, requested=True, enabled=True, standstill=None):
   sm = FakeSM()
   c = sm.put(HM.CLOSE_FOLLOW_SERVICE)
   c.mode, c.live, c.switchOn = 2 if live else 1, live, live
   c.tightening, c.active, c.requested = tightening, active, requested
   sm.put('selfdriveState').enabled = enabled
+  if standstill is not None:
+    sm.put('carState').standstill = standstill
   return sm
 
 
@@ -971,6 +973,21 @@ class TestCloseFollowCue(OpenpilotTestCase):
       assert not any(out), f"{why}: gone on the first frame and never back {out}"
       back = self.run_cue(cue, cf_sm(), 1.0, t)
       assert not any(back[:9]) and back[-1], f"{why}: back in again only after the on-debounce {back}"
+
+  def test_never_at_a_standstill(self):
+    # release13 verification, round 2: the mark showed at a standstill. The planner no longer sets tightening there, and
+    # the car standing (a fresh carState) hides it on the frame - the off-debounce does not carry it into the stop - even
+    # with a stale tightening flag; moving again, it is back only after the on-debounce
+    cue, t = HM.CloseFollowCue(), [100.0]
+    assert self.run_cue(cue, cf_sm(standstill=False), 1.0, t)[-1]
+    for kw in ({'tightening': False}, {}):
+      out = self.run_cue(cue, cf_sm(standstill=True, **kw), 1.5, t)
+      assert not any(out), f"standing {kw}: gone on the first frame {out}"
+    back = self.run_cue(cue, cf_sm(standstill=False), 1.0, t)
+    assert not any(back[:9]) and back[-1], back
+    stale = cf_sm(standstill=True)
+    stale.recv_frame['carState'] = STARTED - 1   # last drive's carState: not this drive's standstill
+    assert self.run_cue(HM.CloseFollowCue(), stale, 1.0, [100.0])[-1]
 
 
 # ------------------------------------------------------------------------------------------- the alerts' rules

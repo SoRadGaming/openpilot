@@ -15,6 +15,14 @@ live takes close follow's candidates, blended by the gap's authority while it ra
 frame a lead brakes; an FCW (the car's, or close follow's own MPC crash flag) holds the gap and the lift out 5 s, the
 lift never back before the gap; the HUD mark (tightening) only while close follow raises the plan; every other car and
 stock ACC mode never build it.
+Round 2 (the release13 verification; each of these fails on 5a778e077): the REAL gap - leadOne's radar gap 0.9 m under
+the personality's own desired gap (about 1 m under the gap push12 keeps) and close follow raises nothing, fading out
+over the last 0.25 m; a queue pulling away
+(aLeadK over 0.3 for 0.5 s) fades the gap and the lift out; the closer gap fades in over 3.6-7.2 km/h (out at a
+standstill, creeping into a stop and through a launch); the 1 m cap held at the speed the queue is heading for; the
+close follow time shortening at most 0.1 s per s; a radar track swap is a new car for the gap; the hand-back resets the
+lift (and the lift reads the look-ahead); no mark at a standstill; the settings' texts; and, closed loop, a gentle
+pull-away from a crawl and four stop-and-go waves each costing at most 1 m of real gap.
 
 Big outputs are compared with assert_same_frames(): unittest's assertEqual on two 400-frame lists builds a difflib diff
 that takes minutes, so a shadow leak would look like a hang rather than a failure.
@@ -92,6 +100,10 @@ class TestSchedule(OpenpilotTestCase):
     self.assertEqual((CF_FADE_SPEED, cf.CF_FADE_KPH, cf.CF_JERK_FACTOR_MIN, cf.CF_MPC_MARGIN), (6.111, 22., 1.0, 1.5))
     # the release13 review: read ahead of a lead speeding up, at most 1 m under the personality's gap
     self.assertEqual((cf.LEAD_AHEAD_S, cf.LEAD_AHEAD_DEADBAND, cf.GAP_DEFICIT_MAX), (2.0, 0.3, 1.0))
+    # round 2 (the release13 verification): the real gap, the pull-away, the close follow time's fall limit
+    self.assertEqual((cf.REAL_GAP_MAX, cf.REAL_GAP_FADE, cf.REAL_GAP_TAU_S), (0.9, 0.25, 0.5))
+    self.assertEqual((cf.PULL_AWAY_ACCEL, cf.PULL_AWAY_T, cf.PULL_AWAY_FALL, cf.T_FOLLOW_FALL), (0.3, 0.5, 1.0, 0.1))
+    self.assertEqual(cf.CF_SPEED_IN_BP, [1.0, 2.0])
     self.assertEqual((cf.GAP_BP, cf.LIFT_SPEED_BP, cf.LIFT_T_FADE, cf.GAP_LEAD_BRAKE, cf.GAP_HOLD_S, cf.GAP_RISE),
                      ([3., 10.], [2.5, 3.5], 0.1, -0.5, 1.0, 0.5))
     self.assertEqual((cf.LEAD_SLOWING_ACCEL, cf.LEAD_SLOWING_T, cf.LEAD_PROB, cf.LEAD_JUMP, cf.LEAD_MIN_SPEED),
@@ -147,7 +159,8 @@ class TestSchedule(OpenpilotTestCase):
   def test_read_at_the_faster_of_the_car_and_its_lead(self):
     # no closer gap while the lead pulls away faster than the car: the schedule is read at max(vEgo, vLead)
     t_p = get_T_FOLLOW(P.aggressive)
-    self.assertAlmostEqual(close_t_follow(2., t_p, v_lead=3.75), 0.88)
+    # (round 2: and never more than 1 m under the personality's gap at that speed - 0.98 s at 13.5 km/h on aggressive)
+    self.assertAlmostEqual(close_t_follow(2., t_p, v_lead=3.75), max(0.88, t_p - 1. / 3.75))
     self.assertAlmostEqual(close_t_follow(3.75, t_p, v_lead=1.), close_t_follow(3.75, t_p),
                            msg="a slower lead does not shorten it")
     self.assertEqual(close_t_follow(2., t_p, v_lead=6.), t_p)
@@ -162,13 +175,36 @@ class TestSchedule(OpenpilotTestCase):
     self.assertAlmostEqual(cf.schedule_speed(3., 3., float('nan')), 3.0)
     self.assertAlmostEqual(cf.schedule_speed(4., None, 2.), 4.0, msg="no lead: the car's own speed")
     # a queue at 10.8 km/h pulling away at 1.2 m/s^2 is read at 17.3 km/h: aggressive (17.2) has handed back already,
-    # standard takes its 17.3 km/h follow time; relaxed stays 1 m under its own gap (the cap), as it was
+    # standard takes its 17.3 km/h follow time; relaxed stays 1 m under its own gap at that speed (the cap, round 2: at
+    # the speed the queue is heading for, not at the crawl's)
     for p in (AGGRESSIVE, STANDARD, RELAXED):
       t_p = get_T_FOLLOW(p)
-      self.assertAlmostEqual(close_t_follow(3., t_p, 3., 1.2), min(t_p, max(schedule_t_follow(4.8), t_p - 1. / 3.)))
+      self.assertAlmostEqual(close_t_follow(3., t_p, 3., 1.2), min(t_p, max(schedule_t_follow(4.8), t_p - 1. / 4.8)))
       self.assertLessEqual(close_t_follow(3., t_p, 3., 0.), close_t_follow(3., t_p, 3., 1.2))
     self.assertEqual(close_t_follow(3., get_T_FOLLOW(P.aggressive), 3., 1.2), get_T_FOLLOW(P.aggressive))
     self.assertLess(close_t_follow(3., get_T_FOLLOW(P.standard), 3., 0.), close_t_follow(3., get_T_FOLLOW(P.standard), 3., 1.2))
+
+  def test_the_1_m_holds_at_the_speed_the_queue_is_heading_for(self):
+    # round 2 (stop-and-go in the verification): capped at the crawl's own speed, a launch behind a lead pulling away
+    # planned its whole horizon at the crawl's short follow time - up to 2.4 m under the personality's gap at the speed
+    # the queue was heading for - and set off ahead of push12. The cap holds at schedule_speed() now
+    for p in (AGGRESSIVE, STANDARD, RELAXED):
+      t_p = get_T_FOLLOW(p)
+      for v_ego in (0., 0.3, 0.5, 1., 2., 3., 4.):
+        for v_lead in (0., 0.5, 1., 2., 3., 4., 5.):
+          for a_lead in (-1., 0., 0.3, 0.5, 1., 1.5):
+            v_s = cf.schedule_speed(v_ego, v_lead, a_lead)
+            self.assertLessEqual((t_p - close_t_follow(v_ego, t_p, v_lead, a_lead)) * v_s, cf.GAP_DEFICIT_MAX + 1e-9,
+                                 (p, v_ego, v_lead, a_lead))
+    # the case it was: relaxed creeping at 1.8 km/h, the lead at 7.2 km/h pulling away at 0.5 m/s^2 (read at 8.6 km/h)
+    self.assertAlmostEqual(close_t_follow(0.5, 1.75, 2.0, 0.5), 1.75 - 1. / 2.4)
+
+  def test_real_weight(self):
+    # round 2: how much close follow may still raise the plan, from the REAL deficit against the personality's own
+    # desired gap - all of it to 0.65 m short, nothing from 0.9 m short (about 1 m short of the gap push12 really keeps:
+    # it settles 0.1-0.2 m past its desired gap), linear between (no on/off at the line)
+    for deficit, w in ((-5., 1.), (0., 1.), (0.65, 1.), (0.775, 0.5), (0.9, 0.), (1.5, 0.), (float('nan'), 0.)):
+      self.assertAlmostEqual(cf.real_weight(deficit), w, msg=str(deficit))
 
   def test_jerk_factor(self):
     # max(1.0, the personality's) - never aggressive's 0.5
@@ -217,6 +253,35 @@ class TestSchedule(OpenpilotTestCase):
     params.put_bool("CloseFollow", False, block=True)
     self.assertEqual(read_mode(params), cf.MODE_SHADOW)
     params.remove("CloseFollow")
+
+  def test_the_settings_say_what_it_does(self):
+    # round 2 (the verification): 'about 1 s behind at 15 km/h' is aggressive's only (standard 1.2 s, relaxed 1.5 s).
+    # What holds on every personality leads: never more than 1 m closer than the personality's own gap
+    import json
+    import os
+    from openpilot.sunnypilot import sunnylink
+    with open(os.path.join(os.path.dirname(sunnylink.__file__), 'settings_ui.json')) as f:
+      ui = json.load(f)
+    found = {}
+
+    def walk(o):
+      if isinstance(o, dict):
+        if o.get('key') in ('CloseFollow', 'HudCloseFollow'):
+          found[o['key']] = o
+        for v in o.values():
+          walk(v)
+      elif isinstance(o, list):
+        for v in o:
+          walk(v)
+    walk(ui)
+    lead_in = "Never more than 1 m closer than your personality's gap"
+    self.assertTrue(found['CloseFollow']['description'].startswith(lead_in), found['CloseFollow']['description'][:80])
+    self.assertNotIn('about 1 s behind', found['CloseFollow']['description'])
+    self.assertTrue(found['HudCloseFollow']['description'].startswith(lead_in))
+    assert 'never shown at a stop' in found['HudCloseFollow']['description']
+    for kph, p in ((15, AGGRESSIVE), (15, STANDARD), (15, RELAXED)):
+      t_p = get_T_FOLLOW(p)
+      self.assertLessEqual((t_p - close_t_follow(kph / 3.6, t_p)) * kph / 3.6, 1. + 1e-9)
 
 
 class TestGapGuard(OpenpilotTestCase):
@@ -315,6 +380,38 @@ class TestGapGuard(OpenpilotTestCase):
     g, _ = self.run_guard(GAP_FULL)
     self.assertEqual((g.update(inputs(gas=True), True, False, 0.), g.inhibit), (0., Inhibit.driver))
 
+  def test_a_radar_track_swap_is_a_new_car(self):
+    # round 2 (the verification's cut-in L1): a slower car cutting in within LEAD_JUMP (3 m) of where the old lead was
+    # is a new radar track at nearly the same range - the gap is out on that frame and waits out its hold, as the lift
+    g, out = self.run_guard(GAP_FULL, lead_one=lead(d=20., v=4., v_ego=4., track=7))
+    self.assertEqual(out, 1.)
+    _, out = self.run_guard(1, g=g, lead_one=lead(d=18.5, v=3., v_ego=4., track=12))
+    self.assertEqual((out, g.inhibit), (0., Inhibit.leadChanged))
+    outs = [g.update(inputs(lead_one=lead(d=18.5, v=4., v_ego=4., track=12)), True, False) for _ in range(HOLD + 2)]
+    self.assertEqual(outs[:HOLD], [0.] * HOLD, "the new car: the hold again")
+    self.assertGreater(outs[-1], 0.)
+    # the same track: no trip; a vision lead under 2 m/s carries no track, so it never counts as a swap
+    g, _ = self.run_guard(GAP_FULL, v=1.5, lead_one=lead(d=7., v=1.5, v_ego=1.5, radar=False, track=-1))
+    _, out = self.run_guard(1, g=g, v=1.5, lead_one=lead(d=7., v=1.5, v_ego=1.5, radar=True, track=5))
+    self.assertEqual(out, 1.)
+
+  def test_a_queue_pulling_away_fades_it_out(self):
+    # round 2 (the verification's gentle pull-aways): while the queue pulls away (CloseFollow: leadOne's aLeadK over 0.3
+    # for 0.5 s) nothing tightens - the authority never rises and falls at PULL_AWAY_FALL - then the hold and the ramp
+    g, out = self.run_guard(GAP_FULL)
+    self.assertEqual(out, 1.)
+    outs = [g.update(inputs(), True, False, 1., True) for _ in range(30)]
+    self.assertEqual(g.inhibit, Inhibit.pullAway)
+    np.testing.assert_allclose(outs[:10], [1. - cf.PULL_AWAY_FALL * DT_MDL * (k + 1) for k in range(10)], atol=1e-12)
+    self.assertEqual(outs[-1], 0.)
+    self.assertTrue(all(b <= a for a, b in zip(outs, outs[1:], strict=False)), "never rises")
+    outs = [g.update(inputs(), True, False, 1., False) for _ in range(HOLD + 2)]
+    self.assertEqual(outs[:HOLD], [0.] * HOLD)
+    self.assertAlmostEqual(outs[HOLD], cf.GAP_RISE * DT_MDL)
+    # a hard trip on the same frame is the trip's
+    g, _ = self.run_guard(GAP_FULL)
+    self.assertEqual((g.update(inputs(gas=True), True, False, 1., True), g.inhibit), (0., Inhibit.driver))
+
   def test_time_to_collision(self):
     # out under 3 s while closing faster than 0.5 m/s; a slow close at any distance, or 3.1 s, is not
     self.assertEqual(cf.time_to_collision(lead(d=10., v=2., v_ego=6.)), 2.5)
@@ -385,12 +482,16 @@ FAR = 40.   # m: far past the close gap at VL
 VL = 4.     # m/s (14.4 km/h): inside the lift's band and under every personality's hand-back
 
 
-def lift_run(frames, lift=None, a_mpc=1.0, a_cruise=2.0, fcw=False, t_follow=1.0, requested=True, **kw):
+def lift_run(frames, lift=None, a_mpc=1.0, a_cruise=2.0, fcw=False, t_follow=1.0, requested=True, pull_away=False,
+             real_w=1., **kw):
   lift = lift or LeadFollowLift()
   out = None
   for _ in range(frames):
     inp = inputs(**dict({'v': VL, 'lead_one': lead(d=FAR, v=VL, v_ego=VL)}, **kw))
-    out = lift.update(inp, requested, a_mpc, a_cruise, fcw, t_follow)
+    if pull_away or real_w != 1.:
+      out = lift.update(inp, requested, a_mpc, a_cruise, fcw, t_follow, pull_away=pull_away, real_w=real_w)
+    else:
+      out = lift.update(inp, requested, a_mpc, a_cruise, fcw, t_follow)
   return lift, out
 
 
@@ -437,6 +538,40 @@ class TestLift(OpenpilotTestCase):
         self.assertEqual(close_t_follow(v, t_p, v_lead), t_p)
         lift, out = lift_run(LIFT_FULL, v=v, lead_one=lead(d=FAR, v=v_lead, v_ego=v), md=model(v, a=0.1))
         self.assertEqual((out, lift.boost, lift.weight), (0.1, 0., 0.))
+
+  def test_the_hand_back_resets_it_and_it_reads_where_the_queue_is_heading(self):
+    # round 2 (the verification): handed back - here by a lead at our 14.4 km/h pulling away at 1.2 m/s^2, read 2 s
+    # ahead at 20.9 km/h, past aggressive's 17.2 - the lift is out on that frame with its authority at 0, and when the
+    # lead stops pulling away it comes back only after its 3 s hold (it used to keep its authority and be back at once,
+    # before the gap's own 1 s hold). Without the look-ahead (a lead at 14.4 km/h) it would not have handed back at all
+    t_p = get_T_FOLLOW(P.aggressive)
+    self.assertLess(close_t_follow(VL, t_p, VL), t_p)
+    self.assertEqual(close_t_follow(VL, t_p, VL, 1.2), t_p)
+    lift, out = lift_run(LIFT_FULL)
+    self.assertAlmostEqual(out, CAP[AGGRESSIVE])
+    _, out = lift_run(1, lift=lift, lead_one=lead(d=FAR, v=VL, v_ego=VL, a=1.2))
+    self.assertEqual((lift.inhibit, out, lift.authority, lift.boost), (Inhibit.speed, 0., 0., 0.))
+    outs = [lift_run(1, lift=lift)[1] for _ in range(round(cf.LIFT_HOLD_S / DT_MDL) + 5)]
+    self.assertEqual(outs[:round(cf.LIFT_HOLD_S / DT_MDL)], [0.] * round(cf.LIFT_HOLD_S / DT_MDL))
+    self.assertGreater(outs[-1], 0.)
+    # CloseFollow hands it its own follow time (t_close): the personality's is the hand-back too
+    lift, _ = lift_run(LIFT_FULL)
+    out = lift.update(inputs(v=VL, lead_one=lead(d=FAR, v=VL, v_ego=VL)), True, 1.0, 2.0, False, 1.0, t_close=t_p)
+    self.assertEqual((lift.inhibit, out, lift.authority), (Inhibit.speed, 0., 0.))
+
+  def test_a_queue_pulling_away_or_a_short_real_gap(self):
+    # round 2: the queue pulling away is a soft trip for the lift (it falls at 4/s, then its 3 s hold); the real gap
+    # scales it (real_w)
+    lift, before = lift_run(LIFT_FULL)
+    _, out = lift_run(1, lift=lift, pull_away=True)
+    self.assertEqual(lift.inhibit, Inhibit.pullAway)
+    self.assertLess(out, before)
+    _, out = lift_run(round(0.25 / DT_MDL), lift=lift, pull_away=True)
+    self.assertEqual(out, 0.)
+    for w in (1., 0.5, 0.):
+      with self.subTest(real_w=w):
+        lift, out = lift_run(LIFT_FULL, real_w=w)
+        self.assertAlmostEqual(out, CAP[AGGRESSIVE] * w)
 
   def test_never_toward_a_close_lead_it_is_closing_on(self):
     # time to collision under 3 s (closing faster than 0.5 m/s): out, a hard trip
@@ -1185,6 +1320,152 @@ class TestPlanner(OpenpilotTestCase):
     self.assertTrue(all(g == 0. for _, g, _ in gs[first:first + HOLD]), gs)
     self.assertTrue(all(i in (Inhibit.speed, Inhibit.hold) for _, _, i in gs[:first + HOLD]), gs)
 
+  def test_the_real_gap_0_9_m_short_raises_nothing(self):
+    # round 2 (the verification): the 1 m bounded the TARGET gap; the gap the car really kept drifted further (a gentle
+    # pull-away, stop-and-go waves). Close follow now reads leadOne's radar gap against the personality's own desired gap
+    # (long_mpc's, at vEgo and vLead): 0.9 m short or more (about 1 m short of the gap push12 really keeps) and it raises
+    # nothing - its MPC candidate is the plan's own, no lift, no mark, and the log says realGap; 0.65 m short or less and
+    # it is all in; between, it fades
+    t_p = get_T_FOLLOW(P.aggressive)
+    want = desired_gap(V0, V0, t_p)
+    for short, w in ((1.2, 0.), (0.95, 0.), (0.775, 0.5), (0.5, 1.)):
+      with self.subTest(short=short):
+        pm = PM()
+        pl = planner(True)
+        c = pl.close_follow
+        for _ in range(GAP_FULL + 5):
+          step(pl, build_sm(V0, want - short, V0, e2e=-0.1), pm)
+        self.assertAlmostEqual(c.real_deficit, short, places=5)   # (the radar's dRel is a Float32)
+        self.assertAlmostEqual(c.real_w, w, places=4)
+        self.assertEqual(c.gap.authority, 1.)
+        self.assertAlmostEqual(c.g, w, places=4)
+        last = last_log(pm)
+        self.assertAlmostEqual(last.realDeficit, short, places=4)
+        self.assertAlmostEqual(last.realWeight, w, places=4)
+        if w == 0.:
+          self.assertEqual((c.a_mpc_close, c.lifting, c.raised, c.tightening), (c.a_mpc, 0., 0., False))
+          self.assertEqual((c._gap_inhibit(), last.gapInhibit.raw), (Inhibit.realGap, int(Inhibit.realGap)))
+          self.assertFalse(last.gapActive)
+        else:
+          self.assertGreater(c.a_mpc_close, c.a_mpc + 0.01, "the closer gap pulls in")
+          self.assertEqual(last.gapInhibit.raw, int(Inhibit.none))
+
+  def test_the_closer_gap_fades_in_over_3_6_to_7_2_km_h(self):
+    # round 2 (stop-and-go in the verification): a car that comes to rest a moment sooner also sets off a moment sooner,
+    # and the waves put it up to 1.8 m off push12. Under 3.6 km/h the closer gap is out - at a standstill, creeping into
+    # a stop and through a launch the plan is push12's - from 7.2 km/h it is all in, linear between; the log says speed
+    t_p = get_T_FOLLOW(P.aggressive)
+    for v, w in ((0.5, 0.), (1.0, 0.), (1.5, 0.5), (2.0, 1.), (3.0, 1.)):
+      with self.subTest(v=v):
+        pm = PM()
+        pl = planner(True)
+        c = pl.close_follow
+        for _ in range(GAP_FULL + 5):
+          step(pl, build_sm(v, desired_gap(v, v, t_p), v, e2e=-0.1), pm)
+        self.assertLess(c.t_follow, c.t_personality)
+        self.assertEqual((c.gap.authority, c.real_w), (1., 1.))
+        self.assertAlmostEqual(c.speed_in, w, places=9)
+        self.assertAlmostEqual(c.g, w, places=9)
+        last = last_log(pm)
+        if w == 0.:
+          self.assertEqual((c.a_mpc_close, c.raised, c.tightening), (c.a_mpc, 0., False))
+          self.assertEqual((c._gap_inhibit(), last.gapInhibit.raw), (Inhibit.speed, int(Inhibit.speed)))
+          self.assertFalse(last.gapActive)
+        else:
+          self.assertEqual(last.gapInhibit.raw, int(Inhibit.none))
+          self.assertTrue(last.gapActive)
+
+  def test_a_queue_pulling_away_gently_fades_it_out(self):
+    # round 2 (the verification's most common case: a queue pulling away at 0.6-0.8 m/s^2 from a crawl): read 2 s ahead,
+    # the schedule stayed well under the hand-back, so the closer gap stayed in at full authority while the car sped up,
+    # and the real gap fell over 1 m behind push12's. Now leadOne's aLeadK over 0.3 for 0.5 s is a pull-away: nothing
+    # tightens, the closer gap fades out at 1/s. A creeping queue's swell (0.25 m/s^2) is not one
+    for a_lead, pulls in ((0.5, True), (0.25, False)):
+      with self.subTest(a_lead=a_lead):
+        pm = PM()
+        live = planner(True)
+        c = live.close_follow
+        for sm in queue(GAP_FULL + 20):
+          step(live, sm, pm)
+        self.assertEqual(c.g, 1.)
+        d, v_lead, gs = D0, V0, []
+        for _ in range(32):
+          v_lead += a_lead * DT_MDL
+          d += (v_lead - V0) * DT_MDL
+          step(live, build_sm(V0, d, v_lead, a_lead=a_lead, e2e=-0.1), pm)
+          gs.append((c.g, c.pull_away, c.gap.inhibit, c.weight))
+        self.assertTrue(all(w > 0. for *_, w in gs), "under aggressive's hand-back all along")
+        if not pulls:
+          self.assertTrue(all(g == 1. and not pa for g, pa, _, _ in gs))
+          continue
+        n = round(cf.PULL_AWAY_T / DT_MDL)
+        self.assertTrue(all(g == 1. and not pa for g, pa, _, _ in gs[:n - 1]))
+        self.assertTrue(all(pa and i == Inhibit.pullAway for _, pa, i, _ in gs[n - 1:]))
+        np.testing.assert_allclose([g for g, *_ in gs[n - 1:n + 9]], [1. - cf.PULL_AWAY_FALL * DT_MDL * (k + 1) for k in range(10)],
+                                   atol=1e-12)
+        self.assertEqual(gs[-1][0], 0.)
+        self.assertTrue(last_log(pm).pullAway)
+
+  def test_its_follow_time_shortens_no_faster_than_0_1_s_per_s(self):
+    # round 2 (the verification): under the hand-back, a lead that stopped accelerating dropped the close follow time from
+    # the look-ahead's to the crawl's on one frame, at full authority. It shortens at most T_FOLLOW_FALL now (0.1 s per
+    # s); it lengthens at once
+    live = planner(True)
+    c = live.close_follow
+    for sm in queue(GAP_FULL + 20):
+      step(live, sm)
+    ts = []
+    for a_lead in [0.] * 5 + [0.9] * 30 + [0.] * 70:
+      step(live, build_sm(V0, D0, V0, a_lead=a_lead, e2e=-0.1, experimental=False))
+      ts.append(c.t_follow)
+    steps = np.diff(ts)
+    self.assertGreaterEqual(float(steps.min()), -0.1 * DT_MDL - 1e-12, "0.1 s per s")
+    self.assertGreater(float(steps.max()), 0.2, "it lengthened at once when the lead pulled away")
+    self.assertAlmostEqual(ts[-1], close_t_follow(V0, c.t_personality, V0, 0.), places=9)
+    self.assertLess(ts[-1], max(ts) - 0.2, "and fell back, slowly")
+
+  def test_no_mark_at_a_standstill(self):
+    # round 2 (the verification): stopped behind a lead creeping a few meters ahead, the mark showed - nothing moves closer
+    # at a standstill. tightening is never set while the car stands
+    for d, v_lead, a_lead in ((4.0, 0.3, 0.3), (6.5, 0.3, 0.3), (7.0, 0.5, 0.5), (6.0, 0., 0.)):
+      for experimental in (False, True):
+        with self.subTest(d=d, v_lead=v_lead, experimental=experimental):
+          pm = PM()
+          pl = planner(True)
+          c = pl.close_follow
+          tight = []
+          for _ in range(80):
+            step(pl, build_sm(0.05, d, v_lead, a_lead=a_lead, e2e=0., experimental=experimental), pm)
+            tight.append(c.tightening)
+          self.assertFalse(any(tight))
+          self.assertFalse(any(messaging.log_from_bytes(b).customReserved10.tightening for b in pm.sent['customReserved10']))
+
+  def test_after_the_hand_back_the_lift_waits_for_the_gap(self):
+    # round 2 (the verification): handed back (the lead at 18 km/h, past aggressive's 17.2), then the lead eases to 15.8
+    # km/h: the gap comes back by its 1 s hold and ramp - and the lift, whose authority the hand-back now resets too, only
+    # after its own 3 s hold (it used to be back at once, before the gap)
+    live = planner(True)
+    c = live.close_follow
+    for sm in queue(LIFT_FULL + 20):
+      step(live, sm)
+    self.assertTrue(c.gap_active and c.lifting > 0.)
+    d, v_lead = D0, 5.0
+    for _ in range(20):
+      d += (v_lead - V0) * DT_MDL
+      step(live, build_sm(V0, d, v_lead, e2e=-0.1))
+    self.assertEqual((c.weight, c.g, c.lifting, c.lift.authority, c.lift.inhibit), (0., 0., 0., 0., Inhibit.speed))
+    rows = []
+    for _ in range(120):
+      v_lead = max(4.4, v_lead - 0.4 * DT_MDL)
+      d += (v_lead - V0) * DT_MDL
+      step(live, build_sm(V0, d, v_lead, a_lead=-0.4 if v_lead > 4.4 else 0., e2e=-0.1))
+      rows.append((c.weight, c.g, c.lifting))
+    first_w = next(k for k, r in enumerate(rows) if r[0] > 0.)
+    first_g = next(k for k, r in enumerate(rows) if r[1] > 0.)
+    first_lift = next(k for k, r in enumerate(rows) if r[2] > 0.)
+    self.assertEqual(first_g, first_w + HOLD)
+    self.assertGreaterEqual(first_lift, first_w + round(cf.LIFT_HOLD_S / DT_MDL), "the lift's own 3 s hold, after the gap")
+
   def test_disengaged_it_is_off(self):
     pl = planner(False)
     for sm in queue(200):
@@ -1375,3 +1656,76 @@ class TestAcceleratingQueue(OpenpilotTestCase):
                                 f"the gap when the lead brakes: {gap_live:.2f} m against {gap_ref:.2f} without close follow")
         self.assertGreaterEqual(min_live, min_ref - cf.GAP_DEFICIT_MAX - 0.1,
                                 f"the closest it comes: {min_live:.2f} m against {min_ref:.2f}")
+
+  def run_waves(self, close_follow: bool, personality, cycles=4, v_top=15 / 3.6, acc=1.0, dec=-1.0, cruise=6., wait=3.):
+    """Stop-and-go: the lead from a standstill to v_top at acc, cruise s, to a stop at dec, wait s - cycles times - with
+    the same plant as run_queue. Returns the gaps every frame and the gap at each standstill (both stopped)."""
+    pl = planner(True, close_follow=close_follow)
+    x_e, v_e, a_e = 0., 0., 0.
+    x_l, v_l, a_lk = 6., 0., 0.
+    cmd = [0.] * self.DEAD
+    phases = []
+    for _ in range(cycles):
+      phases += [(acc, (v_top / acc)), (0., cruise), (dec, (v_top / -dec)), (0., wait)]
+    gaps, stand = [], []
+    t_end = sum(d for _, d in phases)
+    t, standing = 0., False
+    while t < t_end:
+      tt, a_l_now = t, 0.
+      for a, d in phases:
+        if tt < d:
+          a_l_now = a
+          break
+        tt -= d
+      if v_l <= 0. and a_l_now < 0.:
+        a_l_now = 0.
+      a_lk += (a_l_now - a_lk) * DT_MDL / (self.A_LAG + DT_MDL)
+      # (at least 1 cm/s: build_sm's flat model path at exactly 0 divides by zero in SCC's vision curve)
+      step(pl, build_sm(max(v_e, 0.01), x_l - x_e, v_l, a_lead=a_lk, e2e=0., experimental=False, personality=personality))
+      cmd.append(float(np.clip(pl.output_a_target, self.BRAKE_MAX, 2.)))
+      a_e += (cmd.pop(0) - a_e) * DT_MDL / (self.LAG + DT_MDL)
+      v_l = max(0., v_l + a_l_now * DT_MDL)
+      x_l += v_l * DT_MDL
+      v_e = max(0., v_e + a_e * DT_MDL)
+      if v_e <= 0. and a_e < 0.:
+        a_e = 0.
+      x_e += v_e * DT_MDL
+      gaps.append(x_l - x_e)
+      now = v_l < 0.01 and v_e < 0.05
+      if standing and not now:
+        stand.append(gaps[-2])
+      standing = now
+      t += DT_MDL
+    return gaps, stand
+
+  def test_stop_and_go_never_stacks_up(self):
+    # round 2 (the verification's stop-and-go waves): the 1 m bounded the target, so the offset stacked up - up to 2.7 m
+    # less room in its sim, and stops up to 2.5 m closer than push12. Here (four waves to 15 km/h, 6 s at it) 5a778e077's
+    # gap fell 1.4 m short of push12's on relaxed. With the real gap read against the personality's own and the closer
+    # gap out under 3.6 km/h, never more than 1 m (0.4 here), and every stop within 0.3 m of push12's (0.1 here)
+    for p in (P.relaxed, P.standard):
+      with self.subTest(personality=p):
+        g_live, s_live = self.run_waves(True, p)
+        g_ref, s_ref = self.run_waves(False, p)
+        self.assertEqual(len(s_live), len(s_ref))
+        self.assertGreaterEqual(len(s_live), 2)
+        short = max(b - a for a, b in zip(g_live, g_ref, strict=True))
+        self.assertLessEqual(short, 1.0, f"the real gap short of push12's by {short:.2f} m")
+        stops = [b - a for a, b in zip(s_live, s_ref, strict=True)]
+        self.assertLessEqual(max(stops), 0.3, f"stopped closer than push12 by {stops}")
+
+  def test_a_gentle_pull_away_from_a_crawl_costs_at_most_1_m_of_real_gap(self):
+    # round 2 (the verification's most common case): a queue creeping at 5 km/h pulls away at 0.6-0.8 m/s^2 - read 2 s
+    # ahead, still well under the hand-back - and then brakes at -6. The closer gap stayed in at full authority while
+    # the car sped up, and the REAL gap at the brake was up to 1.3 m short of push12's. With the real gap read against
+    # the personality's own and the pull-away rule, never more than 1 m - at the onset, through the whole run and at
+    # the closest point
+    for p, acc in ((P.relaxed, 0.6), (P.relaxed, 0.8), (P.standard, 0.6)):
+      with self.subTest(personality=p, acc=acc):
+        _, min_live, _, rec_live = self.run_queue(True, p, v0=5 / 3.6, acc=acc, a_l=-6.)
+        _, min_ref, _, rec_ref = self.run_queue(False, p, v0=5 / 3.6, acc=acc, a_l=-6.)
+        crawl = [r for r in rec_live if r[0] < -12.]
+        self.assertTrue(any(r[2] > 0.5 for r in crawl), "it followed closer at the crawl")
+        lost = [b[1] - a[1] for a, b in zip(rec_live, rec_ref, strict=False) if a[0] <= 0.]
+        self.assertLessEqual(max(lost), 1.0 + 0.1, f"the real gap, up to the brake: {max(lost):.2f} m short")
+        self.assertGreaterEqual(min_live, min_ref - 1.0, f"the closest: {min_live:.2f} m against {min_ref:.2f}")

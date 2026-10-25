@@ -784,6 +784,11 @@ struct CustomReserved10 @0xcb9fd56c7057593a {
   gapCloser @40 :Bool;               # the gap in and >= 0.5 m shorter than the personality's (release13's first
                                      # 'tightening': the target is closer, the plan may still be the model's or cruise)
   scheduleSpeed @41 :Float32;        # m/s, where the schedule was read: max(vEgo, vLead + 2 s x (aLeadK - 0.3)+)
+  # release13 round 2 (the verification): the real gap, the pull-away
+  realDeficit @42 :Float32;          # m, the personality's own desired gap (long_mpc's, at vEgo and vLead) minus leadOne's
+                                     # radar gap, filtered over 0.5 s; 0 without a real lead
+  realWeight @43 :Float32;           # 1 up to 0.65 m of realDeficit, 0 from 0.9 m: what close follow may still raise
+  pullAway @44 :Bool;                # leadOne's aLeadK over 0.3 m/s^2 for 0.5 s: no new tightening, the gap fades out
 
   enum CloseFollowInhibit {
     none @0;
@@ -791,13 +796,14 @@ struct CustomReserved10 @0xcb9fd56c7057593a {
     notRequested @2;   # the on-switch is off
     inactive @3;       # openpilot longitudinal is not engaged
     speed @4;          # above the fade (CF_FADE_KPH) or the lift's band; the gap: also from the hand-back on (review)
+                       # and, since round 2, under 3.6 km/h (it fades in over 3.6-7.2 km/h)
     noLead @5;         # no lead, or only a held lead (radard's clutter guard)
     leadUncertain @6;  # modelProb under 0.8
     visionLead @7;     # not a radar lead (the gap: above 2 m/s; the lift: always)
     leadSlow @8;       # lift only: a lead under 2.5 m/s (push13: 5 m/s)
     leadBraking @9;    # a real lead's aLeadK under -0.5, or leadOne's own speed falling faster over the last
                        # 0.5 s with aLeadK under 0 (lift: or the model's lead forecast slowing)
-    leadChanged @10;   # a new car (distance jump, lift: or a radar track swap)
+    leadChanged @10;   # a new car (distance jump or a radar track swap - the gap too since round 2)
     fcw @11;           # the planner's FCW, close follow's own crash flag, or the car's FCW/AEB: the gap and the
                        # lift both stay out 5 s (FCW_HOLD_S), then their own holds
     driver @12;        # gas or brake pressed
@@ -815,6 +821,9 @@ struct CustomReserved10 @0xcb9fd56c7057593a {
                        # now or in the 3 s after: the gap and the lift both out
     downhill @24;      # release13: the filtered pitch under -0.03 (steeper than 3 % downhill)
     closing @25;       # release13: leadOne's time to collision under 3 s, closing faster than 0.5 m/s
+    realGap @26;       # round 2, the gap only: in by its guard, but the radar gap is 0.9 m under the personality's own
+                       # desired gap (about 1 m under the gap push12 keeps): nothing raised
+    pullAway @27;      # round 2: the queue pulls away (aLeadK over 0.3 for 0.5 s): the gap and the lift fade out
   }
 }
 

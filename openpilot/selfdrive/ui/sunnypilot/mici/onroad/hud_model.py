@@ -881,9 +881,11 @@ class CloseFollowCue:
   (release13 review): close follow out - not live, not requested (a disengage), or doing nothing at all (not active:
   the gap out on any trip - a braking lead, a pedal, an FCW, a downhill - with no lift left) - or openpilot not engaged
   (selfdriveState); the off-debounce is only for the tightening threshold flickering while close follow is in. Never in
-  shadow (the user's CloseFollow off), never at a standstill (nothing tightens there), never on another car (nothing is
-  published). A stale or missing message, or the setting off, hides it on the frame. update() is idempotent within a
-  frame."""
+  shadow (the user's CloseFollow off), never on another car (nothing is published), and never at a standstill: the
+  planner never sets tightening there (release13 verification, round 2: behind a lead creeping a few meters ahead it
+  did, and nothing moves closer at a stop), and a fresh carState at a standstill hides it on the frame here too, so the
+  off-debounce does not hold it into the stop. A stale or missing message, or the setting off, hides it on the frame.
+  update() is idempotent within a frame."""
   def __init__(self):
     self._on = Debounce(CUE_ON_S, CUE_OFF_S)
 
@@ -896,7 +898,8 @@ class CloseFollowCue:
       return False
     c = sm[CLOSE_FOLLOW_SERVICE]
     disengaged = fresh(sm, 'selfdriveState', started_frame) and not sm['selfdriveState'].enabled
-    if not (c.live and c.requested and c.active) or disengaged:
+    standing = fresh(sm, 'carState', started_frame) and sm['carState'].standstill
+    if not (c.live and c.requested and c.active) or disengaged or standing:
       self.reset()
       return False
     return self._on.update(bool(c.tightening), now)
