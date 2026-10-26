@@ -43,12 +43,22 @@ GATED: close_follow_applies() - HONDA_ELESYS with openpilot longitudinal, stock 
 car in stock ACC mode (the radar's own ACC_HUD reaches the dash; openpilot sends none, and the radar hears the
 driver's real buttons), keep upstream's three steps and personality + 1, bit for bit.
 
-THE RACE. selfdrived's params thread re-reads LongitudinalPersonality every 0.1 s while a press writes it from the 100 Hz
-loop - and Params.put() is non-blocking (a queued write) - so a read before the write lands puts the old personality
-back for 0.1 s (route 14c, t = 365.0-365.15: aggressive, standard, aggressive; one ACC_HUD frame can carry it). On this
-car the thread's reads and assignment and a press's step and writes hold LOCK (selfdrived takes it around both), and a
-read that disagrees with a press's own write that has not landed yet keeps the press's value (_pending), for at most
-PENDING_READS reads - after that the param wins, as it does at once for a value nobody pressed for (a setting).
+THE RACE. selfdrived's params thread re-reads LongitudinalPersonality and CloseFollowOneBar every 0.1 s and takes what
+is on disk, while a press writes them from the 100 Hz loop, and a write can take minutes to reach /data. Route 14c (t =
+365.0-365.15: aggressive, standard, aggressive) showed it for one read; route 157 (push14's first drive, /data at 10 %
+free) for minutes: selfdrived's writes waited 50-230 s in its Params handle's queue (hardwared's ParamsWriter logged
+single writes of 1.3-48.9 s). push14 kept a press's value for 20 reads (2 s) or until a read showed that value, so the
+stale disk won after 2 s, a stale disk that happened to hold the press's value dropped the guard at once, and when the
+queue drained every old step came back to the dash in turn: 48 of its 100 HUD_DISTANCE changes had neither a press nor
+a setting behind them.
+push15: a press writes through selfdrived's ParamsWriter (one write per key, the newest value - not one per press - and
+a slow write logged), and a read takes the press's own value for exactly as long as the writer has that key in flight
+(ParamsWriter.in_flight, asked BEFORE the read, so a write that lands in between is read back, never the stale value).
+No count and no guess: the dash changes on a press, and otherwise only when a setting (the comma 4's page, sunnylink, a
+restore) lands with none of the press's own writes of that key in flight - then it applies on the next read. A setting
+that lands while a press's write of the same key is still in flight is overwritten when that write lands: the last
+write to land wins, on disk and on the dash alike (with a healthy /data that window is a few ms). On this car the
+thread's reads and assignment and a press's step and writes hold LOCK (selfdrived takes it around both).
 """
 import threading
 
@@ -63,7 +73,6 @@ ONE_BAR_PARAM = "CloseFollowOneBar"
 ONE_BAR = 1                                        # the dash's bars in the 1-bar mode
 FOUR_BARS = {RELAXED: 4, STANDARD: 3, AGGRESSIVE: 2}  # the dash's bars for each personality on this car
 ONE_BAR_NAME = "close follow"                      # the personality alert's name for it: "Driving Personality: Close Follow"
-PENDING_READS = 20                                 # the params thread's reads (2 s) a press's own write has to land
 
 
 def four_bars_apply(CP, CP_SP) -> bool:
@@ -125,50 +134,46 @@ def personality_picked(params, personality) -> bool:
 
 class DistanceBars:
   """selfdrived's handle. applies: this car (four_bars_apply). switch_on and one_bar_set are CloseFollow and
-  CloseFollowOneBar as last read or written. read_params() (the params thread, every 0.1 s) and press() (the loop, on a
-  distance-button release) are called with LOCK held - selfdrived takes it around each, with its own assignment of the
-  personality - and only on this car."""
+  CloseFollowOneBar as last read or written. writer: selfdrived's ParamsWriter, which a press writes through (THE RACE).
+  read_params() (the params thread, every 0.1 s) and press() (the loop, on a distance-button release) are called with
+  LOCK held - selfdrived takes it around each, with its own assignment of the personality - and only on this car."""
 
-  def __init__(self, CP, CP_SP, params):
+  def __init__(self, CP, CP_SP, params, writer):
     self.applies = four_bars_apply(CP, CP_SP)
     self.lock = threading.Lock()
+    self.writer = writer
     self.switch_on = False
     self.one_bar_set = False
-    self._pending: dict[str, list] = {}   # key -> [the value a press wrote, reads left before a read wins]
+    self._mine: dict[str, int | bool] = {}   # key -> the value the last press wrote through the writer
     if self.applies:
       self.read_params(params)
 
-  def _landed(self, key, v):
-    """v as read, unless a press's own write of key has not landed yet (Params.put is non-blocking): then the press's
-    value, for at most PENDING_READS reads. Reading the press's value back clears it."""
-    p = self._pending.get(key)
-    if p is None:
-      return v
-    if v == p[0] or p[1] <= 0:
-      del self._pending[key]
-      return v
-    p[1] -= 1
-    return p[0]
+  def _read(self, key, read):
+    """key as selfdrived takes it: the press's own value while the writer has its write in flight, else read() - the
+    disk. in_flight is asked first: a write that lands between the two is then read back, never the stale value."""
+    if key in self._mine and self.writer.in_flight(key):
+      return self._mine[key]
+    return read()
 
   def read_params(self, params):
     """Reads only (LOCK held): CloseFollow, CloseFollowOneBar and - returned, for selfdrived's own - the personality."""
     self.switch_on = read_switch(params)
-    self.one_bar_set = bool(self._landed(ONE_BAR_PARAM, read_one_bar_param(params)))
-    return self._landed(PERSONALITY_PARAM, params.get(PERSONALITY_PARAM, return_default=True))
+    self.one_bar_set = bool(self._read(ONE_BAR_PARAM, lambda: read_one_bar_param(params)))
+    return self._read(PERSONALITY_PARAM, lambda: params.get(PERSONALITY_PARAM, return_default=True))
 
   def one_bar(self, personality) -> bool:
     """The 1-bar mode in effect: this car, the switch on, CloseFollowOneBar set and the personality aggressive."""
     return self.applies and self.switch_on and self.one_bar_set and int(personality) == AGGRESSIVE
 
-  def press(self, personality, params) -> int:
+  def press(self, personality) -> int:
     """A press (LOCK held): the next mode (next_mode) from the mode in effect. Writes the personality and
-    CloseFollowOneBar only where they change, as upstream's press does (non-blocking). Returns the new personality."""
+    CloseFollowOneBar only where they change, through the writer (it returns at once). Returns the new personality."""
     p, one = next_mode(personality, self.one_bar(personality), self.switch_on)
     if p != int(personality):
-      params.put(PERSONALITY_PARAM, p)
-      self._pending[PERSONALITY_PARAM] = [p, PENDING_READS]
+      self.writer.put(PERSONALITY_PARAM, p)
+      self._mine[PERSONALITY_PARAM] = p
     if one != self.one_bar_set:
-      params.put_bool(ONE_BAR_PARAM, one)
-      self._pending[ONE_BAR_PARAM] = [one, PENDING_READS]
+      self.writer.put_bool(ONE_BAR_PARAM, one)
+      self._mine[ONE_BAR_PARAM] = one
       self.one_bar_set = one
     return p

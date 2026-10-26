@@ -213,6 +213,58 @@ class TestParamsWriter(OpenpilotTestCase):
     assert calls == ["UptimeOffroad", "UptimeOnroad"]
     assert self.params.get("UptimeOnroad") == 4.0
 
+  def test_in_flight_until_the_write_has_finished(self):
+    """push15 (distance_bars.py): a key is in flight from its request until its write has finished - pending, then
+    being written (no longer pending), never neither in between - and a read made once it is not sees the write."""
+    put = self.writer._params.put
+    entered, go = threading.Event(), threading.Event()
+
+    def slow(key, value, block=False):
+      entered.set()
+      assert go.wait(5.)
+      put(key, value, block=block)
+
+    self.patch_params("put", slow)
+    assert not self.writer.in_flight("UptimeOffroad")
+    with self.writer._cv:                      # held: the writer cannot take it off the queue yet
+      self.writer.put("UptimeOffroad", 1.0)
+      assert self.writer.in_flight("UptimeOffroad") and "UptimeOffroad" in self.writer._pending
+    assert entered.wait(5.)
+    assert "UptimeOffroad" not in self.writer._pending
+    assert self.writer.in_flight("UptimeOffroad"), "being written"
+    self.writer.put("UptimeOnroad", 2.0)
+    assert self.writer.in_flight("UptimeOnroad") and not self.writer.in_flight("IsEngaged")
+    assert self.params.get("UptimeOffroad") is None
+    go.set()
+    deadline = time.monotonic() + 5.
+    while self.writer.in_flight("UptimeOffroad"):
+      assert time.monotonic() < deadline
+    assert self.params.get("UptimeOffroad") == 1.0, "not in flight: on disk"
+    assert self.writer.flush(5.)
+    assert not self.writer.in_flight("UptimeOnroad") and self.params.get("UptimeOnroad") == 2.0
+
+  def test_in_flight_through_a_newer_request_and_a_stall(self):
+    """Asked again while being written, the key stays in flight until the newer value is written; with <params>/.lock
+    held (a /data stall) everything asked for stays in flight; a write that failed is not in flight."""
+    order = self.record_writes()
+    with held_params_lock():
+      self.writer.put("UptimeOffroad", 1.0)    # taken by the writer, which then waits on the lock
+      time.sleep(0.3)
+      self.writer.put("UptimeOffroad", 2.0)
+      time.sleep(0.2)
+      assert self.writer.in_flight("UptimeOffroad")
+    assert self.writer.flush(5.)
+    assert not self.writer.in_flight("UptimeOffroad")
+    assert order == [("put", "UptimeOffroad", 1.0), ("put", "UptimeOffroad", 2.0)]
+    assert self.params.get("UptimeOffroad") == 2.0
+
+    def fail(key, value, block=False):
+      raise OSError("disk said no")
+    self.patch_params("put", fail)
+    self.writer.put("UptimeOnroad", 3.0)
+    assert self.writer.flush(5.)
+    assert not self.writer.in_flight("UptimeOnroad")
+
 
 class TestParamsWriterSlowWriteLog(OpenpilotTestCase):
   """After the fix a /data stall holds the writer's thread, not the loop: the writer's line is the stall's trace in the

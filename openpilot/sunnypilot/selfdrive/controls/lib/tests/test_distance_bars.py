@@ -14,6 +14,15 @@ through the real Honda CarController: HUD_DISTANCE 0 / 3 / 2 / 1 for 4 / 3 / 2
 the SCM_BUTTONS stand-down among them, the same in all four modes; and in stock ACC mode no ACC_HUD at all, whatever the
 bars. close follow live only at 1 bar (and shadow, the plan bit for bit, at 4, 3 and 2) is in test_close_follow.py
 (TestFourDashBars).
+
+push15 (TestASlowDisk): on a /data that holds every write for seconds to minutes, as on route 157 - push14's first
+drive, where 48 of the dash's 100 changes had neither a press nor a setting behind them - the dash changes only on a
+press, exactly one step each, and on a
+setting that lands with none of the press's own writes in flight: the moments from that drive that went wrong (1 bar
+back to 2 after 2 s and to 1 again, three presses back to the disk's stale value, the backlog draining as a burst), a
+write landing during a read, and the owner's own 51 presses from that drive replayed with its stalls and its five comma
+4 page picks. Every press writes through selfdrived's real ParamsWriter (its own thread); every other car still writes
+on selfdrived's own Params handle, as upstream.
 """
 import base64
 import threading
@@ -41,6 +50,7 @@ from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.sunnylink import utils as sunnylink_utils
 from openpilot.sunnypilot.sunnylink.athena import sunnylinkd
 from openpilot.sunnypilot.sunnylink.backups.manager import BackupManagerSP
+from openpilot.sunnypilot.system.params_writer import ParamsWriter
 
 ButtonEvent = car.CarState.ButtonEvent
 ButtonType = car.CarState.ButtonEvent.Type
@@ -63,14 +73,12 @@ def car_params(fingerprint=ELESYS, op_long=True, stock_acc=False, flag_only=Fals
 
 
 class CountingParams:
-  """Params, counting writes (put / put_bool) by key. Its writes land at once (block=True) unless lag: then they wait
-  in `queued` for land() - Params.put() is non-blocking on the device, and the params thread can read before."""
+  """selfdrived's own Params handle, counting writes (put / put_bool) by key; they land at once (block=True). The long
+  press writes ExperimentalMode here, and so does every other car's press its personality (upstream's)."""
 
-  def __init__(self, lag=False):
+  def __init__(self):
     self.p = Params()
     self.writes: list[str] = []
-    self.lag = lag
-    self.queued: list = []
 
   def get(self, key, *a, **k):
     return self.p.get(key, *a, **k)
@@ -80,39 +88,70 @@ class CountingParams:
 
   def put(self, key, v, *a, **k):
     self.writes.append(key)
-    if self.lag:
-      self.queued.append((self.p.put, key, v))
-      return None
     return self.p.put(key, v, block=True)
 
   def put_bool(self, key, v, *a, **k):
     self.writes.append(key)
-    if self.lag:
-      self.queued.append((self.p.put_bool, key, v))
-      return None
     return self.p.put_bool(key, v, block=True)
 
-  def land(self):
-    for fn, key, v in self.queued:
-      fn(key, v, block=True)
-    self.queued.clear()
+
+_WRITERS: list[ParamsWriter] = []
+_DISKS: list["SlowDisk"] = []
+
+
+class CountingWriter:
+  """selfdrived's ParamsWriter - a real one, on its own thread - counting what a press asks it to write, by key."""
+
+  def __init__(self):
+    self.w = ParamsWriter("test_distance_bars")
+    self.writes: list[str] = []
+    _WRITERS.append(self.w)
+
+  def put(self, key, v):
+    self.writes.append(key)
+    self.w.put(key, v)
+
+  def put_bool(self, key, v):
+    self.writes.append(key)
+    self.w.put_bool(key, v)
+
+  def in_flight(self, key) -> bool:
+    return self.w.in_flight(key)
+
+  def flush(self) -> None:
+    assert self.w.flush(5.), "a healthy /data: the press's writes land"
+
+
+def _stop_writers():
+  while _DISKS:
+    _DISKS.pop().open()
+  while _WRITERS:
+    _WRITERS.pop().stop(5.)
+
+
+class BarsTestCase(OpenpilotTestCase):
+  def setUp(self):
+    super().setUp()
+    self.addCleanup(_stop_writers)
 
 
 class FakeSelfdriveD(CruiseHelper):
   """The parts of selfdrived a distance-button press goes through: CruiseHelper.update() (the long press) and then
   SelfdriveD.distance_button() itself, with selfdrived's own state names - and one pass of its params thread's
-  personality read (SelfdriveD.read_personality)."""
+  personality read (SelfdriveD.read_personality). params is selfdrived's own handle, params_writer its ParamsWriter."""
   distance_button = SelfdriveD.distance_button
   read_personality = SelfdriveD.read_personality
+  disk: "SlowDisk | None" = None
 
-  def __init__(self, CP, CP_SP, params):
+  def __init__(self, CP, CP_SP, params, writer=None):
     CruiseHelper.__init__(self, CP)
     self.params = params
+    self.params_writer = writer if writer is not None else CountingWriter()
     self.events = Events()
     self.events_sp = EventsSP()
     self.experimental_mode = params.get_bool("ExperimentalMode")
     self.personality = params.get("LongitudinalPersonality", return_default=True)
-    self.distance_bars = DistanceBars(CP, CP_SP, params)
+    self.distance_bars = DistanceBars(CP, CP_SP, params, self.params_writer)
     self.cruise_available = True
 
   def frame(self, pressed=None):
@@ -124,20 +163,93 @@ class FakeSelfdriveD(CruiseHelper):
     CruiseHelper.update(self, CS, self.events_sp, self.experimental_mode)
     self.distance_button(CS)
 
-  def press(self, hold=10):
-    """A short press (released before DISTANCE_LONG_PRESS frames). True if it stepped the mode."""
+  def press(self, hold=10, land=True):
+    """A short press (released before DISTANCE_LONG_PRESS frames). True if it stepped the mode. land: its writes land
+    before it returns (a healthy /data); on a SlowDisk they wait for it."""
     self.frame(True)
     for _ in range(hold - 1):
       self.frame()
     self.frame(False)
+    if land and self.disk is None:
+      self.params_writer.flush()
     return EventName.personalityChanged in self.events.names
 
   def bars(self) -> int:
     return lead_distance_bars(self.personality, self.distance_bars.one_bar(self.personality), self.distance_bars.applies)
 
 
-def start(personality, switch=True, one_bar=None, fingerprint=ELESYS, op_long=True, stock_acc=False, lag=False):
-  """A drive's start: the params as the last drive left them, then selfdrived."""
+class SlowDisk:
+  """/data as route 157 had it (10 % free; selfdrived's writes held 50-230 s): every write selfdrived makes waits until
+  land_one() lets it through, while reads are never held. Both of selfdrived's write paths wait, each in its own order:
+  its Params handle's non-blocking put() / put_bool() - one FIFO per handle (Params::putNonBlocking): what push14's
+  press wrote through and the long press still does (HeldParams) - and its ParamsWriter's thread, what a press writes
+  through now."""
+
+  def __init__(self, writer: CountingWriter):
+    self.w = writer.w
+    self.queue: list = []                    # the handle's FIFO: (write, key, value)
+    self._gate = threading.Semaphore(0)
+    for name in ("put", "put_bool"):
+      real = getattr(self.w._params, name)
+
+      def held(key, *a, real=real, **k):
+        self._gate.acquire(timeout=10.)       # (a test gone wrong fails rather than hangs)
+        return real(key, *a, **k)
+      setattr(self.w._params, name, held)
+    _DISKS.append(self)
+
+  def writing(self) -> bool:
+    """Something of the writer's not on disk yet."""
+    with self.w._cv:
+      return bool(self.w._pending) or getattr(self.w, "_writing", None) is not None
+
+  def land_one(self) -> bool:
+    """One held write reaches the disk: the handle's oldest, else the writer's current one. False if none was held."""
+    if self.queue:
+      write, key, v = self.queue.pop(0)
+      write(key, v, block=True)
+      return True
+    if not self.writing():
+      return False
+    n = self.w.written
+    self._gate.release()
+    deadline = time.monotonic() + 5.
+    while self.w.written == n:
+      assert time.monotonic() < deadline, "the writer's held write landed"
+      time.sleep(0.001)
+    return True
+
+  def land_all(self) -> int:
+    n = 0
+    while self.land_one():
+      n += 1
+    return n
+
+  def open(self):
+    """The test's end: let everything through."""
+    self.queue.clear()
+    for _ in range(100):
+      self._gate.release()
+
+
+class HeldParams(CountingParams):
+  """selfdrived's own Params handle on a SlowDisk: put() / put_bool() return at once and wait in the handle's FIFO."""
+
+  def __init__(self, disk: SlowDisk):
+    super().__init__()
+    self.disk = disk
+
+  def put(self, key, v, *a, **k):
+    self.writes.append(key)
+    self.disk.queue.append((self.p.put, key, v))
+
+  def put_bool(self, key, v, *a, **k):
+    self.writes.append(key)
+    self.disk.queue.append((self.p.put_bool, key, v))
+
+
+def start(personality, switch=True, one_bar=None, fingerprint=ELESYS, op_long=True, stock_acc=False, slow=False):
+  """A drive's start: the params as the last drive left them, then selfdrived. slow: on a SlowDisk (sd.disk)."""
   p = Params()
   p.put("LongitudinalPersonality", int(personality), block=True)
   p.put_bool("CloseFollow", switch, block=True)
@@ -145,9 +257,13 @@ def start(personality, switch=True, one_bar=None, fingerprint=ELESYS, op_long=Tr
     p.remove("CloseFollowOneBar")
   else:
     p.put_bool("CloseFollowOneBar", one_bar, block=True)
-  params = CountingParams(lag)
+  writer = CountingWriter()
+  disk = SlowDisk(writer) if slow else None
+  params = HeldParams(disk) if disk is not None else CountingParams()
   CP, CP_SP = car_params(fingerprint, op_long, stock_acc)
-  return FakeSelfdriveD(CP, CP_SP, params), params
+  sd = FakeSelfdriveD(CP, CP_SP, params, writer)
+  sd.disk = disk
+  return sd, params
 
 
 class TestTheMapping(OpenpilotTestCase):
@@ -195,7 +311,7 @@ class TestTheMapping(OpenpilotTestCase):
     self.assertIs(EVENTS[EventName.personalityChanged][ET.WARNING], personality_changed_alert)
 
 
-class TestTheButton(OpenpilotTestCase):
+class TestTheButton(BarsTestCase):
   def test_four_steps_and_the_wrap(self):
     sd, params = start(RELAXED)
     seen = [sd.bars()]
@@ -218,7 +334,7 @@ class TestTheButton(OpenpilotTestCase):
       sd.press()
       seen.append(sd.bars())
     self.assertEqual(seen, [4, 3, 2, 4, 3, 2, 4])
-    self.assertNotIn("CloseFollowOneBar", params.writes)
+    self.assertNotIn("CloseFollowOneBar", sd.params_writer.writes)
 
   def test_a_remembered_one_bar_with_the_switch_off(self):
     sd, params = start(AGGRESSIVE, switch=False, one_bar=True)
@@ -232,15 +348,17 @@ class TestTheButton(OpenpilotTestCase):
     sd, params = start(RELAXED)
     expect = [["LongitudinalPersonality"], ["LongitudinalPersonality"], ["CloseFollowOneBar"],
               ["LongitudinalPersonality", "CloseFollowOneBar"]]
+    writer = sd.params_writer
     for want in expect:
-      params.writes.clear()
+      writer.writes.clear()
       sd.press()
-      self.assertEqual(params.writes, want)
+      self.assertEqual(writer.writes, want)
+    self.assertEqual(params.writes, [], "a press writes through the writer only (push15), never on selfdrived's handle")
     # the params thread's reads (every 0.1 s) never write
-    params.writes.clear()
+    writer.writes.clear()
     for _ in range(50):
       sd.read_personality()
-    self.assertEqual(params.writes, [])
+    self.assertEqual((params.writes, writer.writes), ([], []))
     self.assertEqual(sd.bars(), 4)
 
   def test_it_persists_across_drives(self):
@@ -300,6 +418,7 @@ class TestTheButton(OpenpilotTestCase):
           self.assertEqual(seen, [RELAXED, STANDARD, AGGRESSIVE, RELAXED, STANDARD])
         self.assertEqual(bars, [p + 1 for p in seen], "upstream's personality + 1")
         self.assertNotIn("CloseFollowOneBar", params.writes)
+        self.assertEqual(sd.params_writer.writes, [], "upstream's write, on selfdrived's own handle")
 
   def test_a_press_waits_for_the_params_thread(self):
     sd, _ = start(STANDARD)
@@ -318,38 +437,226 @@ class TestTheButton(OpenpilotTestCase):
     self.assertTrue(done.is_set())
     self.assertEqual((sd.personality, Params().get("LongitudinalPersonality")), (AGGRESSIVE, AGGRESSIVE))
 
-  def test_a_read_before_the_write_lands(self):
-    # route 14c t=365.0-365.15 (upstream's race): the thread read the param before the press's write landed and put the
-    # old personality back for 0.1 s. Here the read keeps the press's values until its writes land...
-    sd, params = start(AGGRESSIVE, lag=True)
-    sd.press()
+
+READ_DT = 0.107   # selfdrived's params thread on route 157: 21 reads in 2.24 s (t = 109.46 -> 111.70)
+ORDER = {4: 3, 3: 2, 2: 1, 1: 4}   # one press, the dash's bars before -> after
+
+
+class Drive:
+  """Route time: the params thread's read every READ_DT, and presses between them; every change of the dash's bars is
+  recorded with what made it (a press, or a read)."""
+
+  def __init__(self, sd: FakeSelfdriveD, t: float = 0.):
+    self.sd, self.t, self.next_read = sd, t, t + READ_DT
+    self.dash: list[tuple[float, int, str]] = [(t, sd.bars(), 'start')]
+
+  def _note(self, why: str):
+    if self.sd.bars() != self.dash[-1][1]:
+      self.dash.append((round(self.t, 2), self.sd.bars(), why))
+
+  def run_to(self, t: float):
+    while self.next_read <= t:
+      self.t = self.next_read
+      self.sd.read_personality()
+      self._note('read')
+      self.next_read += READ_DT
+    self.t = max(self.t, t)
+
+  def press(self, hold: int = 10) -> bool:
+    stepped = self.sd.press(hold, land=False)
+    self._note('press')
+    return stepped
+
+  def bars(self, why: str) -> list[int]:
+    return [b for _, b, w in self.dash if w == why]
+
+  def unprompted(self) -> list[tuple[float, int, str]]:
+    """The dash's changes no press made."""
+    return [d for d in self.dash if d[2] == 'read']
+
+
+def on_disk() -> tuple:
+  p = Params()
+  return p.get("LongitudinalPersonality"), p.get_bool("CloseFollowOneBar")
+
+
+# Route 157 (push14's first drive, 2026-10-27, the servo to home): the owner's 51 distance-button presses as carState
+# logged them, (down, up) in s from the route's start - 47 short, and 4 holds (experimental mode) of 0.96-1.58 s
+R157_PRESSES = (
+  (63.49, 63.63), (65.31, 65.45), (66.26, 66.34), (66.77, 66.89), (109.34, 109.46), (127.54, 127.64), (128.03, 128.18),
+  (128.88, 129.04), (134.60, 134.74), (136.52, 136.64), (139.66, 139.80), (145.01, 145.14), (148.67, 148.79),
+  (148.92, 149.00), (149.12, 149.18), (154.22, 154.38), (155.32, 155.48), (156.41, 156.53), (159.94, 160.09),
+  (161.06, 161.20), (164.56, 164.73), (165.62, 165.76), (166.12, 166.26), (166.96, 167.13), (169.94, 170.10),
+  (178.66, 179.72), (181.82, 182.78), (184.34, 184.48), (185.06, 185.18), (227.07, 227.25), (227.81, 227.96),
+  (262.65, 262.77), (263.84, 264.02), (270.98, 271.13), (274.55, 274.67), (274.73, 274.85), (376.37, 376.55),
+  (397.90, 398.08), (401.36, 402.40), (403.94, 405.52), (412.58, 412.73), (521.27, 521.40), (523.69, 523.87),
+  (526.51, 526.61), (530.95, 531.15), (532.99, 533.18), (537.93, 538.07), (539.09, 539.27), (545.80, 545.92),
+  (548.17, 548.31), (680.66, 680.72))
+# when /data held selfdrived's writes on that drive, as its own reads show (the first press's write took 50 s; the
+# backlog drained at 366.95-369.36 and up to 420.6, and again at 528-572): nothing lands inside, everything held drains
+# at the end, one write per read; outside, a write lands before the next read
+R157_STALLS = ((63.0, 420.6), (521.0, 572.2))
+# the comma 4 settings page's personality picks, as they landed (the touch log has the owner tapping it at 420.8-442.8)
+R157_PICKS = ((427.14, STANDARD), (427.77, RELAXED), (429.27, AGGRESSIVE), (430.55, STANDARD), (439.55, AGGRESSIVE))
+R157_START, R157_END = 4.08, 798.43   # (aggressive, 2 bars, the switch on; experimental mode on)
+
+
+class TestASlowDisk(BarsTestCase):
+  """push15: route 157's /data held selfdrived's writes for up to minutes, and push14's guard (a press's value for 20
+  reads, or until a read showed that value) let the stale disk back onto the dash - 48 changes with neither a press nor
+  a setting. Now a read keeps the press's value exactly while its write is in flight in selfdrived's ParamsWriter."""
+
+  def test_1_bar_holds_while_its_write_waits(self):
+    """t = 109.46-114.07: 2 -> 1 bar, its CloseFollowOneBar write 4.6 s on the way. push14: 2 bars after 21 reads
+    (111.70) and 1 bar again when the write landed (114.07), no press either time."""
+    sd, _ = start(AGGRESSIVE, slow=True)
+    d = Drive(sd)
+    self.assertTrue(d.press())
+    d.run_to(4.6)
+    self.assertEqual(on_disk(), (AGGRESSIVE, False), "still held")
+    self.assertEqual(sd.disk.land_all(), 1)
+    d.run_to(8.0)
+    self.assertEqual(d.dash[1:], [(0., 1, 'press')])
+    self.assertEqual(on_disk(), (AGGRESSIVE, True))
+
+  def test_three_presses_back_to_the_stale_value(self):
+    """t = 127.64-129.60: 1 -> 4 -> 3 -> 2 bars in 1.4 s, every write held. The third press asked for aggressive, which
+    the disk still showed from before the first: push14 took that read as its write landed, dropped the guard, and
+    showed 4 bars when the first held write (relaxed) landed - 0.56 s after the driver chose 2."""
+    sd, _ = start(AGGRESSIVE, one_bar=True, slow=True)
+    d = Drive(sd)
     self.assertEqual(sd.bars(), 1)
-    self.assertFalse(Params().get_bool("CloseFollowOneBar"), "not landed yet")
-    for _ in range(db.PENDING_READS):
+    for t in (0.0, 0.55, 1.40):
+      d.run_to(t)
+      d.press()
+    d.run_to(1.96)
+    self.assertTrue(sd.disk.land_one(), "relaxed, the first press's write")
+    d.run_to(3.5)
+    while sd.disk.land_one():
+      d.run_to(d.t + READ_DT)
+    d.run_to(d.t + 1.)
+    self.assertEqual(d.bars('press'), [4, 3, 2])
+    self.assertEqual(d.unprompted(), [])
+    self.assertEqual(on_disk(), (AGGRESSIVE, False))
+
+  def test_the_backlog_drains_without_a_flicker(self):
+    """t = 366.95-369.36: the writes held since 134-275 s landed in 2.4 s and push14 put each one on the dash in turn,
+    3 2 1 3 1 3 1 3 1 4 3 2 1, no press. Here 8 presses in a stall, then the drain read by read: nothing moves, and
+    the disk gets one write per key and the one that was on its way - not one per press."""
+    sd, _ = start(RELAXED, slow=True)
+    d = Drive(sd)
+    for i in range(8):
+      d.run_to(i * 1.0)
+      d.press()
+    self.assertEqual(d.bars('press'), [3, 2, 1, 4, 3, 2, 1, 4])
+    d.run_to(12.0)
+    landed = 0
+    while sd.disk.land_one():
+      landed += 1
+      d.run_to(d.t + READ_DT)
+    d.run_to(d.t + 1.)
+    self.assertEqual(d.unprompted(), [])
+    self.assertLessEqual(landed, 3)
+    self.assertEqual((sd.bars(), on_disk()), (4, (RELAXED, False)))
+
+  def test_a_write_that_lands_during_a_read(self):
+    """The read asks the writer before it reads the disk: a write landing between the two is read back. Asked after,
+    the stale value read just before the landing would reach the dash for a read (0.1 s)."""
+    sd, params = start(AGGRESSIVE, slow=True)
+    sd.press(land=False)                 # 2 -> 1 bar: CloseFollowOneBar True on its way
+    disk = cast(SlowDisk, sd.disk)
+    get = params.get
+
+    def get_then_land(key, *a, **k):
+      v = get(key, *a, **k)
+      if key == "CloseFollowOneBar" and disk.writing():
+        disk.land_all()                  # the write lands right after this read of the stale value
+      return v
+    with mock.patch.object(params, "get", side_effect=get_then_land):
+      for _ in range(3):
+        sd.read_personality()
+        self.assertEqual(sd.bars(), 1)
+      disk.land_all()
       sd.read_personality()
-      self.assertEqual(sd.bars(), 1)
-    params.land()
-    sd.read_personality()
-    self.assertEqual(sd.bars(), 1)
-    self.assertEqual(sd.distance_bars._pending, {})
-    sd.press()                      # 1 -> 4: both params
+    self.assertEqual((sd.bars(), on_disk()), (1, (AGGRESSIVE, True)))
+
+  def test_a_setting_applies_once_none_of_the_presss_writes_is_in_flight(self):
+    sd, _ = start(STANDARD, slow=True)
+    d = Drive(sd)
+    d.press()                                                      # 3 -> 2 bars: aggressive on its way
+    Params().put("LongitudinalPersonality", RELAXED, block=True)   # a comma 4 page pick landing before it...
+    d.run_to(1.0)
+    self.assertEqual(sd.bars(), 2, "...while the press's own write is in flight")
+    sd.disk.land_all()                                             # ...then the press's: the last to land wins
+    d.run_to(2.0)
+    self.assertEqual((sd.bars(), on_disk()), (2, (AGGRESSIVE, False)))
+    Params().put("LongitudinalPersonality", RELAXED, block=True)   # with nothing of the press's in flight: at once
+    d.run_to(2.0 + READ_DT)
+    self.assertEqual([b for _, b, _ in d.unprompted()], [4])
+    # sunnylink at 1 bar (personality_picked, then the personality): 3 bars on the next read, the 1-bar mode left
+    d.run_to(3.0)
     for _ in range(3):
-      sd.read_personality()
-      self.assertEqual((sd.personality, sd.bars()), (RELAXED, 4))
-    params.land()
+      d.press()
+    self.assertEqual(sd.bars(), 1)
+    sd.disk.land_all()
+    d.run_to(4.0)
+    sunnylinkd.saveParams({"LongitudinalPersonality": _b64(STANDARD)})
+    d.run_to(4.0 + READ_DT)
+    self.assertEqual((sd.bars(), on_disk()), (3, (STANDARD, False)))
+    self.assertEqual([b for _, b, _ in d.unprompted()], [4, 3])
+
+  def test_every_other_car_keeps_upstreams_write(self):
+    """Every other car: upstream's press and its non-blocking write on selfdrived's own handle - nothing through the
+    writer - and upstream's read, which puts the disk's value back until that write lands."""
+    sd, params = start(RELAXED, fingerprint=CAR.HONDA_CIVIC, slow=True)
+    disk = cast(SlowDisk, sd.disk)
+    sd.press(land=False)
+    self.assertEqual(sd.personality, STANDARD)
+    self.assertEqual((params.writes, sd.params_writer.writes), (["LongitudinalPersonality"], []))
     sd.read_personality()
-    self.assertEqual(sd.distance_bars._pending, {})
-    # ...a setting nobody pressed for applies on the next read...
-    Params().put("LongitudinalPersonality", STANDARD, block=True)
-    sd.read_personality()
-    self.assertEqual(sd.bars(), 3)
-    # ...and a write that never lands loses to the param after PENDING_READS reads
-    sd.press()
-    for _ in range(db.PENDING_READS):
-      sd.read_personality()
-    self.assertEqual(sd.personality, AGGRESSIVE)
+    self.assertEqual(sd.personality, RELAXED)
+    disk.land_all()
     sd.read_personality()
     self.assertEqual(sd.personality, STANDARD)
+
+  def test_route_157(self):
+    """The owner's 51 presses from the drive home, its two stalls and his five comma 4 page picks: every short press
+    is exactly one step, 4 -> 3 -> 2 -> 1 -> 4; the holds toggle experimental mode and step nothing; and the dash
+    changes otherwise only on the page's picks, on the read after each landed. On push14 the same drive gives 2 bars
+    back after the first 1-bar press, 4 bars at 129.6 s and a burst of old steps at the end of each stall."""
+    sd, params = start(AGGRESSIVE, one_bar=False, slow=True)
+    disk = cast(SlowDisk, sd.disk)
+    d = Drive(sd, R157_START)
+    events = sorted([(up, 'press', up - down) for down, up in R157_PRESSES] + [(t, 'pick', p) for t, p in R157_PICKS] +
+                    [(end, 'drain', 0) for _, end in R157_STALLS])
+    steps, holds = [], []
+    for t, what, x in events:
+      d.run_to(t)
+      if what == 'drain':
+        while disk.land_one():
+          d.run_to(d.t + READ_DT)
+      elif what == 'pick':
+        p = Params()
+        if p.get_bool("CloseFollowOneBar"):   # the page's own callback first (toggles.py), then its write
+          p.put_bool("CloseFollowOneBar", False, block=True)
+        p.put("LongitudinalPersonality", x, block=True)
+      else:
+        before = sd.bars()
+        stepped = d.press(hold=max(1, round(x / 0.01)))
+        (holds if x >= 0.5 else steps).append((t, before, sd.bars(), stepped))
+        if not any(a <= t < b for a, b in R157_STALLS):
+          disk.land_all()
+    d.run_to(R157_END)
+    self.assertEqual(len(steps), 47)
+    self.assertEqual([s for s in steps if not s[3] or ORDER[s[1]] != s[2]], [], "one step per short press")
+    self.assertEqual([h for h in holds if h[3] or h[1] != h[2]], [], "a hold steps nothing")
+    unprompted = d.unprompted()
+    self.assertEqual([b for _, b, _ in unprompted], [{RELAXED: 4, STANDARD: 3, AGGRESSIVE: 2}[p] for _, p in R157_PICKS],
+                     unprompted)
+    for (t, _, _), (tp, _) in zip(unprompted, R157_PICKS, strict=True):
+      self.assertTrue(0 <= t - tp < READ_DT + 0.01, f"{t}: the read after the pick at {tp} landed")
+    self.assertEqual(disk.land_all(), 0)
+    self.assertEqual(on_disk(), (sd.personality, sd.distance_bars.one_bar_set))
 
 
 def _b64(v) -> str:
@@ -364,7 +671,7 @@ class RecordingParams(CountingParams):
     return self.p.get_type(key)
 
 
-class TestASettingLeavesTheOneBarMode(OpenpilotTestCase):
+class TestASettingLeavesTheOneBarMode(BarsTestCase):
   """The push14 review: a personality picked in a setting - sunnylink's app (saveParams) or a backup restore, both
   through sunnylink's save_param_from_base64_encoded_string(), as on the comma 4's page (toggles.py) - leaves the 1-bar
   mode, and only the distance button enters it."""

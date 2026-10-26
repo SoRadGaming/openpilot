@@ -68,6 +68,7 @@ class SelfdriveD(CruiseHelper):
     # FORK(COMM-ISSUE): the 100 Hz loop's blocking Params writes (the offroad alerts it raises mid-drive, the DM lockout
     # flag's remove) go through this writer's thread: each takes <params>/.lock and fsyncs, and a stuck /data journal
     # commit would hold selfdriveState for as long - a delayed excessiveActuation disable among them. docs/fork/COMM-ISSUE.md
+    # FORK(CLOSE-FOLLOW): the Elesys Accord's distance-button writes too (distance_bars.py, push15)
     self.params_writer = ParamsWriter("selfdrived_params")
 
     # Ensure the current branch is cached, otherwise the first cycle lags
@@ -199,8 +200,9 @@ class SelfdriveD(CruiseHelper):
     self.lane_block_alert = LaneBlockAlert()  # FORK(HUD): the comma 4's lane-block tile: no block alerts, a refused nudge chimes
     self.car_stock_alert = CarStockAlert(self.CP)  # FORK(HONDA_ACCORD_9G_AU): KTuner - stock on purpose is not a fault
     # FORK(CLOSE-FOLLOW): the Elesys Accord's four dash bars - the distance button steps 4 -> 3 -> 2 -> 1 -> 4, 1 bar is
-    # aggressive with close follow live (distance_bars.py); every other car upstream's three steps
-    self.distance_bars = DistanceBars(self.CP, self.CP_SP, self.params)
+    # aggressive with close follow live (distance_bars.py); every other car upstream's three steps. A press writes through
+    # params_writer, and the params thread's reads keep the press's value while that write is in flight (push15)
+    self.distance_bars = DistanceBars(self.CP, self.CP_SP, self.params, self.params_writer)
 
     CruiseHelper.__init__(self, self.CP)
     self.button_state_tracker = ButtonStateTracker()
@@ -564,9 +566,10 @@ class SelfdriveD(CruiseHelper):
         if not self.experimental_mode_switched:
           if self.distance_bars.applies:
             # FORK(CLOSE-FOLLOW): the Elesys Accord's four dash bars, 4 -> 3 -> 2 -> 1 -> 4 with the CloseFollow switch
-            # on (4 -> 3 -> 2 -> 4 off); writes LongitudinalPersonality and CloseFollowOneBar (distance_bars.py)
+            # on (4 -> 3 -> 2 -> 4 off); writes LongitudinalPersonality and CloseFollowOneBar through params_writer
+            # (distance_bars.py)
             with self.distance_bars.lock:
-              self.personality = self.distance_bars.press(self.personality, self.params)
+              self.personality = self.distance_bars.press(self.personality)
           else:
             self.personality = (self.personality - 1) % 3
             self.params.put('LongitudinalPersonality', self.personality)
@@ -732,8 +735,8 @@ class SelfdriveD(CruiseHelper):
 
   def read_personality(self):
     if self.distance_bars.applies:
-      # FORK(CLOSE-FOLLOW): the Elesys Accord's four dash bars - under their lock, never undoing a press whose
-      # (non-blocking) writes have not landed yet, and CloseFollow / CloseFollowOneBar with it (distance_bars.py)
+      # FORK(CLOSE-FOLLOW): the Elesys Accord's four dash bars - under their lock, never undoing a press whose writes
+      # are still in flight in params_writer, and CloseFollow / CloseFollowOneBar with it (distance_bars.py)
       with self.distance_bars.lock:
         self.personality = self.distance_bars.read_params(self.params)
     else:

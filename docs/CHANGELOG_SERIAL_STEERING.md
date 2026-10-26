@@ -15,6 +15,136 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-27 — push15: the distance button fix (board `883a3cd1` unchanged)
+
+Your report on the drive home with push14 (route 157, the servo to home): "it does show 4 separate lengths, but it
+keeps spassing out ... its not synced with comma screen, its just bad". **Branch `cfbars2`, one commit on push14
+(`67c9ebae2`); opendbc (`469d12c7`), panda and both boards unchanged. Not driven yet; not pushed.**
+
+### What you will notice
+
+* **One press is one step, and the dash stays there.** 4 -> 3 -> 2 -> 1 -> 4 as in push14, but the bars no longer
+  jump back two seconds after a press or come back later in bursts. Between presses the dash changes only when you pick
+  a personality on the comma 4's settings page or in sunnylink.
+* **The comma 4 and the dash agree.** The "Driving Personality" alert, the settings page while you drive (it follows
+  selfdrived) and the dash all come from the same choice. At 1 bar the page shows aggressive (it has three options) and
+  the alert says Close Follow.
+* **Close follow goes live, and back to shadow, only with the button.** On route 157 it switched 42 times, 27 of them
+  with no press.
+* Not changed: holding the button (experimental mode), the switch off (4 -> 3 -> 2 -> 4), stock ACC mode, the bar
+  values on the wire, and every other car.
+
+### What it was
+
+Not the bars: push14's four values were right on every frame. On that drive `/data` was 10 % free (9.2 of 90 GB,
+mounted with `discard`, fstrim off) and stalled for minutes. hardwared's ParamsWriter logged single writes of 1.3-48.9 s,
+and up to 71.5 s from request to disk. A press wrote the personality and the 1-bar flag with upstream's non-blocking
+`Params.put`, which queues them. selfdrived re-reads both every 0.1 s and takes what is on disk. push14 held a press's
+value against those reads for only 20 reads (2 s), or until a read showed that value. So:
+
+* **2 s after a press, the stale disk came back.** At 109.46 s you went 2 -> 1 bar; at 111.70 it was back to 2 (21
+  reads), and at 114.07 it was 1 bar again, when the write landed 4.6 s late.
+* **Three presses back to a value the disk still held dropped the guard at once.** 127.64-129.04 went 1 -> 4 -> 3 -> 2,
+  then at 129.60 it showed 4 bars, 0.56 s after you chose 2.
+* **When the queue drained, every old step came back in turn.** 366.95-369.36: 12 changes in 2.4 s, from writes asked
+  for 182-218 s earlier.
+
+In all, 100 `HUD_DISTANCE` changes went out. 47 were the one step after each of your 47 short presses, 5 came from
+your taps on the comma 4's page (427-440 s), and 48 had neither. 37 % of the frames after your first press (269 s)
+showed something other than what your last press chose. Nothing else wrote the bars: the radar's own ACC_HUD never
+reached the dash, and every press made exactly one step. Your experimental-mode holds waited in the same queue: the
+alert showed at 178.66 and 181.82 s, but the mode changed only at 368.95 s.
+
+### How it works
+
+`distance_bars.py` and `params_writer.py` (`FORK(CLOSE-FOLLOW)`).
+
+* **A press now writes through selfdrived's ParamsWriter** (push12's, which has its own thread). It makes one write
+  per key with the newest value, not one per press, and logs a slow write under `selfdrived_params`.
+* **The 0.1 s read keeps the press's own value for exactly as long as that write is in flight**
+  (`ParamsWriter.in_flight()`). The read asks the writer before it reads the disk, so a write that lands in between is
+  read back. There is no count and no guessing.
+* **A setting applies on the next read** (the comma 4's page, sunnylink, a backup restore), once none of the press's
+  own writes of that key is in flight.
+* **Every other car** keeps upstream's write and read.
+
+Left as they are:
+
+* **A pick that lands while a press's write of the same key is still on its way** is overwritten when that write
+  lands. The last write to land wins, on disk and on the dash, as everywhere in openpilot. With a healthy `/data` that
+  window is milliseconds. In a stall like route 157's, a page tap made just after a press can be lost; the page then
+  shows your tap while the dash shows the press.
+* **The experimental-mode hold** still writes with upstream's non-blocking put. In a stall its alert shows, but the mode
+  changes only when `/data` catches up.
+* **The stall itself:** `/data` at 10 % free (the deleter removed one segment of route 131 every minute of that drive).
+  With this fix neither the bars nor close follow depend on it, and since push12 neither does the communication alert.
+
+### The proof
+
+* **Tests.** `test_distance_bars.py` has 30. push14's `test_a_read_before_the_write_lands`, which pinned the 2 s guard,
+  is replaced by `TestASlowDisk` (7). Its `SlowDisk` holds both of selfdrived's write paths (its Params handle's
+  non-blocking queue, and the real ParamsWriter's thread) while reads go on. The cases:
+  * 1 bar holding while its write waits;
+  * three presses back to the stale value;
+  * the backlog draining read by read without a flicker (at most 3 writes for 8 presses);
+  * a write landing during a read;
+  * a setting applying once nothing of the press's is in flight (a page pick, and sunnylink at 1 bar);
+  * every other car keeping upstream's write and read;
+  * **route 157 itself**: your 51 presses as carState logged them, its two stalls and your five page picks.
+
+  Every press goes through a real ParamsWriter. `test_params_writer.py` has 17 (2 new): `in_flight()` from the request
+  to the end of the write, through a newer request, a stall and a failed write.
+* **Against push14.** The same tests run on `67c9ebae2`'s `distance_bars.py` and `selfdrived.py` (loaded from git, with
+  the writer argument ignored). 4 of the 7 slow-disk cases fail, as on the car:
+  * 1 bar shows 2 bars at 2.25 s, and 1 bar again at 4.6 s;
+  * the three presses show 4 bars when relaxed lands;
+  * the drain flickers;
+  * route 157 shows 47 changes with no press, against the fix's 5 (the page picks).
+
+  The 3 that pass on both pin a setting, the read order and every other car. A mutant that reads the disk before it
+  asks the writer fails the landing-during-a-read test.
+* **Route 157 through selfdrived's code, frame by frame.** Every logged carState goes into `CruiseHelper` and
+  `distance_button()`, with a read every 0.107 s. `/data` is held to the fit's landing times for selfdrived's own
+  writes, and the page picks land as fitted.
+  * The fix: 47 steps, each on its press, plus the 5 picks, and nothing else.
+  * `67c9ebae2`: 49 changes with no press, at the drive's own moments (111.6, 114.08 and 129.59 s, and the 367-369 s
+    burst).
+* **Process replay**: openpilot's harness, plannerd + controlsd + card in closed loop over all 14 segments, with the
+  route's own params and `SpeedLimitMode` 0.
+
+  | selfdrived output fed in | `HUD_DISTANCE` changes | after a press | after a page pick | after neither |
+  |---|---|---|---|---|
+  | the route's own (push14) | 100 | 47 | 5 | 48 |
+  | the fixed selfdrived's | **52** | 47 | 5 | **0** |
+
+  Fed the route's own output, the replay sends what the car sent, at the same moments to within 0.1 s. With the fix,
+  the only values held under 0.3 s fall between your presses that came 0.1-0.2 s apart (148.79 / 149.00 / 149.18 and
+  274.67 / 274.85). Close follow (`customReserved10.oneBar`) changes 26 times, each within 0.06 s of a press or a pick,
+  against 42 on the car.
+
+### Gates
+
+On `~/sp-long`, branch `cfbars2`:
+
+* `scons -j6`: done.
+* The full suite (`tools/test_runner.py -j 6`): **3356 passed**, 45 skipped, 1 xfailed. That is push14's 3348, plus the
+  7 slow-disk tests and 2 writer tests, less the 1 replaced test.
+* ruff: clean.
+* ty: 4 diagnostics, the same files as push12's 4.
+* codespell: no new hits in the 7 changed files.
+* No CRLF, no mode change.
+* `compile_settings_ui.py --check`: matches (no settings change).
+* Params: 325 keys, no duplicates (no new key).
+
+### What to check on the first drive
+
+* Press through 4 -> 3 -> 2 -> 1 a few times, waiting between presses. The dash should hold each step, and the comma
+  4's alert should match it every time.
+* In the qlogs, a `params writer slow write` line with writer `selfdrived_params` and key `LongitudinalPersonality` or
+  `CloseFollowOneBar` means `/data` is still stalling. The dash should hold anyway, but free some space on the device.
+* Picking a personality on the comma 4's page should change the dash within a second, unless you pressed the button
+  just before it during a stall (above).
+
 ## 2026-10-26 — push14: four dash bars - 4, 3, 2, and 1 bar for close follow (board `883a3cd1` unchanged)
 
 Your request: "OP actually has 3 modes but my car has 4 supported on the dash so we could map 4 3 2 to driving modes

@@ -30,6 +30,9 @@ so what lands on disk is what upstream writes, a little later; a stall now holds
   writer slow write", with the key, how long the write took and how long since it was asked for, and the disk's
   /proc/diskstats delta over the write. The loops no longer wait in a /data stall, so this thread is where one shows.
   At most one line per min_log_interval s; the slow writes in between are counted into the next line.
+* in_flight(key) (push15): asked for and not written yet - pending, or being written now. It turns False only once
+  the write has finished (or failed), so a read made after in_flight() said False sees what was written. selfdrived's
+  distance-button press keeps its own value while its write is in flight (FORK(CLOSE-FOLLOW), distance_bars.py).
 """
 import threading
 import time
@@ -66,6 +69,7 @@ class ParamsWriter:
     self._pending: OrderedDict[str, tuple[str, Callable[[], None]]] = OrderedDict()
     self._queued_at: dict[str, float] = {}  # when each pending key was first asked for
     self._last: dict[str, tuple] = {}
+    self._writing: str | None = None  # the key whose write is on the thread now
     self._busy = False
     self._stop = False
     self.written = 0  # writes applied, for tests and the logs
@@ -101,6 +105,11 @@ class ParamsWriter:
     """alertmanager.set_offroad_alert(alert, show_alert, extra_text), on the writer's thread."""
     self._params.check_key(alert)
     self._submit(alert, ("alert", show_alert, extra_text), lambda: set_offroad_alert(alert, show_alert, extra_text), False)
+
+  def in_flight(self, key: str) -> bool:
+    """key asked for and its write not finished yet: pending, or being written now."""
+    with self._cv:
+      return key in self._pending or self._writing == key
 
   def flush(self, timeout: float | None = None) -> bool:
     """Wait until everything asked for so far is written. False if it was not within timeout."""
@@ -139,13 +148,19 @@ class ParamsWriter:
         key, (kind, op) = self._pending.popitem(last=False)
         queued_at = self._queued_at.pop(key)
         self._busy = True
+        self._writing = key  # (with the pop: a key is pending or being written, never neither while in flight)
       t = time.monotonic()
       disk = read_diskstats(self._devices)
+      ok = False
       try:
         op()
-        self.written += 1
+        ok = True
       except Exception:
         cloudlog.exception(f"{self.name}: writing {key} failed")
+      with self._cv:
+        self._writing = None
+        if ok:
+          self.written += 1
       op_s = time.monotonic() - t
       if op_s > self.slow_write_s:
         self._log_slow(key, kind, op_s, queued_at, disk)
