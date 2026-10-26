@@ -38,6 +38,11 @@ name: nsw speed zones
 #      The current resource URLs come from the Open Data Hub's CKAN package_show,
 #      looked up by resource id. If that lookup fails, the known direct URLs are used.
 #      The downloads are anonymous; nothing about any car is sent.
+#   4b. (push13, cameras) Fetches NSW's fixed speed / red-light / school-zone cameras from
+#      OpenStreetMap (one Overpass API query, ~0.6 MB: cameras.py fetch). They are a
+#      display-only HUD alert on the car. This step can never fail the run: without the
+#      file the builder carries the previous release's cameras over (re-snapped onto the
+#      new lines), and with an implausible answer it does the same.
 #   5. build_index.py. It exits 2 if a gate fails (value sets, sizes, feature count,
 #      school calendar covers today + 30 days, self-test, and the REVIEW gates below).
 #      A failed gate makes a red run, the gate failures go into the run summary, and
@@ -97,6 +102,8 @@ name: nsw speed zones
 # LICENSE: TfNSW Open Data Hub data, CC BY 4.0. The release notes, the manifest and
 # ATTRIBUTION.txt carry the attribution. No TfNSW logos. The Hub's terms want its
 # users registered; the owner is the registered user (see the doc).
+# The camera locations are (c) OpenStreetMap contributors, ODbL 1.0: the same three
+# places credit them whenever the index carries the camera layer.
 #
 # Tags are never release/* (sunnypilot-build-prebuilt.yaml triggers on that). They
 # point at this repo's master, never into the `sunnypilot` branch the device fetches.
@@ -261,7 +268,7 @@ jobs:
 
           pkg = os.environ['NSW_PKG'][len('sp/'):]
           base = pkg.replace('/', '.')
-          PURE = {'build_index', 'index', 'school_days', 'matcher', 'tests.synth'}
+          PURE = {'build_index', 'index', 'school_days', 'matcher', 'cameras', 'tests.synth'}
           own = {f[:-3] for f in os.listdir(pkg) if f.endswith('.py') and f != '__init__.py'}
 
 
@@ -476,6 +483,23 @@ jobs:
             json.dump(doc, f, indent=1)
           PY
 
+      - name: Fetch the OpenStreetMap speed cameras (never fails the run)
+        id: cams
+        timeout-minutes: 20
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mkdir -p src
+          if [ ! -f "$NSW_PKG/cameras.py" ]; then
+            echo "::notice::this builder has no cameras.py: the index gets no camera layer"
+            exit 0
+          fi
+          # one POST to the public Overpass API (NSW's speed_camera nodes and enforcement relations); it retries
+          if ! python "$NSW_PKG/cameras.py" fetch --out src/osm_cameras.json; then
+            rm -f src/osm_cameras.json
+            echo "::warning::the Overpass fetch failed: the previous release's cameras are carried over"
+          fi
+
       - name: Build the index
         id: build
         timeout-minutes: 45
@@ -504,6 +528,10 @@ jobs:
           if [ "$FORCE" = true ]; then
             echo "::warning::force: REVIEW gate findings are allowed through; read them in the build report and the summary"
             args+=(--allow-review)
+          fi
+          # push13: the OSM camera layer (display only). Without a fresh file the builder carries the previous one over.
+          if [ -f "$NSW_PKG/cameras.py" ] && [ -s src/osm_cameras.json ]; then
+            args+=(--cameras src/osm_cameras.json)
           fi
           rc=0
           python "$NSW_PKG/build_index.py" "${args[@]}" 2>&1 | tee build.log || rc=$?
@@ -572,10 +600,12 @@ jobs:
           prev_tag, latest = E['PREV_TAG'], E['LATEST_TAG']
 
           # ---- did the CONTENT change? Leave out what changes with every build.
-          VOLATILE = {'meta_json': ('data_version', 'built_utc'), 'calendar_json': ('generated_utc',)}
+          VOLATILE = {'meta_json': ('data_version', 'built_utc'), 'calendar_json': ('generated_utc',),
+                      'cameras_json': ('osm_base', 'origin')}
           AREAS = (('b_', 'speed-zone lines'), ('o_', 'School / School Bus / Wet Weather lines'),
                    ('s_', 'school zones (times, polygons, names)'), ('opcal_', "TfNSW's OP_CAL term dates"),
-                   ('calendar_json', 'school-day calendar'), ('meta_json', 'index metadata'), ('attribution', 'attribution'))
+                   ('calendar_json', 'school-day calendar'), ('meta_json', 'index metadata'), ('attribution', 'attribution'),
+                   ('c_', 'speed cameras (OpenStreetMap)'), ('cameras_json', 'speed cameras (OpenStreetMap)'))
 
 
           def area(k):
@@ -665,6 +695,9 @@ jobs:
               notes_changes.append(f'school-day calendar now covers {cov(new)}')
             if old.get('format_version') != new.get('format_version'):
               notes_changes.append(f"index format {old.get('format_version')} -> {new.get('format_version')}")
+            co, cn = (old.get('cameras') or {}).get('rows'), (new.get('cameras') or {}).get('rows')
+            if co != cn:
+              notes_changes.append(f'speed cameras {num(co)} -> {num(cn)}')
             for k in ('speed_zones', 'school_zones'):
               so = ((old.get('sources') or {}).get(k) or {}).get('sha256')
               sn = ((new.get('sources') or {}).get(k) or {}).get('sha256')
@@ -712,6 +745,9 @@ jobs:
             f"| line parts | {num(counts.get('base_parts'))} base, {num(counts.get('overlay_parts'))} overlay (School, School Bus, Wet Weather) |",
             f"| school zones | {num(counts.get('schools'))} |",
             f'| school-day calendar | {cov(new)} |',
+            (f"| speed cameras | {num((new.get('cameras') or {}).get('rows'))} from OpenStreetMap, data of "
+             + f"{(new.get('cameras') or {}).get('osm_base')} ({(new.get('cameras') or {}).get('origin')}); a display-only HUD alert |"
+             if new.get('cameras') else '| speed cameras | none in this index |'),
             f"| gates | {'all passed' if gates.get('passed') else 'FAILED'}" + (f', self-test {st * 100:.1f} % right' if isinstance(st, (int, float)) else '') + ' |',
             src_row('speed_zones', 'Speed Zones source'),
             src_row('school_zones', 'School Zones source'),
@@ -733,6 +769,14 @@ jobs:
             f"Source: [Transport for NSW Open Data Hub, Speed Zones]({E['DATASET_PAGE']}) (Speed Zones and School Zones resources). "
             + 'License: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).',
             '',
+          ]
+          if new.get('cameras'):
+            body += [
+              'Speed camera locations: (c) [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), '
+              + '[ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/). They can be out of date.',
+              '',
+            ]
+          body += [
             'Speed limits in this file can be out of date or wrong. The signs on the road always apply.',
             '',
             '```text',
@@ -786,6 +830,7 @@ jobs:
           O_TESTS: ${{ steps.tests.outcome }}
           O_PREV: ${{ steps.prev.outcome }}
           O_SRC: ${{ steps.src.outcome }}
+          O_CAMS: ${{ steps.cams.outcome }}
           O_BUILD: ${{ steps.build.outcome }}
           O_CMP: ${{ steps.cmp.outcome }}
           BUILDER_COMMIT: ${{ steps.pkg.outputs.commit }}
@@ -814,7 +859,7 @@ jobs:
             return ' '.join(str(s).split()).replace('|', '\\|')
 
 
-          O = {k: E.get('O_' + k, '') or 'not run' for k in ('PKG', 'TESTS', 'PREV', 'SRC', 'BUILD', 'CMP')}
+          O = {k: E.get('O_' + k, '') or 'not run' for k in ('PKG', 'TESTS', 'PREV', 'SRC', 'CAMS', 'BUILD', 'CMP')}
           m = load('out/manifest.json') or {}
           rep = load('out/build_report.json') or {}
           srcs = (load('src/sources.json') or {}).get('sources', {})
@@ -831,6 +876,8 @@ jobs:
           s = '; '.join(f"`{p['file']}` {p['bytes'] / 1e6:.1f} MB (TfNSW {str(p.get('last_modified') or '?')[:16].replace('T', ' ')}, {p['resolved_by']})"
                         for p in srcs.values() if 'bytes' in p)
           print(f"| TfNSW download | {O['SRC']}" + (f': {s}' if s else '') + ' |')
+          cm = (m.get('cameras') or {}) if m else {}
+          print(f"| OSM cameras | {O['CAMS']}" + (f": {cm.get('rows')} in the index, {cm.get('origin')}, OSM data of {cm.get('osm_base')}" if cm else ': none in the index') + ' |')
           if m:
             print(f"| build | {O['BUILD']}: {m['bytes'] / 1e6:.2f} MB, sha256 `{m['sha256'][:16]}...`, data version {m['data_version']}, "
                   + f"{m.get('feature_count', 0):,} features, {(m.get('counts') or {}).get('schools', '?')} school zones |")
