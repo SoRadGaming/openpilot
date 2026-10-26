@@ -38,6 +38,14 @@ settings page (its toggles.py, every tap a change) and - personality_picked() - 
 both through sunnylink's save_param_from_base64_encoded_string(); the personality in effect picked again changes
 nothing. No backup carries CloseFollowOneBar (not BACKUP) and sunnylink cannot write it (BLOCKED_PARAMS), so a restore
 or the app never turns close follow live: the button does.
+And selfdrived holds to it (push15's review): the read that sees a personality no press wrote - not the one the last
+read or press left, with no press's write of it in flight - leaves the 1-bar mode itself, CloseFollowOneBar False
+through the writer. The settings clear the flag only when the DISK has it set, and while a press's write of it waits
+(a /data stall) the disk still says False: route 157's conditions, a press 2 -> 1 bar then the comma 4's page tapped
+standard, relaxed, aggressive, gave 1 bar and close follow live while the page showed aggressive, and the True landing
+behind a sunnylink pick left (standard, True). The writer's newer False either replaces that True in its queue or lands
+after it. It also covers a writer with no clear of its own (the comma 3X's page). A press's own write landing is never
+such a change (press() records what it chose).
 
 GATED: close_follow_applies() - HONDA_ELESYS with openpilot longitudinal, stock ACC mode off. Every other car, and this
 car in stock ACC mode (the radar's own ACC_HUD reaches the dash; openpilot sends none, and the radar hears the
@@ -57,8 +65,11 @@ a slow write logged), and a read takes the press's own value for exactly as long
 No count and no guess: the dash changes on a press, and otherwise only when a setting (the comma 4's page, sunnylink, a
 restore) lands with none of the press's own writes of that key in flight - then it applies on the next read. A setting
 that lands while a press's write of the same key is still in flight is overwritten when that write lands: the last
-write to land wins, on disk and on the dash alike (with a healthy /data that window is a few ms). On this car the
-thread's reads and assignment and a press's step and writes hold LOCK (selfdrived takes it around both).
+write to land wins, on disk and on the dash alike (with a healthy /data that window is a few ms). A setting is seen as
+a change of the personality between two reads, so picks that come back to the personality they started from inside one
+read (0.1 s) - in a stall, the comma 4's own queued taps landing in a burst - are no change, and a press's 1-bar mode
+still waiting to land is kept. On this car the thread's reads and assignment and a press's step and writes hold LOCK
+(selfdrived takes it around both).
 """
 import threading
 
@@ -144,7 +155,8 @@ class DistanceBars:
     self.writer = writer
     self.switch_on = False
     self.one_bar_set = False
-    self._mine: dict[str, int | bool] = {}   # key -> the value the last press wrote through the writer
+    self._mine: dict[str, int | bool] = {}   # key -> the value the last press (or _leave_one_bar()) wrote through the writer
+    self._last: int | None = None            # the personality as the last read or press left it
     if self.applies:
       self.read_params(params)
 
@@ -156,10 +168,23 @@ class DistanceBars:
     return read()
 
   def read_params(self, params):
-    """Reads only (LOCK held): CloseFollow, CloseFollowOneBar and - returned, for selfdrived's own - the personality."""
+    """LOCK held: CloseFollow, CloseFollowOneBar and - returned, for selfdrived's own - the personality. Reads only,
+    except that a personality no press wrote, seen with the 1-bar mode set, leaves the mode (ONLY THE BUTTON ENTERS IT)."""
     self.switch_on = read_switch(params)
     self.one_bar_set = bool(self._read(ONE_BAR_PARAM, lambda: read_one_bar_param(params)))
-    return self._read(PERSONALITY_PARAM, lambda: params.get(PERSONALITY_PARAM, return_default=True))
+    p = self._read(PERSONALITY_PARAM, lambda: params.get(PERSONALITY_PARAM, return_default=True))
+    # a personality no press wrote: while a press's write of it is in flight _read() returns the press's own, _last
+    if self.one_bar_set and self._last is not None and int(p) != self._last:
+      self._leave_one_bar()
+    self._last = int(p)
+    return p
+
+  def _leave_one_bar(self):
+    """CloseFollowOneBar False through the writer - the newest write of the key, so it replaces a press's True still
+    queued there or lands after one being written - and held by _read() until it lands."""
+    self.writer.put_bool(ONE_BAR_PARAM, False)
+    self._mine[ONE_BAR_PARAM] = False
+    self.one_bar_set = False
 
   def one_bar(self, personality) -> bool:
     """The 1-bar mode in effect: this car, the switch on, CloseFollowOneBar set and the personality aggressive."""
@@ -176,4 +201,5 @@ class DistanceBars:
       self.writer.put_bool(ONE_BAR_PARAM, one)
       self._mine[ONE_BAR_PARAM] = one
       self.one_bar_set = one
+    self._last = p   # the press's own choice: its write landing is no pick
     return p

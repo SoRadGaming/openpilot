@@ -138,9 +138,10 @@ class TogglesLayoutMici(NavScroller):
   def _on_personality(self, value: str):
     # FORK(CLOSE-FOLLOW): a tap here picks one of the three personalities, so it leaves the 1-bar mode (a settings change;
     # sunnylink's app and a backup restore do the same through personality_picked(); distance_bars.py). Written only when
-    # it is set, queued before the toggle's own write of the personality.
+    # it is set, on the toggle's own Params handle: queued there before the toggle's write of the personality, so it lands
+    # first (each handle has its own queue). selfdrived leaves the mode too if the personality lands alone.
     if ui_state.params.get_bool("CloseFollowOneBar"):
-      ui_state.params.put_bool("CloseFollowOneBar", False)
+      self._personality_toggle._params.put_bool("CloseFollowOneBar", False)
 
   def _on_experimental_mode(self, state: bool):
     if state and not ui_state.params.get_bool("ExperimentalModeConfirmed"):

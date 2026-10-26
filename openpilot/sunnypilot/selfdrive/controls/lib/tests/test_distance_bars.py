@@ -23,10 +23,19 @@ back to 2 after 2 s and to 1 again, three presses back to the disk's stale value
 write landing during a read, and the owner's own 51 presses from that drive replayed with its stalls and its five comma
 4 page picks. Every press writes through selfdrived's real ParamsWriter (its own thread); every other car still writes
 on selfdrived's own Params handle, as upstream.
+
+push15's review: a setting that picks a personality reads CloseFollowOneBar from disk to decide whether to clear it,
+and in a stall that is the stale value while a press's write of it waits. The comma 4 page tapped through standard,
+relaxed and aggressive just after 2 -> 1 bar put 1 bar on the dash at aggressive, close follow live, while the page
+showed aggressive; sunnylink left (standard, True) on disk. Now selfdrived itself leaves the 1-bar mode on the read that
+sees a personality no press wrote (TestASlowDisk, TestASettingLeavesTheOneBarMode), never on a press's own write
+landing (TestTheButton), and the page queues its clear on the handle that writes its personality, so it lands first.
 """
+import ast
 import base64
 import threading
 import time
+from pathlib import Path
 from typing import Any, cast
 from unittest import mock
 
@@ -202,6 +211,13 @@ class SlowDisk:
     """Something of the writer's not on disk yet."""
     with self.w._cv:
       return bool(self.w._pending) or getattr(self.w, "_writing", None) is not None
+
+  def on_the_thread(self, key: str):
+    """Until the writer's thread has taken key's write off its queue (and is held writing it)."""
+    deadline = time.monotonic() + 5.
+    while getattr(self.w, "_writing", None) != key:
+      assert time.monotonic() < deadline, f"the writer took {key}"
+      time.sleep(0.001)
 
   def land_one(self) -> bool:
     """One held write reaches the disk: the handle's oldest, else the writer's current one. False if none was held."""
@@ -437,6 +453,16 @@ class TestTheButton(BarsTestCase):
     self.assertTrue(done.is_set())
     self.assertEqual((sd.personality, Params().get("LongitudinalPersonality")), (AGGRESSIVE, AGGRESSIVE))
 
+  def test_a_presss_own_write_landing_is_never_a_pick(self):
+    """push15's review: a read that sees a personality no press wrote leaves the 1-bar mode. A press's own write is
+    not that: 3 -> 2 -> 1 bar with both writes landed before the params thread's next read is 1 bar on that read."""
+    sd, _ = start(STANDARD)
+    self.assertTrue(sd.press())
+    self.assertTrue(sd.press())
+    sd.read_personality()
+    self.assertEqual((sd.bars(), on_disk()), (1, (AGGRESSIVE, True)))
+    self.assertEqual(sd.params_writer.writes, ["LongitudinalPersonality", "CloseFollowOneBar"])
+
 
 READ_DT = 0.107   # selfdrived's params thread on route 157: 21 reads in 2.24 s (t = 109.46 -> 111.70)
 ORDER = {4: 3, 3: 2, 2: 1, 1: 4}   # one press, the dash's bars before -> after
@@ -478,6 +504,16 @@ class Drive:
 def on_disk() -> tuple:
   p = Params()
   return p.get("LongitudinalPersonality"), p.get_bool("CloseFollowOneBar")
+
+
+def page_pick(personality):
+  """A tap on the comma 4 settings page's personality, as it lands: its select callback (toggles.py _on_personality)
+  clears CloseFollowOneBar if the DISK has it set, and then the toggle writes the personality, on one handle, in that
+  order (TestTheComma4Page)."""
+  p = Params()
+  if p.get_bool("CloseFollowOneBar"):
+    p.put_bool("CloseFollowOneBar", False, block=True)
+  p.put("LongitudinalPersonality", int(personality), block=True)
 
 
 # Route 157 (push14's first drive, 2026-10-27, the servo to home): the owner's 51 distance-button presses as carState
@@ -605,6 +641,60 @@ class TestASlowDisk(BarsTestCase):
     self.assertEqual((sd.bars(), on_disk()), (3, (STANDARD, False)))
     self.assertEqual([b for _, b, _ in d.unprompted()], [4, 3])
 
+  def test_page_picks_while_the_1_bar_write_waits(self):
+    """push15's review: 2 -> 1 bar writes only CloseFollowOneBar, and it waits. The comma 4 page then reads the disk's
+    stale False, clears nothing, and is tapped standard, relaxed, aggressive. push15 kept the press's True through the
+    picks - 3, 4 and then 1 bar, close follow live while the page showed aggressive - and (aggressive, True) was on disk
+    once it landed. The read that sees a personality no press wrote leaves the 1-bar mode: 3, 4, 2 bars, and the
+    writer's newer False lands after the True that was already being written."""
+    sd, _ = start(AGGRESSIVE, one_bar=False, slow=True)
+    disk = cast(SlowDisk, sd.disk)
+    d = Drive(sd)
+    self.assertTrue(d.press())
+    disk.on_the_thread("CloseFollowOneBar")
+    self.assertEqual(sd.bars(), 1)
+    for i, p in enumerate((STANDARD, RELAXED, AGGRESSIVE)):
+      d.run_to(1.0 + i)
+      page_pick(p)
+      d.run_to(1.0 + i + READ_DT)
+    self.assertEqual([b for _, b, _ in d.unprompted()], [3, 4, 2])
+    self.assertFalse(sd.distance_bars.one_bar(sd.personality), "close follow not live")
+    self.assertEqual(sd.params_writer.writes, ["CloseFollowOneBar"] * 2, "the press's True, then selfdrived's False")
+    self.assertEqual(on_disk(), (AGGRESSIVE, False), "both still held")
+    self.assertEqual(disk.land_all(), 2)
+    d.run_to(6.0)
+    self.assertEqual([b for _, b, _ in d.unprompted()], [3, 4, 2], "nothing as they land")
+    self.assertEqual(on_disk(), (AGGRESSIVE, False))
+    self.assertTrue(d.press(), "the button still enters it")
+    self.assertEqual(sd.bars(), 1)
+
+  def test_a_sunnylink_pick_while_the_1_bar_write_waits(self):
+    """The same through sunnylink's app: personality_picked() reads the stale False and clears nothing. push15 left
+    (standard, True) on disk, so an aggressive picked there later was 1 bar, close follow live. Here the True waits
+    behind another of selfdrived's writes (DriverTooDistracted), so selfdrived's newer False takes its place in the
+    writer's queue and the True never reaches the disk."""
+    sd, _ = start(AGGRESSIVE, one_bar=False, slow=True)
+    disk = cast(SlowDisk, sd.disk)
+    d = Drive(sd)
+    sd.params_writer.w.put_bool("DriverTooDistracted", True)
+    disk.on_the_thread("DriverTooDistracted")
+    self.assertTrue(d.press())
+    self.assertEqual(sd.bars(), 1)
+    d.run_to(1.0)
+    sunnylinkd.saveParams({"LongitudinalPersonality": _b64(STANDARD)})
+    d.run_to(1.0 + READ_DT)
+    self.assertEqual(sd.bars(), 3)
+    landed = []
+    while disk.land_one():
+      landed.append(on_disk())
+    self.assertEqual(landed, [(STANDARD, False)] * 2, "DriverTooDistracted, then the False; never the True")
+    d.run_to(3.0)
+    sunnylinkd.saveParams({"LongitudinalPersonality": _b64(AGGRESSIVE)})
+    d.run_to(3.0 + READ_DT)
+    self.assertEqual((sd.bars(), sd.distance_bars.one_bar(sd.personality)), (2, False))
+    self.assertEqual([b for _, b, _ in d.unprompted()], [3, 2])
+    self.assertEqual(on_disk(), (AGGRESSIVE, False))
+
   def test_every_other_car_keeps_upstreams_write(self):
     """Every other car: upstream's press and its non-blocking write on selfdrived's own handle - nothing through the
     writer - and upstream's read, which puts the disk's value back until that write lands."""
@@ -636,10 +726,7 @@ class TestASlowDisk(BarsTestCase):
         while disk.land_one():
           d.run_to(d.t + READ_DT)
       elif what == 'pick':
-        p = Params()
-        if p.get_bool("CloseFollowOneBar"):   # the page's own callback first (toggles.py), then its write
-          p.put_bool("CloseFollowOneBar", False, block=True)
-        p.put("LongitudinalPersonality", x, block=True)
+        page_pick(x)
       else:
         before = sd.bars()
         stepped = d.press(hold=max(1, round(x / 0.01)))
@@ -740,6 +827,62 @@ class TestASettingLeavesTheOneBarMode(BarsTestCase):
     self.assertIsNone(Params().get("CloseFollowOneBar"), "never set there, so never written")
     sd.read_personality()
     self.assertEqual(sd.bars(), STANDARD + 1)
+
+  def test_a_pick_that_clears_nothing_still_leaves_the_1_bar_mode(self):
+    """push15's review: whatever writes a personality without clearing CloseFollowOneBar - a setting that read the
+    flag stale, or the comma 3X's settings page, which has no clear - selfdrived leaves the 1-bar mode itself, on the
+    read that sees it, so an aggressive picked afterwards is 2 bars, never close follow live. push15 left the flag."""
+    sd, _ = start(AGGRESSIVE, one_bar=True)
+    self.assertEqual(sd.bars(), 1)
+    Params().put("LongitudinalPersonality", STANDARD, block=True)
+    sd.read_personality()
+    self.assertEqual(sd.bars(), 3)
+    sd.params_writer.flush()
+    self.assertEqual((on_disk(), sd.params_writer.writes), ((STANDARD, False), ["CloseFollowOneBar"]))
+    Params().put("LongitudinalPersonality", AGGRESSIVE, block=True)
+    sd.read_personality()
+    self.assertEqual((sd.bars(), sd.distance_bars.one_bar(sd.personality)), (2, False))
+    self.assertEqual(sd.params_writer.writes, ["CloseFollowOneBar"], "once, and nothing for a pick at 2 bars")
+
+
+MICI = Path(db.__file__).parents[4] / "selfdrive/ui/mici"
+
+
+def _method(path: Path, cls: str, name: str) -> ast.FunctionDef:
+  for node in ast.walk(ast.parse(path.read_text())):
+    if isinstance(node, ast.ClassDef) and node.name == cls:
+      for f in node.body:
+        if isinstance(f, ast.FunctionDef) and f.name == name:
+          return f
+  raise AssertionError(f"{cls}.{name} not in {path}")
+
+
+def _calls(node: ast.AST) -> list[str]:
+  return [ast.unparse(c) for c in ast.walk(node) if isinstance(c, ast.Call)]
+
+
+class TestTheComma4Page(OpenpilotTestCase):
+  """The comma 4's settings page, parsed and never imported (it pulls in raylib; test_mads_fast_wheel_settings.py does
+  the same)."""
+
+  def test_the_pages_clear_lands_before_its_personality(self):
+    """A tap runs the toggle's select callback (toggles.py _on_personality: CloseFollowOneBar cleared when set) and then
+    BigMultiParamToggle's own write of the personality, both non-blocking so the UI never waits on /data. Params queues
+    per handle (Params::putNonBlocking: one FIFO and one thread for each), so the clear goes through the toggle's own
+    handle, queued ahead of the personality. push14 and push15 put it on ui_state.params, another handle and another
+    queue: on a stalled /data the personality could land first."""
+    toggles, button = MICI / "layouts/settings/toggles.py", MICI / "widgets/button.py"
+    init = _calls(_method(toggles, "TogglesLayoutMici", "__init__"))
+    self.assertTrue(any(c.startswith("BigMultiParamToggle('driving personality', 'LongitudinalPersonality'") and
+                        c.endswith("select_callback=self._on_personality)") for c in init), init)
+    writes = [c for c in _calls(_method(toggles, "TogglesLayoutMici", "_on_personality")) if ".put" in c]
+    self.assertEqual(writes, ["self._personality_toggle._params.put_bool('CloseFollowOneBar', False)"])
+    select = _calls(_method(button, "BigMultiToggle", "_handle_mouse_release"))
+    self.assertTrue("self._select_callback(self.value)" in select, select)
+    release = _method(button, "BigMultiParamToggle", "_handle_mouse_release")
+    self.assertEqual([ast.unparse(s) for s in release.body],
+                     ["super()._handle_mouse_release(mouse_pos)", "new_idx = self._options.index(self.value)",
+                      "self._params.put(self._param, new_idx)"], "the callback first, then the personality, one handle")
 
 
 def _interface_params(fingerprint=ELESYS, stock_acc=False):

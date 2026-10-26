@@ -18,8 +18,9 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 ## 2026-10-27 — push15: the distance button fix (board `883a3cd1` unchanged)
 
 Your report on the drive home with push14 (route 157, the servo to home): "it does show 4 separate lengths, but it
-keeps spassing out ... its not synced with comma screen, its just bad". **Branch `cfbars2`, one commit on push14
-(`67c9ebae2`); opendbc (`469d12c7`), panda and both boards unchanged. Not driven yet; not pushed.**
+keeps spassing out ... its not synced with comma screen, its just bad". **Branch `cfbars2`, two commits on push14
+(`67c9ebae2`): the fix (`040f3e244`) and its review (below, "The review: a pick during a stall"); opendbc
+(`469d12c7`), panda and both boards unchanged. Not driven yet; not pushed.**
 
 ### What you will notice
 
@@ -30,7 +31,8 @@ keeps spassing out ... its not synced with comma screen, its just bad". **Branch
   selfdrived) and the dash all come from the same choice. At 1 bar the page shows aggressive (it has three options) and
   the alert says Close Follow.
 * **Close follow goes live, and back to shadow, only with the button.** On route 157 it switched 42 times, 27 of them
-  with no press.
+  with no press. A personality you pick on the page or in sunnylink always leaves 1 bar, also when you pick it right
+  after a press while `/data` is stalling.
 * Not changed: holding the button (experimental mode), the switch off (4 -> 3 -> 2 -> 4), stock ACC mode, the bar
   values on the wire, and every other car.
 
@@ -66,14 +68,20 @@ alert showed at 178.66 and 181.82 s, but the mode changed only at 368.95 s.
   read back. There is no count and no guessing.
 * **A setting applies on the next read** (the comma 4's page, sunnylink, a backup restore), once none of the press's
   own writes of that key is in flight.
+* **A setting always leaves the 1-bar mode** (the review): the read that sees a personality no press wrote clears
+  `CloseFollowOneBar` itself, through the writer (below).
 * **Every other car** keeps upstream's write and read.
 
 Left as they are:
 
-* **A pick that lands while a press's write of the same key is still on its way** is overwritten when that write
+* **A pick that lands while a press's write of the personality is still on its way** is overwritten when that write
   lands. The last write to land wins, on disk and on the dash, as everywhere in openpilot. With a healthy `/data` that
   window is milliseconds. In a stall like route 157's, a page tap made just after a press can be lost; the page then
-  shows your tap while the dash shows the press.
+  shows your tap while the dash shows the press. (If that tap found 1 bar already on disk, it still leaves 1 bar: the
+  dash shows the press's personality without close follow.)
+* **Page taps that come back to where they started inside one read** (0.1 s) are not seen as a pick. In a stall the
+  page's own writes wait too and can land in a burst, so three quick taps from aggressive back to aggressive just after
+  a 2 -> 1 press would leave 1 bar on.
 * **The experimental-mode hold** still writes with upstream's non-blocking put. In a stall its alert shows, but the mode
   changes only when `/data` catches up.
 * **The stall itself:** `/data` at 10 % free (the deleter removed one segment of route 131 every minute of that drive).
@@ -81,7 +89,7 @@ Left as they are:
 
 ### The proof
 
-* **Tests.** `test_distance_bars.py` has 30. push14's `test_a_read_before_the_write_lands`, which pinned the 2 s guard,
+* **Tests.** `test_distance_bars.py` has 30 in `040f3e244` (35 with the review's, below). push14's `test_a_read_before_the_write_lands`, which pinned the 2 s guard,
   is replaced by `TestASlowDisk` (7). Its `SlowDisk` holds both of selfdrived's write paths (its Params handle's
   non-blocking queue, and the real ParamsWriter's thread) while reads go on. The cases:
   * 1 bar holding while its write waits;
@@ -122,6 +130,54 @@ Left as they are:
   274.67 / 274.85). Close follow (`customReserved10.oneBar`) changes 26 times, each within 0.06 s of a press or a pick,
   against 42 on the car.
 
+### The review: a pick during a stall
+
+The review of `040f3e244` found one case it did not cover, low severity and not new in push15 (push14 ends in the same
+place). The comma 4 page and sunnylink clear `CloseFollowOneBar` only when the **disk** has it set. In a stall, right
+after a 2 -> 1 press, the disk still says False while the press's True waits in selfdrived's writer:
+
+* **The page:** tapped standard, relaxed, aggressive, it cleared nothing, and `040f3e244` kept the press's True through
+  the picks. The dash went 3, 4 and then **1 bar, close follow live, while the page showed aggressive**. When the True
+  landed the disk held (aggressive, True).
+* **sunnylink:** a standard pick left (standard, True) on disk, so an aggressive picked there later was 1 bar.
+
+The fix (`distance_bars.py`, `toggles.py`):
+
+* **selfdrived leaves the 1-bar mode itself.** The read that sees a personality no press wrote (not the one the last
+  read or press left) with the mode set writes `CloseFollowOneBar` False through its writer. That is the newest write
+  of the key, so it replaces the press's True still queued there, or lands after a True already being written. A
+  press records what it chose, so its own write landing is never taken for a pick. This also covers a writer with no
+  clear of its own (the comma 3X's settings page).
+* **The page's clear goes on the toggle's own Params handle.** Params queues per handle (one queue and one thread
+  each); the clear was on `ui_state.params` and the personality on the toggle's handle, so in a stall either could land
+  first. Now the clear is queued ahead of the personality on one handle and lands first. Both stay non-blocking, so the
+  UI never waits on `/data`.
+
+Proof:
+
+* **Tests** (`test_distance_bars.py` 35, 5 new; 4 fail on `040f3e244` for the reason above):
+  * the page's three taps during the wait: 3, 4, 2 bars, and (aggressive, False) once both writes land (`040f3e244`:
+    3, 4, 1);
+  * sunnylink during the wait, with the True still queued behind another write: 3 bars, and the True never reaches the
+    disk (`040f3e244`: (standard, True));
+  * a personality written with no clear at all (healthy disk): 3 bars, the flag cleared once, aggressive afterwards 2
+    bars (`040f3e244`: the flag left set);
+  * the page's clear and its personality on one handle, clear first, both non-blocking (parsed; the page is never
+    imported);
+  * two presses landing before the next read: 1 bar, no clear (passes on both; it guards the press's record).
+* **Mutants:** 7 deliberate breakages of the fix (no record on a press, none on a read, no clear, the clear not held
+  while in flight, a clear without the mode set, the clear on selfdrived's own handle, the page's clear back on
+  `ui_state.params`); the tests catch all 7.
+* **The reviewer's replay of route 157** (real `distance_button()` / `read_personality()`, a real gated ParamsWriter;
+  healthy, hardwared's stall windows, frozen to the end, 6 random): 0 changes with no cause and the disk matching
+  selfdrived in every model, as for `040f3e244`. The reviewer's own scenario now gives 3, 4, 2 bars and (aggressive,
+  False), and sunnylink's (standard, False).
+* **A randomized stress** of the same harness: 100 runs of presses, page picks 0.25-1.2 s after them and random stalls.
+  With the fix no read ever put 1 bar on the dash, every short press was one step and the disk matched selfdrived in
+  all 100. The one change not equal to its pick's bars (1 run) was the case left above: a pick of the personality lost
+  to the press's write, which still left 1 bar (2 bars). A read put 1 bar on the dash in 8 of the 100 runs with
+  `040f3e244`'s `DistanceBars` (this finding) and in 56 with push14's.
+
 ### Gates
 
 On `~/sp-long`, branch `cfbars2`:
@@ -135,6 +191,10 @@ On `~/sp-long`, branch `cfbars2`:
 * No CRLF, no mode change.
 * `compile_settings_ui.py --check`: matches (no settings change).
 * Params: 325 keys, no duplicates (no new key).
+
+With the review (5 files changed on `040f3e244`): `scons -j6` done; the full suite **3361 passed** (the 5 new tests),
+45 skipped, 1 xfailed; ruff clean; ty the same 4 as push12; codespell no new hits; no CRLF, no mode change; the
+settings check matches; 325 keys, no new key.
 
 ### What to check on the first drive
 
