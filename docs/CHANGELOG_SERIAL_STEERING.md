@@ -196,6 +196,50 @@ With the review (5 files changed on `040f3e244`): `scons -j6` done; the full sui
 45 skipped, 1 xfailed; ruff clean; ty the same 4 as push12; codespell no new hits; no CRLF, no mode change; the
 settings check matches; 325 keys, no new key.
 
+### The CI failure on push15: a test that changed a shared alert (tests only)
+
+GitHub's unit tests failed one test on push15 that passed on push14:
+`test_car_stock_alert.TestBusOff.test_mads_paused_while_moving_is_disengaged_and_told_why`, with `(1, [5, 6])` - a
+`warningImmediate`, then a `prompt`. Nothing that runs in the car changes, and push15's own code was not involved: the
+test builds no selfdrived, no `ParamsWriter` and no `DistanceBars`, and push14 fails it the same way.
+
+* **The cause** is upstream's `test_alertmanager.test_duration`. It picks 99 random alerts from `EVENTS` and sets each
+  one's `duration` - on the alert in the table itself, one object that every later test in the same process shares.
+  About 1 run in 30 it leaves controlsMismatch's "TAKE CONTROL IMMEDIATELY" at 1-9 frames instead of 400.
+  `tools/test_runner.py` runs the suite in batches, and a worker takes whichever batch is next. In all 4 local full runs
+  at `-j4` the batch with `test_car_stock_alert` ran right after `test_alertmanager`'s, in the same worker: that batch
+  is slow (`test_car_interfaces`, about 130 s), and the other workers have taken the batches in between by then. One of
+  the runs on push15 left the alert at 75 frames, long enough to pass. So roughly 1 CI run in 30 could fail this way,
+  on push14 as on push15.
+* **Why that test.** With the param read one frame late, upstream's controlsMismatch disengages MADS, and
+  `late_alerts()` puts our "Car Bus Error: Car Is Stock" over it 10 frames later - but only while upstream's alert is
+  still up. At 1-9 frames it has gone by then, so ours never shows and the bus-off announcement's chime plays after the
+  disengagement. Shortened one at a time to 5 frames, no other alert in `EVENTS` breaks any `TestBusOff` test; with all
+  of them shortened at once to 1-9 frames the other two disengagement tests fail too, and at 20 frames or more nothing
+  in the fork's alert, MADS or state-machine tests does.
+* **The numbers** (6 runs at a time beside 6 busy loops). The test alone 0/200, its file 0/200, its file through
+  `tools/test_runner.py -j6` 0/100, both selfdrived test folders through the runner 0/300 - on push14 and on push15
+  alike. `test_alertmanager` then `test_car_stock_alert` in one process, as a CI worker runs them: push14 13/400,
+  push15 19/400, each failure that same `(1, [5, 6])`. A shortened alert alone reproduces it: 1-9 frames fail, 10 and
+  over pass.
+
+The fix, in two test files:
+
+* `test_alertmanager.py` (upstream's, `FORK(UPSTREAM-FIX)`): `test_duration` sets the duration on a copy. The new
+  `test_duration_leaves_events_alone` checks that every alert in `EVENTS` keeps every attribute; without the copy it
+  fails.
+* `test_car_stock_alert.py`: every scenario runs on copies of `EVENTS` and `EVENTS_SP` taken when the file is imported
+  (`pin_events()`), before any test has run. Other upstream tests still leave the shared tables changed
+  (`test_state_machine` replaces canError, `test_mads_state_machine` replaces lkasEnable). The new
+  `TestTablesArePinned` reproduces the CI failure on the table that worker had, and passes through the pin. It fails if
+  the pin is removed, does nothing, or shares the alerts instead of copying them.
+
+After the fix: 0/400 with both files fixed, 0/400 with push15's unfixed `test_alertmanager` beside the fixed
+`test_car_stock_alert`, and 0/200, 0/200, 0/100 and 0/50 for the test, its file, the runner and the folders.
+Gates: the full suite (`tools/test_runner.py`) **3363 passed** (push15's 3361 and the 2 new tests), 45 skipped,
+1 xfailed, at `-j4` (CI's runner) and at `-j6`; both selfdrived test folders with the close-follow and distance-bar
+tests 272 passed; ruff clean; codespell no new hits; no CRLF, no mode change.
+
 ### What to check on the first drive
 
 * Press through 4 -> 3 -> 2 -> 1 a few times, waiting between presses. The dash should hold each step, and the comma

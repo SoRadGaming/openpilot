@@ -1,3 +1,4 @@
+import copy
 import random
 
 from openpilot.common.test import OpenpilotTestCase
@@ -19,6 +20,11 @@ class TestAlertManager(OpenpilotTestCase):
         event = random.choice([e for e in EVENTS.values() if len(e)])
         alert = random.choice(list(event.values()))
 
+      # FORK(UPSTREAM-FIX): a copy. EVENTS' alerts are shared module objects - create_alerts() hands the very object to
+      # every AlertManager - so setting the picked one's duration shortened that alert for every later test in this
+      # process. In 1 run in 30 it left controlsMismatch's "TAKE CONTROL IMMEDIATELY" at 1-9 frames, and a CI worker
+      # that ran this before test_car_stock_alert failed its bus-off disengagement (push15)
+      alert = copy.copy(alert)
       alert.duration = duration
 
       # check two cases:
@@ -59,3 +65,13 @@ class TestAlertManager(OpenpilotTestCase):
           shown = AM.current_alert != EmptyAlert
           should_show = frame <= show_duration
           assert shown == should_show, f"{frame=} {duration=}"
+
+  def test_duration_leaves_events_alone(self):
+    """FORK(UPSTREAM-FIX): test_duration works on copies. Every alert in EVENTS - shared by every later test in this
+    process, and by selfdrived's AlertManager - keeps every attribute."""
+    def snapshot():
+      return {(e, et): (id(a), dict(vars(a))) for e, ets in EVENTS.items() for et, a in ets.items() if isinstance(a, Alert)}
+    before = snapshot()
+    for _ in range(3):
+      self.test_duration()
+    assert snapshot() == before

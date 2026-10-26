@@ -19,7 +19,8 @@ What it must do:
     the mismatch counter, anything engaged; and nothing at all on any other car;
   * FCW / stock AEB, driver monitoring's stage 2 and a newer equal-priority alert still take the screen.
 Each frame is selfdrived.step() in miniature: the pandaStates mismatch check, this helper, selfdrived's state machine,
-MADS (the real class), then create_alerts -> adjust_alerts -> AlertManager.
+MADS (the real class), then create_alerts -> adjust_alerts -> AlertManager - on copies of EVENTS and EVENTS_SP as
+events.py defines them (pin_events), whatever an earlier test in the process left in the shared tables.
 """
 import copy
 import re
@@ -71,6 +72,30 @@ TEN_S = int(10. / DT_CTRL)
 DIAG_TEXT = (EVENTS_SP[DIAG][ET.PERMANENT].alert_text_1, EVENTS_SP[DIAG][ET.PERMANENT].alert_text_2)
 BUS_OFF_TEXT = (EVENTS_SP[BUS_OFF][ET.PERMANENT].alert_text_1, EVENTS_SP[BUS_OFF][ET.PERMANENT].alert_text_2)
 DISENGAGE_TEXT = ("TAKE CONTROL IMMEDIATELY", EVENTS_SP[DISENGAGE][ET.IMMEDIATE_DISABLE].alert_text_2)
+
+
+def copy_table(table: dict) -> dict:
+  return {e: {et: copy.copy(a) if isinstance(a, Alert) else a for et, a in ets.items()} for e, ets in table.items()}
+
+
+# EVENTS and EVENTS_SP as events.py defines them, copied when this module is imported: before any test has run, under
+# every runner (unittest and tools/test_runner.py import every test module first; the runner's workers fork after
+# that). The tables and their alerts are shared module objects, and other tests write into them and leave them so:
+# upstream's mads/tests/test_mads_state_machine.py replaces EVENTS_SP[lkasEnable], selfdrived/tests/test_state_machine.py
+# EVENTS[canError], and until FORK(UPSTREAM-FIX) test_alertmanager.test_duration shortened 99 random alerts in place.
+# A CI worker runs whichever batches its pool hands it, in whatever order: push15's CI got controlsMismatch's
+# "TAKE CONTROL IMMEDIATELY" at 1-9 frames (TestTablesArePinned).
+PRISTINE = ((EVENTS, copy_table(EVENTS)), (EVENTS_SP, copy_table(EVENTS_SP)))
+
+
+def pin_events(test, tables=(EVENTS, EVENTS_SP)) -> None:
+  """tables, for the rest of the test, exactly as this module found them - fresh copies of every alert, so nothing a
+  test does to one leaks either way. Put back as they were (whatever that was) on cleanup."""
+  for table, pristine in PRISTINE:
+    if any(table is t for t in tables):
+      pin = mock.patch.dict(table, copy_table(pristine), clear=True)
+      pin.start()
+      test.addCleanup(pin.stop)
 
 
 def make_cp(fingerprint=CAR.HONDA_ACCORD_9G_AU, passive=False):
@@ -229,6 +254,9 @@ def critical(d: Drive) -> list[str]:
 
 class MadsPin(OpenpilotTestCase):
   def setUp(self):
+    # every scenario reads the real tables, pinned as this module found them (pin_events; PRISTINE says why)
+    pin_events(self)
+    # and lkasEnable's entry by name, as before, which holds even were this module imported after that test ran:
     # upstream's mads/tests/test_mads_state_machine.py overwrites EVENTS_SP[lkasEnable] and never puts it back
     # (see test_vsa_fault_alert.TestMads); pin the real entry for these tests
     pin = mock.patch.dict(EVENTS_SP, {EventNameSP.lkasEnable: {ET.ENABLE: EngagementAlert(AudibleAlert.engage)}})
@@ -491,6 +519,30 @@ class TestBusOff(MadsPin):
     assert sum(ANNOUNCE in f for f in out) == ANNOUNCE_FRAMES and ANNOUNCE in out[0]
     assert all(BUS_OFF in f and DISENGAGE not in f for f in out)
     assert DISENGAGE in h.update(Events(), [panda(NO_OUTPUT)], 0, True), "the disengagement text only while engaged"
+
+
+class TestTablesArePinned(OpenpilotTestCase):
+  def test_an_alert_another_test_shortened_is_upstreams_again(self):
+    """push15's CI: a worker that ran test_alertmanager.test_duration first (before FORK(UPSTREAM-FIX)) had
+    controlsMismatch's disengagement alert at 1-9 frames. With the param read 1 frame late, that alert is gone before
+    the bus-off reason reaches the helper, so late_alerts() has nothing to name and the announcement's prompt follows
+    the warningImmediate. Through MadsPin.setUp, as every scenario runs, the shared alert's change is not seen."""
+    name = "test_mads_paused_while_moving_is_disengaged_and_told_why"
+    shared = EVENTS[EventName.controlsMismatch][ET.IMMEDIATE_DISABLE]
+    with mock.patch.object(shared, "duration", 5):   # the shared alert as that worker had it
+      case = TestBusOff(name)
+      case.setUp()
+      try:
+        getattr(case, name)()
+      finally:
+        case.doCleanups()
+      assert shared.duration == 5, "a copy: the alert the earlier test changed is left as it was"
+    assert PRISTINE[0][1][EventName.controlsMismatch][ET.IMMEDIATE_DISABLE].duration == ImmediateDisableAlert("x").duration
+    # and the same scenario on the table that worker had: the CI's own failure
+    pin_events(self)
+    EVENTS[EventName.controlsMismatch][ET.IMMEDIATE_DISABLE].duration = 5
+    with self.assertRaisesRegex(AssertionError, re.escape(str((1, [AudibleAlert.warningImmediate, AudibleAlert.prompt])))):
+      getattr(TestBusOff(name), name)()
 
 
 class TestPrecedenceAndPriorities(MadsPin):
