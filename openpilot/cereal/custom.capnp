@@ -741,7 +741,7 @@ struct CustomReserved10 @0xcb9fd56c7057593a {
                                      # push13: 1 up to 18 km/h, 0 from 35). The hand-back resets gapAuthority (review)
   tFollow @7 :Float32;               # s, the close-follow MPC's follow time: release13's safe limit at scheduleSpeed,
                                      # 0.5 at a stop .. 1.8 at 22 km/h, never more than 1 m of gap under the
-                                     # personality's (review) and never above it
+                                     # personality's (review; 0.85 m since round 3) and never above it
   tFollowPersonality @8 :Float32;    # s, the selected personality's (what the plan's own MPC uses)
   jerkFactor @9 :Float32;            # the close-follow MPC's jerk factor
   desiredGap @10 :Float32;           # m, the gap the close-follow MPC settles at behind leadOne
@@ -787,7 +787,8 @@ struct CustomReserved10 @0xcb9fd56c7057593a {
   # release13 round 2 (the verification): the real gap, the pull-away
   realDeficit @42 :Float32;          # m, the personality's own desired gap (long_mpc's, at vEgo and vLead) minus leadOne's
                                      # radar gap, filtered over 0.5 s; 0 without a real lead
-  realWeight @43 :Float32;           # 1 up to 0.65 m of realDeficit, 0 from 0.9 m: what close follow may still raise
+  realWeight @43 :Float32;           # 1 up to 0.55 m of realDeficit, 0 from 0.8 m (round 3; 0.65 / 0.9 in round 2):
+                                     # what close follow may still raise
   pullAway @44 :Bool;                # leadOne's aLeadK over 0.3 m/s^2 for 0.5 s: no new tightening, the gap fades out
 
   enum CloseFollowInhibit {
@@ -821,8 +822,8 @@ struct CustomReserved10 @0xcb9fd56c7057593a {
                        # now or in the 3 s after: the gap and the lift both out
     downhill @24;      # release13: the filtered pitch under -0.03 (steeper than 3 % downhill)
     closing @25;       # release13: leadOne's time to collision under 3 s, closing faster than 0.5 m/s
-    realGap @26;       # round 2, the gap only: in by its guard, but the radar gap is 0.9 m under the personality's own
-                       # desired gap (about 1 m under the gap push12 keeps): nothing raised
+    realGap @26;       # round 2, the gap only: in by its guard, but the radar gap is 0.8 m (0.9 in round 2) under the
+                       # personality's own desired gap (about 1 m under the gap push12 keeps): nothing raised
     pullAway @27;      # round 2: the queue pulls away (aLeadK over 0.3 for 0.5 s): the gap and the lift fade out
   }
 }

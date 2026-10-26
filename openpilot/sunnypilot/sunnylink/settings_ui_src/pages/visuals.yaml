@@ -163,11 +163,12 @@ sections:
   - key: HudCloseFollow
     widget: toggle
     title: Close Follow Mark
-    description: Never more than 1 m closer than your personality's gap is Close Follow's limit (Vehicle > Honda); this
-      mark - two cars, one close behind the other, at the bottom of the right strip - shows while it is on and has
-      openpilot following the car ahead closer than it otherwise would, in slow traffic. It is never shown at a stop,
-      and goes the moment Close Follow steps out (a car braking or pulling away, a short time to collision, a downhill, a
-      warning, your pedals, a disengage). The confidence ball covers it when it comes down that far. Display only.
+    description: Close Follow's mark (Vehicle > Honda - about 1 m closer than your personality's gap at most) - two
+      cars, one close behind the other, at the bottom of the right strip - shows while Close Follow is on and has
+      openpilot following the car ahead closer than it otherwise would, in slow traffic. It is never shown at a stop. It
+      goes the moment Close Follow steps out for a car braking, a short time to collision, a downhill, a warning, your
+      pedals or a disengage, and within a few seconds once the traffic ahead pulls away. The confidence ball covers it
+      when it comes down that far. Display only.
   # FORK(HUD): HudRadarDots (push13) - the radar's tracks as dots (radar_dots.py), the one HUD toggle that defaults off
   - key: HudRadarDots
     widget: toggle

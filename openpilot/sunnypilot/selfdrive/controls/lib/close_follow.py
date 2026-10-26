@@ -26,8 +26,9 @@ personality's:
    study and its skeptic, skeptic_schedule.json): CF_T_FOLLOW_V over CF_T_FOLLOW_BP, 0.5 s at a stop, 0.88 s at
    13.5 km/h, 1.0 s at 15, 1.34 s at 18 and 1.8 s at 22 km/h, evaluated at the speed the queue is heading for -
    max(vEgo, the real lead's vLead + LEAD_AHEAD_S x its aLeadK over LEAD_AHEAD_DEADBAND) - never more than
-   GAP_DEFICIT_MAX (1 m) under the personality's gap at that same speed and never above the personality's
-   (close_t_follow) - and since round 2 (below) never while the gap the radar measures is already REAL_GAP_MAX short.
+   GAP_DEFICIT_MAX (0.85 m since round 3; 1 m before) under the personality's gap at that same speed and never above
+   the personality's (close_t_follow) - and since round 2 (below) never while the gap the radar measures is already
+   REAL_GAP_MAX short.
    So it hands back to the personality by itself - at 17.2 / 19.0 / 21.6 km/h on aggressive / standard / relaxed, and
    sooner when the queue pulls away - with no separate fade, and never closes up while the lead pulls away faster.
    It was sized so that behind a lead braking at -4 m/s^2 from STEADY following anywhere in the band this car keeps 2 m
@@ -50,11 +51,12 @@ personality's:
    closer gap. Since round 2:
    * THE REAL GAP: leadOne's radar gap against the personality's own desired gap - desired_gap() at vEgo and vLead with
      the personality's follow time, what push12's MPC aims for - filtered over REAL_GAP_TAU_S, per car (realDeficit).
-     From REAL_GAP_MAX (0.9 m) short close follow raises nothing - neither the gap nor the lift - and it fades out over
-     the REAL_GAP_FADE (0.25 m) before that, so there is no on/off at the line (real_weight, realWeight; the gap held out
-     by it alone logs realGap). 0.9 m and not 1: push12 itself settles 0.1-0.2 m past its desired gap, so 0.9 m short of
-     the desired gap is about 1 m short of the gap push12 really keeps. It bounds what stop-and-go waves stack up, and
-     the stop: a car following closer arrives at the stop no more than that much closer.
+     From REAL_GAP_MAX (0.8 m since round 3, 0.9 m in round 2) short close follow raises nothing - neither the gap nor
+     the lift - and it fades out over the REAL_GAP_FADE (0.25 m) before that, so there is no on/off at the line
+     (real_weight, realWeight; the gap held out by it alone logs realGap). Under 1 m: push12 itself settles 0.1-0.2 m
+     past its desired gap, so a limit at the desired gap's 1 m is more than 1 m short of the gap push12 really keeps. It
+     bounds what stop-and-go waves stack up, and the stop: a car following closer arrives at the stop no more than that
+     much closer.
    * A QUEUE PULLING AWAY - leadOne's aLeadK over PULL_AWAY_ACCEL (0.3 m/s^2) for PULL_AWAY_T (0.5 s), the same car - is
      a soft trip (pullAway): nothing tightens, the gap's authority falls at PULL_AWAY_FALL (1/s) and the lift's at its
      own 4/s, then their holds. (Chosen over a smaller look-ahead dead band, 0.1, by the verifier's
@@ -79,6 +81,25 @@ personality's:
    (close follow's car was at most 0.38 m closer there), comes 1.4 / 2.6 m closer at that point. Before a brake the real
    gap is at most 1.03 m short of push12's at the same moment (p95 0.84; 3 cm over while push12's own gap swung 0.26 m
    past its target).
+   THE VERIFICATION OF ROUND 2 (round 3: a closed-loop sim written from scratch - its own plant with the measured gas
+   response and a brake that builds only while the pump runs, 10 Hz radar with latency, noise, dropouts and track ids;
+   7,996 pairs in 17 families - and a mutation-tested code review) found no safety bug, but the real gap 1.03-1.15 m
+   short of push12's in steady following, slow pull-aways under PULL_AWAY_ACCEL (0.15-0.25 m/s^2), a slow accordion,
+   cut-ins and personality changes (no touch in any). Two causes: REAL_GAP_MAX was 0.9 m against push12's TARGET, which
+   push12 overshoots by 0.1-0.2 m; and while both chase a queue speeding up slowly, both behind their targets, the
+   real-gap limit never acts and the closer target pulled the car up to 0.15 m past its own difference. So since round
+   3 the target is GAP_DEFICIT_MAX 0.85 m and the real-gap limit REAL_GAP_MAX 0.8 m: in that sim the real gap is at
+   most 0.95 m short of push12's at the same moment in every family but one (1.15 before), 25 touches where push12
+   stopped short (27), all where push12 itself kept 0.41 m or less (0.53), at up to 4.4 km/h, none with the closer gap
+   in; in the first verifier's sim (9,960 runs) 0.91 m before a brake (1.03) and 41 such touches (43), push12 having
+   kept 0.63 m or less, at up to 3.9 km/h (4.4). The stop-launch-brake case stays - at the closest point 1.4 m in the
+   first sim (2.1) and 1.8 m in the second (1.8): the closeness left as the lead begins to slow is not the limit's - it
+   is what the car had not given back yet - and push12 moved 0.4 m closer there does the same (1.8 / 2.6 m). Holding
+   1 m there too took the closer gap down to 0.25 m below 12 km/h (tried, not done - the owner's call): 0.6 m in that
+   case, but 73 % fewer frames raising the plan in the second sim's critical families, and on the owner's 20 routes
+   10 s raising it instead of 27 (a 0.23 m closer target at the median instead of 0.56).
+   (Tried as well: a second pull-away rule, aLeadK over 0.15 for 1.5 s - as good on the slow pull-aways, but 11 % less
+   time with the closer gap in across the families against 1 % for the lower limits.)
    The jerk factor is max(1.0, the personality's) (CF_JERK_FACTOR_MIN: not the aggressive 0.5, which the envelope showed
    reacts later to a braking lead). STOP_DISTANCE is compiled into the solver and untouched: the plan still aims for 6 m
    at a standstill, as push12's. Arriving from a closer gap the car stopped closer than push12 (the release13 review's
@@ -137,8 +158,11 @@ shadow, 2 live), `sw` (the switch), the share of those frames with the gap and t
 tightening live), the mean follow time and gap change, `up` (the most it raised the plan), the top reasons it was out
 (round 2 adds realGap and pullAway), `brk`, the frames where it lifted the plan while a lead braked - by construction 0;
 a non-zero `brk` in a route is a bug - `smax` / `xmax`, the slowest close-MPC solve and the slowest whole close-follow
-step of those 10 s, in ms (mpcSolveTime / stepTime, every plan), and (round 2) `rmax`, the largest realDeficit while the
-gap was in - above REAL_GAP_MAX is a bug. A switch change is one `closefollow switch` line.
+step of those 10 s, in ms (mpcSolveTime / stepTime, every plan), (round 2) `rmax`, the largest realDeficit while the
+gap was in - at or above REAL_GAP_MAX is a bug, but by construction it cannot show more (the weight is 0 from there) -
+and (round 3) `rraw`, the largest UNFILTERED real deficit while the gap was in and REAL_RAW_TAIL_S (1 s) after, on the
+same car: what the radar really showed, the one to read against 'about 1 m'. A switch change is one `closefollow
+switch` line.
 
 COST: a second MPC solve only while eligible: requested, engaged, a real lead, under CF_FADE_SPEED + CF_MPC_MARGIN.
 On the device the plan's own solve on such frames is 0.6 ms at the median but has a long tail (p95 7.6-13 ms, max
@@ -210,15 +234,19 @@ CF_FADE_SPEED = CF_T_FOLLOW_BP[-1]  # m/s: the one eligibility bound (22 km/h); 
 # the release13 review: a queue pulling away from a crawl, then braking hard
 LEAD_AHEAD_S = 2.0              # s: the schedule is read at the lead's speed this far ahead on its acceleration ...
 LEAD_AHEAD_DEADBAND = 0.3       # m/s^2: ... above this (a creeping queue's swell is not a pull-away)
-GAP_DEFICIT_MAX = 1.0           # m: the closer gap is never more than this under the personality's, at the speed the
-                                # queue is heading for (schedule_speed) - the MPC plans the launch at that speed
+GAP_DEFICIT_MAX = 0.85          # m: the closer gap is never more than this under the personality's, at the speed the
+                                # queue is heading for (schedule_speed) - the MPC plans the launch at that speed. 0.15 m
+                                # inside the 1 m it promises (round 3: chasing a slowly accelerating queue the real gap
+                                # ran up to 0.15 m past the target's difference)
 # the release13 verification (round 2): GAP_DEFICIT_MAX bounds the TARGET; the gap the car really keeps drifted further
 # (a gentle pull-away, stop-and-go waves). So close follow also reads the REAL gap, and leaves a queue pulling away alone
-REAL_GAP_MAX = 0.9              # m: the radar gap this far under the personality's own desired gap (long_mpc's
+REAL_GAP_MAX = 0.8              # m: the radar gap this far under the personality's own desired gap (long_mpc's
                                 # distance at vEgo and vLead): close follow raises nothing - neither the gap nor the lift.
-                                # 0.1 m inside the 1 m it promises: push12 itself settles 0.1-0.2 m past its desired gap
+                                # 0.2 m inside the 1 m it promises: push12 itself settles 0.1-0.2 m past its desired gap
+                                # (round 3: 0.9 left steady following 1.03-1.06 m short of push12)
 REAL_GAP_FADE = 0.25            # m: ... and fades out over the last this before it (no on/off chatter at the line)
 REAL_GAP_TAU_S = 0.5            # s: the real deficit's filter (dRel and vLead are the radar's raw values)
+REAL_RAW_TAIL_S = 1.0           # s: the log's rraw - the unfiltered deficit's max while the gap is in and this long after
 PULL_AWAY_ACCEL = 0.3           # m/s^2: leadOne's aLeadK above this ...
 PULL_AWAY_T = 0.5               # s: ... this long (the same car): the queue pulls away - no new tightening ...
 PULL_AWAY_FALL = 1.0            # 1/s: ... and the closer gap fades out at this (then the 1 s hold once it is over)
@@ -848,6 +876,10 @@ class CloseFollow:
     self.real_w = 0.              # real_weight(real_deficit): how much close follow may still raise the plan
     self._real_k = dt / (REAL_GAP_TAU_S + dt)
     self._real_key = None         # the car the filter is on
+    self.real_raw = math.nan      # m, the same deficit unfiltered, this frame
+    self.raw_watch = False        # the gap in, or out under REAL_RAW_TAIL_S on the same car: rraw counts this frame
+    self._raw_tail_frames = int(round(REAL_RAW_TAIL_S / dt))
+    self._raw_tail = 0
     self.pull_frames = 0          # frames leadOne's aLeadK has been over PULL_AWAY_ACCEL (the same car)
     self.pull_away = False
     self._pull_n = max(1, int(round(PULL_AWAY_T / dt)))
@@ -1018,6 +1050,9 @@ class CloseFollow:
     else:
       self.real_deficit += self._real_k * (raw - self.real_deficit)
     self.real_w = real_weight(self.real_deficit)
+    self.real_raw = raw if key is not None else math.nan
+    if not same_car:
+      self._raw_tail = 0
     self.speed_in = float(np.interp(v_ego, CF_SPEED_IN_BP, [0., 1.])) if _finite(v_ego) else 0.
     # round 2: the queue pulls away - leadOne's aLeadK over PULL_AWAY_ACCEL for PULL_AWAY_T, the same car
     pulling = key is not None and _finite(lead.a_lead) and lead.a_lead > PULL_AWAY_ACCEL
@@ -1055,8 +1090,16 @@ class CloseFollow:
     # round 2: scaled by the real gap - nothing from REAL_GAP_MAX under the personality's own desired gap - and faded in
     # over CF_SPEED_IN_BP: nothing at a standstill, creeping into a stop or through a launch
     self.g = authority * self.real_w * self.speed_in if (close is not None and self.weight > 0.) else 0.
-    if self.g <= 0. or close is None:
+    if not self.g > 0. or close is None:
       self.g = 0.
+    # round 3: what the radar shows while the gap is in and REAL_RAW_TAIL_S after (the same car) - the log's rraw. The
+    # filtered deficit, which the weight reads, cannot pass REAL_GAP_MAX while the gap is in; the raw one can
+    if self.g > 0.:
+      self._raw_tail = self._raw_tail_frames
+    self.raw_watch = (self.g > 0. or self._raw_tail > 0) and _finite(self.real_raw)
+    if self.g <= 0. and self._raw_tail > 0:
+      self._raw_tail -= 1
+    if self.g <= 0. or close is None:
       self.a_mpc_close = self.a_mpc
       return trajectories
     g = self.g
@@ -1261,7 +1304,7 @@ class CloseFollow:
   @staticmethod
   def _new_window() -> dict:
     return {'n': 0, 'gap': 0, 'lift': 0, 'live': 0, 't': 0., 'dg': 0., 'v': 0., 'lmax': 0., 'up': 0., 'brk': 0, 'fcw': 0,
-            'smax': 0., 'xmax': 0., 'rmax': -math.inf, 'why': Counter()}
+            'smax': 0., 'xmax': 0., 'rmax': -math.inf, 'rraw': -math.inf, 'why': Counter()}
 
   def _account(self) -> None:
     inp = self.inputs
@@ -1280,6 +1323,8 @@ class CloseFollow:
         w['dg'] += (self.t_follow_used - self.t_personality) * inp.v_ego
         if _finite(self.real_deficit):
           w['rmax'] = max(w['rmax'], self.real_deficit)
+      if self.raw_watch:
+        w['rraw'] = max(w['rraw'], self.real_raw)
       if self.lifting > _EPS:
         w['lift'] += 1
         w['lmax'] = max(w['lmax'], self.lifting)
@@ -1309,6 +1354,7 @@ class CloseFollow:
                      t=round(w['t'] / g, 2) if g else None, dg=round(w['dg'] / g, 1) if g else None,
                      lmax=round(w['lmax'], 2), up=round(w['up'], 2), brk=w['brk'], fcw=w['fcw'], why=why,
                      smax=round(w['smax'] * 1e3, 1), xmax=round(w['xmax'] * 1e3, 1),
-                     rmax=round(w['rmax'], 2) if math.isfinite(w['rmax']) else None)
+                     rmax=round(w['rmax'], 2) if math.isfinite(w['rmax']) else None,
+                     rraw=round(w['rraw'], 2) if math.isfinite(w['rraw']) else None)
     except Exception:
       pass
