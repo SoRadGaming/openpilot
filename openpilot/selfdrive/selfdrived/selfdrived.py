@@ -38,6 +38,7 @@ from openpilot.sunnypilot.selfdrive.selfdrived.vsa_fault_alert import VsaFaultAl
 from openpilot.sunnypilot.selfdrive.controls.lib.steer_saturated import SteerSaturatedAlert  # FORK(LKAS-GATEWAY)
 from openpilot.sunnypilot.selfdrive.selfdrived.lane_block_alert import LaneBlockAlert  # FORK(HUD)
 from openpilot.sunnypilot.selfdrive.selfdrived.car_stock_alert import CarStockAlert  # FORK(HONDA_ACCORD_9G_AU)
+from openpilot.sunnypilot.selfdrive.controls.lib.distance_bars import DistanceBars, ONE_BAR_NAME  # FORK(CLOSE-FOLLOW)
 from openpilot.sunnypilot.system.params_writer import FLUSH_AT_EXIT_S, ParamsWriter  # FORK(COMM-ISSUE)
 
 REPLAY = "REPLAY" in os.environ
@@ -197,6 +198,9 @@ class SelfdriveD(CruiseHelper):
     self.vsa_fault_alert = VsaFaultAlert()  # FORK(HONDA_ACCORD_9G_AU): name the VSA's own fault; no engagement while it holds one
     self.lane_block_alert = LaneBlockAlert()  # FORK(HUD): the comma 4's lane-block tile: no block alerts, a refused nudge chimes
     self.car_stock_alert = CarStockAlert(self.CP)  # FORK(HONDA_ACCORD_9G_AU): KTuner - stock on purpose is not a fault
+    # FORK(CLOSE-FOLLOW): the Elesys Accord's four dash bars - the distance button steps 4 -> 3 -> 2 -> 1 -> 4, 1 bar is
+    # aggressive with close follow live (distance_bars.py); every other car upstream's three steps
+    self.distance_bars = DistanceBars(self.CP, self.CP_SP, self.params)
 
     CruiseHelper.__init__(self, self.CP)
     self.button_state_tracker = ButtonStateTracker()
@@ -549,16 +553,25 @@ class SelfdriveD(CruiseHelper):
 
     CruiseHelper.update(self, CS, self.events_sp, self.experimental_mode)
 
+    self.distance_button(CS)  # FORK(CLOSE-FOLLOW): upstream's block, as a method (the four dash bars' test drives it)
+
+    self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], self.is_metric)
+
+  def distance_button(self, CS):
     # decrement personality on distance button press
     if self.CP.openpilotLongitudinalControl:
       if any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in CS.buttonEvents):
         if not self.experimental_mode_switched:
-          self.personality = (self.personality - 1) % 3
-          self.params.put('LongitudinalPersonality', self.personality)
+          if self.distance_bars.applies:
+            # FORK(CLOSE-FOLLOW): the Elesys Accord's four dash bars, 4 -> 3 -> 2 -> 1 -> 4 with the CloseFollow switch
+            # on (4 -> 3 -> 2 -> 4 off); writes LongitudinalPersonality and CloseFollowOneBar (distance_bars.py)
+            with self.distance_bars.lock:
+              self.personality = self.distance_bars.press(self.personality, self.params)
+          else:
+            self.personality = (self.personality - 1) % 3
+            self.params.put('LongitudinalPersonality', self.personality)
           self.events.add(EventName.personalityChanged)
         self.experimental_mode_switched = False
-
-    self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], self.is_metric)
 
   def data_sample(self):
     _car_state = messaging.recv_one(self.car_state_sock)
@@ -615,6 +628,8 @@ class SelfdriveD(CruiseHelper):
       clear_event_types.add(ET.NO_ENTRY)
 
     pers = LONGITUDINAL_PERSONALITY_MAP[self.personality]
+    if self.distance_bars.one_bar(self.personality):
+      pers = ONE_BAR_NAME  # FORK(CLOSE-FOLLOW): at 1 bar the alert reads "Driving Personality: Close Follow"
     callback_args = [self.CP, CS, self.sm, self.is_metric,
                      self.state_machine.soft_disable_timer, pers]
 
@@ -675,6 +690,8 @@ class SelfdriveD(CruiseHelper):
     icbm.vTarget = self.icbm.v_target
 
     self.button_state_tracker.publish(ss_sp)
+    # FORK(CLOSE-FOLLOW): the 1-bar mode in effect - controlsd's dash bars and plannerd's close follow (distance_bars.py)
+    ss_sp.closeFollowOneBar = self.distance_bars.one_bar(self.personality)
 
     self.pm.send('selfdriveStateSP', ss_sp_msg)
 
@@ -706,12 +723,21 @@ class SelfdriveD(CruiseHelper):
       self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
       self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
       self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
-      self.personality = self.params.get("LongitudinalPersonality", return_default=True)
+      self.read_personality()  # FORK(CLOSE-FOLLOW): upstream's read, as a method (the four dash bars' test drives it)
 
       self.mads.read_params()
       self.lane_block_alert.read_params(self.params)  # FORK(HUD)
       self.car_stock_alert.read_params(self.params)  # FORK(HONDA_ACCORD_9G_AU)
       time.sleep(0.1)
+
+  def read_personality(self):
+    if self.distance_bars.applies:
+      # FORK(CLOSE-FOLLOW): the Elesys Accord's four dash bars - under their lock, never undoing a press whose
+      # (non-blocking) writes have not landed yet, and CloseFollow / CloseFollowOneBar with it (distance_bars.py)
+      with self.distance_bars.lock:
+        self.personality = self.distance_bars.read_params(self.params)
+    else:
+      self.personality = self.params.get("LongitudinalPersonality", return_default=True)
 
   def run(self):
     e = threading.Event()

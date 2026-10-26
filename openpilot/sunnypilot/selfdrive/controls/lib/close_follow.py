@@ -3,12 +3,16 @@ FORK(CLOSE-FOLLOW): close follow in queues (the owner's round-5 request: "close 
 in, gap grows back with speed"). push13 built it in shadow; release13 makes it LIVE (owner, 2026-10-24: "Automatic in
 queues", "Live now, with a safety limit", "Safe limit only").
 
-THE SWITCH: one user setting, CloseFollow (a BOOL, default ON; comma 4 Settings > Toggles 'close follow', sunnylink
-Vehicle > Honda 'Close Follow'). ON: live - close follow shapes the plan. OFF: shadow - it computes and logs everything
-below every plan and changes nothing (the plan, the accel sent, the HUD, every CAN frame are as without it). The planner
-reads it when plannerd starts, again every SWITCH_READ_S (3 s) and at every engage (reads only, never a write), and a
-change applies on that frame: switched ON, the gap and the lift start from nothing (the 1 s hold, then the ramp);
-switched OFF, close follow drops out at once, as on any trip. A switch that cannot be read is OFF (shadow).
+THE SWITCH: one user setting, CloseFollow (a BOOL, default ON; comma 4 Settings > Toggles 'close follow at 1 bar',
+sunnylink Vehicle > Honda 'Close Follow'). ON: live - close follow shapes the plan - but since push14 (the four dash
+bars, distance_bars.py) only in the dash's 1-bar mode, the fourth step of the steering wheel's distance button
+(4 relaxed, 3 standard, 2 aggressive, 1 aggressive with close follow). OFF, or at 4, 3 or 2 bars: shadow - it computes
+and logs everything below every plan and changes nothing (the plan, the accel sent, the HUD, every CAN frame are as
+without it), and with the switch off the button never reaches 1 bar. The planner reads the switch when plannerd starts,
+again every SWITCH_READ_S (3 s) and at every engage (reads only, never a write), and the 1-bar mode every plan from
+selfdriveStateSP.closeFollowOneBar (read_one_bar); a change of either applies on that frame: into live, the gap and the
+lift start from nothing (the 1 s hold, then the ramp); out of it, close follow drops out at once, as on any trip. A
+switch or a 1-bar mode that cannot be read is OFF (shadow).
 
 ACTIVATION is automatic (CloseFollowSwitch: wanted whenever openpilot longitudinal is engaged, off at every disengage):
 it switches itself in and out by the guards below - engaged, a real radar lead, under the hand-back speed.
@@ -202,8 +206,6 @@ from typing import NamedTuple
 
 import numpy as np
 
-from opendbc.car.honda.values import HONDA_ELESYS
-from opendbc.sunnypilot.car.honda.values_ext import HondaFlagsSP
 from openpilot.cereal import custom, log
 import openpilot.cereal.messaging as messaging
 from openpilot.common.constants import CV
@@ -215,14 +217,18 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (COMF
                                                                            get_jerk_factor)
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.held_lead import is_held, real_lead
+# push14: the gate and the switch live in close_follow_gate.py (light, shared with distance_bars.py); re-exported here
+from openpilot.sunnypilot.selfdrive.controls.lib.close_follow_gate import (SWITCH_PARAM as SWITCH_PARAM, read_switch,
+                                                                           close_follow_applies as close_follow_applies)
 
 Inhibit = custom.CustomReserved10.CloseFollowInhibit
 LaneChangeState = log.LaneChangeState
 Personality = log.LongitudinalPersonality
 PlanSource = log.LongitudinalPlan.LongitudinalPlanSource
 
-# CloseFollow (params_keys.h, BOOL, default "1"): the user's switch. ON live, OFF shadow (computed and logged only).
-SWITCH_PARAM = "CloseFollow"
+# CloseFollow (params_keys.h, BOOL, default "1"): the user's switch, SWITCH_PARAM. Since push14 the master: live needs
+# it ON and the dash's 1-bar mode (selfdriveStateSP.closeFollowOneBar, distance_bars.py); anything else is shadow.
+ONE_BAR_SERVICE = "selfdriveStateSP"
 SWITCH_READ_S = 3.0             # s: plannerd re-reads it this often (and at every engage); reads only, never a write
 MODE_SHADOW, MODE_LIVE = 1, 2   # customReserved10.mode
 SERVICE = "customReserved10"
@@ -322,33 +328,19 @@ assert CF_T_FOLLOW_V[-1] >= get_T_FOLLOW(Personality.relaxed) and abs(CF_FADE_KP
 assert CF_FADE_SPEED > LIFT_SPEED_BP[1] > LIFT_SPEED_BP[0] >= LEAD_MIN_SPEED
 
 
-def close_follow_applies(CP, CP_SP) -> bool:
-  """HONDA_ELESYS with openpilot longitudinal and stock ACC mode off (the re-entry ramp's gate)."""
-  try:
-    if CP.brand != 'honda' or CP.carFingerprint not in HONDA_ELESYS or not CP.openpilotLongitudinalControl:
-      return False
-    return not (int(getattr(CP_SP, 'flags', 0)) & HondaFlagsSP.ELESYS_STOCK_ACC.value)
-  except Exception:
-    return False
-
-
-def read_switch(params) -> bool:
-  """The user's CloseFollow switch (a key nobody has written yet is its params_keys.h default, ON). Anything unreadable
-  is OFF: an unknown switch never makes it live."""
-  try:
-    v = params.get(SWITCH_PARAM, return_default=True)
-    if isinstance(v, bool):
-      return v
-    if isinstance(v, bytes):
-      v = v.decode(errors='ignore')
-    return str(v).strip() == "1"
-  except Exception:
-    return False
-
-
 def read_mode(params) -> int:
-  """The mode the switch asks for: MODE_LIVE when it is on, MODE_SHADOW otherwise (read_switch)."""
+  """The mode the switch asks for: MODE_LIVE when it is on, MODE_SHADOW otherwise (read_switch). Since push14 the
+  planner's close follow also needs the 1-bar mode for live (read_one_bar, CloseFollow(one_bar_gate=True))."""
   return MODE_LIVE if read_switch(params) else MODE_SHADOW
+
+
+def read_one_bar(sm) -> bool:
+  """push14: the dash's 1-bar mode in effect, as selfdrived publishes it (selfdriveStateSP.closeFollowOneBar,
+  distance_bars.py). A message without it (a route from before push14) or anything unreadable is off: shadow."""
+  try:
+    return bool(sm[ONE_BAR_SERVICE].closeFollowOneBar)
+  except Exception:
+    return False
 
 
 def _personality(p) -> int:
@@ -566,9 +558,9 @@ class LeadSpeedWindow:
 class CloseFollowSwitch:
   """THE ACTIVATION, decided 2026-10-24 ("Automatic in queues"): close follow is wanted whenever openpilot longitudinal
   is engaged, and off at every disengage; it then switches itself in and out by its own guards (a real radar lead,
-  under the hand-back, every trip). It answers one question per plan - does the driver want close follow now? - and is
-  the one place a manual on-switch (a distance-button hold) would go. The user's CloseFollow setting is not this: it
-  picks live or shadow (CloseFollow.set_mode)."""
+  under the hand-back, every trip). It answers one question per plan - does the driver want close follow now? The
+  user's CloseFollow setting is not this, nor (push14) the dash's 1-bar mode the distance button selects: together they
+  pick live or shadow (CloseFollow._wanted_mode, set_mode)."""
   SWITCH_ASSUMED = True
 
   def __init__(self):
@@ -847,18 +839,23 @@ class CloseFollow:
   sets defer = False (the values are the same, only computed earlier).
   mode: MODE_LIVE or MODE_SHADOW (read_mode() of the user's switch); with `params`, update_mpc() re-reads the switch
   every SWITCH_READ_S and at every engage and applies a change on that frame (set_mode).
+  one_bar_gate (push14, the planner's): live also needs the dash's 1-bar mode, which update_mpc() reads every plan
+  (read_one_bar: selfdriveStateSP.closeFollowOneBar) and applies on that frame too; until the first plan it is shadow.
   An exception anywhere in close follow never reaches plannerd: it is logged once (cloudlog.exception, error level),
   close follow is off for the rest of the drive, and every call hands back the plan's own values (push12's)."""
 
-  def __init__(self, mode: int, dt: float = DT_MDL, mpc_factory=None, defer: bool | None = None, params=None):
-    self.mode = MODE_LIVE if mode == MODE_LIVE else MODE_SHADOW
+  def __init__(self, mode: int, dt: float = DT_MDL, mpc_factory=None, defer: bool | None = None, params=None,
+               one_bar_gate: bool = False):
+    self.switch_on = mode == MODE_LIVE   # the user's CloseFollow switch as last read
+    self.one_bar_gate = bool(one_bar_gate)
+    self.one_bar = False                 # push14: the dash's 1-bar mode as last read (one_bar_gate only)
+    self.mode = self._wanted_mode()
     self._defer_forced = defer
     self.defer = (self.mode != MODE_LIVE) if defer is None else bool(defer)
     self._pending: list | None = None
     self.failed = False
     self.dt = dt
     self.params = params
-    self.switch_on = self.mode == MODE_LIVE   # the user's CloseFollow switch as last read
     self.switch_changes = 0
     self._read_frames = max(1, int(round(SWITCH_READ_S / dt)))
     self._read_left = self._read_frames
@@ -914,12 +911,17 @@ class CloseFollow:
   def live(self) -> bool:
     return self.mode == MODE_LIVE
 
+  def _wanted_mode(self) -> int:
+    """Live while the user's switch is on and - the planner's close follow (one_bar_gate, push14) - the dash is in its
+    1-bar mode; shadow otherwise."""
+    return MODE_LIVE if self.switch_on and (self.one_bar or not self.one_bar_gate) else MODE_SHADOW
+
   def set_mode(self, mode: int) -> None:
-    """Live or shadow, from the user's switch. A change applies on this frame: the gap and the lift start again from
-    nothing (authority 0, their holds) - switched on, close follow ramps in as after any trip; switched off, it drops
-    out at once, the plan's own on this frame. The FCW and hard-brake holds carry over."""
+    """Live or shadow, from the user's switch (and since push14 the dash's 1-bar mode, _wanted_mode). A change applies
+    on this frame: the gap and the lift start again from nothing (authority 0, their holds) - switched on, close follow
+    ramps in as after any trip; switched off, it drops out at once, the plan's own on this frame. The FCW and hard-brake
+    holds carry over."""
     mode = MODE_LIVE if mode == MODE_LIVE else MODE_SHADOW
-    self.switch_on = mode == MODE_LIVE
     if mode == self.mode:
       return
     self.mode = mode
@@ -932,7 +934,8 @@ class CloseFollow:
     self.a_model_lifted = self.a_model
     self.switch_changes += 1
     try:
-      cloudlog.event("closefollow switch", error=True, mode=int(mode), on=bool(self.switch_on), changes=self.switch_changes)
+      cloudlog.event("closefollow switch", error=True, mode=int(mode), on=bool(self.switch_on), bar=bool(self.one_bar),
+                     changes=self.switch_changes)
     except Exception:
       pass
 
@@ -946,7 +949,14 @@ class CloseFollow:
     if self._read_left > 0 and not engage:
       return
     self._read_left = self._read_frames
-    self.set_mode(read_mode(self.params))
+    self.switch_on = read_switch(self.params)
+
+  def _poll_mode(self, sm, engaged: bool) -> None:
+    """The switch when it is due (_poll_switch), the 1-bar mode every plan (one_bar_gate), then live or shadow."""
+    self._poll_switch(engaged)
+    if self.one_bar_gate:
+      self.one_bar = read_one_bar(sm)
+    self.set_mode(self._wanted_mode())
 
   def _close_mpc(self):
     if self.mpc is None:
@@ -979,11 +989,11 @@ class CloseFollow:
     """After the plan's own MPC solve. v_state, a_state: what the plan's MPC was set to (set_cur_state); fcw: the
     planner's FCW this frame; trajectories: the plan's (v, a, j) at control_t_idxs. Returns the trajectories with close
     follow blended in by the gap's authority - the very same arrays while it is out, and always in shadow (defer),
-    where the call is only recorded for run_deferred(). First the user's switch, when it is due (_poll_switch): live or
-    shadow is decided for the whole plan here."""
+    where the call is only recorded for run_deferred(). First the user's switch, when it is due, and the dash's 1-bar
+    mode (_poll_mode): live or shadow is decided for the whole plan here."""
     if not self.failed:
       try:
-        self._poll_switch(not reset_state)
+        self._poll_mode(sm, not reset_state)
       except Exception:
         self._fail('switch')
     args = (sm, reset_state, v_state, a_state, prev_accel_constraint, fcw, plan_mpc, trajectories, control_t_idxs,
@@ -1274,6 +1284,7 @@ class CloseFollow:
     msg.mpcSolveTime = float(self.mpc_solve_time)
     msg.stepTime = float(self.step_time)
     msg.switchOn = bool(self.switch_on)
+    msg.oneBar = bool(self.one_bar)
     msg.live = bool(self.live)
     msg.tightening = bool(self.tightening)
     msg.raised = float(self.raised)
@@ -1349,7 +1360,8 @@ class CloseFollow:
       n, g = w['n'], w['gap']
       names = {v: k for k, v in Inhibit.schema.enumerants.items()}
       why = ",".join(f"{names.get(int(k), int(k))}:{c}" for k, c in w['why'].most_common(3))
-      cloudlog.event("closefollow", error=True, mode=int(self.mode), sw=int(self.switch_on), n=n, v=round(w['v'] / n, 1),
+      cloudlog.event("closefollow", error=True, mode=int(self.mode), sw=int(self.switch_on), bar=int(self.one_bar), n=n,
+                     v=round(w['v'] / n, 1),
                      gap=round(g / n, 2), lift=round(w['lift'] / n, 2), live=round(w['live'] / n, 2),
                      t=round(w['t'] / g, 2) if g else None, dg=round(w['dg'] / g, 1) if g else None,
                      lmax=round(w['lmax'], 2), up=round(w['up'], 2), brk=w['brk'], fcw=w['fcw'], why=why,

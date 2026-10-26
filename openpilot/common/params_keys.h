@@ -159,10 +159,17 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CarPlatformBundle", {PERSISTENT | BACKUP, JSON}},
     {"ChevronInfo", {PERSISTENT | BACKUP, INT, "4"}},
     // FORK(CLOSE-FOLLOW): close follow in queues (close_follow.py, HONDA_ELESYS with openpilot longitudinal), the user's
-    // switch (comma 4 Toggles 'close follow', sunnylink Vehicle > Honda): on (the default) live, off shadow - computed
-    // and logged as customReserved10, the plan untouched. plannerd re-reads it every 3 s and at every engage. Replaces
-    // push13's CloseFollowMode (0/1/2, never set by any UI), which is no longer registered.
+    // switch (comma 4 Toggles 'close follow at 1 bar', sunnylink Vehicle > Honda): on (the default) live - since push14
+    // only in the dash's 1-bar mode (CloseFollowOneBar) - off shadow, computed and logged as customReserved10, the plan
+    // untouched. plannerd re-reads it every 3 s and at every engage, selfdrived every 0.1 s. Replaces push13's
+    // CloseFollowMode (0/1/2, never set by any UI), which is no longer registered.
     {"CloseFollow", {PERSISTENT | BACKUP, BOOL, "1"}},
+    // FORK(CLOSE-FOLLOW) push14: the Elesys Accord's four dash bars (distance_bars.py) - the 1-bar mode (aggressive with
+    // close follow live) as the steering wheel's distance button left it; it counts only with CloseFollow on and the
+    // personality aggressive. Written by a press (selfdrived) or the comma 4's personality picker, never from a loop;
+    // persists across drives like LongitudinalPersonality. Default off: after the update the button's next step from
+    // 2 bars (aggressive) is 1 bar.
+    {"CloseFollowOneBar", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"CompletedSunnylinkConsentVersion", {PERSISTENT, STRING, "0"}},
     {"CustomAccIncrementsEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"CustomAccLongPressIncrement", {PERSISTENT | BACKUP, INT, "5"}},

@@ -30,6 +30,10 @@ no test pinned: the deficit's vLead term, its filter and its restart for each ca
 leadTwo, the lift reading close follow's own (rate-limited) follow time, the mark's standstill rule behind speed_in, rmax
 and rraw in the summary line; the settings' texts as the sims bear them out (about 1 m at most, and the one case of
 about 2 m: a hard brake just after a stop and a launch).
+push14 (the four dash bars, distance_bars.py): with its switch on close follow is live only in the dash's 1-bar mode,
+read every plan from selfdriveStateSP.closeFollowOneBar (build_sm's one_bar, on in every test above) - at 4, 3 and 2
+bars it is shadow, every planner output and published plan bit for bit, and the mode applies on the frame both ways
+(TestFourDashBars); until its first plan reads it, shadow.
 
 Big outputs are compared with assert_same_frames(): unittest's assertEqual on two 400-frame lists builds a difflib diff
 that takes minutes, so a shadow leak would look like a hang rather than a failure.
@@ -304,6 +308,13 @@ class TestSchedule(OpenpilotTestCase):
     for kph, p in ((15, AGGRESSIVE), (15, STANDARD), (15, RELAXED)):
       t_p = get_T_FOLLOW(p)
       self.assertLessEqual((t_p - close_t_follow(kph / 3.6, t_p)) * kph / 3.6, 1. + 1e-9)
+    # push14: the 1-bar mode, and where the button's steps go; aggressive (the 1-bar personality) hands back at 17.2 km/h
+    assert "Only at 1 bar on the dash" in desc, desc
+    assert "4 bars (relaxed), 3 (standard), 2 (aggressive) and 1 (aggressive with Close Follow)" in desc, desc
+    assert "Off - the button steps 4, 3 and 2 only" in desc, desc
+    assert "holding the button still switches experimental mode" in desc, desc
+    assert "hands the gap back to aggressive's by about 17 km/h" in desc, desc   # (test_it_hands_back_by_itself: 17.2)
+    assert "the dash shows 1 bar" in mark, mark
 
 
 class TestGapGuard(OpenpilotTestCase):
@@ -762,11 +773,21 @@ class _SM(dict):
     return True
 
 
+def one_bar_sp(one_bar: bool):
+  """selfdriveStateSP as selfdrived sends it, with push14's closeFollowOneBar (the dash's 1-bar mode, distance_bars.py)."""
+  sp = messaging.new_message('selfdriveStateSP')
+  sp.selfdriveStateSP.closeFollowOneBar = one_bar
+  return sp.selfdriveStateSP.as_reader()
+
+
 def build_sm(v_ego, d_rel, v_lead, a_lead=0., e2e=0., engaged=True, experimental=True, gas=False, radar=True, track=7,
-             personality=P.aggressive, stock_fcw=False, pitch=None, held_two=False) -> _SM:
+             personality=P.aggressive, stock_fcw=False, pitch=None, held_two=False, one_bar=True) -> _SM:
+  """one_bar (push14): the dash's 1-bar mode, where close follow is live with its switch on - on in every test from
+  before push14 (they test close follow live); TestFourDashBars has it off."""
   services = {}
   for service in ("vehicleParameters", "carStateSP", "liveMapDataSP", "gpsLocationExternal", "gpsLocation"):
     services[service] = getattr(messaging.new_message(service), service)
+  services['selfdriveStateSP'] = one_bar_sp(one_bar)
   rs = messaging.new_message('radarState')
   if d_rel is not None:
     ld = rs.radarState.leadOne
@@ -824,8 +845,8 @@ def honda_cp(fingerprint=CAR.HONDA_ACCORD_9G_AU, op_long=True):
 
 
 def planner(switch=True, fingerprint=CAR.HONDA_ACCORD_9G_AU, stock_acc=False, close_follow=True):
-  """The real planner. switch: the user's CloseFollow (on: live). close_follow=False: the same planner with close follow
-  removed - the reference, push12's plan."""
+  """The real planner. switch: the user's CloseFollow (on: live - in the dash's 1-bar mode, build_sm's one_bar, since
+  push14). close_follow=False: the same planner with close follow removed - the reference, push12's plan."""
   from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
   Params().put_bool("CloseFollow", switch, block=True)
   Params().put("LeadBrakeAssistMode", 0)  # FORK(LEAD-BRAKE): close follow alone (test_lead_brake_close_follow.py has both)
@@ -838,14 +859,14 @@ def planner(switch=True, fingerprint=CAR.HONDA_ACCORD_9G_AU, stock_acc=False, cl
   return pl
 
 
-def queue(n=400, brake_at=None, e2e=-0.1, a_brake=-1.0):
+def queue(n=400, brake_at=None, e2e=-0.1, a_brake=-1.0, one_bar=True):
   """A queue at V0: the lead D0 ahead at our speed (the model holding its own longer gap with a small negative accel).
-  From brake_at on the lead brakes at a_brake."""
+  From brake_at on the lead brakes at a_brake. one_bar: build_sm's (the dash's 1-bar mode, push14)."""
   frames = []
   d, v_lead = D0, V0
   for k in range(n):
     a_lead = a_brake if brake_at is not None and k >= brake_at else 0.
-    frames.append(build_sm(V0, d, v_lead, a_lead=a_lead, e2e=e2e))
+    frames.append(build_sm(V0, d, v_lead, a_lead=a_lead, e2e=e2e, one_bar=one_bar))
     v_lead = max(0., v_lead + a_lead * DT_MDL)
     d += (v_lead - V0) * DT_MDL
   return frames
@@ -994,7 +1015,7 @@ class TestPlanner(OpenpilotTestCase):
                                                                'customReserved10'])):
       with self.subTest(switch=switch):
         pl = planner(switch)
-        self.assertEqual(pl.close_follow.defer, not switch)
+        self.assertTrue(pl.close_follow.defer, "push14: shadow until its first plan reads the dash's 1-bar mode")
         pl.close_follow._mpc_factory = mpc_class(lambda mpc, n: log.append('closeSolve'))
         pm = PM(log=log)
         for sm in queue(30):
@@ -1010,6 +1031,7 @@ class TestPlanner(OpenpilotTestCase):
           if not switch:
             self.assertEqual(log[log.index('closeSolve') + 1:], ['customReserved10'])
         self.assertTrue(pl.close_follow.mpc_solved)
+        self.assertEqual(pl.close_follow.defer, not switch)
 
   def test_plannerd_sends_driver_assistance_before_close_follow(self):
     # plannerd itself: driverAssistance, then publish_deferred() (close follow's deferred work and customReserved10)
@@ -1039,7 +1061,7 @@ class TestPlanner(OpenpilotTestCase):
     # the way to close follow's (and the same for the MPC candidate's accel): a 2 s ramp, never a step to the close MPC
     pl = planner(True)
     c = pl.close_follow
-    self.assertTrue(c.live)
+    self.assertTrue(c.switch_on)   # push14: live from its first plan, which reads the 1-bar mode (build_sm's: on)
     action_t = pl.CP.longitudinalActuatorDelay + DT_MDL
     gs, diffs = [], []
     for sm in queue(GAP_FULL + 10):
@@ -1157,7 +1179,7 @@ class TestPlanner(OpenpilotTestCase):
   def test_live_takes_close_follows_candidates(self):
     live = planner(True)
     c = live.close_follow
-    self.assertTrue(c.live)
+    self.assertTrue(c.switch_on)   # push14: live from its first plan, which reads the 1-bar mode (build_sm's: on)
     ref = planner(close_follow=False)
     frames = queue(300)
     out_live, out_ref = drive(live, frames), drive(ref, frames)
@@ -1291,8 +1313,11 @@ class TestPlanner(OpenpilotTestCase):
     self.assertIsNone(planner(True, CAR.HONDA_CIVIC).close_follow)
     self.assertIsNone(planner(False, CAR.HONDA_CIVIC).close_follow)
     self.assertIsNone(planner(True, stock_acc=True).close_follow)
-    self.assertTrue(planner(True).close_follow.live)
-    self.assertFalse(planner(False).close_follow.live)
+    for switch in (True, False):
+      pl = planner(switch)
+      self.assertFalse(pl.close_follow.live, "push14: shadow until its first plan reads the dash's 1-bar mode")
+      step(pl, queue(1)[0])   # at 1 bar
+      self.assertEqual(pl.close_follow.live, switch)
     self.assertFalse(close_follow_applies(honda_cp(op_long=False), custom.CarParamsSP.new_message()))
     self.assertTrue(close_follow_applies(honda_cp(), custom.CarParamsSP.new_message()))
 
@@ -1668,7 +1693,8 @@ class TestPlanner(OpenpilotTestCase):
     after = [g for _, g in gs[k_on:]]
     self.assertEqual(after[:HOLD], [0.] * HOLD, "from nothing: the 1 s hold")
     self.assertLessEqual(max(np.diff(after)), cf.GAP_RISE * DT_MDL + 1e-12, "then the ramp, never a step")
-    self.assertEqual(c.switch_changes, 2)
+    # three: push14's first plan (shadow until it reads the dash's 1-bar mode, here 1 bar), off, on
+    self.assertEqual(c.switch_changes, 3)
     # at an engage it is read on the frame (the 3 s read is held off here, so only the engage can read it)
     params.put_bool("CloseFollow", False, block=True)
     c._read_left = 10
@@ -1769,6 +1795,99 @@ class TestPlanner(OpenpilotTestCase):
     self.assertFalse(s.update(None, False))
     self.assertFalse(s.on, "off at every disengage")
     self.assertTrue(math.isfinite(cf.SUMMARY_S))
+
+
+class TestFourDashBars(OpenpilotTestCase):
+  """push14 (distance_bars.py): with its switch on, close follow is live only in the dash's 1-bar mode - at 4, 3 and 2
+  bars it is shadow, the planner's every output and published plan bit for bit the planner's without close follow - and
+  the 1-bar mode, read every plan from selfdriveStateSP, applies on that frame both ways."""
+
+  def outputs(self, pl, frames, pm=None):
+    out = []
+    for sm in frames:
+      step(pl, sm, pm)
+      out.append((float(pl.output_a_target), bool(pl.output_should_stop), pl.v_desired_trajectory.tolist(),
+                  pl.a_desired_trajectory.tolist(), pl.j_desired_trajectory.tolist(), int(pl.mpc.source), bool(pl.fcw),
+                  float(pl.v_desired_filter.x), float(pl.a_cruise)))
+    return out
+
+  def test_shadow_at_4_3_and_2_bars(self):
+    for p in (P.relaxed, P.standard, P.aggressive):
+      with self.subTest(personality=p):
+        frames = [build_sm(V0, f['radarState'].leadOne.dRel, f['radarState'].leadOne.vLead,
+                           a_lead=f['radarState'].leadOne.aLeadK, e2e=-0.1, personality=p, one_bar=False)
+                  for f in queue(400, brake_at=300)]
+        pm_off, pm_on = PM(), PM()
+        off, on = planner(close_follow=False), planner(True)
+        out_off = self.outputs(off, frames, pm_off)
+        out_on = self.outputs(on, frames, pm_on)
+        assert_same_frames(self, out_off, out_on, "the switch on, not at 1 bar: every planner output bit for bit")
+        for s in ('longitudinalPlan', 'longitudinalPlanSP'):
+          assert_same_frames(self, plan_dicts(pm_off, s), plan_dicts(pm_on, s), s)
+        logs = [messaging.log_from_bytes(b).customReserved10 for b in pm_on.sent['customReserved10']]
+        self.assertTrue(all(m.switchOn and not m.oneBar and not m.live and not m.tightening and m.mode == cf.MODE_SHADOW
+                            for m in logs))
+        self.assertGreater(sum(m.gapActive for m in logs), 100, "while its log says what it would have done")
+        self.assertEqual(on.close_follow.switch_changes, 0, "never live, so never a switch line")
+
+  def test_live_at_1_bar_only_with_the_switch(self):
+    for switch, live in ((True, True), (False, False)):
+      with self.subTest(switch=switch):
+        pl = planner(switch)
+        for sm in queue(200, one_bar=True):
+          step(pl, sm)
+          self.assertEqual(pl.close_follow.live, live)
+        self.assertEqual(pl.close_follow.gap_active, True)   # (in shadow too: its log)
+
+  def test_the_1_bar_mode_applies_on_the_frame(self):
+    pl = planner(True)
+    c = pl.close_follow
+    pm = PM()
+    for sm in queue(100, one_bar=False):
+      step(pl, sm, pm)
+    self.assertFalse(c.live)
+    self.assertTrue(c.defer, "shadow runs after the sends")
+    # into 1 bar: live on the first frame, from nothing - the 1 s hold, then the ramp
+    gs = []
+    for sm in queue(400, one_bar=True):
+      step(pl, sm, pm)
+      gs.append((c.live, c.g))
+    self.assertTrue(all(lv for lv, _ in gs))
+    self.assertFalse(c.defer)
+    after = [g for _, g in gs]
+    self.assertEqual(after[:HOLD], [0.] * HOLD, "from nothing: the 1 s hold")
+    self.assertLessEqual(max(np.diff(after)), cf.GAP_RISE * DT_MDL + 1e-12, "then the ramp, never a step")
+    self.assertEqual(after[-1], 1.)
+    self.assertTrue(last_log(pm).oneBar and last_log(pm).live)
+    # out of it (a press to 4 bars): shadow on that frame, the plan its own MPC's at once
+    step(pl, queue(1, one_bar=False)[0], pm)
+    self.assertFalse(c.live)
+    plan = plan_trajectories(pl.mpc)
+    np.testing.assert_allclose(pl.a_desired_trajectory, plan[1], rtol=0., atol=0.)
+    self.assertEqual((c.g, c.gap.authority, c.lift.authority, c.lifting), (0., 0., 0., 0.))
+    self.assertFalse(last_log(pm).oneBar or last_log(pm).live)
+    self.assertEqual(c.switch_changes, 2)
+
+  def test_a_route_from_before_push14_is_shadow(self):
+    # selfdriveStateSP without closeFollowOneBar (or none at all): off - shadow, whatever the switch
+    pl = planner(True)
+    for sm in queue(60):
+      del sm['selfdriveStateSP']
+      step(pl, sm)
+    self.assertFalse(pl.close_follow.live)
+    self.assertFalse(pl.close_follow.failed, "an unreadable 1-bar mode is shadow, not a failure")
+    self.assertFalse(cf.read_one_bar({}))
+    self.assertFalse(cf.read_one_bar({'selfdriveStateSP': object()}))
+    self.assertFalse(cf.read_one_bar({'selfdriveStateSP': messaging.new_message('selfdriveStateSP').selfdriveStateSP}))
+    self.assertTrue(cf.read_one_bar({'selfdriveStateSP': one_bar_sp(True)}))
+
+  def test_the_gate_moved_unchanged(self):
+    # close_follow_applies, read_switch and SWITCH_PARAM live in close_follow_gate.py since push14 (light enough for
+    # selfdrived and controlsd) and close follow re-exports them
+    from openpilot.sunnypilot.selfdrive.controls.lib import close_follow_gate as gate
+    self.assertIs(cf.close_follow_applies, gate.close_follow_applies)
+    self.assertIs(cf.read_switch, gate.read_switch)
+    self.assertEqual(cf.SWITCH_PARAM, gate.SWITCH_PARAM)
 
 
 def last_pitch(pl) -> float:

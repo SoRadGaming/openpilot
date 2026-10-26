@@ -24,6 +24,7 @@ from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
 from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
+from openpilot.sunnypilot.selfdrive.controls.lib.distance_bars import four_bars_apply, lead_distance_bars  # FORK(CLOSE-FOLLOW)
 
 State = log.SelfdriveState.OpenpilotState
 LaneChangeState = log.LaneChangeState
@@ -61,6 +62,8 @@ class Controls(ControlsExt):
     self.LoC = LongControl(self.CP, self.CP_SP)
     # FORK(HONDA_ACCORD_9G_AU): HONDA_ELESYS's PID floor follows the climb (honda/interface.py elesys_pid_accel_min())
     self.elesys_pid_floor = self.CP.brand == 'honda' and elesys_pid_floor_applies(self.CP, self.CP_SP)
+    # FORK(CLOSE-FOLLOW): the Elesys Accord's four dash bars (distance_bars.py); every other car personality + 1
+    self.four_bars = four_bars_apply(self.CP, self.CP_SP)
     self.VM = VehicleModel(self.CP)
     self.LaC: LatControl
     if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
@@ -199,7 +202,10 @@ class Controls(ControlsExt):
     hudControl.speedVisible = CC.enabled
     hudControl.lanesVisible = CC.enabled
     hudControl.leadVisible = self.sm['longitudinalPlan'].hasLead
-    hudControl.leadDistanceBars = self.sm['selfdriveState'].personality.raw + 1
+    # FORK(CLOSE-FOLLOW): 4 / 3 / 2 bars and 1 at close follow's 1-bar mode on the Elesys Accord, upstream's
+    # personality + 1 everywhere else (distance_bars.py)
+    hudControl.leadDistanceBars = lead_distance_bars(self.sm['selfdriveState'].personality.raw,
+                                                     self.sm['selfdriveStateSP'].closeFollowOneBar, self.four_bars)
     hudControl.visualAlert = self.sm['selfdriveState'].alertHudVisual
 
     hudControl.rightLaneVisible = True

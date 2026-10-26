@@ -71,6 +71,10 @@ struct SelfdriveStateSP @0x81c2f05a394cf4af {
   intelligentCruiseButtonManagement @1 :IntelligentCruiseButtonManagement;
   buttonsPressed @2 :UInt16;
   buttonsReleaseToggle @3 :UInt16;
+  # FORK(CLOSE-FOLLOW) push14: the Elesys Accord's four dash bars (distance_bars.py) - the 1-bar mode in effect: the
+  # CloseFollow switch on, CloseFollowOneBar set by the distance button, the personality aggressive, the car where close
+  # follow runs. controlsd shows 1 bar for it, plannerd's close follow is live only while it is set. False everywhere else.
+  closeFollowOneBar @4 :Bool;
 
   enum AudibleAlert {
     none @0;
@@ -790,6 +794,9 @@ struct CustomReserved10 @0xcb9fd56c7057593a {
   realWeight @43 :Float32;           # 1 up to 0.55 m of realDeficit, 0 from 0.8 m (round 3; 0.65 / 0.9 in round 2):
                                      # what close follow may still raise
   pullAway @44 :Bool;                # leadOne's aLeadK over 0.3 m/s^2 for 0.5 s: no new tightening, the gap fades out
+  # push14 (four dash bars, distance_bars.py)
+  oneBar @45 :Bool;                  # the dash's 1-bar mode as plannerd read it this plan (selfdriveStateSP.
+                                     # closeFollowOneBar): live needs it AND switchOn; false on a route from before push14
 
   enum CloseFollowInhibit {
     none @0;

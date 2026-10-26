@@ -42,13 +42,16 @@ class TogglesLayoutMici(NavScroller):
   def __init__(self):
     super().__init__()
 
-    self._personality_toggle = BigMultiParamToggle("driving personality", "LongitudinalPersonality", ["aggressive", "standard", "relaxed"])
+    # FORK(CLOSE-FOLLOW): a personality picked here leaves the four dash bars' 1-bar mode (distance_bars.py)
+    self._personality_toggle = BigMultiParamToggle("driving personality", "LongitudinalPersonality", ["aggressive", "standard", "relaxed"],
+                                                   select_callback=self._on_personality)
     self._experimental_btn = BigToggle("experimental mode", initial_state=ui_state.params.get_bool("ExperimentalMode"),
                                        toggle_callback=self._on_experimental_mode)
-    # FORK(CLOSE-FOLLOW): close follow in queues (close_follow.py): on, it follows closer below ~20 km/h; off, it only
-    # logs what it would do. The Elesys Accord with openpilot longitudinal only (_update_toggles). Also in sunnylink
-    # Vehicle > Honda. plannerd re-reads it within 3 s, so it may change while driving.
-    self._close_follow_toggle = BigParamControl("close follow", "CloseFollow")
+    # FORK(CLOSE-FOLLOW): close follow in queues (close_follow.py), the master: on, the steering wheel's distance button
+    # steps 4 -> 3 -> 2 -> 1 bar and at 1 bar it follows closer below ~20 km/h; off, the button steps 4 -> 3 -> 2 and
+    # close follow only logs what it would do (push14, distance_bars.py). The Elesys Accord with openpilot longitudinal
+    # only (_update_toggles). Also in sunnylink Vehicle > Honda. Read within 3 s, so it may change while driving.
+    self._close_follow_toggle = BigParamControl("close follow at 1 bar", "CloseFollow")
     is_metric_toggle = BigParamControl("use metric units", "IsMetric")
     # FORK(HUD): every radar track as a dot on the road view, a diagnostic, off by default (radar_dots.py); also in
     # sunnylink Visuals > HUD. The road view re-reads it within a second, so it may change while driving.
@@ -130,6 +133,12 @@ class TogglesLayoutMici(NavScroller):
     # Refresh toggles from params to mirror external changes
     for key, item in self._refresh_toggles:
       item.set_checked(ui_state.params.get_bool(key))
+
+  def _on_personality(self, value: str):
+    # FORK(CLOSE-FOLLOW): a tap here picks one of the three personalities, so it leaves the 1-bar mode (a settings change,
+    # the only write outside a distance-button press; distance_bars.py). Written only when it is set.
+    if ui_state.params.get_bool("CloseFollowOneBar"):
+      ui_state.params.put_bool("CloseFollowOneBar", False)
 
   def _on_experimental_mode(self, state: bool):
     if state and not ui_state.params.get_bool("ExperimentalModeConfirmed"):

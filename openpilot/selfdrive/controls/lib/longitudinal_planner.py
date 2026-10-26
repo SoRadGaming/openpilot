@@ -80,12 +80,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     # car and in stock ACC mode, which keeps upstream's plan bit for bit.
     self.reentry_ramp = ReentryRamp(dt) if reentry_ramp_applies(CP, CP_SP) else None
     # FORK(CLOSE-FOLLOW): close follow in queues (close_follow.py): live while the user's CloseFollow switch is on (the
-    # default), shadow (logged only) while it is off - read here, then every 3 s and at every engage by close follow
-    # itself. None on every other car and in stock ACC mode: upstream's plan bit for bit.
+    # default) AND (push14) the dash is in its 1-bar mode (selfdriveStateSP.closeFollowOneBar, distance_bars.py),
+    # shadow (logged only) otherwise - the switch read here, then every 3 s and at every engage, the 1-bar mode every
+    # plan, by close follow itself. None on every other car and in stock ACC mode: upstream's plan bit for bit.
     self.close_follow = None
     if close_follow_applies(CP, CP_SP):
       params = Params()
-      self.close_follow = CloseFollow(read_mode(params), dt, params=params)
+      self.close_follow = CloseFollow(read_mode(params), dt, params=params, one_bar_gate=True)
     # FORK(LEAD-BRAKE): brake sooner when the lead brakes hard (lead_brake_assist.py). None on every other car, in stock
     # ACC mode and with LeadBrakeAssistMode 0, which keeps upstream's plan bit for bit.
     self.lead_brake = lead_brake_planner(CP, CP_SP, dt)

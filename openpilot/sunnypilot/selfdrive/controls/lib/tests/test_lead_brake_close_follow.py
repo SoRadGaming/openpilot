@@ -17,6 +17,7 @@ import unittest
 from typing import Any, cast
 from unittest import mock
 
+from openpilot.cereal import messaging
 from openpilot.common.params import Params
 from openpilot.common.test import OpenpilotTestCase
 import openpilot.selfdrive.controls.lib.longitudinal_planner as LP
@@ -60,11 +61,16 @@ def drive(pl):
   with mock.patch.object(tl, 'V0', V):
     for f in frames():
       sm = tl.build_sm(f)
+      # push14: the dash's 1-bar mode, where close follow is live with its switch on (distance_bars.py)
+      sp = messaging.new_message('selfdriveStateSP')
+      sp.selfdriveStateSP.closeFollowOneBar = True
+      sm['selfdriveStateSP'] = sp.selfdriveStateSP.as_reader()
       n = len(cf_saw)
       pl.update(cast(Any, sm))
       pl.publish(cast(Any, sm), pm)
       lb = pl.lead_brake
-      seen.append({'a': float(pl.output_a_target), 'active': bool(lb and lb.proj.active), 'a_proj': lb.proj.a_lead if lb else None,
+      seen.append({'live': bool(c and c.live),
+                   'a': float(pl.output_a_target), 'active': bool(lb and lb.proj.active), 'a_proj': lb.proj.a_lead if lb else None,
                    'a_k': float(f.aLeadK), 'g': c.g if c else 0.0, 'cf_lead': cf_saw[n] if len(cf_saw) > n else None,
                    'compared': bool(lb and lb.compared), 'skipped': bool(lb and lb.skipped)})
   return seen
@@ -75,8 +81,9 @@ class TestLeadBrakeWithCloseFollow(OpenpilotTestCase):
   def test_close_follow_sees_the_projection_and_never_dilutes_it(self):
     pl = planner(lba.MODE_LIVE, cf.MODE_LIVE)
     self.assertIsNotNone(pl.close_follow)
-    self.assertTrue(pl.close_follow.live)
+    self.assertTrue(pl.close_follow.switch_on)
     seen = drive(pl)
+    self.assertTrue(all(s['live'] for s in seen), "live from the first plan (push14: the switch and the 1-bar mode)")
     act = [s for s in seen if s['active']]
     self.assertTrue(act, "the projection fired")
     self.assertTrue(any(s['g'] > 0.0 for s in seen[:40]), "close follow had the gap while the queue was steady")
