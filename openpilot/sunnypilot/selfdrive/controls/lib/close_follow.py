@@ -9,7 +9,9 @@ bars, distance_bars.py) only in the dash's 1-bar mode, the fourth step of the st
 (4 relaxed, 3 standard, 2 aggressive, 1 aggressive with close follow). OFF, or at 4, 3 or 2 bars: shadow - it computes
 and logs everything below every plan and changes nothing (the plan, the accel sent, the HUD, every CAN frame are as
 without it), and with the switch off the button never reaches 1 bar. The planner reads the switch when plannerd starts,
-again every SWITCH_READ_S (3 s) and at every engage (reads only, never a write), and the 1-bar mode every plan from
+again every SWITCH_READ_S (3 s), at every engage and on the plan the 1-bar mode comes on (reads only, never a write;
+selfdrived's own 0.1 s read of the switch is in that mode, so the master switched on at a remembered 1 bar is live on the
+plan the dash shows 1 bar - the push14 review), and the 1-bar mode every plan from
 selfdriveStateSP.closeFollowOneBar (read_one_bar); a change of either applies on that frame: into live, the gap and the
 lift start from nothing (the 1 s hold, then the ramp); out of it, close follow drops out at once, as on any trip. A
 switch or a 1-bar mode that cannot be read is OFF (shadow).
@@ -229,7 +231,7 @@ PlanSource = log.LongitudinalPlan.LongitudinalPlanSource
 # CloseFollow (params_keys.h, BOOL, default "1"): the user's switch, SWITCH_PARAM. Since push14 the master: live needs
 # it ON and the dash's 1-bar mode (selfdriveStateSP.closeFollowOneBar, distance_bars.py); anything else is shadow.
 ONE_BAR_SERVICE = "selfdriveStateSP"
-SWITCH_READ_S = 3.0             # s: plannerd re-reads it this often (and at every engage); reads only, never a write
+SWITCH_READ_S = 3.0             # s: plannerd re-reads it this often (at every engage and when the 1-bar mode comes on too); reads only
 MODE_SHADOW, MODE_LIVE = 1, 2   # customReserved10.mode
 SERVICE = "customReserved10"
 
@@ -840,7 +842,8 @@ class CloseFollow:
   mode: MODE_LIVE or MODE_SHADOW (read_mode() of the user's switch); with `params`, update_mpc() re-reads the switch
   every SWITCH_READ_S and at every engage and applies a change on that frame (set_mode).
   one_bar_gate (push14, the planner's): live also needs the dash's 1-bar mode, which update_mpc() reads every plan
-  (read_one_bar: selfdriveStateSP.closeFollowOneBar) and applies on that frame too; until the first plan it is shadow.
+  (read_one_bar: selfdriveStateSP.closeFollowOneBar) and applies on that frame too, re-reading the switch on the plan it
+  comes on (_poll_mode); until the first plan it is shadow.
   An exception anywhere in close follow never reaches plannerd: it is logged once (cloudlog.exception, error level),
   close follow is off for the rest of the drive, and every call hands back the plan's own values (push12's)."""
 
@@ -952,10 +955,16 @@ class CloseFollow:
     self.switch_on = read_switch(self.params)
 
   def _poll_mode(self, sm, engaged: bool) -> None:
-    """The switch when it is due (_poll_switch), the 1-bar mode every plan (one_bar_gate), then live or shadow."""
-    self._poll_switch(engaged)
+    """The 1-bar mode every plan (one_bar_gate), the switch when it is due (_poll_switch) - and on the plan the 1-bar
+    mode comes on, which selfdrived sets only with its own read of the switch on (the push14 review: the master switched
+    on at a remembered 1 bar showed 1 bar on the dash for up to SWITCH_READ_S while this was still shadow) - then live
+    or shadow."""
     if self.one_bar_gate:
-      self.one_bar = read_one_bar(sm)
+      one_bar = read_one_bar(sm)
+      if one_bar and not self.one_bar:
+        self._read_left = min(self._read_left, 1)   # the switch on this plan (a read, never a write)
+      self.one_bar = one_bar
+    self._poll_switch(engaged)
     self.set_mode(self._wanted_mode())
 
   def _close_mpc(self):

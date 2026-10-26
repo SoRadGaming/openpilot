@@ -98,6 +98,11 @@ def save_param_from_base64_encoded_string(param_name: str, base64_encoded_data: 
 
   # We convert to string anything that isn't bytes first. We later transform further.
   param_value = _convert_param_to_type(value, param_type)
+  if param_name == "LongitudinalPersonality":
+    # FORK(CLOSE-FOLLOW): a personality picked in sunnylink's app or restored from a backup leaves the four dash bars'
+    # 1-bar mode, cleared before the personality lands; only the distance button enters it (distance_bars.py)
+    from openpilot.sunnypilot.selfdrive.controls.lib.distance_bars import personality_picked
+    personality_picked(params, param_value)
   params.put(param_name, param_value, block=True)
 
 

@@ -50,7 +50,8 @@ class TogglesLayoutMici(NavScroller):
     # FORK(CLOSE-FOLLOW): close follow in queues (close_follow.py), the master: on, the steering wheel's distance button
     # steps 4 -> 3 -> 2 -> 1 bar and at 1 bar it follows closer below ~20 km/h; off, the button steps 4 -> 3 -> 2 and
     # close follow only logs what it would do (push14, distance_bars.py). The Elesys Accord with openpilot longitudinal
-    # only (_update_toggles). Also in sunnylink Vehicle > Honda. Read within 3 s, so it may change while driving.
+    # only (_update_toggles). Also in sunnylink Vehicle > Honda. Read within a fraction of a second (selfdrived every
+    # 0.1 s, plannerd on the plan the 1-bar mode comes on), so it may change while driving.
     self._close_follow_toggle = BigParamControl("close follow at 1 bar", "CloseFollow")
     is_metric_toggle = BigParamControl("use metric units", "IsMetric")
     # FORK(HUD): every radar track as a dot on the road view, a diagnostic, off by default (radar_dots.py); also in
@@ -135,8 +136,9 @@ class TogglesLayoutMici(NavScroller):
       item.set_checked(ui_state.params.get_bool(key))
 
   def _on_personality(self, value: str):
-    # FORK(CLOSE-FOLLOW): a tap here picks one of the three personalities, so it leaves the 1-bar mode (a settings change,
-    # the only write outside a distance-button press; distance_bars.py). Written only when it is set.
+    # FORK(CLOSE-FOLLOW): a tap here picks one of the three personalities, so it leaves the 1-bar mode (a settings change;
+    # sunnylink's app and a backup restore do the same through personality_picked(); distance_bars.py). Written only when
+    # it is set, queued before the toggle's own write of the personality.
     if ui_state.params.get_bool("CloseFollowOneBar"):
       ui_state.params.put_bool("CloseFollowOneBar", False)
 

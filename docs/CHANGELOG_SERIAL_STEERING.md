@@ -18,8 +18,9 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 ## 2026-10-26 — push14: four dash bars - 4, 3, 2, and 1 bar for close follow (board `883a3cd1` unchanged)
 
 Your request: "OP actually has 3 modes but my car has 4 supported on the dash so we could map 4 3 2 to driving modes
-then 1 bar to the new setting". **Branch `cfbars`, one commit on release13 (`faa063298`, push13 as pushed); opendbc
-unchanged (`469d12c7`), panda and both boards unchanged. Not driven yet; not pushed.**
+then 1 bar to the new setting". **Branch `cfbars`, two commits on release13 (`faa063298`, push13 as pushed): push14
+itself and its review's fixes (below, "The review"); opendbc unchanged (`469d12c7`), panda and both boards unchanged.
+Not driven yet; not pushed.**
 
 ### What you will notice
 
@@ -35,11 +36,13 @@ unchanged (`469d12c7`), panda and both boards unchanged. Not driven yet; not pus
   while it actually has openpilot following closer.
 * **The Close Follow switch is now the master** (comma 4 Settings > Toggles, renamed 'close follow at 1 bar'; sunnylink
   Vehicle > Honda 'Close Follow'). Off, the button steps 4 -> 3 -> 2 -> 4 like stock and close follow never goes live.
-  If you are at 1 bar and switch it off, the dash shows 2 bars, and your next press goes to 4. It still defaults on.
+  If you are at 1 bar and switch it off, the dash shows 2 bars, and your next press goes to 4. Switched back on with 1
+  bar remembered, the dash shows 1 bar and close follow is live together, within a second. It still defaults on.
 * **Holding the button** still switches experimental mode, as before. The release that ends a hold changes nothing.
-* **The car remembers your step** for the next drive, like the personality. Picking a personality on the comma 4's
-  settings page leaves the 1-bar mode. (Picking one in sunnylink shows that personality's bars; picking aggressive there
-  while the 1-bar mode is remembered brings 1 bar back.)
+* **The car remembers your step** for the next drive, like the personality. **Only the button takes you to 1 bar.**
+  Picking another personality - on the comma 4's settings page or in sunnylink (Cruise > Driving Personality) - leaves
+  the 1-bar mode, and so does restoring a sunnylink backup with another personality; picking the one you already have
+  changes nothing. No backup carries the 1-bar mode and sunnylink cannot set it, so neither can turn close follow live.
 
 ### The bar values, from your own drives
 
@@ -48,31 +51,34 @@ is four. The radar's own ACC_HUD on bus 2, in 203 routes in `S:\OP\sunny_logs` a
 
 * **The order.** In 25 of your drives the radar's `HUD_DISTANCE` changed 91 times, every time down one and round:
   3 -> 2 (22), 2 -> 1 (25), 1 -> 0 (22), 0 -> 3 (22) - never any other step. One press is one step.
-* **Which end is which.** Following a car steadily under the radar's own ACC (its `ACC_ON` and solid lead car, the radar
-  lead within 0.3 m/s of your speed for 3 s, over 8 m/s), the gap is shortest at 1 and longest at 0:
+* **Which end is which** (as the review re-measured it - see "The review" below for why the first table was dropped).
+  Only 9 of your drives are truly stock - no openpilot ACC_HUD on the bus, so the radar's own reached the dash and its
+  gas and brake the car (routes 0d, 0e, 44, 45, 48, 61, 81, 82, 88):
 
-  | `HUD_DISTANCE` | bars | samples | routes (50+) | time gap, median (p10-p90) |
+  | evidence | `HUD_DISTANCE` 1 | 2 | 0 | 3 |
   |---|---|---|---|---|
-  | 1 | 1 | 5,567 | 7 | **1.23 s** (1.16-2.18) |
-  | 2 | 2 | 2,640 | 2 | **1.59 s** (1.48-1.71) |
-  | 0 | 4 | 4,032 | 2 | **1.86 s** (1.60-2.71) |
-  | 3 | 3 | - | - | no steady following at 3 in the logs; between 0 and 2 in the radar's order |
+  | route 81, the stock ACC driving, steady behind a car (radar lead within 0.5 m/s, 1 s at one setting): time gap, median | **1.22 s** (6,731 samples) | **1.60 s** (8,041) | - | - |
+  | steady behind a car at 1.3-2.1 s with the radar's `ACC_ON`, all routes: the share of frames the radar's own speed request (`PCM_SPEED`) brakes - it computes it while openpilot drives too, where it never reaches the car | 5 % (4,427) | 7 % (8,481) | **60 %** (5,832; 6 of its 7 routes over 30 %) | 2 % (245) |
 
-  So 0 is the longest gap (four bars) and 1 the shortest (one bar), as upstream's `hondacan` says ("wraps to 0 at 4
-  bars"; the CAN packer masks 4 to 0). Your radar sent 1 bar (1) with its ACC on for 58,754 frames, so the dash shows
-  it; openpilot sends 1 today for aggressive.
+  So 1 is closer than 2, and at 0 the radar wants more than 2.1 s - it is the longest. With one step closer per press
+  that leaves 1, 2 and 3 as that many bars and 0 as four, as upstream's `hondacan` says ("wraps to 0 at 4 bars"; the
+  CAN packer masks 4 to 0). Wherever no openpilot ACC_HUD was on the bus (none within 1 s: those 9 drives, and 2 frames
+  of route 0a) the radar put all four values on the dash with its ACC on - 0: 129 frames, 1: 24,209, 2: 19,627, 3: 573
+  - so the dash shows every one of them; openpilot sends 1 today for aggressive.
 * **What openpilot now sends**: 0 / 3 / 2 / 1 for 4 / 3 / 2 / 1 bars - the radar's own values for the same bars
   (`test_distance_bars.py`, through the real Honda CarController).
 
 ### How it works
 
 `distance_bars.py` (`FORK(CLOSE-FOLLOW)`). selfdrived keeps the step: `LongitudinalPersonality` as before and a new
-`CloseFollowOneBar` (BOOL, default off), both written only by a press (`SelfdriveD.distance_button()`, only what
-changes) or the comma 4's personality picker - never from a loop. The mode in effect (the switch on, `CloseFollowOneBar`,
+`CloseFollowOneBar` (BOOL, PERSISTENT, default off), both written only by a press (`SelfdriveD.distance_button()`, only
+what changes) or a setting - never from a loop. Only a press sets `CloseFollowOneBar`; a personality picked in a setting
+clears it (the comma 4's picker; sunnylink's app and a backup restore through `personality_picked()`), and it is neither
+backed up nor writable from sunnylink. The mode in effect (the switch on, `CloseFollowOneBar`,
 aggressive, this car with openpilot longitudinal outside stock ACC mode) goes out every frame as
 `selfdriveStateSP.closeFollowOneBar`: controlsd turns it into the dash's bars, and plannerd's close follow is live only
 while it is set and its own read of the switch is on - read every plan and applied on that frame (into 1 bar: from
-nothing, the 1 s hold and the ramp; out: at once). `customReserved10.oneBar` and `bar=` in its `closefollow` lines log
+nothing, the 1 s hold and the ramp; out: at once), the switch re-read on the plan the mode comes on. `customReserved10.oneBar` and `bar=` in its `closefollow` lines log
 it. Also closed on this car: the stock race your route 14c shows at t=365.0-365.15 - a press, then aggressive, standard,
 aggressive in 0.15 s - because selfdrived re-reads the personality every 0.1 s and the press's write is not blocking;
 the read and the press now take a lock, and a read never undoes a press whose write has not landed. Not changed: the
@@ -108,18 +114,52 @@ limits, and every other car (upstream's three steps and bars, bit for bit).
   On 14c close follow never had a chance (19,676 of the 19,900 plans it was wanted, it was above its hand-back speed),
   so its 1-bar run planned what 2 bars did.
 
+### The review (2026-10-26, the second commit)
+
+Two reviews - the dash encoding from the raw logs, and the button and mode logic on the real selfdrived and in closed
+loop - found nothing that changes what is sent at 4, 3, 2 or 1 bar. Each finding was reproduced, has a test that failed
+before its fix, and is fixed:
+
+* **The "which end is which" table was measured while openpilot drove.** Its value-0 row (4,032 samples, 1.86 s) came
+  only from routes 08, 0a, 6c and 6d, where openpilot sent its own ACC_HUD on bus 0 (route 0a: 10,148 openpilot frames
+  against the radar's 10,211), so the radar's ACC_HUD never reached the dash and its gas and brake never reached the car.
+  Route 0a gave 72 % of the row: openpilot engaged 99.9 % of the time on standard, sending `HUD_DISTANCE` 2 - openpilot's
+  standard gap, not the radar's four bars. The value-1 row mixed in such routes too, and the "58,754 frames" counted them.
+  Re-measured on the stock drives only (above): the conclusion holds, so nothing on the wire changes. Any later gap
+  measurement must leave out the times openpilot's own `0x30C` (src 128) is on the bus.
+* **A personality picked in sunnylink did not leave the 1-bar mode.** At 1 bar, standard picked in sunnylink showed 3
+  bars but left `CloseFollowOneBar` set, and aggressive picked there later was 1 bar again, close follow live, with no
+  press - the comma 4's page already cleared it. Now sunnylink's save path (`save_param_from_base64_encoded_string()`,
+  which the app's saveParams and a backup restore both use) clears it on a change of the personality, before the
+  personality lands (`personality_picked()`); the same personality picked again changes nothing. And so that only the
+  button ever enters the mode, `CloseFollowOneBar` is no longer backed up (as `HondaElesysStockAcc` and
+  `LeadBrakeAssistMode`: a restore must never turn something live) and sunnylink cannot write it (`BLOCKED_PARAMS`).
+* **Switched back on at a remembered 1 bar, the dash showed 1 bar up to 3 s before close follow went live.** selfdrived
+  reads the switch every 0.1 s and sets the mode; plannerd re-read it only every 3 s. plannerd now also re-reads it on
+  the plan the 1-bar mode comes on (a read, never a write), so the dash and close follow change together; switched off,
+  both already went at once.
+
+New tests: `test_distance_bars.py::TestASettingLeavesTheOneBarMode` (6: a sunnylink pick leaves the 1-bar mode and
+aggressive picked there afterwards is 2 bars; the same personality again changes nothing; the flag is cleared before the
+personality lands; a backup restore never enters it; sunnylink cannot write it; every other car writes nothing) and
+`test_close_follow.py::TestFourDashBars::test_the_master_switched_on_at_a_remembered_1_bar` (live on the plan the 1-bar
+mode comes on; never on the mode alone with the switch off), and the settings test checks the new details text. Five
+of the seven failed on the first commit; the other two pin what must not change. Route 14 segments 18-20, replayed
+again on the fixed tree (plannerd + controlsd + card, as above): at 1 bar and at 2 bars every service byte for byte the
+first commit's runs, and 1 bar still `faa063298` close follow on in sendcan.
+
 ### Gates
 
 | gate | result |
 |---|---|
-| `scons -j6` | exit 0 |
-| full suite (`tools/test_runner.py -j 6`, this tree on `PYTHONPATH`) | 3,341 passed, 45 skipped, 1 xfailed (release13: 3,318 passed; +23 new). `test_distance_bars.py`'s ty and codespell fixes after it: that file, `test_close_follow.py` and `test_lead_brake_close_follow.py` again, 111 passed |
+| `scons -j6` | exit 0 (both commits) |
+| full suite (`tools/test_runner.py -j 6`, this tree on `PYTHONPATH`) | with the review's fixes **3,348 passed**, 45 skipped, 1 xfailed (+7 new). The first commit: 3,341 passed (release13: 3,318; +23 new), and after its ty and codespell fixes `test_distance_bars.py`, `test_close_follow.py` and `test_lead_brake_close_follow.py` again, 111 passed |
 | ruff | clean |
 | ty | push12's 4 diagnostics, in the same files |
-| codespell | no new hits in the 17 changed files |
+| codespell | no new hits in the 17 changed files, nor in the review's 12 |
 | `compile_settings_ui.py --check` | matches |
-| modes / CRLF | no mode change (the three new files 644) / none |
-| params | 323 keys, no duplicate (`CloseFollowOneBar` +1) |
+| modes / CRLF | no mode change (the three new files 644; `sunnylinkd.py` stays 755) / none |
+| params | 323 keys, no duplicate (`CloseFollowOneBar` +1; PERSISTENT only since the review) |
 
 ### What to check on the first drive
 
@@ -128,6 +168,7 @@ limits, and every other car (upstream's three steps and bars, bit for bit).
   with `oneBar`, `live`. One more press: **4 bars**, then 3, then 2.
 * At 2 bars in the same queue: no mark, `live` false, `oneBar` false - the shadow log only.
 * Hold the button: experimental mode toggles and the bars do not move.
+* Parked with the car on, at 1 bar: pick standard in sunnylink (3 bars), then aggressive there - **2 bars**, not 1; one press is 1 bar.
 
 ## 2026-10-24 — push13: close follow live, braking to 320, the lane-change floor; brake-sooner and bend ease in shadow; radar dots and camera alerts (board `883a3cd1` unchanged)
 

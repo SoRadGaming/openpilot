@@ -58,6 +58,9 @@ BLOCKED_PARAMS = {
   # FORK(NSW-ZONES): written by the NSW data downloader only (the installed data date, the last check's result)
   "NswZonesStatus",
   "NswZonesVersion",
+  # FORK(CLOSE-FOLLOW): the four dash bars' 1-bar mode, where close follow is live: the distance button enters it, a
+  # picked personality leaves it (distance_bars.py), the app never sets it
+  "CloseFollowOneBar",
 }
 
 # FORK(HONDA_ACCORD_9G_AU): changed only while offroad. Read once at ignition, so an onroad cycle requested from any

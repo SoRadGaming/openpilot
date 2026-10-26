@@ -6,15 +6,20 @@ remembered 1-bar mode stepping on to 4 and cleared); what a press writes - only 
 params thread's reads - and that the mode comes back on the next drive; the first press after the update (aggressive, 2
 bars) is 1 bar; the long press still toggles experimental mode and steps nothing; every other car, and this car without
 openpilot longitudinal or in stock ACC mode, upstream's three steps and personality + 1; the press and the params thread
-taken in turn under the lock. And on the wire, through the real Honda CarController: HUD_DISTANCE 0 / 3 / 2 / 1 for 4 / 3 / 2
+taken in turn under the lock. The push14 review: a personality picked in a setting - sunnylink's app or a backup
+restore - leaves the 1-bar mode, cleared before the personality lands, and only the distance button enters it (no
+backup carries it, sunnylink cannot write it); the personality in effect picked again changes nothing. And on the wire,
+through the real Honda CarController: HUD_DISTANCE 0 / 3 / 2 / 1 for 4 / 3 / 2
 / 1 bars - the values the stock Elesys radar sends for the same bars on the owner's drives - with every other frame,
 the SCM_BUTTONS stand-down among them, the same in all four modes; and in stock ACC mode no ACC_HUD at all, whatever the
 bars. close follow live only at 1 bar (and shadow, the plan bit for bit, at 4, 3 and 2) is in test_close_follow.py
 (TestFourDashBars).
 """
+import base64
 import threading
 import time
 from typing import Any, cast
+from unittest import mock
 
 from opendbc.car import gen_empty_fingerprint, structs
 from opendbc.car.honda.interface import CarInterface
@@ -23,7 +28,7 @@ from opendbc.car.structs import car
 from opendbc.sunnypilot.car.honda.values_ext import HondaFlagsSP
 from opendbc.sunnypilot.car.interfaces import setup_interfaces
 from openpilot.cereal import custom, log, messaging
-from openpilot.common.params import Params
+from openpilot.common.params import ParamKeyFlag, Params
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.selfdrive.selfdrived.events import EVENTS, ET, Events, personality_changed_alert
 from openpilot.selfdrive.selfdrived.selfdrived import SelfdriveD
@@ -33,6 +38,9 @@ from openpilot.sunnypilot.selfdrive.controls.lib.distance_bars import (AGGRESSIV
                                                                        DistanceBars, four_bars_apply, lead_distance_bars,
                                                                        next_mode)
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
+from openpilot.sunnypilot.sunnylink import utils as sunnylink_utils
+from openpilot.sunnypilot.sunnylink.athena import sunnylinkd
+from openpilot.sunnypilot.sunnylink.backups.manager import BackupManagerSP
 
 ButtonEvent = car.CarState.ButtonEvent
 ButtonType = car.CarState.ButtonEvent.Type
@@ -342,6 +350,89 @@ class TestTheButton(OpenpilotTestCase):
     self.assertEqual(sd.personality, AGGRESSIVE)
     sd.read_personality()
     self.assertEqual(sd.personality, STANDARD)
+
+
+def _b64(v) -> str:
+  """A value as sunnylink's app sends it to saveParams and a backup stores it: base64 of its text."""
+  return base64.b64encode(str(v).encode()).decode()
+
+
+class RecordingParams(CountingParams):
+  """CountingParams as sunnylink's save path uses its own Params() (get_type too): every write, in order."""
+
+  def get_type(self, key):
+    return self.p.get_type(key)
+
+
+class TestASettingLeavesTheOneBarMode(OpenpilotTestCase):
+  """The push14 review: a personality picked in a setting - sunnylink's app (saveParams) or a backup restore, both
+  through sunnylink's save_param_from_base64_encoded_string(), as on the comma 4's page (toggles.py) - leaves the 1-bar
+  mode, and only the distance button enters it."""
+
+  def test_a_sunnylink_pick_leaves_the_1_bar_mode(self):
+    sd, _ = start(AGGRESSIVE, one_bar=True)
+    self.assertEqual(sd.bars(), 1)
+    sunnylinkd.saveParams({"LongitudinalPersonality": _b64(STANDARD)})
+    sd.read_personality()
+    self.assertEqual(sd.bars(), 3)
+    self.assertFalse(Params().get_bool("CloseFollowOneBar"), "left on disk too, for the next drive")
+    # the review's case: aggressive picked there afterwards is 2 bars, close follow not live
+    sunnylinkd.saveParams({"LongitudinalPersonality": _b64(AGGRESSIVE)})
+    sd.read_personality()
+    self.assertEqual((sd.personality, sd.bars()), (AGGRESSIVE, 2))
+    self.assertFalse(sd.distance_bars.one_bar(sd.personality))
+    self.assertTrue(sd.press(), "the button still enters it")
+    self.assertEqual(sd.bars(), 1)
+
+  def test_the_personality_in_effect_picked_again_changes_nothing(self):
+    sd, _ = start(AGGRESSIVE, one_bar=True)
+    sunnylinkd.saveParams({"LongitudinalPersonality": _b64(AGGRESSIVE)})
+    sd.read_personality()
+    self.assertEqual(sd.bars(), 1, "an app sending a page's unchanged values changes nothing")
+    self.assertTrue(Params().get_bool("CloseFollowOneBar"))
+
+  def test_the_mode_is_cleared_before_the_personality_lands(self):
+    start(AGGRESSIVE, one_bar=True)
+    rec = RecordingParams()
+    with mock.patch.object(sunnylink_utils, 'Params', return_value=rec):
+      sunnylink_utils.save_param_from_base64_encoded_string("LongitudinalPersonality", _b64(STANDARD))
+    self.assertEqual(rec.writes, ["CloseFollowOneBar", "LongitudinalPersonality"],
+                     "no read of selfdrived's ever sees the new personality with the old mode")
+    self.assertEqual((Params().get("LongitudinalPersonality"), Params().get_bool("CloseFollowOneBar")), (STANDARD, False))
+
+  def test_a_backup_restore_never_enters_the_1_bar_mode(self):
+    keys = {flag: Params().all_keys(flag) for flag in (ParamKeyFlag.BACKUP, ParamKeyFlag.PERSISTENT)}
+    self.assertNotIn(b"CloseFollowOneBar", keys[ParamKeyFlag.BACKUP], "never in a backup")
+    assert b"CloseFollowOneBar" in keys[ParamKeyFlag.PERSISTENT], "kept across drives"
+    assert b"LongitudinalPersonality" in keys[ParamKeyFlag.BACKUP]
+    m = BackupManagerSP.__new__(BackupManagerSP)   # its restore step alone: no sunnylink, no PubMaster
+    m.params = Params()
+    # a backup that carries the 1-bar mode (one from cfbars before this fix) restored over 3 bars: aggressive, 2 bars
+    sd, _ = start(STANDARD, one_bar=False)
+    m._apply_config({"CloseFollowOneBar": _b64(1), "LongitudinalPersonality": _b64(AGGRESSIVE)})
+    sd.read_personality()
+    self.assertEqual((sd.personality, sd.bars()), (AGGRESSIVE, 2))
+    # restored over 1 bar with another personality: that personality, and the 1-bar mode left
+    sd, _ = start(AGGRESSIVE, one_bar=True)
+    m._apply_config({"LongitudinalPersonality": _b64(RELAXED)})
+    sd.read_personality()
+    self.assertEqual(sd.bars(), 4)
+    self.assertFalse(Params().get_bool("CloseFollowOneBar"))
+
+  def test_sunnylink_cannot_set_the_1_bar_mode(self):
+    assert "CloseFollowOneBar" in sunnylinkd.BLOCKED_PARAMS, "only the distance button enters it"
+    sd, _ = start(AGGRESSIVE, one_bar=False)
+    sunnylinkd.saveParams({"CloseFollowOneBar": _b64(1)})
+    sd.read_personality()
+    self.assertEqual(sd.bars(), 2)
+    self.assertFalse(Params().get_bool("CloseFollowOneBar"))
+
+  def test_every_other_car_writes_nothing(self):
+    sd, _ = start(RELAXED, fingerprint=CAR.HONDA_CIVIC)
+    sunnylinkd.saveParams({"LongitudinalPersonality": _b64(STANDARD)})
+    self.assertIsNone(Params().get("CloseFollowOneBar"), "never set there, so never written")
+    sd.read_personality()
+    self.assertEqual(sd.bars(), STANDARD + 1)
 
 
 def _interface_params(fingerprint=ELESYS, stock_acc=False):

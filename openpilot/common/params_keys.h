@@ -166,10 +166,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CloseFollow", {PERSISTENT | BACKUP, BOOL, "1"}},
     // FORK(CLOSE-FOLLOW) push14: the Elesys Accord's four dash bars (distance_bars.py) - the 1-bar mode (aggressive with
     // close follow live) as the steering wheel's distance button left it; it counts only with CloseFollow on and the
-    // personality aggressive. Written by a press (selfdrived) or the comma 4's personality picker, never from a loop;
-    // persists across drives like LongitudinalPersonality. Default off: after the update the button's next step from
-    // 2 bars (aggressive) is 1 bar.
-    {"CloseFollowOneBar", {PERSISTENT | BACKUP, BOOL, "0"}},
+    // personality aggressive. Set only by a press (selfdrived), cleared by a press or by a personality picked in a
+    // setting (the comma 4's page, sunnylink's app or a backup restore), never written from a loop; persists across
+    // drives like LongitudinalPersonality. Deliberately not BACKUP (and blocked in sunnylinkd): a restore must never
+    // turn close follow live. Default off: after the update the button's next step from 2 bars (aggressive) is 1 bar.
+    {"CloseFollowOneBar", {PERSISTENT, BOOL, "0"}},
     {"CompletedSunnylinkConsentVersion", {PERSISTENT, STRING, "0"}},
     {"CustomAccIncrementsEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"CustomAccLongPressIncrement", {PERSISTENT | BACKUP, INT, "5"}},

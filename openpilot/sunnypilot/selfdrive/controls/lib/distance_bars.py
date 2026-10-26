@@ -4,10 +4,17 @@ on the dash so we could map 4 3 2 to driving modes then 1 bar to the new setting
 
 THE DASH. This car's cluster shows the follow distance as 1-4 bars, from ACC_HUD's 2-bit HUD_DISTANCE (0x30C byte 5
 bits 7:6): 1, 2 and 3 are that many bars and 0 is 4 (upstream hondacan: "wraps to 0 at 4 bars" - the packer masks 4 to
-0). The owner's own drives under the Elesys radar's stock ACC bear it out: the radar steps its HUD_DISTANCE
-3 -> 2 -> 1 -> 0 -> 3 at each press of the distance button (91 steps on 25 routes, never any other step), and following
-a car steadily under the stock ACC the gap is shortest at 1 (median 1.23 s, 7 routes) and longest at 0 (1.86 s), with 2
-between (1.59 s). Upstream sends personality + 1 - aggressive 1 bar, standard 2, relaxed 3 - and never 4.
+0). The owner's own drives bear it out (the Elesys radar's own ACC_HUD, bus 2):
+  * the order: the radar steps its HUD_DISTANCE 3 -> 2 -> 1 -> 0 -> 3, one step per press of the distance button (91
+    steps on 25 routes, never any other step);
+  * 1 closer than 2: on a drive the stock ACC drove itself (route 81: no openpilot ACC_HUD on the bus, so the radar's own
+    reached the dash and its gas and brake the car), the steady gap behind a car was 1.22 s at 1 and 1.60 s at 2;
+  * 0 the longest: steadily behind a car at 1.3-2.1 s, the radar's own speed request (PCM_SPEED) braked in 60 % of the
+    frames at 0 against 5 % at 1, 7 % at 2 and 2 % at 3 - at 0 it wanted more than 2.1 s;
+  so with one step closer per press 1-3 are that many bars and 0 is four. Where no openpilot ACC_HUD was on the bus
+  (none within 1 s) the radar put all four on the dash with ACC_ON (0: 129 frames, 1: 24,209, 2: 19,627, 3: 573). A gap measured while
+  openpilot sends its own ACC_HUD (src 128) is openpilot's, not the radar's: leave those drives out of any such count.
+Upstream sends personality + 1 - aggressive 1 bar, standard 2, relaxed 3 - and never 4.
 
 THE MODES on this car: 4 bars relaxed, 3 standard, 2 aggressive, 1 aggressive with close follow LIVE. Each press of the
 steering wheel's distance button steps one closer and wraps, 4 -> 3 -> 2 -> 1 -> 4 (the stock radar's own order), while
@@ -17,16 +24,20 @@ it runs in shadow - computed and logged, the plan and every CAN frame as with cl
 Holding the button is upstream's experimental-mode toggle (sunnypilot's cruise_helpers.py), unchanged: the release that
 ends a hold steps nothing, as upstream.
 
-THE STATE: upstream's LongitudinalPersonality and CloseFollowOneBar (BOOL, PERSISTENT | BACKUP, default off) - the
-1-bar mode as the button left it. Both are written only by a press (press(), selfdrived) or a setting, never from a loop,
-and both persist across drives like the personality: after the update the owner keeps his personality (aggressive, now 2
-bars) and his first press takes him to 1 bar. The mode in effect (one_bar()) is the switch on AND CloseFollowOneBar AND
-the personality aggressive AND the car where close follow runs; selfdrived publishes it as
+THE STATE: upstream's LongitudinalPersonality and CloseFollowOneBar (BOOL, PERSISTENT, default off) - the 1-bar mode as
+the button left it. Both are written only by a press (press(), selfdrived) or a setting, never from a loop, and both
+persist across drives like the personality: after the update the owner keeps his personality (aggressive, now 2 bars)
+and his first press takes him to 1 bar. The mode in effect (one_bar()) is the switch on AND CloseFollowOneBar AND the
+personality aggressive AND the car where close follow runs; selfdrived publishes it as
 selfdriveStateSP.closeFollowOneBar, controlsd turns it into the dash's bars (lead_distance_bars()), and plannerd's close
-follow is live only while it is set and its own read of the switch is on. A press always steps from the mode in effect,
-so a remembered 1-bar mode with the switch off (2 bars on the dash) steps to 4 and is cleared. A personality picked on
-the comma 4's settings page leaves the 1-bar mode (its toggles.py clears CloseFollowOneBar); one picked in sunnylink
-does too unless it is aggressive, which with CloseFollowOneBar still set is the 1-bar mode again.
+follow is live only while it is set and its own read of the switch is on (re-read on the plan the mode comes on). A
+press always steps from the mode in effect, so a remembered 1-bar mode with the switch off (2 bars on the dash) steps to
+4 and is cleared.
+ONLY THE BUTTON ENTERS IT (the push14 review). A personality picked in a setting leaves the 1-bar mode: the comma 4's
+settings page (its toggles.py, every tap a change) and - personality_picked() - sunnylink's app and a backup restore,
+both through sunnylink's save_param_from_base64_encoded_string(); the personality in effect picked again changes
+nothing. No backup carries CloseFollowOneBar (not BACKUP) and sunnylink cannot write it (BLOCKED_PARAMS), so a restore
+or the app never turns close follow live: the button does.
 
 GATED: close_follow_applies() - HONDA_ELESYS with openpilot longitudinal, stock ACC mode off. Every other car, and this
 car in stock ACC mode (the radar's own ACC_HUD reaches the dash; openpilot sends none, and the radar hears the
@@ -91,6 +102,23 @@ def read_one_bar_param(params) -> bool:
     if isinstance(v, bytes):
       v = v.decode(errors='ignore')
     return str(v).strip() == "1"
+  except Exception:
+    return False
+
+
+def personality_picked(params, personality) -> bool:
+  """A setting is about to write LongitudinalPersonality (sunnylink's app or a backup restore; the comma 4's page has its
+  own, toggles.py): a change of the personality leaves the 1-bar mode - CloseFollowOneBar cleared, once and before the
+  personality lands, so no read of selfdrived's sees the new personality with the old mode. The personality in effect
+  picked again changes nothing. A write on a settings change, never from a loop; on every other car the flag is never
+  set, so nothing is written. True if it cleared the flag."""
+  try:
+    if int(personality) == int(params.get(PERSONALITY_PARAM, return_default=True)):
+      return False
+    if not read_one_bar_param(params):
+      return False
+    params.put_bool(ONE_BAR_PARAM, False, block=True)
+    return True
   except Exception:
     return False
 

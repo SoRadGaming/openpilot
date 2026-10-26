@@ -315,6 +315,12 @@ class TestSchedule(OpenpilotTestCase):
     assert "holding the button still switches experimental mode" in desc, desc
     assert "hands the gap back to aggressive's by about 17 km/h" in desc, desc   # (test_it_hands_back_by_itself: 17.2)
     assert "the dash shows 1 bar" in mark, mark
+    # the push14 review: a personality picked in sunnylink leaves the 1-bar mode too (personality_picked), and the switch
+    # applies within selfdrived's 0.1 s read and the next plan (_poll_mode), not plannerd's 3 s
+    assert "Cruise > Driving Personality here, or on the comma 4 - leaves the 1-bar mode" in details, details
+    assert "only the button enters it" in details, details
+    assert "this switch within a second" in details, details
+    self.assertNotIn("within 3 s", details)
 
 
 class TestGapGuard(OpenpilotTestCase):
@@ -1880,6 +1886,31 @@ class TestFourDashBars(OpenpilotTestCase):
     self.assertFalse(cf.read_one_bar({'selfdriveStateSP': object()}))
     self.assertFalse(cf.read_one_bar({'selfdriveStateSP': messaging.new_message('selfdriveStateSP').selfdriveStateSP}))
     self.assertTrue(cf.read_one_bar({'selfdriveStateSP': one_bar_sp(True)}))
+
+  def test_the_master_switched_on_at_a_remembered_1_bar(self):
+    # the push14 review: selfdrived reads CloseFollow every 0.1 s, so with 1 bar remembered the master switched on puts
+    # 1 bar on the dash at once; close follow re-reads the switch on the plan the 1-bar mode comes on (a read, never a
+    # write) - live on that plan, not up to SWITCH_READ_S later
+    pl = planner(False)                    # the master off: the dash 2 bars, shadow
+    c = pl.close_follow
+    for sm in queue(70, one_bar=False):    # past a 3 s read, so the next one is 50 plans away
+      step(pl, sm)
+    self.assertFalse(c.live)
+    self.assertGreater(c._read_left, 40)
+    Params().put_bool("CloseFollow", True, block=True)
+    lives = []
+    for sm in queue(20, one_bar=True):
+      step(pl, sm)
+      lives.append(c.live)
+    self.assertEqual(lives, [True] * 20, "live on the plan the dash shows 1 bar")
+    # the 1-bar mode alone never makes it live: the read on that plan finds the master off
+    pl = planner(False)
+    c = pl.close_follow
+    for sm in queue(70, one_bar=False):
+      step(pl, sm)
+    for sm in queue(round(cf.SWITCH_READ_S / DT_MDL) + 5, one_bar=True):
+      step(pl, sm)
+      self.assertFalse(c.live)
 
   def test_the_gate_moved_unchanged(self):
     # close_follow_applies, read_switch and SWITCH_PARAM live in close_follow_gate.py since push14 (light enough for

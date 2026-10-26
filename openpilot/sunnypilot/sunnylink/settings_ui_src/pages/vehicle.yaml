@@ -41,9 +41,10 @@ sections:
       ECON and S tables will be fitted from) is only counted while that toggle is on.
     enablement:
     - $ref: '#/macros/offroad'
-  # FORK(CLOSE-FOLLOW): CloseFollow, re-read by plannerd every 3 s (close_follow.py), so not offroad-only. Since push14
-  # the master of the dash's 1-bar mode (distance_bars.py): on (the default), live at 1 bar and shadow (logged only) at
-  # 4, 3 and 2; off, shadow and the distance button steps 4, 3 and 2 only. Also on the comma 4's Toggles page.
+  # FORK(CLOSE-FOLLOW): CloseFollow, re-read by selfdrived every 0.1 s and plannerd every 3 s and when the 1-bar mode
+  # comes on (close_follow.py), so not offroad-only. Since push14 the master of the dash's 1-bar mode (distance_bars.py):
+  # on (the default), live at 1 bar and shadow (logged only) at 4, 3 and 2; off, shadow and the distance button steps 4,
+  # 3 and 2 only. Also on the comma 4's Toggles page.
   - key: CloseFollow
     widget: toggle
     title: Close Follow
@@ -61,8 +62,9 @@ sections:
       2013-15 Accord (Elesys) with sunnypilot longitudinal only.
     details: A small two-car mark on the comma 4's right edge shows while it has openpilot following closer than it
       otherwise would, never at a stop. It goes the moment it steps out for a car braking or any of the above, and within
-      a few seconds once the traffic ahead pulls away. A press of the distance button takes effect at once; this switch
-      within 3 s, also while driving. Picking a personality on the comma 4's settings page leaves the 1-bar mode.
+      a few seconds once the traffic ahead pulls away. A press of the distance button takes effect at once, and this
+      switch within a second, also while driving. Picking another personality - Cruise > Driving Personality here, or
+      on the comma 4 - leaves the 1-bar mode, and so does restoring a backup with another one; only the button enters it.
   # FORK(LEAD-BRAKE): LeadBrakeAssistMode, read once when plannerd starts (lead_brake_assist.py), so offroad only.
   # 0 off, 1 shadow (the default), 2 live. The owner's only switch: there is no SSH to the car.
   - key: LeadBrakeAssistMode
