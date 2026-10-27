@@ -260,6 +260,31 @@ class TestSensorWorker(OpenpilotTestCase):
     assert w.wait_first(5.) and w.latest.values == {"a": 3.}
 
 
+class TestPowerMonitoringGivenPower(OpenpilotTestCase):
+  def test_parked_it_integrates_the_power_it_is_given(self):
+    """FORK(COMM): hardwared passes the power worker's reading; calculate() must not read the sensor itself."""
+    from openpilot.system.hardware import power_monitoring as pmod
+    pm = pmod.PowerMonitoring()
+    t = [1000.]
+    with mock.patch.object(pmod.HARDWARE, "get_current_power_draw", side_effect=AssertionError("read the sensor")), \
+         mock.patch.object(pmod.time, "monotonic", side_effect=lambda: t[0]):
+      pm.calculate(12500, False, current_power=4.0)
+      t[0] += 3600.
+      pm.calculate(12500, False, current_power=4.0)
+    assert abs(pm.get_power_used() - 4e6) < 1., pm.get_power_used()  # 4 W for an hour, in uWh
+
+  def test_without_it_the_sensor_is_read_as_upstream(self):
+    from openpilot.system.hardware import power_monitoring as pmod
+    pm = pmod.PowerMonitoring()
+    t = [1000.]
+    with mock.patch.object(pmod.HARDWARE, "get_current_power_draw", return_value=2.0) as read, \
+         mock.patch.object(pmod.time, "monotonic", side_effect=lambda: t[0]):
+      pm.calculate(12500, False)
+      t[0] += 3600.
+      pm.calculate(12500, False)
+    assert read.called and abs(pm.get_power_used() - 2e6) < 1.
+
+
 class TestThermalReads(OpenpilotTestCase):
   def test_the_sweep_rebuilds_get_msg(self):
     n = [0.]

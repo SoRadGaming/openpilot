@@ -45,6 +45,13 @@ class Stall:
     self.entered_at = math.nan
     self.released_at = math.nan
     self.held = math.nan   # the reading the sweep before the stuck one returned
+    self.unstuck = threading.Event()
+
+  def wait_if_stuck(self) -> None:
+    """Any other caller of a stuck read waits it out, as a second reader under the same driver lock would: a loop
+    that made the read itself stops here."""
+    if self.entered.is_set() and not self.unstuck.is_set():
+      self.unstuck.wait(30.)
 
   def block(self) -> None:
     self.arm.clear()
@@ -59,6 +66,7 @@ class Stall:
       os.write(fd, b"x")
       os.close(fd)
       self.released_at = time.monotonic()
+    self.unstuck.set()
 
 
 class Zone(ThermalZone):
@@ -72,6 +80,8 @@ class Zone(ThermalZone):
     if self.stall is not None and self.stall.arm.is_set():
       self.stall.held = self.last
       self.stall.block()
+    elif self.stall is not None:
+      self.stall.wait_if_stuck()
     self.last = self.value()
     return self.last
 
@@ -240,11 +250,30 @@ class TestHardwaredSensorStall(OpenpilotTestCase):
       if self.stall.arm.is_set():
         self.stall.held = round(n[0] * 0.25, 2)
         self.stall.block()
+      else:
+        self.stall.wait_if_stuck()
       n[0] += 1
       return round(n[0] * 0.25, 2)
     r = run_hardware_thread(self.thermal_cfg(lambda: 45., stall_zone=False), 11., self.stall_for(4.8),
                             patches=[mock.patch.object(hardwared.HARDWARE, "get_som_power_draw", side_effect=som)])
     self.check_masked(r, "power", "som_power_draw", "som", 4.8)
+
+  def test_a_4_8_s_power_stall_parked_is_masked(self):
+    """Parked, PowerMonitoring integrates the power draw; hardwared hands it the worker's reading, so the loop never
+    calls the stuck read (a loop that did would wait it out: wait_if_stuck)."""
+    n = [0]
+
+    def power():
+      if self.stall.arm.is_set():  # the first caller after arming: the stuck read
+        self.stall.held = round(n[0] * 0.5, 2)
+        self.stall.block()
+      else:
+        self.stall.wait_if_stuck()
+      n[0] += 1
+      return round(n[0] * 0.5, 2)
+    r = run_hardware_thread(self.thermal_cfg(lambda: 45., stall_zone=False), 11., self.stall_for(4.8), ignition=False,
+                            patches=[mock.patch.object(hardwared.HARDWARE, "get_current_power_draw", side_effect=power)])
+    self.check_masked(r, "power", "power_draw", "power", 4.8)
 
   def test_a_stall_past_the_limit_stops_deviceState_as_before(self):
     r = run_hardware_thread(self.thermal_cfg(lambda: 50.), 16., self.stall_for(10.))
