@@ -476,7 +476,16 @@ class Car:
 
 
 def main():
-  config_realtime_process(4, Priority.CTRL_HIGH)
+  # FORK(CPU): card runs on core 6, not upstream's core 4. card, selfdrived and controlsd all ran on core 4 at FIFO 53,
+  # and with upstream's 1.69 GHz cap on the big cluster (c01b8be96, in the car from 1 Oct) they used 99.5 % of it -
+  # route 157: card 48.4, selfdrived 27.6, controlsd 23.4 (60 % for the three in July). That full core starved its
+  # per-CPU kernel workers for minutes (157's kernel log: "workqueue lockup - pool cpus=4", up to 150 s) and came
+  # before every one of the 21 stalls since 22 Oct, the Low Communication Rate alerts of 153 and 15d among them; and at
+  # equal priority each of the three waited for the others, so 64.5 % of 157's commands were built from the frame
+  # before last or older (CAN -> carControl median 19.3 ms; 5.8 ms in July). Core 6 is camerad's (CFS, 7.3 %; 8.4 %
+  # busy in all), isolated (isolcpus=6,7) and, like core 4, offline only while parked (set_power_save). Expected:
+  # core 4 about 51 %, core 6 about 57 %. docs/fork/COMM-ISSUE.md section 9
+  config_realtime_process(6, Priority.CTRL_HIGH)
   car = Car()
   car.card_thread()
 
