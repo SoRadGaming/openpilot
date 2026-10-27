@@ -15,10 +15,12 @@ full load. A sysfs read runs the driver's code, under the driver's locks, so a r
   and takes the last finished one (`latest`, a Snapshot replaced whole, never changed). A read slower than
   SLOW_READ_S is logged with its name, its time, and how much of that time the thread ran, waited for a CPU, or slept.
 * DeviceStateGuard: what the loop does with the snapshots it has. Up to FRESH_S old they are what it always published.
-  Older, the thermal status may rise but not fall (thermal_status()); past MASK_MAX_S deviceState is not sent at all,
-  which is what a stuck read did before - the comm checks see it as they always did. A read stuck STALL_REPORT_S gets
-  one report, from a thread of its own: where the reading thread is in the kernel, and what the bound kernel threads
-  of the busy cores are doing. Episodes are logged when publishing stops and when the snapshots are fresh again.
+  A thermal snapshot older than that: the thermal status may rise but not fall (thermal_status(); an old power
+  snapshot alone does not hold it, since the status is computed from the temperatures only); any snapshot past
+  MASK_MAX_S: deviceState is not sent at all, which is what a stuck read did before - the comm checks see it as they
+  always did. A read stuck STALL_REPORT_S gets one report, from a thread of its own: where the reading thread is in the
+  kernel, and what the bound kernel threads of the busy cores (sched_diag.VIEW_CPUS) are doing. Episodes are logged
+  when publishing stops and when the snapshots are fresh again.
 
 Normal age is one loop (0.5 s): each loop publishes the sweep the loop before asked for. A read stuck for D seconds:
 up to 5.5 s nothing pauses; up to 8 s publishing pauses at most 3 s, under selfdrived's 3.0 s (no alert); beyond that
@@ -36,6 +38,7 @@ from typing import Protocol
 
 from openpilot.common.hardware.base import ThermalConfig
 from openpilot.common.swaglog import cloudlog
+from openpilot.sunnypilot.system.sched_diag import VIEW_CPUS
 
 FRESH_S = 1.5          # a snapshot older than this is stale: the thermal status may rise, not fall
 MASK_MAX_S = 6.0       # a snapshot older than this: deviceState is not sent (what a stuck read did before)
@@ -222,9 +225,10 @@ def thermal_msg(cfg, values: dict) -> dict:
 # ------------------------------------------------------------------------------------------ the guard
 @dataclass(frozen=True)
 class Decision:
-  send: bool
-  stale: bool
-  age: float
+  send: bool         # no snapshot is past mask_max_s
+  stale: bool        # the oldest snapshot is past fresh_s
+  age: float         # the oldest snapshot's age
+  stale_names: frozenset[str] = frozenset()  # every snapshot past fresh_s, by name: the thermal rule asks for "thermal"
 
 
 class WorkerState(Protocol):
@@ -268,13 +272,15 @@ class DeviceStateGuard:
 
   @staticmethod
   def thermal_status(prev, new, stale: bool):
-    """An old snapshot never lowers the thermal status: while stale it can only rise."""
+    """Old temperatures never lower the thermal status: while the thermal snapshot is stale it can only rise. The caller
+    passes the thermal snapshot's own staleness ("thermal" in Decision.stale_names), not the oldest snapshot's."""
     return max(prev, new) if stale else new
 
   def update(self, now: float, snapshots: dict[str, Snapshot | None]) -> Decision:
     ages = {k: (math.inf if s is None else now - s.t_start) for k, s in snapshots.items()}
     age = max(ages.values(), default=0.)
     stale = age > self.fresh_s
+    stale_names = frozenset(k for k, a in ages.items() if a > self.fresh_s)
     send = age <= self.mask_max_s
     self._check_stuck(now)
     if stale:
@@ -297,7 +303,7 @@ class DeviceStateGuard:
         ep.held_at = None
     elif self.episode is not None:
       self._end_episode(now, self.episode)
-    return Decision(send=send, stale=stale, age=age)
+    return Decision(send=send, stale=stale, age=age, stale_names=stale_names)
 
   def _end_episode(self, now: float, ep: _Episode) -> None:
     self.episode = None
@@ -354,7 +360,7 @@ class DeviceStateGuard:
       cloudlog.exception("sensor stall report failed")
 
 
-def _sudo_stacks(kthreads: dict | None, cpus: tuple[int, ...] = (4, 5), limit: int = 4) -> dict | None:
+def _sudo_stacks(kthreads: dict | None, cpus: tuple[int, ...] = VIEW_CPUS, limit: int = 4) -> dict | None:
   """The kernel stacks of the runnable bound kernel threads of the busy cores (root only: sudo -n, 2 s at most)."""
   if not kthreads:
     return None

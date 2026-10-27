@@ -18,9 +18,10 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 ## 2026-10-28 — push16: room to breathe (board `883a3cd1` unchanged)
 
 Your question after push15: "i got low speed storage problem again, is comma dying?? allocate more spare space if you
-think [that's] worth?", and the alert on Wednesday's drive. **Branch `storage16`, six commits on push15
+think [that's] worth?", and the alert on Wednesday's drive. **Branch `storage16`, seven commits on push15
 (`2984df599`): the deleter and its review; then the alert's own fix - card on a core of its own, then hardwared's
-sensor reads on threads of their own with new diagnostics - and its tests; then these documents. opendbc
+sensor reads on threads of their own with new diagnostics - and its tests; then these documents; then the alert
+fix's review. opendbc
 (`469d12c7`), panda and both boards unchanged. Not driven yet; not pushed.** The details are in
 `docs/fork/STORAGE.md` (storage) and `docs/fork/COMM-ISSUE.md` section 9 (the alert).
 
@@ -80,14 +81,14 @@ they should have been, because each of the three waited for the others to finish
 **What changed.**
 
 * **card moves to core 6**, which until now only ran the camera program (about 8 % busy). Core 4 should drop from
-  about 100 % to about 50 %, and core 6 rise to about 57 %. Same programs, same priority, same calculations: only
+  about 100 % to about 50 %, and core 6 rise to about 55-57 %. Same programs, same priority, same calculations: only
   where they run.
-* **card does a little less work each frame**: a conversion it makes 100 times a second skips a slow step. Its result
-  is exactly the same, checked on every message of Tuesday's drive.
+* **card does a little less work each frame**: a conversion it makes 100 times a second skips a slow step, worth
+  about 2 % of a core. Its result is exactly the same, checked on every message of Tuesday's drive.
 * **hardwared reads the temperature and power sensors on helper threads** and, if a read is slow, keeps reporting the
-  last real readings. While those are more than 1.5 s old it may report the device hotter, never cooler; once they are
-  more than 6 s old it stops reporting, as before, so a real fault still raises the alert, a few seconds later than
-  it used to.
+  last real readings. While the temperatures are more than 1.5 s old it may report the device hotter, never cooler;
+  once any reading is more than 6 s old it stops reporting, as before, so a real fault still raises the alert, a few
+  seconds later than it used to.
 * **hardwared stays off the two busiest cores** (4 and 5).
 * **New lines in the routes** say every minute of a drive how long each core's kernel housekeeping waited, and, if a
   sensor read is ever slow again, which one, for how long, and what held it.
@@ -99,8 +100,11 @@ they should have been, because each of the three waited for the others to finish
 * The steering and speed commands back on fresh data, as in July. You may not feel it.
 * Nothing else: no setting, nothing different in how it steers, brakes or accelerates; the ACC stand-down and AEB are
   untouched.
-* If the camera ever stutters (it shares core 6 with card now), tell me: the fallback is to move selfdrived there
-  instead.
+* **The one risk: the camera now shares core 6 with card**, and card has the higher priority there. The numbers say it
+  fits easily (card holds the camera program up for a few milliseconds of each 50 ms frame), but it has not been tried
+  in the car. If the camera program fell behind by about three frames in a few seconds, openpilot would show "TAKE
+  CONTROL IMMEDIATELY / Driving Model Lagging". I will check the first drives' logs for exactly that; if you see that
+  alert, or the camera stutters, tell me. The fallback (selfdrived on core 6 instead of card) is ready to go.
 
 **What is still unknown.**
 
@@ -108,7 +112,10 @@ they should have been, because each of the three waited for the others to finish
   full logs (rlogs) could say. The new lines are built to tell the next time. Requesting the rlogs of 153 and 15d in
   connect (above) would help.
 * Why the stalls started on 22 October, when core 4 was already busy in September.
-* Core 5 (the screen's) runs at 85-91 %; the new lines watch it too.
+* **Core 5 is the next one.** It runs the screen, the planner and the radar processing, at about 90 % on the recent
+  drives (about 70 % in July: the screen's program has grown). push16 does not change it, and it is now the busiest
+  core. The new lines watch it; if they show it starving, the next step is to move the planner and radar processing
+  to core 4, which push16 has emptied.
 * None of this has been driven yet.
 
 ### What it was (the storage)
@@ -174,11 +181,25 @@ Three new things, all in the qlogs:
   requested in connect could be deleted before it was sent.
 * Upstream's `test_deleter.py` replaced `os.statvfs` for every later test in its worker and never put it back; it now
   patches it per test (`FORK(UPSTREAM-FIX)`).
-* For the alert, 67 new tests (COMM-ISSUE.md 9.8), among them the real hardwared with a sensor read stuck in the
+* For the alert, 75 new tests (COMM-ISSUE.md 9.8), among them the real hardwared with a sensor read stuck in the
   kernel: on the bench a 3.7 s stuck read (Sunday's) and a 4.8 s one (Wednesday's) now give no alert, where push15
   gave the alert both times; a 10 s one still stops deviceState and raises it, as before. Its 37 deliberate
   breakages (card back on core 4, a sensor read back on hardwared's loop, no age limit, the cooler-never rule
   removed, no CPU mask, the stuck-thread detector off, and so on): 37 of 37 fail a test.
+* **The alert fix's review** (two reviewers; COMM-ISSUE.md 9.11) found no fault in the steering, braking, the ACC
+  stand-down or AEB, and these, each fixed or answered with a test that failed first:
+  * A slow power read alone stopped the thermal status from falling, even with the temperatures normal again: in the
+    bench, parked at 101 C then 40 C with the battery read stuck 5.3 s, it stayed "critical" throughout. Now only
+    old temperatures hold it. (Before push16 the same slow read meant the Low Communication Rate alert instead.)
+  * The stall report looked at the kernel threads of cores 4 and 5 only; card's new core 6 is in it now.
+  * One new test failed at random (2 runs in 10): it read a log line a moment before the program wrote it. Fixed in
+    the test, and the tests now widen that moment on purpose so they cannot pass by luck: 30 of 30 runs alone, 10 of
+    10 with every CPU busy, 3 of 3 parallel runs.
+  * Six of the reviewer's 20 deliberate breakages passed the tests (for example the power statistics sampled twice,
+    or the starvation lines never switched on). Eight new tests: all six fail now, and so do nine breakages of the
+    review's own changes.
+  * Numbers corrected: card's conversion was about 2.7 % of a core, not 4 % (the saving is 1.6-1.8 points); the
+    camera's core 6 ran about 8.5 %, not "2-18 %". Core 5 and the camera risk are above.
 * card's new conversion is identical to the old on all 76,779 messages of Tuesday's drive, and a replay of the
   whole drive through radard, plannerd, controlsd and card gives every one of its 655,859 output messages identical
   (191,895 CAN frames sent).
@@ -188,17 +209,20 @@ Three new things, all in the qlogs:
 On `~/sp-long`, branch `storage16`:
 
 * `scons -j6`: done (push16 changes no C++).
-* The full suite (`tools/test_runner.py -j 6`): **3482 passed, 45 skipped, 1 xfailed**. That is push15's 3363, plus
-  the 45 deleter tests and the 7 new diagnostics tests (3415 at the second commit), plus the alert's 67.
+* The full suite (`tools/test_runner.py -j 6`): **3490 passed, 45 skipped, 1 xfailed**. That is push15's 3363, plus
+  the 45 deleter tests and the 7 new diagnostics tests (3415 at the second commit), plus the alert's 67 (3482), plus
+  its review's 8.
 * Process replay, route 157, all 14 segments, radard + plannerd + controlsd + card: **all 655,859 output messages of
   17 services identical** (191,895 sendcan frames), 48c366fae's `card.py` and `helpers.py` against push16's in the
-  same tree and build.
-* The 41 deliberate breakages: every one fails a test. (On the first commit, a first full run failed 7 of the new tests
+  same tree and build; run again on the review commit, identical again. card's conversion: all 76,779 messages of
+  route 157 identical to the old path.
+* The 41 deliberate breakages: every one fails a test. The alert's: 37 of 37; the review's 6 survivors and 9 new
+  ones: 15 of 15. (On the first commit, a first full run failed 7 of the new tests
   because the mutation run's last breakage, the target as 15 %, had the same length as the original and was undone
   within the same second, so Python kept its compiled copy. The mutation script deletes it since.)
 * ruff: clean. ty: 5 diagnostics, push12's 4 and the one in push15's CI test fix (`test_car_stock_alert.py:543`,
   unchanged here); none in push16's files.
-* codespell (with the repo's ignore list): no hits in the changed files.
+* codespell (with the repo's ignore list): no hits in the lines push16 adds.
 * No CRLF, no mode change (`deleter.py`, `card.py` and `hardwared.py` stay 755, every new file 644).
 * `compile_settings_ui.py --check`: matches (no settings change). No new Params key.
 
@@ -212,9 +236,14 @@ On `~/sp-long`, branch `storage16`:
   unattributed `disk_written_mb`).
 * The `storage report`'s `ufs`: a `health_descriptor` with `life_time_estimation_a` / `_b` (0x01 = under 10 % of its
   life used) answers "is it dying" from the flash itself; `entries` instead means this kernel does not expose it.
-* The first `sched baseline`: `caps.affinity` `[0, 1, 2, 3]`, `cpu.4.busy` near 50 and `cpu.6.busy` near 57; no `sched
-  starvation` for CPU 4.
-* The camera, which now shares core 6 with card: no gaps in `roadCameraState.frameId`, `modelV2.frameDropPerc` near 0.
+* The first `sched baseline`: `caps.affinity` `[0, 1, 2, 3]`. Core loads from procLog's per-process CPU (controlsd +
+  selfdrived about 51 % on core 4, card about 46-48 % and camerad 7 % on core 6) or the lines' `rt` and `run_pct`, not
+  from `cpu.N.busy`, which aliases on a core that is not full (COMM-ISSUE 9.6, 9.9). No `sched starvation` for CPU 4
+  or 6; one for CPU 5 is possible (it runs about 90 %) and is information, not a fault.
+* The camera, which now shares core 6 with card, strictly (COMM-ISSUE 9.9): no `modeldLagging`, `cameraFrameRate` or
+  `cameraMalfunction`; the maximum of `drivingModelData.frameDropPerc` 0.5 or less (0 on 157, 14d, 155); no camerad
+  `frame ID skipped` / `requests skipped` lines; `processingTime` against 157's; the first 10 s of each drive too.
+  Any of them off: the fallback branch `storage16-fallback6`.
 * No `commIssue` / `commIssueAvgFreq` naming deviceState unless a `deviceState held: sensors stale` line came first.
 
 ## 2026-10-27 — push15: the distance button fix (board `883a3cd1` unchanged)

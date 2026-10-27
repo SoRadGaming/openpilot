@@ -407,8 +407,10 @@ def hardware_thread(end_event, hw_queue) -> None:
         thermal_status = list(THERMAL_BANDS.keys())[band_idx - 1]
       elif current_band.max_temp is not None and all_comp_temp > current_band.max_temp:
         thermal_status = list(THERMAL_BANDS.keys())[band_idx + 1]
-    # FORK(COMM): from a stale snapshot (over FRESH_S old) the thermal status may rise but never fall
-    thermal_status = sensor_guard.thermal_status(prev_thermal_status, thermal_status, sensors.stale)
+    # FORK(COMM): from stale temperatures (the thermal snapshot over FRESH_S old) the thermal status may rise but never
+    # fall. Only the thermal snapshot's age counts: the status comes from the temperatures, and a slow power read alone
+    # (route 153's) must not hold it at overheated or critical while the temperatures are new
+    thermal_status = sensor_guard.thermal_status(prev_thermal_status, thermal_status, "thermal" in sensors.stale_names)
 
     # **** starting logic ****
 

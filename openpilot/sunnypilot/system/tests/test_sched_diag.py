@@ -70,8 +70,10 @@ class FakeProc:
     lines = ["cpu  0 0 0 0 0 0 0 0 0 0"] + [f"cpu{n} {b} 0 0 {i} 0 0 0 0 0 0" for n, (b, i) in sorted(cpus.items())]
     self.write("stat", "\n".join(lines) + "\n")
 
-  def schedstat(self, cpus: dict[int, int]):
-    lines = ["version 15", "timestamp 1"] + [f"cpu{n} 0 0 0 0 0 0 1000 {d} 10" for n, d in sorted(cpus.items())]
+  def schedstat(self, cpus: dict[int, int], run: dict[int, int] | None = None):
+    """cpus: n -> ns its tasks waited; run: n -> ns its tasks ran (1000 if not given)."""
+    run = run or {}
+    lines = ["version 15", "timestamp 1"] + [f"cpu{n} 0 0 0 0 0 0 {run.get(n, 1000)} {d} 10" for n, d in sorted(cpus.items())]
     self.write("schedstat", "\n".join(lines) + "\n")
 
 
@@ -183,6 +185,18 @@ class TestStuck(SamplerCase):
     for t in (20., 22., 24.):
       s.poll(t)
     assert len(self.ev.named("kthread runnable, not run")) == 2
+
+  def test_the_view_covers_cores_4_5_and_6(self):
+    """The stall report's view: the cores the real-time processes fill, card's core 6 among them since push16."""
+    s = self.sampler()
+    s.started = True
+    for pid, comm, cpu in ((110, "kworker/0:1", 0), (114, "kworker/4:1", 4), (115, "kworker/5:0H", 5),
+                           (116, "kworker/6:2", 6), (126, "ksoftirqd/6", 6), (117, "kworker/7:1", 7)):
+      self.fp.task(pid, comm, "S", cpu=cpu, schedstat=(1, 1, 1))
+    s.poll(0.)
+    v = s.view()
+    assert sorted(t["comm"] for t in v["threads"]) == ["ksoftirqd/6", "kworker/4:1", "kworker/5:0H", "kworker/6:2"], v
+    assert sd.VIEW_CPUS == (4, 5, 6)
 
   def test_a_kworker_that_runs_between_samples_is_not_stuck(self):
     s = self.sampler()
@@ -298,6 +312,40 @@ class TestWindows(SamplerCase):
       s.poll(2. * k)
     line = self.ev.named("sched baseline")[0]
     assert line["cpu"]["4"]["rq_wait_s"] == 2.0 and line["cpu"]["0"]["rq_wait_s"] == 0.0, line["cpu"]
+
+  def test_run_share_from_proc_schedstat(self):
+    """/proc/stat's busy is tick-sampled and aliases with the 100 Hz loops on a core that is not full (the review:
+    route 01's core 4 read 28-52 % with 60 % of real run time); /proc/schedstat's run time is exact, per window and
+    for the drive. Here core 4 runs 51 % and core 6 57 % of the time, while /proc/stat says 30 and 80."""
+    s = self.sampler()
+    s.started = True
+    for k in range(31):
+      t = 2. * k
+      self.fp.schedstat({4: 0, 6: 0, 0: 0}, run={4: int(0.51 * t * 1e9), 6: int(0.57 * t * 1e9), 0: 0})
+      self.fp.stat({4: (30 * k, 70 * k), 6: (80 * k, 20 * k)})
+      self.fp.task(204, "kworker/4:0", "S", cpu=4, schedstat=(1, 0, 1))
+      s.poll(t)
+    cpu = self.ev.named("sched baseline")[0]["cpu"]
+    assert (cpu["4"]["run_pct"], cpu["6"]["run_pct"], cpu["0"]["run_pct"]) == (51.0, 57.0, 0.0), cpu
+    assert (cpu["4"]["busy"], cpu["6"]["busy"]) == (30.0, 80.0), cpu
+    for k in range(31, 46):  # 30 s more at 25 % on core 4, then the drive ends
+      t = 2. * k
+      self.fp.schedstat({4: 0, 6: 0, 0: 0}, run={4: int((0.51 * 60. + 0.25 * (t - 60.)) * 1e9), 6: int(0.57 * t * 1e9),
+                                                 0: 0})
+      s.poll(t)
+    s.started = False
+    s.poll(90.)
+    d = self.ev.named("sched drive summary")[0]["cpu"]
+    assert d["4"]["run_pct"] == round(100. * (0.51 * 60. + 0.25 * 30.) / 90., 1) and d["6"]["run_pct"] == 57.0, d
+
+  def test_without_proc_schedstat_run_share_is_none(self):
+    s = self.sampler()
+    s.started = True
+    for k in range(31):
+      self.fp.stat({4: (50 * k, 50 * k)})
+      s.poll(2. * k)
+    cpu = self.ev.named("sched baseline")[0]["cpu"]
+    assert cpu["4"]["run_pct"] is None and cpu["4"]["busy"] == 50.0, cpu
 
 
 class TestThread(SamplerCase):

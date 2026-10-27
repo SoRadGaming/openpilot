@@ -28,7 +28,7 @@ from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.common.version import terms_version, terms_version_sp, training_version
-from openpilot.sunnypilot.system import sensor_snapshot
+from openpilot.sunnypilot.system import sched_diag, sensor_snapshot
 from openpilot.system.hardware import hardwared
 
 ThermalStatus = log.DeviceState.ThermalStatus
@@ -111,6 +111,10 @@ class Run:
   def __init__(self):
     self.recv: list[tuple[float, dict]] = []
     self.events: list[tuple[float, str, dict]] = []
+    self.samples: list[tuple[float, str, float]] = []  # statlog.sample() calls: (t, name, value)
+    self.samplers: list = []   # the StarvationSampler hardwared built
+    self.workers: list = []    # the SensorWorkers hardwared built
+    self.alive_before_end: dict[str, bool] = {}
     self.first = math.nan
 
   def named(self, name):
@@ -124,7 +128,8 @@ class Run:
     return [(a, b - a) for a, b in zip(ts, ts[1:], strict=False)]
 
 
-def run_hardware_thread(cfg: ThermalConfig, run_s: float, script, ignition: bool = True, patches=()) -> Run:
+def run_hardware_thread(cfg: ThermalConfig, run_s: float, script, ignition: bool = True, patches=(),
+                        sampler_poll_s: float | None = None) -> Run:
   params = Params()
   params.put("HasAcceptedTerms", terms_version, block=True)
   params.put("HasAcceptedTermsSP", terms_version_sp, block=True)
@@ -138,6 +143,28 @@ def run_hardware_thread(cfg: ThermalConfig, run_s: float, script, ignition: bool
   def record(event, *a, **kw):
     r.events.append((time.monotonic(), event, kw))
     return real_event(event, *a, **kw)
+
+  def sample(name, value):
+    r.samples.append((time.monotonic(), name, value))
+
+  class Sampler(sched_diag.StarvationSampler):
+    """The real sampler, recorded: every poll notes whether hardwared had told it the car is started."""
+
+    def __init__(self, *a, **kw):
+      if sampler_poll_s is not None:
+        kw["poll_s"] = sampler_poll_s
+      super().__init__(*a, **kw)
+      self.polled: list[tuple[float, bool]] = []
+      r.samplers.append(self)
+
+    def poll(self, now):
+      self.polled.append((time.monotonic(), self.started))
+      super().poll(now)
+
+  class Worker(sensor_snapshot.SensorWorker):
+    def __init__(self, *a, **kw):
+      super().__init__(*a, **kw)
+      r.workers.append(self)
 
   def feeder():
     k = 0
@@ -158,6 +185,9 @@ def run_hardware_thread(cfg: ThermalConfig, run_s: float, script, ignition: bool
   with contextlib.ExitStack() as stack:
     stack.enter_context(mock.patch.object(hardwared.HARDWARE, "get_thermal_config", return_value=cfg))
     stack.enter_context(mock.patch.object(cloudlog, "event", side_effect=record))
+    stack.enter_context(mock.patch.object(hardwared.statlog, "sample", side_effect=sample))
+    stack.enter_context(mock.patch.object(hardwared, "StarvationSampler", Sampler))
+    stack.enter_context(mock.patch.object(hardwared, "SensorWorker", Worker))
     for p in patches:
       stack.enter_context(p)
     feed = threading.Thread(target=feeder, daemon=True)
@@ -179,8 +209,10 @@ def run_hardware_thread(cfg: ThermalConfig, run_s: float, script, ignition: bool
           ds = sm["deviceState"]
           r.recv.append((time.monotonic(), {"cpu0": ds.cpuTempC[0] if len(ds.cpuTempC) else None,
                                             "status": ds.thermalStatus.raw, "power": ds.powerDrawW,
-                                            "som": ds.somPowerDrawW}))
+                                            "som": ds.somPowerDrawW, "started": ds.started,
+                                            "uwh": ds.offroadPowerUsageUwh}))
       worker.join(15.)
+      r.alive_before_end = {t.name: t.is_alive() for t in [x.thread for x in r.samplers + r.workers] if t is not None}
     finally:
       end_event.set()
       hw.join(15.)
@@ -233,6 +265,11 @@ class TestHardwaredSensorStall(OpenpilotTestCase):
     report = r.named("hardwared sensor stall report")
     assert len(report) == 1 and report[0][1]["read"] == read and report[0][0] < s.released_at, report
     assert report[0][1]["thread"]["stat"]["state"] == "S", report  # asleep in the kernel, in open(2)
+    # statlog samples a power reading once, when it is new: none while the power read is stuck, one a loop otherwise
+    power = [t for t, name, _ in r.samples if name == "power_draw"]
+    assert len([t for t in power if t < s.entered_at]) >= 4, power
+    during = [t for t in power if s.entered_at + 0.3 < t < s.released_at]
+    assert (not during) if worker == "power" else len(during) >= int(stuck / 0.5) - 2, (worker, during)
 
   def test_a_4_8_s_thermal_stall_is_masked(self):
     n = [0]
@@ -274,6 +311,13 @@ class TestHardwaredSensorStall(OpenpilotTestCase):
     r = run_hardware_thread(self.thermal_cfg(lambda: 45., stall_zone=False), 11., self.stall_for(4.8), ignition=False,
                             patches=[mock.patch.object(hardwared.HARDWARE, "get_current_power_draw", side_effect=power)])
     self.check_masked(r, "power", "power_draw", "power", 4.8)
+    # the offroad integration (offroadPowerUsageUwh, and the car battery estimate the shutdown rule reads) takes the
+    # battery power the worker read, loop by loop, the held reading through the stall: each loop's reading times the
+    # time since the loop before
+    pts = [(t, m["power"], m["uwh"]) for t, m in r.recv]
+    expect = sum(p1 * (t1 - t0) for (t0, _, _), (t1, p1, _) in zip(pts, pts[1:], strict=False)) / 3600. * 1e6
+    got = pts[-1][2] - pts[0][2]
+    assert expect > 5000. and abs(got - expect) <= 0.1 * expect, (got, expect)
 
   def test_a_stall_past_the_limit_stops_deviceState_as_before(self):
     r = run_hardware_thread(self.thermal_cfg(lambda: 50.), 16., self.stall_for(10.))
@@ -328,3 +372,55 @@ class TestHardwaredSensorStall(OpenpilotTestCase):
     assert len(inside) >= 9 and set(inside) == {ThermalStatus.critical}, inside
     after = [m["status"] for t, m in r.recv if t > s.released_at + 0.3]
     assert after and min(after) < ThermalStatus.critical, after  # new readings: it falls
+
+  def test_a_power_stall_does_not_hold_the_thermal_status(self):
+    """Only old temperatures hold the thermal status (review of push16). Parked at 101 C: critical. The temperatures
+    fall to 40 C and stay new, and a second later the battery-power read sticks 5.3 s (route 153's stall was in the
+    power section): the status falls during the stall, as it would without one. Holding it there would keep the device
+    offroad, or soft-disable it onroad, for as long as the power reads stay slow."""
+    state = {"v": 101.}
+    cfg = ThermalConfig(cpu=[Zone("cpu0", lambda: state["v"])], gpu=[Zone("gpu0", lambda: state["v"])],
+                        memory=Zone("ddr", lambda: state["v"]), pmic=[Zone("pm", lambda: state["v"])])
+
+    def power():
+      if self.stall.arm.is_set():
+        self.stall.block()
+      else:
+        self.stall.wait_if_stuck()
+      return 3.
+
+    def script(r: Run):
+      time.sleep(3.)
+      state["v"] = 40.
+      time.sleep(1.)
+      self.stall.arm.set()
+      assert self.stall.entered.wait(5.)
+      time.sleep(5.3 - (time.monotonic() - self.stall.entered_at))
+      self.stall.release()
+
+    r = run_hardware_thread(cfg, 12., script, ignition=False,
+                            patches=[mock.patch.object(hardwared.HARDWARE, "get_current_power_draw", side_effect=power)])
+    s = self.stall
+    before = [m["status"] for t, m in r.recv if t < s.entered_at - 1.2]
+    assert before and before[-1] == ThermalStatus.critical, before
+    inside = [(round(t - s.entered_at, 2), m["status"], m["cpu0"]) for t, m in r.recv if s.entered_at < t < s.released_at]
+    assert len(inside) >= 9 and {c for _, _, c in inside} == {40.}, inside  # new temperatures throughout
+    assert min(st for _, st, _ in inside) < ThermalStatus.critical, inside
+    assert inside[-1][1] == ThermalStatus.ok, inside
+    masked = r.named("deviceState masked a sensor stall")
+    assert len(masked) == 1 and masked[0][1]["worker"] == "power", masked  # the power snapshot was stale meanwhile
+
+  def test_the_starvation_sampler_runs_and_follows_started(self):
+    """hardwared starts the sampler, tells it every loop whether the car is started (it samples drives only), and
+    stops it and both sensor workers when it ends."""
+    r = run_hardware_thread(self.thermal_cfg(lambda: 45., stall_zone=False), 4., lambda r: None, sampler_poll_s=0.1)
+    started = [t for t, m in r.recv if m["started"]]
+    assert started, "deviceState never started"
+    assert len(r.samplers) == 1 and len(r.workers) == 2, (r.samplers, r.workers)
+    smp = r.samplers[0]
+    assert r.alive_before_end == {"hw_sched_diag": True, "hw_thermal": True, "hw_power": True}, r.alive_before_end
+    on = [t for t, st in smp.polled if st]
+    assert on and on[0] < started[0] + 1.0, (on[:3], started[:3])
+    for t in [smp.thread] + [w.thread for w in r.workers]:
+      t.join(3.)
+      assert not t.is_alive(), t.name

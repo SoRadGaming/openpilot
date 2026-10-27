@@ -14,7 +14,9 @@ Route 157's kernel log showed a per-CPU kernel worker on CPU 4 runnable and not 
   (kworker/N:M, kworker/N:MH, ksoftirqd/N), every POLL_S: the wait each CPU's housekeeping had, and a thread that is
   runnable at two samples and ran not at all in between (its wait is only counted once it runs, so a stuck one would
   otherwise show nothing until it is over).
-* /proc/stat: each CPU's busy share. /proc/schedstat (per CPU: all tasks' run time and wait), where the kernel has it.
+* /proc/stat: each CPU's busy share (`busy`, sampled at the timer tick, so a 100 Hz or 20 Hz loop on a core that is not
+  full can alias against it: July's route 01 read core 4 at 28-52 % while its three processes ran 60 % of it).
+  /proc/schedstat, where the kernel has it, per CPU: all tasks' run time (`run_pct`, exact) and wait (`rq_wait_s`).
 * Once a window, the SCHED_FIFO / SCHED_RR processes (card, controlsd and selfdrived waiting for each other among them)
   and hardwared's own threads: run time and wait.
 
@@ -46,7 +48,9 @@ STUCK_LOG_S = 2.0      # one bound kernel thread runnable and not run this long
 BASELINE_EVERY = 10
 MIN_LOG_INTERVAL_S = 10.
 SLOW_POLL_S = 0.3
-VIEW_CPUS = (4, 5)     # the cores the real-time processes fill: the stall report's view
+# the cores the real-time processes fill, the stall report's view (and its sudo stacks): controlsd and selfdrived on 4,
+# the UI, plannerd and radard on 5, card on 6 since push16 (with camerad and the camera IRQs' deferred work)
+VIEW_CPUS = (4, 5, 6)
 SCHEDSTAT_VERSIONS = (15, 16, 17)
 
 
@@ -193,6 +197,7 @@ class StarvationSampler:
     self._prev_stat: dict | None = None
     self._drive_stat: dict | None = None
     self._prev_sched: dict | None = None
+    self._drive_sched: dict | None = None
     self._prev_rt: dict[str, tuple[int, int]] = {}
     self._last_kline = -1e9
     self._klines_suppressed = 0
@@ -324,7 +329,7 @@ class StarvationSampler:
     self._worst = None
     self._prev_stat = parse_proc_stat(read_text(os.path.join(self.proc, "stat")))
     self._prev_sched = parse_proc_schedstat(read_text(os.path.join(self.proc, "schedstat")))
-    self._drive_stat = self._prev_stat
+    self._drive_stat, self._drive_sched = self._prev_stat, self._prev_sched
     self._prev_rt = self._rt_sample()
     self._last_rescan = -1e9
 
@@ -334,9 +339,10 @@ class StarvationSampler:
     d = self._drive
     if d is not None:
       stat = parse_proc_stat(read_text(os.path.join(self.proc, "stat")))
+      sched = parse_proc_schedstat(read_text(os.path.join(self.proc, "schedstat")))
       self.prev_drive = {
         "drive_s": round(now - d.start, 1), "windows": self._windows, "starved_windows": self._starved_windows,
-        "cpu": self._cpu_table(d, now, self._drive_stat, stat, None, None), "worst": self._worst,
+        "cpu": self._cpu_table(d, now, self._drive_stat, stat, self._drive_sched, sched), "worst": self._worst,
         "polls": d.polls, "slow_polls": d.slow_polls,
       }
       cloudlog.event("sched drive summary", error=True, **self.prev_drive)
@@ -350,11 +356,13 @@ class StarvationSampler:
       if stat0 and stat1 and c in stat0 and c in stat1:
         db, dt = stat1[c][0] - stat0[c][0], stat1[c][1] - stat0[c][1]
         busy = round(100. * db / dt, 1) if dt > 0 else None
-      rq = None
+      rq = run = None
       if sched0 and sched1 and c in sched0 and c in sched1:
         rq = round(max(sched1[c][1] - sched0[c][1], 0) / 1e9, 3)
+        span = now - w.start  # the two /proc/schedstat reads were taken at w.start and now
+        run = round(100. * max(sched1[c][0] - sched0[c][0], 0) / 1e9 / span, 1) if span > 0 else None
       maxw = max((v for (_, pc), v in w.per_thread.items() if pc == c), default=0.)
-      out[str(c)] = {"busy": busy, "kwait_s": round(w.kwait.get(c, 0.), 3), "kwait_max_s": round(maxw, 3),
+      out[str(c)] = {"busy": busy, "run_pct": run, "kwait_s": round(w.kwait.get(c, 0.), 3), "kwait_max_s": round(maxw, 3),
                      "stuck_max_s": round(w.stuck_max.get(c, 0.), 2), "rq_wait_s": rq}
     return out
 

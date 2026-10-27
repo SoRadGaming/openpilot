@@ -59,6 +59,19 @@ class TestGuard(OpenpilotTestCase):
     d = g.update(10., {"thermal": None})
     assert not d.send and d.stale
 
+  def test_each_stale_snapshot_is_named(self):
+    """The thermal rule asks whether the thermal snapshot is stale, not whether any is: a slow power read alone must
+    not hold the thermal status while the temperatures are new (review of push16; route 153's stall was a power read)."""
+    g = DeviceStateGuard([FakeWorker("thermal"), FakeWorker("power")])
+    d = g.update(10., {"thermal": snap(9, 9.5), "power": snap(2, 6.)})
+    assert d.send and d.stale and d.stale_names == frozenset({"power"}), d
+    d = g.update(10., {"thermal": snap(9, 8.), "power": snap(2, 6.)})
+    assert d.stale_names == frozenset({"thermal", "power"}), d
+    d = g.update(10., {"thermal": snap(9, 9.5), "power": snap(3, 9.6)})
+    assert not d.stale and d.stale_names == frozenset(), d
+    d = g.update(10., {"thermal": None, "power": snap(3, 9.6)})
+    assert not d.send and d.stale_names == frozenset({"thermal"}), d
+
   def test_thermal_status_never_falls_while_stale(self):
     for prev in range(3):
       for new in range(3):
@@ -125,6 +138,16 @@ class TestGuard(OpenpilotTestCase):
     assert r["thread"]["tid"] == w.tid and r["thread"]["stat"]["state"] in ("R", "S") and r["threads"]
     assert r["kthread_stacks"] is None  # sudo only on the device
 
+  def test_the_sudo_stacks_cover_cores_4_5_and_6(self):
+    """card runs on core 6 since push16: its kernel threads are in the report's stacks, as 4's and 5's are."""
+    kthreads = {"t": 1., "threads": [{"pid": 10 + c, "comm": f"kworker/{c}:1", "cpu_bound": c, "state": "R"}
+                                     for c in (0, 4, 5, 6, 7)]}
+    kthreads["threads"].append({"pid": 30, "comm": "kworker/6:2", "cpu_bound": 6, "state": "S"})  # not runnable
+    with mock.patch.object(ss.subprocess, "run", return_value=mock.Mock(stdout="[<0>] worker_thread", stderr="")) as run:
+      out = ss._sudo_stacks(kthreads)
+    assert out is not None and set(out) == {"kworker/4:1:14", "kworker/5:1:15", "kworker/6:1:16"}, out
+    assert [c.args[0][-1] for c in run.call_args_list] == ["/proc/14/stack", "/proc/15/stack", "/proc/16/stack"]
+
   def test_a_new_stuck_read_gets_a_new_report(self):
     w = FakeWorker("thermal")
     g = DeviceStateGuard([w])
@@ -138,10 +161,22 @@ class TestGuard(OpenpilotTestCase):
 
 
 class TestSensorWorker(OpenpilotTestCase):
+  """A sweep publishes `latest` first and logs its slow reads after, on the worker's thread, so a test that has seen a
+  sweep must still wait for that sweep's logging (wait_until). To keep a test from passing by luck when it does not,
+  the gap is widened on purpose: task_schedstat(), which the worker calls between the two, takes 30 ms here."""
+
   def setUp(self):
     super().setUp()
     self.ev = Events()
     p = mock.patch.object(cloudlog, "event", side_effect=self.ev)
+    p.start()
+    self.addCleanup(p.stop)
+    real = ss.task_schedstat
+
+    def slow_schedstat(tid):
+      time.sleep(0.03)
+      return real(tid)
+    p = mock.patch.object(ss, "task_schedstat", side_effect=slow_schedstat)
     p.start()
     self.addCleanup(p.stop)
 
@@ -150,6 +185,12 @@ class TestSensorWorker(OpenpilotTestCase):
     while (w.latest is None or w.latest.seq < seq) and time.monotonic() < deadline:
       time.sleep(0.005)
     assert w.latest is not None and w.latest.seq >= seq, w.latest
+
+  def wait_until(self, cond, timeout=5.):
+    deadline = time.monotonic() + timeout
+    while not cond() and time.monotonic() < deadline:
+      time.sleep(0.005)
+    assert cond(), self.ev.lines
 
   def test_sweeps_are_numbered_and_replaced_whole(self):
     n = [0]
@@ -210,6 +251,7 @@ class TestSensorWorker(OpenpilotTestCase):
     self.addCleanup(w.stop)
     w.request()
     self.wait_seq(w, 1)
+    self.wait_until(lambda: w.slow_sweeps == 1 and w._last_log > 0.)  # the line is written after the publish
     lines = self.ev.named("hardwared slow sensor read")
     assert len(lines) == 1, self.ev.lines
     line = lines[0]
@@ -224,7 +266,9 @@ class TestSensorWorker(OpenpilotTestCase):
     self.addCleanup(w.stop)
     w.request()
     self.wait_seq(w, 1)
-    assert not self.ev.named("hardwared slow sensor read")
+    w.request()
+    self.wait_seq(w, 2)  # one thread: sweep 2 published means sweep 1's logging is over
+    assert not self.ev.named("hardwared slow sensor read") and w.slow_sweeps == 0
 
   def test_slow_reads_are_rate_limited_and_counted(self):
     w = SensorWorker("t", [("a", lambda: time.sleep(0.32) or 1.)], min_log_interval=10.)
@@ -233,11 +277,35 @@ class TestSensorWorker(OpenpilotTestCase):
     for k in range(1, 4):
       w.request()
       self.wait_seq(w, k)
+    # sweep 3 is published before its slow read is counted: wait for that (suppressed is its last step), then end the
+    # interval. Ending it earlier let sweep 3 log instead of sweep 4 (the reviewer's 2 in 10 failures)
+    self.wait_until(lambda: w.slow_sweeps == 3 and w.suppressed == 2)
     w._last_log = -1e9  # the interval is over
     w.request()
     self.wait_seq(w, 4)
+    self.wait_until(lambda: len(self.ev.named("hardwared slow sensor read")) == 2 and w.suppressed == 0)
     lines = self.ev.named("hardwared slow sensor read")
     assert len(lines) == 2 and lines[1]["suppressed"] == 2 and lines[1]["slow_sweeps"] == 4, lines
+    assert lines[0]["slow_sweeps"] == 1 and lines[0]["suppressed"] == 0, lines
+
+  def test_a_sweep_is_as_old_as_its_start(self):
+    """A sweep that sat in a stuck read lands with the time it started: its first readings are that old, so the guard
+    must see it stale on arrival (an age from the sweep's end would make 4.8 s old readings look new)."""
+    gate = threading.Event()
+    w = SensorWorker("t", [("first", lambda: 1.), ("stuck", lambda: gate.wait(5.) and 2.)], slow_read_s=10.)
+    w.start()
+    self.addCleanup(gate.set)
+    self.addCleanup(w.stop)
+    t_req = time.monotonic()
+    w.request()
+    time.sleep(0.6)
+    gate.set()
+    self.wait_seq(w, 1)
+    now = time.monotonic()
+    s = w.latest
+    assert s.values == {"first": 1., "stuck": 2.}
+    assert s.t_start - t_req < 0.3 and s.t_end - s.t_start >= 0.55 and w.age(now) >= 0.55, (s, now - t_req)
+    assert DeviceStateGuard([w], fresh_s=0.5).update(now, {"t": s}).stale
 
   def test_a_read_that_raises_is_raised_on_the_loop(self):
     def bad():

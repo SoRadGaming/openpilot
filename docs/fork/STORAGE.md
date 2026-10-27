@@ -33,8 +33,9 @@ spare space if you think [that's] worth?"
   deleted 29 segments with no stall. The one link: on 157, four of six stall episodes began 6-13 s after a delete
   (p about 0.03); 15d and 158 show none.
 
-So the alert needs core 4 to have room (moving card to core 6, which camerad uses 2-19 %, or reading hardwared's
-sensors on a thread of their own). **Both are in push16's third and fourth commits, documented in
+So the alert needs core 4 to have room (moving card to core 6, where camerad uses about 7 %, 8.5 % with its IRQ work;
+/proc/stat's 2-19 % there is tick aliasing), or reading hardwared's sensors on a thread of their own). **Both are in
+push16's third and fourth commits, documented in
 [COMM-ISSUE.md](COMM-ISSUE.md) section 9** (measured against inferred, the bench, the new lines). This document is the
 storage half, which the evidence supports as harmless and possibly a trigger removed: no routine deletes while
 driving.

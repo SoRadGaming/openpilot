@@ -48,8 +48,10 @@ def convert_to_capnp(struct: structs.CarParamsSP | structs.CarStateSP) -> capnp.
   return struct_capnp
 
 
-# FORK(CPU): convert_carControlSP() runs in card every frame (100 Hz), and struct.to_dict() was most of its cost (43 of
-# its 55 us a call on a PC, on route 157's messages; about 4 % of the device core card runs on). The fast path reads
+# FORK(CPU): convert_carControlSP() runs in card every frame (100 Hz), and struct.to_dict() was most of its cost: timed on
+# a PC on route 157's messages, gc off as in card, 54-58 us a call before and 20-22 us on the fast path. At card's
+# device / PC ratio (about 4.8) the function was about 2.6-2.8 % of the device core card runs on; the fast path saves
+# about 1.6-1.8 points of it (the 43-of-55 us and "about 4 %" first given came from a cProfile run). The fast path reads
 # each field as to_dict() does - _get(), an enum by _as_str(), a nested struct only when it is set: to_dict() leaves an
 # unset one out and the dataclass keeps its own defaults, which are not always capnp's (LeadData.radarTrackId is -1 in
 # the schema, 0 in the dataclass) - and builds the same dataclasses from the same values. Where it could differ it is
