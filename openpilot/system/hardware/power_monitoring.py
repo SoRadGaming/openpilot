@@ -35,7 +35,7 @@ class PowerMonitoring:
     self.car_battery_capacity_uWh = max((CAR_BATTERY_CAPACITY_uWh / 10), car_battery_capacity_uWh)
 
   # Calculation tick
-  def calculate(self, voltage: float | None, ignition: bool):
+  def calculate(self, voltage: float | None, ignition: bool, current_power: float | None = None):
     try:
       now = time.monotonic()
 
@@ -76,7 +76,9 @@ class PowerMonitoring:
           self.last_measurement_time = now
       else:
         # Get current power draw somehow
-        current_power = HARDWARE.get_current_power_draw()
+        # FORK(COMM): hardwared passes what its power worker last read (sensor_snapshot.py); None reads it here
+        if current_power is None:
+          current_power = HARDWARE.get_current_power_draw()
 
         # Do the integration
         self._perform_integration(now, current_power)

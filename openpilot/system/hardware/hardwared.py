@@ -16,7 +16,7 @@ from openpilot.cereal.services import SERVICE_LIST
 from openpilot.common.utils import strip_deprecated_keys
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
-from openpilot.common.realtime import DT_HW
+from openpilot.common.realtime import DT_HW, set_core_affinity
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.common.hardware import HARDWARE, COMMA_HARDWARE
 from openpilot.common.basedir import BASEDIR
@@ -32,6 +32,8 @@ from openpilot.system.hardware.chestnut.status import ChestnutStatus
 from openpilot.common.version import terms_version, training_version, get_build_metadata, terms_version_sp
 from openpilot.sunnypilot.system.params_writer import ParamsWriter  # FORK(COMM-ISSUE)
 from openpilot.sunnypilot.system.storage_diag import LoopTimer, StorageReporter  # FORK(COMM-ISSUE)
+from openpilot.sunnypilot.system.sched_diag import StarvationSampler  # FORK(COMM)
+from openpilot.sunnypilot.system.sensor_snapshot import DeviceStateGuard, SensorWorker, thermal_msg, thermal_reads  # FORK(COMM)
 
 ThermalStatus = log.DeviceState.ThermalStatus
 NetworkType = log.DeviceState.NetworkType
@@ -41,6 +43,12 @@ TEMP_TAU = 5.   # 5s time constant
 DISCONNECT_TIMEOUT = 5.  # wait 5 seconds before going offroad after disconnect so you get an alert
 PANDA_STATES_TIMEOUT = round(1000 / SERVICE_LIST['pandaStates'].frequency * 1.5)  # 1.5x the expected pandaState frequency
 ONROAD_CYCLE_TIME = 1  # seconds to wait offroad after requesting an onroad cycle
+# FORK(COMM): hardwared and every thread it starts stay off cores 4 and 5, which the real-time processes fill (card was
+# there until push16; controlsd and selfdrived, FIFO 53, still are; plannerd and radard, FIFO 51, with the UI on 5).
+# A thread of this process preempted on core 4 while holding the GIL held every other thread of it, the one publishing
+# deviceState too (its main thread ran there in 0.9 % of procLog samples, on 5 in 3.1 %). The default mask was 0-5
+# (isolcpus=6,7); athenad, the uploader and sunnylinkd already use 0-3, which set_power_save never takes offline.
+HARDWARED_CORES = [0, 1, 2, 3]
 
 class Chestnut:
   # flash offroad, modeld ignores chestnut until the product string matches
@@ -263,6 +271,22 @@ def hardware_thread(end_event, hw_queue) -> None:
   HARDWARE.initialize_hardware()
   thermal_config = HARDWARE.get_thermal_config()
 
+  # FORK(COMM): the thermal-zone and power reads run on threads of their own and the loop publishes the last finished
+  # sweep of each: it never waits for a sensor (routes 153 and 15d: 3.70 s and 4.43 s stuck in these reads, and
+  # commIssueAvgFreq). Past MASK_MAX_S old, deviceState is not sent, as when a stuck read held the loop. The
+  # starvation sampler watches the kernel's per-CPU threads. docs/fork/COMM-ISSUE.md section 9
+  sched_sampler = StarvationSampler()
+  thermal_worker = SensorWorker("thermal", thermal_reads(thermal_config))
+  power_worker = SensorWorker("power", [("power_draw", HARDWARE.get_current_power_draw),
+                                        ("som_power_draw", HARDWARE.get_som_power_draw)])
+  sensor_workers = [thermal_worker, power_worker]
+  sensor_guard = DeviceStateGuard(sensor_workers, kthread_view=sched_sampler.view, sudo_stacks=COMMA_HARDWARE)
+  for w in sensor_workers:
+    w.start()
+    w.request()
+  sched_sampler.start()
+  last_power_seq = -1
+
   fan_controller = FanController(int(1./DT_HW))
   chestnut = Chestnut()
   chestnut_status = ChestnutStatus()
@@ -302,9 +326,22 @@ def hardware_thread(end_event, hw_queue) -> None:
       loop_timer.finish()  # FORK(COMM-ISSUE)
       continue
     loop_timer.sample_disk()  # FORK(COMM-ISSUE)
+    loop_timer.mark("disk_sample")  # FORK(COMM): apart from "thermal", which no longer reads a sensor
+
+    # FORK(COMM): take the sweeps the last loop asked for and ask for the next ones. Nothing here waits for a read but
+    # the very first message, as the loop's own reads did
+    for w in sensor_workers:
+      if w.latest is None:
+        w.wait_first()
+      w.raise_if_failed()  # a read's exception ends hardwared, as it did here
+    thermal_snap, power_snap = thermal_worker.latest, power_worker.latest
+    assert thermal_snap is not None and power_snap is not None
+    for w in sensor_workers:
+      w.request()
+    sensors = sensor_guard.update(time.monotonic(), {"thermal": thermal_snap, "power": power_snap})
 
     msg = messaging.new_message('deviceState', valid=True)
-    msg.deviceState = thermal_config.get_msg()
+    msg.deviceState = thermal_msg(thermal_config, thermal_snap.values)  # FORK(COMM): was thermal_config.get_msg()
     msg.deviceState.deviceType = HARDWARE.get_device_type()
 
     try:
@@ -358,6 +395,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     msg.deviceState.fanSpeedPercentDesired = fan_controller.update(all_comp_temp, onroad_conditions["ignition"])
 
     is_offroad_for_5_min = (started_ts is None) and ((not started_seen) or (off_ts is None) or (time.monotonic() - off_ts > 60 * 5))
+    prev_thermal_status = thermal_status  # FORK(COMM)
     if is_offroad_for_5_min and offroad_comp_temp > OFFROAD_DANGER_TEMP:
       # if device is offroad and already hot without the extra onroad load,
       # we want to cool down first before increasing load
@@ -369,6 +407,8 @@ def hardware_thread(end_event, hw_queue) -> None:
         thermal_status = list(THERMAL_BANDS.keys())[band_idx - 1]
       elif current_band.max_temp is not None and all_comp_temp > current_band.max_temp:
         thermal_status = list(THERMAL_BANDS.keys())[band_idx + 1]
+    # FORK(COMM): from a stale snapshot (over FRESH_S old) the thermal status may rise but never fall
+    thermal_status = sensor_guard.thermal_status(prev_thermal_status, thermal_status, sensors.stale)
 
     # **** starting logic ****
 
@@ -478,15 +518,20 @@ def hardware_thread(end_event, hw_queue) -> None:
     params_rewrite = (count % int(60. / DT_HW)) == 0
     params_writer.put_bool("GithubRunnerSufficientVoltage", ((voltage or 0) and voltage > 9000), if_changed=not params_rewrite)
 
-    power_monitor.calculate(voltage, onroad_conditions["ignition"])
+    # FORK(COMM): the power the worker read; calculate() read it itself (offroad only), and so did this loop
+    power_monitor.calculate(voltage, onroad_conditions["ignition"], current_power=power_snap.values["power_draw"])
     msg.deviceState.offroadPowerUsageUwh = power_monitor.get_power_used()
     msg.deviceState.carBatteryCapacityUwh = max(0, power_monitor.get_car_battery_capacity())
-    current_power_draw = HARDWARE.get_current_power_draw()
-    statlog.sample("power_draw", current_power_draw)
+    new_power = power_snap.seq != last_power_seq  # FORK(COMM): a held reading is not sampled twice
+    last_power_seq = power_snap.seq
+    current_power_draw = power_snap.values["power_draw"]  # FORK(COMM)
+    if new_power:
+      statlog.sample("power_draw", current_power_draw)
     msg.deviceState.powerDrawW = current_power_draw
 
-    som_power_draw = HARDWARE.get_som_power_draw()
-    statlog.sample("som_power_draw", som_power_draw)
+    som_power_draw = power_snap.values["som_power_draw"]  # FORK(COMM)
+    if new_power:
+      statlog.sample("som_power_draw", som_power_draw)
     msg.deviceState.somPowerDrawW = som_power_draw
     loop_timer.mark("power")  # FORK(COMM-ISSUE)
 
@@ -504,7 +549,8 @@ def hardware_thread(end_event, hw_queue) -> None:
     loop_timer.mark("athena_ping")  # FORK(COMM-ISSUE)
 
     msg.deviceState.thermalStatus = thermal_status
-    pm.send("deviceState", msg)
+    if sensors.send:  # FORK(COMM): not past MASK_MAX_S, where a stuck read used to hold the loop and nothing was sent
+      pm.send("deviceState", msg)
     loop_timer.mark("send")  # FORK(COMM-ISSUE)
 
     statlog.gauge("free_space_percent", msg.deviceState.freeSpacePercent)
@@ -564,14 +610,24 @@ def hardware_thread(end_event, hw_queue) -> None:
     # FORK(COMM-ISSUE): a section over 0.3 s is logged with the disk's counters; the storage report once per start
     loop_timer.finish(count=count, started=started_ts is not None)
     storage_reporter.update(started_ts, now_ts)
+    sched_sampler.started = started_ts is not None  # FORK(COMM): it samples drives only
 
     count += 1
     should_start_prev = should_start
 
+  for w in sensor_workers:  # FORK(COMM)
+    w.stop()
+  sched_sampler.stop()
   params_writer.flush(5.)  # FORK(COMM-ISSUE): what the loop asked for is on disk when it ends, as with blocking puts
 
 
 def main():
+  # FORK(COMM): before any thread starts, so every thread of hardwared inherits it (HARDWARED_CORES)
+  try:
+    set_core_affinity(HARDWARED_CORES)
+  except OSError:
+    cloudlog.exception("hardwared: could not set its CPU affinity")
+
   hw_queue = queue.Queue(maxsize=1)
   end_event = threading.Event()
 
