@@ -34,8 +34,10 @@ spare space if you think [that's] worth?"
   (p about 0.03); 15d and 158 show none.
 
 So the alert needs core 4 to have room (moving card to core 6, which camerad uses 2-19 %, or reading hardwared's
-sensors on a thread of their own). **That is not in push16.** push16 is the storage half, which the evidence supports
-as harmless and possibly a trigger removed: no routine deletes while driving.
+sensors on a thread of their own). **Both are in push16's third and fourth commits, documented in
+[COMM-ISSUE.md](COMM-ISSUE.md) section 9** (measured against inferred, the bench, the new lines). This document is the
+storage half, which the evidence supports as harmless and possibly a trigger removed: no routine deletes while
+driving.
 
 ## 2. The deleter before push16 (upstream's)
 
@@ -137,7 +139,8 @@ It is there for the 57-61 GB written in each of two parked windows (26 and 27 Oc
   AGNOS lets openpilot run `sudo` without a password (`hardware.py` uses it), so a one-shot `sudo fstrim /data` while
   parked would be possible and leaves nothing behind, but nothing here says it would help. Changing the mount means a
   remount at every boot; not done.
-* **The alert itself** (section 1): core 4's headroom, or hardwared's sensor reads off its loop. A separate change.
+* **The alert itself** (section 1): core 4's headroom and hardwared's sensor reads off its loop. Not the deleter's
+  business: push16's `FORK(CPU)` / `FORK(COMM)` commits, [COMM-ISSUE.md](COMM-ISSUE.md) section 9.
 
 ## 6. Tests
 

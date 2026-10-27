@@ -18,8 +18,11 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 ## 2026-10-28 — push16: room to breathe (board `883a3cd1` unchanged)
 
 Your question after push15: "i got low speed storage problem again, is comma dying?? allocate more spare space if you
-think [that's] worth?". **Branch `storage16`, two commits on push15 (`2984df599`): the change and its review; opendbc
-(`469d12c7`), panda and both boards unchanged. Not driven yet; not pushed.** The details are in `docs/fork/STORAGE.md`.
+think [that's] worth?", and the alert on Wednesday's drive. **Branch `storage16`, six commits on push15
+(`2984df599`): the deleter and its review; then the alert's own fix - card on a core of its own, then hardwared's
+sensor reads on threads of their own with new diagnostics - and its tests; then these documents. opendbc
+(`469d12c7`), panda and both boards unchanged. Not driven yet; not pushed.** The details are in
+`docs/fork/STORAGE.md` (storage) and `docs/fork/COMM-ISSUE.md` section 9 (the alert).
 
 ### The short answer
 
@@ -33,7 +36,7 @@ think [that's] worth?". **Branch `storage16`, two commits on push15 (`2984df599`
   controlsd and selfdrived share core 4; together they used about 60 % of it in July and 99.5 % on Tuesday's 01:26
   drive. Every stall since 22 October came after half a minute of that core at full load.
 * **More free space would not fix the alert.** The stalls also came at 11-13 % free, and without any deletes. Giving
-  core 4 room is the fix for the alert; that is a separate change, not this one.
+  core 4 room is the fix for the alert, and push16 does that too: see "The alert: one CPU core full" below.
 * **What push16 does do is the part of your idea the logs support:** a bigger cushion of free space, used so that the
   comma stops deleting old drives while you drive.
 
@@ -56,10 +59,59 @@ think [that's] worth?". **Branch `storage16`, two commits on push15 (`2984df599`
   (about 120 MB) for about every minute you drove: 1,453 times over the 115 drives on the device since July. Now it
   deletes while driving only below that same floor, which takes a drive of more than about 75 minutes with no parking
   before it, and then slowly, one file every 6 seconds.
-* **Nothing else changes**: driving, alerts, settings, uploads.
-* **"Low Communication Rate" can still appear.** push16 is not its fix.
+* **Nothing else in the storage part changes**: driving, alerts, settings, uploads.
+* **"Low Communication Rate" from a slow sensor read, as on Sunday and Wednesday, should be gone** (below). It can
+  still appear for a real fault: a reading stuck for longer than about 7-8 seconds raises it as before.
 
-### What it was
+### The alert: one CPU core full since the 1 October speed cap
+
+**What was wrong.** The comma has eight CPU cores. openpilot puts the three programs that run the car's controls on
+one of them, core 4, at the highest priority there: card (talks to the car), controlsd (the steering and speed
+calculations) and selfdrived (decides engaged, disengaged and the alerts). On 1 October an update capped the fast
+cores at 1.69 GHz, about 40 % slower than before, and since then those three have needed nearly all of core 4: 60 % of
+it in July, 99.5 % on Tuesday's 01:26 drive. A core that full leaves no time for the Linux kernel's own housekeeping
+jobs that belong to it; on that drive the kernel logged one of them waiting more than two minutes. The part of
+openpilot that reports the device's temperatures and power (hardwared) reads them from the kernel, and on Sunday
+(3.7 s) and Wednesday (4.4 s) one of those reads waited. The report stopped for more than 3 seconds, and selfdrived
+took that as "the programs are not talking to each other": TAKE CONTROL IMMEDIATELY. The full core also held the
+controls back themselves: on Tuesday most steering and speed commands were built from data a frame (10 ms) older than
+they should have been, because each of the three waited for the others to finish.
+
+**What changed.**
+
+* **card moves to core 6**, which until now only ran the camera program (about 8 % busy). Core 4 should drop from
+  about 100 % to about 50 %, and core 6 rise to about 57 %. Same programs, same priority, same calculations: only
+  where they run.
+* **card does a little less work each frame**: a conversion it makes 100 times a second skips a slow step. Its result
+  is exactly the same, checked on every message of Tuesday's drive.
+* **hardwared reads the temperature and power sensors on helper threads** and, if a read is slow, keeps reporting the
+  last real readings. While those are more than 1.5 s old it may report the device hotter, never cooler; once they are
+  more than 6 s old it stops reporting, as before, so a real fault still raises the alert, a few seconds later than
+  it used to.
+* **hardwared stays off the two busiest cores** (4 and 5).
+* **New lines in the routes** say every minute of a drive how long each core's kernel housekeeping waited, and, if a
+  sensor read is ever slow again, which one, for how long, and what held it.
+
+**What you should see.**
+
+* No "Low Communication Rate" from a slow sensor read like Sunday's or Wednesday's: on the bench a 3.7 s and a 4.8 s
+  stuck read now give no alert, where push15 gave it both times.
+* The steering and speed commands back on fresh data, as in July. You may not feel it.
+* Nothing else: no setting, nothing different in how it steers, brakes or accelerates; the ACC stand-down and AEB are
+  untouched.
+* If the camera ever stutters (it shares core 6 with card now), tell me: the fallback is to move selfdrived there
+  instead.
+
+**What is still unknown.**
+
+* How exactly the full core held up the sensor read on Sunday and Wednesday: one of two ways, and only those drives'
+  full logs (rlogs) could say. The new lines are built to tell the next time. Requesting the rlogs of 153 and 15d in
+  connect (above) would help.
+* Why the stalls started on 22 October, when core 4 was already busy in September.
+* Core 5 (the screen's) runs at 85-91 %; the new lines watch it too.
+* None of this has been driven yet.
+
+### What it was (the storage)
 
 On the drives since push12's storage diagnostics (153 to 15d), /data stalled for minutes on 157 and for seconds on 156,
 158 and 15d, and the two alerts (153, 15d) came from hardwared's sensor reads with the disk idle. Against the storage
@@ -100,6 +152,10 @@ Three new things, all in the qlogs:
   while the car was parked from the early morning to the afternoon, by something the logs do not name; this names it.
 * In the `storage report`: the flash's own wear estimate if the kernel exposes it (`ufs`), and the CPU clusters' speed
   caps (`cpu`).
+* For the alert (COMM-ISSUE.md 9.7): `sched baseline` in the first minute of each drive and every 10 minutes after,
+  `sched starvation` in any minute a core's kernel housekeeping waited a second or more, `kthread runnable, not run`,
+  `sched drive summary`; and only when a sensor read is slow, `hardwared slow sensor read`, `hardwared sensor stall
+  report`, `deviceState masked a sensor stall`, or `deviceState held: sensors stale` then `deviceState resumed`.
 
 ### The proof
 
@@ -118,21 +174,32 @@ Three new things, all in the qlogs:
   requested in connect could be deleted before it was sent.
 * Upstream's `test_deleter.py` replaced `os.statvfs` for every later test in its worker and never put it back; it now
   patches it per test (`FORK(UPSTREAM-FIX)`).
+* For the alert, 67 new tests (COMM-ISSUE.md 9.8), among them the real hardwared with a sensor read stuck in the
+  kernel: on the bench a 3.7 s stuck read (Sunday's) and a 4.8 s one (Wednesday's) now give no alert, where push15
+  gave the alert both times; a 10 s one still stops deviceState and raises it, as before. Its 37 deliberate
+  breakages (card back on core 4, a sensor read back on hardwared's loop, no age limit, the cooler-never rule
+  removed, no CPU mask, the stuck-thread detector off, and so on): 37 of 37 fail a test.
+* card's new conversion is identical to the old on all 76,779 messages of Tuesday's drive, and a replay of the
+  whole drive through radard, plannerd, controlsd and card gives every one of its 655,859 output messages identical
+  (191,895 CAN frames sent).
 
 ### Gates
 
 On `~/sp-long`, branch `storage16`:
 
 * `scons -j6`: done (push16 changes no C++).
-* The full suite (`tools/test_runner.py -j 6`): **3415 passed**, 45 skipped, 1 xfailed. That is push15's 3363, plus the
-  45 deleter tests and the 7 new diagnostics tests.
+* The full suite (`tools/test_runner.py -j 6`): **3482 passed, 45 skipped, 1 xfailed**. That is push15's 3363, plus
+  the 45 deleter tests and the 7 new diagnostics tests (3415 at the second commit), plus the alert's 67.
+* Process replay, route 157, all 14 segments, radard + plannerd + controlsd + card: **all 655,859 output messages of
+  17 services identical** (191,895 sendcan frames), 48c366fae's `card.py` and `helpers.py` against push16's in the
+  same tree and build.
 * The 41 deliberate breakages: every one fails a test. (On the first commit, a first full run failed 7 of the new tests
   because the mutation run's last breakage, the target as 15 %, had the same length as the original and was undone
   within the same second, so Python kept its compiled copy. The mutation script deletes it since.)
 * ruff: clean. ty: 5 diagnostics, push12's 4 and the one in push15's CI test fix (`test_car_stock_alert.py:543`,
   unchanged here); none in push16's files.
 * codespell (with the repo's ignore list): no hits in the changed files.
-* No CRLF, no mode change (`deleter.py` stays 755, the two new files 644).
+* No CRLF, no mode change (`deleter.py`, `card.py` and `hardwared.py` stay 755, every new file 644).
 * `compile_settings_ui.py --check`: matches (no settings change). No new Params key.
 
 ### What to check on the first drives
@@ -145,6 +212,10 @@ On `~/sp-long`, branch `storage16`:
   unattributed `disk_written_mb`).
 * The `storage report`'s `ufs`: a `health_descriptor` with `life_time_estimation_a` / `_b` (0x01 = under 10 % of its
   life used) answers "is it dying" from the flash itself; `entries` instead means this kernel does not expose it.
+* The first `sched baseline`: `caps.affinity` `[0, 1, 2, 3]`, `cpu.4.busy` near 50 and `cpu.6.busy` near 57; no `sched
+  starvation` for CPU 4.
+* The camera, which now shares core 6 with card: no gaps in `roadCameraState.frameId`, `modelV2.frameDropPerc` near 0.
+* No `commIssue` / `commIssueAvgFreq` naming deviceState unless a `deviceState held: sensors stale` line came first.
 
 ## 2026-10-27 — push15: the distance button fix (board `883a3cd1` unchanged)
 

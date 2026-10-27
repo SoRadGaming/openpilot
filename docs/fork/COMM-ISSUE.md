@@ -1,7 +1,8 @@
-# COMM-ISSUE: the "Communication Issue Between Processes" alert that was the storage (push12)
+# COMM-ISSUE: the "Communication Issue Between Processes" alert that was the storage (push12), and CPU core 4 (push16)
 
-Area **COMM**, markers `FORK(COMM-ISSUE)`. Not car-specific and not gated: every device runs it. Nothing it changes
-is published differently; selfdrived's checks are untouched.
+Area **COMM**, markers `FORK(COMM-ISSUE)` (push12) and `FORK(COMM)` / `FORK(CPU)` (push16, section 9). Not
+car-specific and not gated: every device runs it. Nothing it changes is published differently; selfdrived's checks
+are untouched.
 
 The owner, 2026-10-24: "the only critical bug" - "the stupid alert at random of low communication speed".
 
@@ -205,10 +206,11 @@ collected on a thread of its own, for the filesystem holding the params (`/data`
 **`hardwared slow loop section`**, when any section of hardwared's loop takes over 0.3 s (the loop is timed in 17
 named sections: `pandaStates`, `thermal`, `free_space`, `system_stats`, `brightness`, `chestnut`, `startup_params`,
 `tici_alert`, `temp_alert`, `engaged`, `power_save`, `power`, `athena_ping`, `send`, `statlog`, `status_packet`,
-`uptime`): the slowest, every section over 20 ms, the total, and the `/proc/diskstats` delta of the partition and the
-disk since the loop's start (reads, writes, sectors written, write ms, in flight at the end, io ms, weighted ms). At
-most one line per 10 s; the loops in between are counted (`suppressed`) and the count goes out with the next line.
-The first two loops (the cached git calls) are skipped.
+`uptime`; 18 since push16 split `disk_sample` from `thermal`, section 9.7): the slowest, every section over 20 ms, the
+total, and the `/proc/diskstats` delta of the partition and the disk since the loop's start (reads, writes, sectors
+written, write ms, in flight at the end, io ms, weighted ms). At most one line per 10 s; the loops in between are
+counted (`suppressed`) and the count goes out with the next line. The first two loops (the cached git calls) are
+skipped.
 
 **`params writer slow write`**, when one of a `ParamsWriter`'s writes takes over 0.3 s (`params_writer.py`; added
 after the first review of push12). The fix took the waiting out of the loop, so a params stall no longer makes a
@@ -354,3 +356,240 @@ driving; until then 6.1 is the proof.
 | `openpilot/selfdrive/monitoring/policy.py` | 3.4 |
 | `openpilot/system/hardware/tests/comm_issue/fault_injection.py`, `fscount.c`, `RESULT.json` | 6.1, not run by the suite |
 | the five test files of 6.2 | |
+| `openpilot/selfdrive/car/card.py`, `helpers.py` | push16, `FORK(CPU)`: card on core 6; `convert_carControlSP()` without `to_dict()` (9.3, 9.4) |
+| `openpilot/sunnypilot/system/sensor_snapshot.py` | push16, `FORK(COMM)`: `SensorWorker`, `DeviceStateGuard`, `thermal_reads` / `thermal_msg` (9.5) |
+| `openpilot/sunnypilot/system/sched_diag.py` | push16, `FORK(COMM)`: `StarvationSampler` (9.6) |
+| `openpilot/system/hardware/hardwared.py`, `power_monitoring.py` | push16, `FORK(COMM)`: the workers, the guard, `HARDWARED_CORES`, `calculate(current_power=)` |
+| the five test files of 9.8 | |
+
+## 9. push16: the same alert with /data idle - CPU core 4 (2026-10-28)
+
+Branch `storage16`, the third and fourth commits (`FORK(CPU)`, `FORK(COMM)`); STORAGE.md is the first two. Not
+car-specific, not gated. Nothing here changes a control law, a limit or the ACC stand-down; the move of card changes
+when its frame runs, not what it computes (9.5).
+
+### 9.1 What happened
+
+* **Route 0000015d** (push15 `2984df599`, Wed 28 Oct 01:18:08 AEDT, 59 km/h): `commIssueAvgFreq`, 0.9 s of soft
+  disable, no disengagement. deviceState stopped **4.81 s** (302.36 to 307.17 s); hardwared's `slow loop section`
+  line (5) named **`thermal`, 4.429 s** - the thermal-zone files in /sys. The disk was busy 220 ms of those 4455 ms
+  with nothing queued at the end, mapd (the /data witness) never stopped, and iowait was at most 1.9 %.
+* **Route 00000153** (Sun 25 Oct, about 15:47): a **4.12 s** gap, section **`power`, 3.70 s** (three sysfs files),
+  the disk busy 120 ms of 3.73 s.
+* push12's fix held on both: the loop waited on no /data write. It waited inside a sysfs read, which runs the
+  driver's code under the driver's locks.
+
+### 9.2 What is measured, and what is inferred
+
+Measured (STORAGE.md section 1 and the d1028 diagnosis; scripts and data in the session's `storage1028` and
+`core16` scratch folders):
+
+| | |
+|---|---|
+| who is on core 4 | card, controlsd and selfdrived, all `config_realtime_process(4, Priority.CTRL_HIGH)` = FIFO 53 (`card.py`, `controlsd.py`, `selfdrived.py`). Nothing else; IRQ load 0.4 % |
+| how full | route 157 procLog: core 4 **99.7 %** busy, card **48.4 %**, selfdrived **27.6 %**, controlsd **23.4 %**. July 60 % (27 + 14 + 19); 1 Oct 91 %; 9-19 Oct 93-95 %; 14c / 14d 96.5 / 97.7 % |
+| why it rose | mostly upstream's `c01b8be96` (3 Jun, "set max cpu core frequency": both clusters capped at 1689.6 MHz, `common/hardware/comma/hardware.py` `set_power_save`), on the car from route 10f on 1 Oct with AGNOS 19.7; Python-heavy processes run 1.5-1.6 times slower under it. The fork's own openpilot-side additions are about **5 points**: route 157 replayed against upstream `a5f44653d` (same opendbc), card +3.9 %, controlsd +5.9 %, selfdrived +5.6 % per frame |
+| the other cores (recent drives, medians) | 0-3: 55-71 %; 5: 85-91 % (ui 73, plannerd 15, radard 1.6); 6: 2-18 % (camerad, CFS, 7.3 %); 7: 22-38 % (modeld FIFO 54 22.5, dmonitoringmodeld 14.5). The kernel runs `isolcpus=6,7` |
+| the stalls follow it | every one of the **21** stall events since 22 Oct (11 /data episodes, 10 deviceState gaps; routes 14d, 152, 153, 156, 157, 158, 15d) came after 30 s of core 4 averaging **>= 96.8 %**. Not enough on its own: stretches of 75-178 s at full load passed with no stall (155, 15a, 15b, 15d) |
+| the kernel said so on 157 | "BUG: workqueue lockup - pool cpus=4 ... stuck for 30s" up to **150 s** (225.8-346.1 s, again 406-556 s); `rcu_preempt` stalls; `kworker/4:1` runnable and not run for at least 6 minutes, inside `delayed_fput`; CPU 4's `cfq_kick_queue` and `blk_timeout_work` waiting behind it again and again; `thermal_zone_device_check` pending |
+| the control loop paid too | at equal FIFO priority nothing preempts, so each of the three waited for the others: CAN -> carControl median **5.8 ms** in July, 8.8 on 1 Oct, 11.5 on 14d, **19.3 ms** on 157, where **58.6 %** of the commands sent were built from the frame before last and **5.9 %** from older ones |
+| hardwared on the busy cores | not pinned (default mask 0-5); its main thread last ran on core 4 in **0.91 %** and core 5 in **3.07 %** of 55,501 procLog samples |
+| not the flash | ext4 errors 0, no UFS / SCSI / I/O error in 130 kernel logs; STORAGE.md section 1 |
+
+Inferred, not proven:
+
+* That 157's starved CPU-4 worker is what delayed /data's I/O (a strong inference: the stalled work was CPU 4's
+  block-I/O dispatch).
+* **For 153 and 15d** (qlogs only, no kernel log): how a full core 4 held hardwared's sensor read. Two paths fit and
+  the logs cannot tell them apart: (B) a kernel lock (a thermal zone's, the battery driver's) held by a starved
+  core-4 kernel thread; or (A) a hardwared thread itself preempted on core 4 or 5 by FIFO 53 while it held the GIL,
+  which stops every other hardwared thread, the publishing one too - the thermal section gives the GIL up and takes
+  it back about 55 times per loop. Against (B): on 157 CPU 4's own thermal polling was stuck for 6 minutes and
+  hardwared never stalled. push16 covers both without knowing which (9.4, 9.5), and its diagnostics (9.6) are built
+  to tell them apart next time.
+* Why the stalls start on 22 Oct, when mid-September builds already had core 4 saturated 33-71 % of the time with
+  no gap (before push12 only a stall that overlapped a /data write could show as one).
+
+### 9.3 card to core 6 (`FORK(CPU)`, `selfdrive/car/card.py`)
+
+`config_realtime_process(6, Priority.CTRL_HIGH)`: the same priority, on core 6 instead of 4. From route 157's procLog
+(worst case; 15d differs by about a point):
+
+| option | core 4 | core 6 | CAN -> carControl |
+|---|---|---|---|
+| before (all three on 4) | 99.7 % | 8.4 % | 19.3 ms median |
+| selfdrived to 6 | 72.1 % | 36.0 % | about 7.8 ms |
+| **card to 6 (push16)** | **51.3 %** | **56.8 %** | **about 7.8 ms** |
+| controlsd to 6 | 76.3 % | 31.8 % | about 9.9 ms |
+| anything to 7 | - | 61-86 % on 7 | modeld (FIFO 54) takes core 7 for about 11 ms every 50 ms: rejected |
+
+* card alone grew about 6 points in October; card to 6 leaves about 49 points free on core 4, selfdrived to 6 about
+  28.
+* card's CAN-in no longer waits behind selfdrived and controlsd; those two run one after the other anyway
+  (controlsd waits for selfdriveState).
+* Core 6 is camerad's, which is not real-time (`camerad/main.cc`: "doesn't need RT priority since we're using
+  isolcpus"). card at FIFO 53 preempts it and its kernel threads in bursts of about 5 ms every 10 ms, against a 50 ms
+  camera frame, and core 6 keeps about 43 % idle. **Inferred, not tested on the device.** If camera frames start to
+  drop (9.8), selfdrived to 6 is the fallback: a one-line change back on card and one on selfdrived.
+* Cores 4-7 go offline when parked (`set_power_save`), so core 6 is as it was for core 4: card only runs onroad.
+* `test_cpu_layout.py` holds the layout on the source: card on 6, core 4 only controlsd and selfdrived, nothing else
+  real-time on 6 and camerad not real-time, so an upstream merge that moves things fails.
+
+### 9.4 card's per-frame work: `convert_carControlSP()` without `to_dict()` (`FORK(CPU)`, `selfdrive/car/helpers.py`)
+
+`to_dict()` was 43 of the function's 55 us a call on a PC, about 4 % of card's core. The fast path reads each field
+as `to_dict()` does (`_get()`, an enum by `_as_str()`) and a nested struct only when it is set: `to_dict()` leaves an
+unset one out and the dataclass keeps its own defaults, which are not always capnp's (`LeadData.radarTrackId` is -1
+in the schema, 0 in the dataclass). A message with `params` (a list the general path hands on as dicts), or a schema
+with anything the plan does not know, runs the general path - upstream's, unchanged, renamed
+`convert_carControlSP_general()`. On route 157 the fast path took **25.6 us** a call against **61.7 us**
+(PC).
+
+Proof of identity: **76,779** carControlSP messages of all 14 segments of route 157, **0 different** (field for
+field, type for type, floats bit for bit); `test_convert_carcontrolsp_fast.py` (12) on segments 1, 3, 7 when the
+rlogs are on the machine, all 32 set / unset combinations, every enum value, a DEPRECATED field with a value,
+`params`, an unknown enum (both raise), builders, 4,000 seeded fuzz messages with NaN, infinities and -0.0; and the
+process replay (9.8).
+
+Not done, though the profile listed them (about 1.5 points together): scalar numpy in `compute_gb_honda_elesys` and
+the brake / gas paths, and controlsd_ext's `fieldnames`. None is identical by construction - `np.clip` passes a NaN
+bound through where `min` / `max` does not (`brake_max` is computed), `np.interp`'s edge rules would have to be copied,
+and caching `fieldnames` assumes the controller's schema never changes - and core 4 no longer needs them.
+
+### 9.5 hardwared's sensors on threads of their own (`FORK(COMM)`, `sunnypilot/system/sensor_snapshot.py`)
+
+* **`SensorWorker`**: one section's reads on a thread of its own - `thermal` (every zone of the ThermalConfig, in
+  `get_msg()`'s order; `thermal_msg()` rebuilds exactly `get_msg()`'s dict) and `power` (`power_draw`,
+  `som_power_draw`). The loop asks for a sweep (`request()` never waits) and publishes the last finished one, a
+  `Snapshot` replaced whole. CPython releases the GIL around open, read and close, so a worker asleep in the kernel
+  holds nothing the loop needs. A read's exception still ends hardwared: it is raised on the loop.
+* **`DeviceStateGuard`**, once a loop, by the age of the oldest snapshot (normally one loop, 0.5 s):
+  * up to **`FRESH_S` 1.5 s**: as always;
+  * older: the thermal status may rise but not fall (`thermal_status()`, applied after upstream's band logic). The
+    filters are fed the held readings, so they settle on the last real one and never below it;
+  * past **`MASK_MAX_S` 6 s**: deviceState is not sent - what a stuck read did before - and selfdrived's checks see a
+    longer stall as they always did. The rest of the loop keeps running (started, shutdown, params), which a stuck
+    read used to freeze.
+* `PowerMonitoring.calculate(..., current_power=None)` takes the worker's reading (upstream file; `None` reads the
+  sensor, as upstream).
+* Why stop sending rather than send `valid=False`: stopping is what every consumer has always seen; hardwared has
+  never sent an invalid deviceState, and manager's watchdog kick and the other readers were never tested with one.
+* Thermal margin: across 127 routes (after each one's first minute) the filtered maximum rose at most 4.1 C in 8 s
+  and 4.7 C in 13 s, the hottest was 91.0 C (route ac) against the mici's 100 C for overheated, and thermalStatus was
+  ok in all 285,749 samples. The kernel's own thermal protection does not depend on openpilot.
+
+The bench (the real `hardware_thread`, one zone read stuck D seconds in open(2) on a FIFO, a real kernel wait;
+"before" is 48c366fae's hardwared imported against this tree; alerts from cereal's FrequencyTracker and alive rule at
+selfdrived's 100 Hz, seconds after the read stuck):
+
+| D (stuck) | before: gap, alerts | push16: longest gap (from), alerts | lines |
+|---|---|---|---|
+| 3.7 s (153's) | 4.20 s; commIssueAvgFreq at 3.71 | **0.51 s**; none | slow sensor read, stall report, masked |
+| 4.8 s (15d's) | 5.30 s; commIssue 4.50, AvgFreq 4.81 | **0.51 s**; none | the same |
+| 7.5 s | 8.01 s; commIssue 4.50 | 2.52 s (5.07); AvgFreq 7.60 * | + held, resumed |
+| 9 s | 9.50 s; commIssue 4.49 | 4.05 s (5.06); AvgFreq 9.12 | + held, resumed |
+| 12 s | 12.51 s; commIssue 4.50 | 7.07 s (5.07); commIssue 10.08 | + held, resumed |
+
+\* The bench's loop ran at 0.52 s (its pandaStates feeder); at the car's 0.50 s the 20-sample average passes a pause up
+to 3.0 s, so in the car stalls up to about 7.5-8 s should pass with no alert. Longer ones alert as before, about
+`MASK_MAX_S` later.
+
+### 9.6 hardwared off cores 4 and 5, and the starvation sampler
+
+* **`HARDWARED_CORES = [0, 1, 2, 3]`**, set at the very top of `hardwared.main()` before any thread starts, so every
+  thread inherits it (path A of 9.2). Cores 0-3 never go offline (`set_power_save` takes 4-7); athenad, the uploader
+  and sunnylinkd already use the same mask. Core 6 was not used: isolated, the scheduler never balances onto it.
+* **`sunnypilot/system/sched_diag.py`, `StarvationSampler`**: passive, procfs only, on its own thread every 2 s while
+  driving (nothing logged parked reaches a route).
+  * `/proc/<pid>/schedstat` (time on a CPU, time runnable and waiting, times run) of every per-CPU kernel thread
+    (`kworker/N:M`, `kworker/N:MH`, `ksoftirqd/N`), found by a `/proc/*/stat` scan every 30 s (never `cmdline`, which
+    takes the target's mmap lock): each CPU's housekeeping wait, and a thread runnable at two samples that did not
+    run between them (its wait is only counted once it runs, so a stuck one would otherwise show nothing).
+  * `/proc/stat`: each CPU's busy share. `/proc/schedstat` per CPU, where the kernel has it.
+  * Once a window (60 s): the SCHED_FIFO / SCHED_RR processes' and hardwared's own threads' run time and wait.
+  * Every file is optional and probed once (`caps` in the first line of each start: `pid_schedstat` true / false
+    (compiled in but reading `0 0 0`) / null, `proc_schedstat`, `proc_stat`, `pressure`, `sched_debug`, `own_stack`,
+    and hardwared's `affinity`, which proves the 0-3 mask took effect). Expected on this kernel (4.9, from
+    agnos-kernel-sdm845's `tici_defconfig`, assumed to match the 2 Sep build): per-pid schedstat yes
+    (`TASK_DELAY_ACCT`), `/proc/schedstat` and `sched_debug` no, `/proc/pressure` no (4.9).
+  * Cost: about 40 small reads every 2 s and 600 stat reads every 30 s, on cores 0-3.
+* **The stall report** (`DeviceStateGuard`, from its own thread, once per read stuck 1.5 s): the reading thread's
+  state, CPU, `wchan`, schedstat and kernel stack (its own process), every hardwared thread, the sampler's view of the
+  kernel threads bound to cores 4 and 5, and on the device the kernel stacks of the runnable ones by `sudo -n`, at
+  most once per 10 minutes. A stack in a lock with a core-4 kworker runnable is path B; a hardwared thread in R on
+  core 4 or 5 is path A.
+
+### 9.7 Lines in the routes
+
+All `cloudlog.event(..., error=True)`, so `errorLogMessage` and the qlogs keep them.
+
+| line | when | fields |
+|---|---|---|
+| `hardwared slow sensor read` | a read over 0.3 s (at most one line per 10 s, the rest counted) | `worker`, `reads` [[name, s]], `sweep_s`, `self_s` (`ran`, `waited_for_cpu`, `slept`: a read blocked in the kernel sleeps; a starved thread waits for a CPU), `cpu`, `slow_sweeps`, `suppressed` |
+| `hardwared sensor stall report` | a read still running 1.5 s | `worker`, `read`, `stuck_s`, `thread` (`stat`, `wchan`, `schedstat`, `stack`), `threads`, `kthreads`, `kthread_stacks` |
+| `deviceState masked a sensor stall` | snapshots fresh again after a stale spell that never stopped deviceState | `max_age_s`, `worker`, `read`, `stale_s`, `held_s` 0, `episodes`, `suppressed` |
+| `deviceState held: sensors stale` | deviceState stops (once per spell) | `age_s`, `worker`, `read`, `mask_max_s` |
+| `deviceState resumed` | fresh again after deviceState stopped | as masked, with `held_s` |
+| `sched starvation` | a 60 s window in which a CPU's bound kernel threads waited >= 1 s in all, or one was runnable and not run >= 2 s | `cpu` {N: `busy`, `kwait_s`, `kwait_max_s`, `stuck_max_s`, `rq_wait_s`}, `rt` {comm:pid: `exec_s`, `delay_s`}, `hardwared` {thread: ...}, `window`, `drive_s`, `polls`, `slow_polls` |
+| `kthread runnable, not run` | as it happens, once per thread and spell (one per 10 s) | `comm`, `pid`, `cpu`, `last_cpu`, `for_s`, `suppressed` |
+| `sched baseline` | the first window of each drive and every 10th | as `sched starvation`; the first also `caps` and `prev_drive` |
+| `sched drive summary` | the drive ends (and again as `prev_drive` in the next drive's first line) | `drive_s`, `windows`, `starved_windows`, `cpu` (busy, waits for the whole drive), `worst`, `polls`, `slow_polls` |
+
+`hardwared slow loop section` (5) now names 18 sections: `disk_sample` was split from `thermal`, which no longer
+reads a sensor.
+
+### 9.8 Tests and proof
+
+| test | holds |
+|---|---|
+| `system/hardware/tests/test_hardwared_sensor_stall.py` (5) | the real `hardware_thread`, one read stuck in open(2) on a FIFO, every other caller of it waiting as under a driver lock: 4.8 s thermal, 4.8 s power and 4.8 s parked power (where PowerMonitoring integrates it) each keep deviceState's gaps under 1 s with the last real readings, predict no alert, and log the slow read, the stall report (the thread asleep in the kernel) and the masked spell; 10 s stops deviceState only after the mask, predicts an alert, comes back within a loop of the read, with held and resumed lines; 101 C then one reading of 40 C then a 5.3 s stall: critical throughout, and falling once readings are new |
+| `sunnypilot/system/tests/test_sensor_snapshot.py` (21) | the guard on a fake clock (the publish rule at 0.5 / 1.5 / 1.51 / 4.9 / 6.0 / 6.01 s, the oldest worker decides, never cooler while stale, an episode logged once, held / resumed, rate limit, one report per stuck read); the worker (numbering, merged requests, `request()` never waits, slow reads logged with name and time and not under 0.3 s, rate limit, a read's exception raised on the loop); PowerMonitoring with and without a given power; `thermal_msg() == get_msg()` |
+| `sunnypilot/system/tests/test_sched_diag.py` (23) | the parsers on this machine's real `/proc/schedstat`, `/proc/stat` and a real `/proc/<pid>/stat` line, and on 4.9's formats; absent, malformed and unknown-version files; the probe; a runnable kworker that never runs (and one that does), with and without schedstat; the starvation, baseline and drive-summary lines; nothing read while parked; a pid that goes away; the real /proc |
+| `sunnypilot/system/tests/test_cpu_layout.py` (6) | the core layout (9.3) and hardwared's mask: never offlined, off 4-5, set before any thread starts, a failed call harmless |
+| `selfdrive/car/tests/test_convert_carcontrolsp_fast.py` (12) | 9.4 |
+
+**Against 48c366fae** every one of the 67 new tests fails: four of the five files cannot import what they test, and
+the layout tests fail on the layout. With only 48c366fae's `hardwared.py`, `power_monitoring.py`, `card.py` and
+`helpers.py` put back and the new modules kept, the 5 stall tests, the given-power test, the 6 layout tests and the 12
+conversion tests fail; the new modules' own unit tests (42) and the upstream power path pass there, as they should.
+
+**Deliberate breakages: 37 of 37 fail at least one test** - card back on core 4; the fast path reading unset structs,
+handing enums on raw, keeping DEPRECATED fields, ignoring params, sharing a default object; the thermal, power or
+battery read back on the loop; `calculate()` reading the sensor parked or ignoring the given power; no age cap;
+sending whatever the guard says; the thermal rule removed or ignoring staleness; never stale; no affinity call, cores
+4-5 in the mask, a thread started before the call; a read's exception swallowed; slow reads never logged or not at
+error level; the held line every loop; no stall report; episodes not rate-limited; requests lost during a sweep;
+colliding zone keys; the stuck detector off or ignoring runs; `/proc/schedstat`'s fields shifted; a missing file
+raising; the starvation line not at error level, or never; sampling while parked; no `prev_drive`; no drive summary;
+a `self` key in a line (cloudlog.event's own argument, so a TypeError on the device: the sampler's first version had
+it, and its test caught it). Writing them found three holes in the first version's tests, closed in `e4560a6e5`: a
+stuck read now holds every caller, as a driver lock would; the parked power path; `calculate()`'s given power.
+
+**Process replay**, route 157, all 14 segments, radard + plannerd + controlsd + card in closed loop, every output
+message compared byte for byte with logMonoTime and the wall-clock fields zeroed, 48c366fae's `card.py` and
+`helpers.py` against push16's in the same tree and build: **all 655,859 output messages of 17 services identical**,
+191,895 sendcan frames among them.
+
+### 9.9 What to check on the first drives
+
+* The first drive's first `sched baseline`: `caps` (which files this kernel has) and `affinity` `[0, 1, 2, 3]`.
+* `sched baseline` / `sched starvation` `cpu.4.busy` near 50 % and `cpu.6.busy` near 57 %, and no `sched starvation`
+  for CPU 4. The UI's core 5 runs 85-91 % and is the next to watch.
+* card's timing: `carState.cumLagMs` (in the qlogs) back near July's, and the latency from CAN to carControl back to one
+  frame (needs an rlog).
+* The camera on core 6: `roadCameraState.frameId` with no gaps, `modelV2.frameDropPerc` near 0. If they move, the
+  fallback is selfdrived to 6 (9.3).
+* Any `hardwared slow sensor read` names the read; its `self_s.slept` against `waited_for_cpu`, and the stall report's
+  `thread.wchan` / `stack` and `kthreads`, say which path of 9.2 it was.
+* Pass condition: no `commIssue` / `commIssueAvgFreq` listing deviceState unless a `deviceState held: sensors stale`
+  line comes first.
+
+### 9.10 Still open
+
+* Which of 9.2's two paths held 153 and 15d. Requested rlogs of 153 and 15d (STORAGE.md) would show the kernel log.
+* Why the stalls began on 22 Oct.
+* Core 5 (ui 73 %, plannerd and radard): at 98 % or more in 5-26 % of samples, so its kernel threads can starve the
+  same way. The sampler reports it.
+* Other sysfs reads still on hardwared's loop: `get_gpu_usage_percent()` (`system_stats`) and
+  `get_screen_brightness()` (`brightness`). No slow section has named them since push12; `slow loop section` would.
+* Whether to lift the big cluster's frequency cap instead (more heat; undoes an upstream choice). Not done.
