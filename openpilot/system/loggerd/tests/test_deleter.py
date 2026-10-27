@@ -1,6 +1,7 @@
 from collections import namedtuple
 from pathlib import Path
 from collections.abc import Sequence
+from unittest import mock
 
 import openpilot.system.loggerd.deleter as deleter
 from openpilot.system.loggerd.tests.loggerd_tests_common import UploaderTestCase
@@ -21,7 +22,11 @@ class TestDeleter(UploaderTestCase):
     self.f_type = "fcamera.hevc"
     super().openpilot_setup_method()
     self.fake_stats = Stats(f_bavail=0, f_blocks=10, f_frsize=4096)
-    deleter.os.statvfs = self.fake_statvfs  # ty: ignore[invalid-assignment]  # test double
+    # FORK(UPSTREAM-FIX): for this test only. Upstream assigns deleter.os.statvfs - os.statvfs itself - and never puts it
+    # back, so every later test in the same worker got this fake (test_storage_diag's storage report then raises).
+    patcher = mock.patch.object(deleter.os, "statvfs", side_effect=self.fake_statvfs)
+    patcher.start()
+    self.addCleanup(patcher.stop)
 
   def test_delete(self):
     f_path = self.make_file_with_data(self.seg_dir, self.f_type)

@@ -330,7 +330,9 @@ driving; until then 6.1 is the proof.
   `userspace/root/etc/fstab`) mounts /data `discard,noatime,nodiratime,nosuid,nodev,nofail`. With online `discard`,
   ext4 issues the freed blocks' discards from the journal commit, and on a near-full flash device those can take
   seconds - a known cause of long commits. The report's `mount`, `ext4_options` and `queue.discard_max_bytes` say
-  whether this device has it. Not acted on here.
+  whether this device has it. Not acted on here. push16 ([STORAGE.md](STORAGE.md)): the device has it, but the stalls
+  follow a full CPU core 4, not the free space or the deletes; the deleter no longer deletes while driving above its
+  floor.
 * **Reads on the loop.** hardwared still reads about 14 params a loop, and `get_build_metadata()` reads two files under
   `/data/openpilot` twice a loop on a git install. Reads take no lock and the files are in the page cache. The atime
   concern - with `relatime` the first read after a file changes would update its atime, which needs a journal handle -

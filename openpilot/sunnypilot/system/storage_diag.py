@@ -19,6 +19,11 @@ things, both at error level so they reach errorLogMessage and with it the qlogs:
   counted and the count goes out with the next.
 
 procfs and sysfs only, plus one statvfs and two stats on the probed filesystem in the report thread.
+
+FORK(STORAGE), push16: the report also carries the UFS's own wear estimate where the kernel exposes it (`ufs`), and
+the CPU's state (`cpu`: each cpufreq policy's cap and current speed, the real-time throttle), because the alerts of
+routes 153 and 15d came with core 4 at full load and /data idle. WriteSampler is the deleter's: which processes wrote
+to storage while the car was parked (deleter_policy.ParkedSummary).
 """
 import glob
 import os
@@ -40,6 +45,14 @@ QUEUE_FILES = ("scheduler", "nr_requests", "rotational", "discard_max_bytes", "d
                "wbt_lat_usec")
 EXT4_SYSFS_FILES = ("lifetime_write_kbytes", "session_write_kbytes", "delayed_allocation_blocks", "errors_count",
                     "first_error_time", "last_error_time")
+# FORK(STORAGE): the UFS health descriptor (JESD220: life time A / B in 10 % steps, 0x0B = past its life; pre-EOL
+# 0x01 normal, 0x02 warning, 0x03 urgent) and who made it
+UFS_HEALTH_FILES = ("eol_info", "life_time_estimation_a", "life_time_estimation_b")
+UFS_STRING_FILES = ("manufacturer_name", "product_name", "product_revision")
+UFS_ENTRIES_MAX = 60
+CPUFREQ_FILES = ("related_cpus", "scaling_governor", "cpuinfo_max_freq", "scaling_max_freq", "scaling_cur_freq")
+WRITERS_TOP = 5
+WRITERS_TRACKED_MAX = 4000
 
 
 def _read(path: str, limit: int = 4096) -> str | None:
@@ -132,6 +145,49 @@ def _fstrim_state() -> dict:
   return state
 
 
+def ufs_health(disk: str | None, sys_block: str = "/sys/class/block") -> dict | None:
+  """FORK(STORAGE): the UFS host above disk in sysfs and, where this kernel has them, its health and string
+  descriptors. Without a health descriptor the host's entries are listed instead, to see what this kernel offers."""
+  if not disk:
+    return None
+  d = os.path.realpath(os.path.join(sys_block, disk))
+  host = None
+  while d and d != os.path.dirname(d):
+    if os.path.isdir(os.path.join(d, "health_descriptor")) or "ufshc" in os.path.basename(d):
+      host = d
+      break
+    d = os.path.dirname(d)
+  if host is None:
+    return {"host": None}
+  out: dict = {"host": host}
+  for group, files in (("health_descriptor", UFS_HEALTH_FILES), ("string_descriptors", UFS_STRING_FILES)):
+    g = os.path.join(host, group)
+    out[group] = {k: _read(os.path.join(g, k)) for k in files} if os.path.isdir(g) else None
+  if out["health_descriptor"] is None:
+    try:
+      out["entries"] = sorted(os.listdir(host))[:UFS_ENTRIES_MAX]
+    except OSError:
+      out["entries"] = None
+  return out
+
+
+def cpu_state(cpufreq: str = "/sys/devices/system/cpu/cpufreq", kernel: str = "/proc/sys/kernel",
+              sched_features: str = "/sys/kernel/debug/sched_features") -> dict:
+  """FORK(STORAGE): each cpufreq policy's cap and current speed, and the real-time throttle (RT_RUNTIME_SHARE is in
+  debugfs, which is usually root's only: None then)."""
+  features = _read(sched_features)
+  share = None
+  if features is not None:
+    for f in features.split():
+      if f in ("RT_RUNTIME_SHARE", "NO_RT_RUNTIME_SHARE"):
+        share = f == "RT_RUNTIME_SHARE"
+  return {"cpufreq": {os.path.basename(p): {k: _read(os.path.join(p, k)) for k in CPUFREQ_FILES}
+                      for p in sorted(glob.glob(os.path.join(cpufreq, "policy*")))},
+          "sched_rt_runtime_us": _read(os.path.join(kernel, "sched_rt_runtime_us")),
+          "sched_rt_period_us": _read(os.path.join(kernel, "sched_rt_period_us")),
+          "rt_runtime_share": share}
+
+
 def storage_report(path: str) -> dict:
   """Everything above for the filesystem that holds path."""
   m = mount_for(path)
@@ -155,6 +211,8 @@ def storage_report(path: str) -> dict:
     jbd2 = sorted(glob.glob(f"/proc/fs/jbd2/{part}-*/info"))
     report["jbd2"] = " | ".join((_read(jbd2[0]) or "").split("\n")) if jbd2 else None
   report["diskstats"] = read_diskstats([n for n in (part, disk) if n])
+  report["ufs"] = ufs_health(disk)  # FORK(STORAGE)
+  report["cpu"] = cpu_state()  # FORK(STORAGE)
   report["uptime_s"] = round(time.monotonic(), 1)
   return report
 
@@ -240,3 +298,70 @@ class LoopTimer:
     self.last_log = now
     self.suppressed = 0
     return True
+
+
+def proc_write_bytes(proc: str = "/proc") -> tuple[dict[tuple[int, int], tuple[str, int]], int]:
+  """FORK(STORAGE): {(pid, start time in clock ticks): (comm, write_bytes)} for every process whose /proc/<pid>/io this
+  user may read (write_bytes: what it caused to be sent to storage), and how many it may not."""
+  out: dict[tuple[int, int], tuple[str, int]] = {}
+  unreadable = 0
+  try:
+    pids = [p for p in os.listdir(proc) if p.isdigit()]
+  except OSError:
+    return out, unreadable
+  for pid in pids:
+    try:
+      with open(os.path.join(proc, pid, "stat")) as f:
+        stat = f.read()
+      close = stat.rindex(")")
+      comm = stat[stat.index("(") + 1:close]
+      start = int(stat[close + 2:].split()[19])  # field 22, starttime
+    except (OSError, ValueError, IndexError):
+      continue  # gone
+    try:
+      with open(os.path.join(proc, pid, "io")) as f:
+        written = next(int(line.split()[1]) for line in f if line.startswith("write_bytes:"))
+    except (OSError, ValueError, IndexError, StopIteration):
+      unreadable += 1
+      continue
+    out[(int(pid), start)] = (comm, written)
+  return out, unreadable
+
+
+class WriteSampler:
+  """FORK(STORAGE): what each process sent to storage over a window, from samples of /proc/<pid>/io: a process that
+  was there at the start counts from its first sample, one started since counts from zero. A process that came and
+  went between two samples is missed; ParkedSummary also logs the disk's own counters over the window."""
+
+  def __init__(self, proc: str = "/proc", uptime_file: str = "/proc/uptime"):
+    self.proc = proc
+    try:
+      hz = os.sysconf("SC_CLK_TCK")
+      with open(uptime_file) as f:
+        self.start_ticks = float(f.read().split()[0]) * hz
+    except (OSError, ValueError, IndexError, AttributeError):
+      self.start_ticks = float("inf")  # unknown: count everyone from their first sample
+    self.seen: dict[tuple[int, int], list] = {}  # (pid, start) -> [comm, base, last]
+    self.unreadable = 0
+    self.samples = 0
+    self.sample()
+
+  def sample(self) -> None:
+    procs, self.unreadable = proc_write_bytes(self.proc)
+    for key, (comm, written) in procs.items():
+      s = self.seen.get(key)
+      if s is None:
+        self.seen[key] = [comm, 0 if key[1] >= self.start_ticks else written, written]
+      else:
+        s[2] = written
+    self.samples += 1
+    if len(self.seen) > WRITERS_TRACKED_MAX:
+      keep = sorted(self.seen.items(), key=lambda kv: kv[1][2] - kv[1][1], reverse=True)[:WRITERS_TRACKED_MAX // 2]
+      self.seen = dict(keep)
+
+  def top(self, n: int = WRITERS_TOP) -> list[dict]:
+    rows = sorted(((s[2] - s[1], s[0], key[0]) for key, s in self.seen.items()), reverse=True)
+    return [{"comm": comm, "pid": pid, "mb": round(d / 2**20, 1)} for d, comm, pid in rows[:n] if d > 0]
+
+  def total_bytes(self) -> int:
+    return sum(max(0, s[2] - s[1]) for s in self.seen.values())

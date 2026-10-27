@@ -15,6 +15,119 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-28 — push16: room to breathe (board `883a3cd1` unchanged)
+
+Your question after push15: "i got low speed storage problem again, is comma dying?? allocate more spare space if you
+think [that's] worth?". **Branch `storage16`, one commit on push15 (`2984df599`); opendbc (`469d12c7`), panda and both
+boards unchanged. Not driven yet; not pushed.** The details are in `docs/fork/STORAGE.md`.
+
+### The short answer
+
+* **The comma is not dying.** Nothing on it reports a storage fault: ext4's error count is 0 in every storage report,
+  and the kernel logs of all 130 routes on the device (9 July to 27 October) have no flash or I/O errors.
+* **Wednesday's alert was not a storage alert.** On the 01:12 drive (route 15d) it was "TAKE CONTROL IMMEDIATELY / Low
+  Communication Rate Between Processes" at 01:18:08, at 59 km/h, for 0.9 s, with no disengagement. The part of
+  openpilot that reports the device's temperatures (hardwared) stopped for 4.8 s inside its temperature-sensor reads.
+  The storage was idle at that moment. Sunday's alert (route 153) was the same, in the power readings.
+* **What these alerts and the earlier storage stalls have in common is one CPU core running flat out.** card,
+  controlsd and selfdrived share core 4; together they used about 60 % of it in July and 99.5 % on Tuesday's 01:26
+  drive. Every stall since 22 October came after half a minute of that core at full load.
+* **More free space would not fix the alert.** The stalls also came at 11-13 % free, and without any deletes. Giving
+  core 4 room is the fix for the alert; that is a separate change, not this one.
+* **What push16 does do is the part of your idea the logs support:** a bigger cushion of free space, used so that the
+  comma stops deleting old drives while you drive.
+
+### What you will notice
+
+* **The first time the comma is parked and on with push16, it deletes about 9 GB of your oldest drives**: roughly 75
+  minutes of driving, about the oldest two days. Free space then reads about 20 % instead of 10 %, and the comma keeps
+  it there by deleting while parked.
+* **The device keeps a little less history.** Every drive's qlogs and small videos are uploaded, and they stay in
+  comma connect. What goes for good is what only the device had: the oldest drives' full-resolution video and full
+  logs, which you can then no longer request.
+* **While you drive it normally deletes nothing.** Before, at the 10 % floor, it deleted one minute of old recording
+  (about 120 MB) for about every minute you drove: 1,453 times over the 115 drives on the device since July. Now it
+  deletes while driving only below that same floor, which takes a drive of more than about 75 minutes with no parking
+  before it, and then slowly, one file every 6 seconds.
+* **Nothing else changes**: driving, alerts, settings, uploads.
+* **"Low Communication Rate" can still appear.** push16 is not its fix.
+
+### What it was
+
+On the drives since push12's storage diagnostics (153 to 15d), /data stalled for minutes on 157 and for seconds on 156,
+158 and 15d, and the two alerts (153, 15d) came from hardwared's sensor reads with the disk idle. Against the storage
+being the cause:
+
+* The deletes do not line up with the stalls. 155 deleted 29 segments with no stall; 158 stalled 425 s before its
+  first delete; 152, 153 and 156 never reached the floor. On 157, four of six stalls did begin 6-13 s after a delete,
+  which is why deleting while driving goes anyway.
+* The flash answered fast when the work reached it: inside a 157 stall a 21 MB backlog drained in 0.51 s.
+* On 157 the kernel logged a worker on CPU 4 left without the CPU for at least 6 minutes, with CPU 4's disk-dispatch
+  work queued behind it, while card, controlsd and selfdrived kept core 4 at 99.5 %.
+
+### How it works
+
+`openpilot/sunnypilot/system/deleter_policy.py`, called from upstream's `deleter.py` (`FORK(STORAGE)`):
+
+* **Parked**: below 20 % free, the oldest segment whose qlog and small video an uploader has already sent, one a
+  second, until 20 %. The newest drives, not uploaded yet, wait for the uploader.
+* **Driving**: nothing, unless free space is below upstream's floor (10 % or 5 GiB), which stays the floor at all times.
+  Then the oldest segment, uploaded or not, as before, but one file at a time, the largest first, 6 s apart, so the
+  freed space reaches the flash in small pieces instead of 120 MB at once. Below 8 % (the "Out of Storage" alert is
+  below 7 %) without the wait.
+* **Kept from upstream**: the oldest first, never the segment being recorded, your bookmarked segments and the boot and
+  crash logs last.
+* **No settings and no Params writes.** "Driving" is manager's `IsOffroad`, which the uploader also reads.
+
+### What the routes will show
+
+Three new things, all in the qlogs:
+
+* `deleter deleted`, each delete: which segment, why (`routine` parked or `critical` below the floor), its size and
+  files, how long it took.
+* `deleter parked summary`, half a minute into each drive: how long the car was parked, what was deleted, how much the
+  device wrote to /data meanwhile and **which processes wrote it**. On Monday and on Tuesday, 57-61 GB was written
+  while the car was parked from the early morning to the afternoon, by something the logs do not name; this names it.
+* In the `storage report`: the flash's own wear estimate if the kernel exposes it (`ufs`), and the CPU clusters' speed
+  caps (`cpu`).
+
+### The proof
+
+* 31 new tests for the deleter (`test_deleter_policy.py`): the thresholds and pacing, uploaded-only parked deletes,
+  upstream's order and locks, file-by-file removal, the real deleter loop through a parking, drives above and below
+  the floor, an emergency, ignition on half-way, waiting for the uploader, and the parked summary. 7 more in
+  `test_storage_diag.py` for the UFS, CPU and per-process readings.
+* 20 deliberate breakages of the new code (deleting while driving, ignoring uploads, no pacing, a cached upload flag,
+  and so on): every one fails a test.
+* Upstream's `test_deleter.py` replaced `os.statvfs` for every later test in its worker and never put it back; it now
+  patches it per test (`FORK(UPSTREAM-FIX)`).
+
+### Gates
+
+On `~/sp-long`, branch `storage16`:
+
+* `scons -j6`: done (push16 changes no C++).
+* The full suite (`tools/test_runner.py -j 6`): **3401 passed**, 45 skipped, 1 xfailed. That is push15's 3363, plus the
+  31 deleter tests and the 7 new diagnostics tests.
+* The 20 deliberate breakages: every one fails a test. (A first full run failed 7 of the new tests because the mutation
+  run's last breakage, the target as 15 %, had the same length as the original and was undone within the same second,
+  so Python kept its compiled copy. The mutation script now deletes it; the run above is after that.)
+* ruff: clean. ty: 5 diagnostics, push12's 4 and the one in push15's CI test fix (`test_car_stock_alert.py:543`,
+  unchanged here); none in push16's files.
+* codespell (with the repo's ignore list): no hits in the changed files.
+* No CRLF, no mode change (`deleter.py` stays 755, the two new files 644).
+* `compile_settings_ui.py --check`: matches (no settings change). No new Params key.
+
+### What to check on the first drives
+
+* The first drive after a long park: a `deleter parked summary` with about 75 routine deletes and `free_pct_now` near
+  20. Later drives: a handful each, matching the minutes driven before.
+* No `deleter deleted` line with `onroad: true` unless the drive started below 20 % or ran past about 75 minutes.
+* The summary's `writers`: who writes ~60 GB while parked (if it is a root process it shows as `procs_unreadable` and
+  unattributed `disk_written_mb`).
+* The `storage report`'s `ufs`: a `health_descriptor` with `life_time_estimation_a` / `_b` (0x01 = under 10 % of its
+  life used) answers "is it dying" from the flash itself; `entries` instead means this kernel does not expose it.
+
 ## 2026-10-27 — push15: the distance button fix (board `883a3cd1` unchanged)
 
 Your report on the drive home with push14 (route 157, the servo to home): "it does show 4 separate lengths, but it
