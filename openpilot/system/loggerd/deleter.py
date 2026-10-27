@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
+import math
 import os
 import time
 import shutil
 import threading
+from collections import Counter
 from pathlib import Path
 from openpilot.common.hardware.hw import Paths
 from openpilot.common.params import Params
@@ -56,13 +58,14 @@ def free_space() -> tuple[float, int]:
   return get_available_percent(default=100.), get_available_bytes(default=MIN_BYTES + 1)
 
 
-def deleter_step(onroad: bool | None = None) -> tuple[bool, str | None]:
-  # FORK(STORAGE): push16's policy. Parked: room up to ROUTINE_PERCENT from segments the uploaders are done with;
+def deleter_step(onroad: bool | None = None, parked_s: float = math.inf) -> tuple[bool, str | None]:
+  # FORK(STORAGE): push16's policy. Parked: room up to ROUTINE_PERCENT from ordinary segments no upload waits for;
   # driving: only below the floor. Returns (room needed, the directory removed).
+  params = Params()
   if onroad is None:
-    onroad = policy.is_onroad(Params())
+    onroad = policy.is_onroad(params)
   free_percent, free_bytes = free_space()
-  need = policy.deletion_need(free_percent, free_bytes, onroad, MIN_PERCENT, MIN_BYTES)
+  need = policy.deletion_need(free_percent, free_bytes, onroad, MIN_PERCENT, MIN_BYTES, parked_s)
   if need is None:
     return False, None
 
@@ -70,7 +73,7 @@ def deleter_step(onroad: bool | None = None) -> tuple[bool, str | None]:
   preserved_dirs = get_preserved_segments(dirs)
 
   # remove the earliest directory we can
-  for delete_dir in policy.candidates(Paths.log_root(), dirs, preserved_dirs, DELETE_LAST, need):
+  for delete_dir in policy.candidates(Paths.log_root(), dirs, preserved_dirs, DELETE_LAST, need, params):
     delete_path = os.path.join(Paths.log_root(), delete_dir)
 
     try:
@@ -86,20 +89,23 @@ def deleter_thread(exit_event: threading.Event):
   # FORK(STORAGE): push16's policy and pacing (deleter_policy.py); upstream's order, locks and external storage kept
   params = Params()
   parked = policy.ParkedSummary(Paths.log_root(), MIN_PERCENT)
+  timer = policy.ParkedTimer()
   while not exit_event.is_set():
     onroad = policy.is_onroad(params)
+    now = time.monotonic()
     free_percent, free_bytes = free_space()
-    parked.update(onroad, free_percent, time.monotonic())
-    need = policy.deletion_need(free_percent, free_bytes, onroad, MIN_PERCENT, MIN_BYTES)
+    parked.update(onroad, free_percent, now)
+    need = policy.deletion_need(free_percent, free_bytes, onroad, MIN_PERCENT, MIN_BYTES, timer.parked_s(onroad, now))
 
     if need is not None:
       pace_s = policy.file_pace_s(need, onroad, free_percent)
       removed = False
+      held: Counter[str] = Counter()
       dirs = listdir_by_creation(Paths.log_root())
       preserved_dirs = get_preserved_segments(dirs)
 
       # remove the earliest directory we can
-      for delete_dir in policy.candidates(Paths.log_root(), dirs, preserved_dirs, DELETE_LAST, need):
+      for delete_dir in policy.candidates(Paths.log_root(), dirs, preserved_dirs, DELETE_LAST, need, params, held):
         delete_path = os.path.join(Paths.log_root(), delete_dir)
 
         if Path(Paths.log_root_external()).is_mount():
@@ -150,10 +156,10 @@ def deleter_thread(exit_event: threading.Event):
           break
         except OSError:
           cloudlog.exception(f"issue deleting {delete_path}")
-      parked.waiting_for_upload = need == policy.ROUTINE and not removed
+      parked.pass_done(onroad, need == policy.ROUTINE and not removed and held["upload"] > 0)
       exit_event.wait(policy.next_wait_s(need, pace_s, removed))
     else:
-      parked.waiting_for_upload = False
+      parked.pass_done(onroad, False)
       exit_event.wait(policy.IDLE_S)
 
 

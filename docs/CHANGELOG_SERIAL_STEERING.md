@@ -18,8 +18,8 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 ## 2026-10-28 — push16: room to breathe (board `883a3cd1` unchanged)
 
 Your question after push15: "i got low speed storage problem again, is comma dying?? allocate more spare space if you
-think [that's] worth?". **Branch `storage16`, one commit on push15 (`2984df599`); opendbc (`469d12c7`), panda and both
-boards unchanged. Not driven yet; not pushed.** The details are in `docs/fork/STORAGE.md`.
+think [that's] worth?". **Branch `storage16`, two commits on push15 (`2984df599`): the change and its review; opendbc
+(`469d12c7`), panda and both boards unchanged. Not driven yet; not pushed.** The details are in `docs/fork/STORAGE.md`.
 
 ### The short answer
 
@@ -39,12 +39,19 @@ boards unchanged. Not driven yet; not pushed.** The details are in `docs/fork/ST
 
 ### What you will notice
 
-* **The first time the comma is parked and on with push16, it deletes about 9 GB of your oldest drives**: roughly 75
-  minutes of driving, about the oldest two days. Free space then reads about 20 % instead of 10 %, and the comma keeps
-  it there by deleting while parked.
-* **The device keeps a little less history.** Every drive's qlogs and small videos are uploaded, and they stay in
-  comma connect. What goes for good is what only the device had: the oldest drives' full-resolution video and full
-  logs, which you can then no longer request.
+* **The first time the comma is parked and on with push16 for about 10 minutes, it deletes about 9 GB of your oldest
+  drives**: roughly 75 minutes of driving, about the oldest two days. It waits 2 minutes after you park, then deletes
+  one old minute of recording every 6 seconds. Free space then reads about 20 % instead of 10 %, and the comma keeps it
+  there by deleting while parked: a few minutes after each drive.
+* **The device keeps a little less history.** It reaches back about two weeks now (on Tuesday it was deleting the
+  drives of 12-13 October), and about two days less after this. Every drive's qlogs and small videos are uploaded, and
+  they stay in comma connect. What goes for good is what only the device had: the oldest drives' full-resolution video
+  and full logs, which you can then no longer request.
+* **Your bookmarked drives and the boot and crash logs are not touched** while there is room, and nothing you request
+  in connect is deleted before it has been sent.
+* **One thing worth doing in the next week:** in connect, request the full logs (rlogs) of routes 152, 153 (Sunday's
+  alert), 158 and 15d (Wednesday's alert). Connect has only their qlogs, and the full logs would show whether core 4
+  is what held up hardwared on those two alerts. Once requested, the comma keeps them until they are sent.
 * **While you drive it normally deletes nothing.** Before, at the 10 % floor, it deleted one minute of old recording
   (about 120 MB) for about every minute you drove: 1,453 times over the 115 drives on the device since July. Now it
   deletes while driving only below that same floor, which takes a drive of more than about 75 minutes with no parking
@@ -69,15 +76,18 @@ being the cause:
 
 `openpilot/sunnypilot/system/deleter_policy.py`, called from upstream's `deleter.py` (`FORK(STORAGE)`):
 
-* **Parked**: below 20 % free, the oldest segment whose qlog and small video an uploader has already sent, one a
-  second, until 20 %. The newest drives, not uploaded yet, wait for the uploader.
+* **Parked**: once the car has been parked 2 minutes, below 20 % free, the oldest segment whose qlog and small video an
+  uploader has already sent and that nothing in connect's upload queue needs, one every 6 seconds, until 20 %. The
+  newest drives, not uploaded yet, wait for the uploader. The 2 minutes cover a boot straight into a drive and a short
+  stop, so a drive does not begin just after a burst of deletes.
 * **Driving**: nothing, unless free space is below upstream's floor (10 % or 5 GiB), which stays the floor at all times.
   Then the oldest segment, uploaded or not, as before, but one file at a time, the largest first, 6 s apart, so the
   freed space reaches the flash in small pieces instead of 120 MB at once. Below 8 % (the "Out of Storage" alert is
   below 7 %) without the wait.
-* **Kept from upstream**: the oldest first, never the segment being recorded, your bookmarked segments and the boot and
-  crash logs last.
-* **No settings and no Params writes.** "Driving" is manager's `IsOffroad`, which the uploader also reads.
+* **Kept from upstream**: the oldest first, never the segment being recorded, and your bookmarked segments and the boot
+  and crash logs only below the floor, last.
+* **No settings and no Params writes.** "Driving" is manager's `IsOffroad`, which the uploader also reads; the upload
+  queue is athenad's `AthenadUploadQueue`.
 
 ### What the routes will show
 
@@ -93,12 +103,19 @@ Three new things, all in the qlogs:
 
 ### The proof
 
-* 31 new tests for the deleter (`test_deleter_policy.py`): the thresholds and pacing, uploaded-only parked deletes,
-  upstream's order and locks, file-by-file removal, the real deleter loop through a parking, drives above and below
-  the floor, an emergency, ignition on half-way, waiting for the uploader, and the parked summary. 7 more in
-  `test_storage_diag.py` for the UFS, CPU and per-process readings.
-* 20 deliberate breakages of the new code (deleting while driving, ignoring uploads, no pacing, a cached upload flag,
-  and so on): every one fails a test.
+* 45 new tests for the deleter (`test_deleter_policy.py`): the thresholds, the 2-minute wait and the pacing,
+  uploaded-only parked deletes, upstream's order and locks, bookmarks and boot / crash left to the floor, connect's
+  upload queue, file-by-file removal, the real deleter loop on a fake clock through a parking, a boot straight into a
+  drive, a short stop, drives above and below the floor, an emergency, ignition on half-way, waiting for the uploader,
+  and a whole parking into the next drive's parked summary. 7 more in `test_storage_diag.py` for the UFS, CPU and
+  per-process readings.
+* 41 deliberate breakages of the new code (deleting while driving, ignoring uploads, no pacing, a cached upload flag,
+  deleting bookmarks while parked, no 2-minute wait, ignoring the upload queue, and so on): every one fails a test.
+* The review found four things, all fixed with tests that failed first: parked deletes took bookmarked segments and
+  the boot / crash logs before drives still waiting to upload; they ran at one a second from the first second
+  parked, including the seconds after a boot just before a drive; the parked summary always said
+  `waiting_for_upload: false`, because the drive's own passes reset it before the summary was written; and a file
+  requested in connect could be deleted before it was sent.
 * Upstream's `test_deleter.py` replaced `os.statvfs` for every later test in its worker and never put it back; it now
   patches it per test (`FORK(UPSTREAM-FIX)`).
 
@@ -107,11 +124,11 @@ Three new things, all in the qlogs:
 On `~/sp-long`, branch `storage16`:
 
 * `scons -j6`: done (push16 changes no C++).
-* The full suite (`tools/test_runner.py -j 6`): **3401 passed**, 45 skipped, 1 xfailed. That is push15's 3363, plus the
-  31 deleter tests and the 7 new diagnostics tests.
-* The 20 deliberate breakages: every one fails a test. (A first full run failed 7 of the new tests because the mutation
-  run's last breakage, the target as 15 %, had the same length as the original and was undone within the same second,
-  so Python kept its compiled copy. The mutation script now deletes it; the run above is after that.)
+* The full suite (`tools/test_runner.py -j 6`): **3415 passed**, 45 skipped, 1 xfailed. That is push15's 3363, plus the
+  45 deleter tests and the 7 new diagnostics tests.
+* The 41 deliberate breakages: every one fails a test. (On the first commit, a first full run failed 7 of the new tests
+  because the mutation run's last breakage, the target as 15 %, had the same length as the original and was undone
+  within the same second, so Python kept its compiled copy. The mutation script deletes it since.)
 * ruff: clean. ty: 5 diagnostics, push12's 4 and the one in push15's CI test fix (`test_car_stock_alert.py:543`,
   unchanged here); none in push16's files.
 * codespell (with the repo's ignore list): no hits in the changed files.
@@ -121,7 +138,8 @@ On `~/sp-long`, branch `storage16`:
 ### What to check on the first drives
 
 * The first drive after a long park: a `deleter parked summary` with about 75 routine deletes and `free_pct_now` near
-  20. Later drives: a handful each, matching the minutes driven before.
+  20. Later drives: a handful each, matching the minutes driven before. `waiting_for_upload: true` with
+  `free_pct_now` below 20 means the uploads, not the deleter, are behind.
 * No `deleter deleted` line with `onroad: true` unless the drive started below 20 % or ran past about 75 minutes.
 * The summary's `writers`: who writes ~60 GB while parked (if it is a root process it shows as `procs_unreadable` and
   unattributed `disk_written_mb`).

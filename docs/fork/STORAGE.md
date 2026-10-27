@@ -54,32 +54,50 @@ UFS as discards from the next journal commits.
 | | parked (IsOffroad) | driving |
 |---|---|---|
 | free >= 20 % (`ROUTINE_PERCENT`) | nothing | nothing |
-| 10-20 % | **routine**: the oldest segment whose qlog and qcamera an uploader has sent; a second between segments | nothing |
+| 10-20 % | **routine**, after 2 minutes parked (`PARKED_GRACE_S`): the oldest ordinary segment no upload is waiting for (its qlog and qcamera sent, nothing of it in athenad's queue); 6 s between segments (`ROUTINE_SEGMENT_PACE_S`). Never a preserved segment or `boot` / `crash` | nothing |
 | below 10 % or 5 GiB (upstream's floor) | **critical**: the oldest segment, uploaded or not, at upstream's 0.1 s | **critical**: the same, one file at a time, the largest first, 6 s apart (`ONROAD_FILE_PACE_S`) |
 | below 8 % (`EMERGENCY_PERCENT`) | critical, unpaced | critical, unpaced |
 
-* **Upstream's order is kept** in every row: the oldest first, `.lock` never, the preserved segments and `boot` /
-  `crash` last. The routine row only skips segments with a file an uploader would still send by itself (`qlog`,
-  `qlog.zst`, `qcamera.ts`) and has not (`user.upload`, comma's uploader; `user.sunny.upload`, sunnylink's). The
-  uploader goes oldest first, so in practice those are the newest. Their xattrs are read past `xattr_cache`'s cache:
-  the uploader sets them in its own process, and a cached "not yet" would never change.
-* **6 s** is longer than /data's ext4 `commit=5`, so each file's discards go out with a journal commit of their own
-  instead of a whole 120 MB segment's at once. About 40 s per segment, against one recorded per minute.
+* **Upstream's order is kept** in every row: the oldest first, `.lock` never. The preserved (bookmarked) segments and
+  `boot` / `crash` are upstream's last resort, taken only below its floor and after every ordinary segment; the routine
+  row never takes them. (Boot and crash logs are not named like the uploaders' files, so an upload check would pass
+  them even when nothing in them was sent.)
+* **The routine row skips segments an upload is waiting for**: a file an uploader would send by itself (`qlog`,
+  `qlog.zst`, `qcamera.ts`) that it has not marked sent (`user.upload`, comma's uploader; `user.sunny.upload`,
+  sunnylink's), or any file of the segment in athenad's `AthenadUploadQueue` (an rlog or a full video asked for in
+  connect). The uploader goes oldest first, so in practice those are the newest. The xattrs are read past
+  `xattr_cache`'s cache: the uploader sets them in its own process, and a cached "not yet" would never change. A queue
+  that is missing or not valid JSON counts as empty, as athenad itself starts with an empty one then.
+* **2 minutes parked first**, counted from the deleter's own start. manager writes `IsOffroad=True` when it starts and
+  clears it only once the drive has `started`, so a boot straight into a drive (the update, then away) looks parked for
+  its first seconds; a short stop (fuel, a drop-off) is the same. Either would otherwise begin the drive with the
+  discards of whatever was deleted in the last seconds before it.
+* **6 s** is longer than /data's ext4 `commit=5`. While driving, each file's discards go out with a journal commit of
+  their own instead of a whole 120 MB segment's at once: about 40 s per segment, against one recorded per minute.
+  Parked, each commit carries one segment's discards, not five.
 * **8 %** sits above selfdrived's "Out of Storage" (below 7 %): there the pacing stops.
 * **The drive is `IsOffroad`**, which manager writes on every change of `started` and the uploader also reads.
   Unknown counts as driving: the routine work waits, the floor does not.
 * **The external drive path** (`/mnt/external_realdata`, when mounted) is upstream's, unchanged, under the same rows.
-* **No Params writes.** The deleter reads `IsOffroad` and nothing else.
+* **No Params writes.** The deleter reads `IsOffroad` and `AthenadUploadQueue`, and nothing else.
 
 With every drive since July under 69 minutes, and about 9 GB (75 minutes of recording) between 20 % and the floor, none
 of those 115 drives would have needed a delete while driving, provided the device was parked and on long enough before
-each to catch up (about a second a segment). A drive that starts below 20 % - the first after the update if it
-follows straight on, or several drives with no time parked between them - deletes at the floor as before, paced.
+each to catch up: 2 minutes, then 6 s per minute driven before (3 minutes after a 30-minute drive). A drive that starts
+below 20 % - the first after the update if it follows straight on, or several drives with no time parked between
+them - deletes at the floor as before, paced.
 
-**What it costs:** about 9 GB once, the first time the device is parked with push16: roughly 75 one-minute segments
-of the oldest drives, about two days of the owner's driving. After that the device keeps that much less history;
-every drive's qlogs and qcameras are uploaded (connect lists both for every segment of 158-15d) and stay in connect.
-What goes with them for good is what only the device had: the oldest drives' full-resolution video and rlogs.
+**What it costs:** about 9 GB once, the first time the device is parked and on with push16 for about 10 minutes (2
+minutes' wait, then 75 segments at 6 s): roughly 75 one-minute segments of the oldest drives, about two days of the
+owner's driving. After that the device keeps that much less history; every drive's qlogs and qcameras are uploaded
+(connect lists both for every segment of 158-15d) and stay in connect. What goes with them for good is what only the
+device had: the oldest drives' full-resolution video and rlogs. Bookmarked segments and the boot / crash logs are not
+touched above the floor, and nothing queued in connect is deleted before athenad has sent it.
+
+How far back the device reaches: on route 157 (27 Oct) the floor was deleting route 131 (12-13 Oct), so about two
+weeks; push16 shortens that by about two days. The rlogs of 152, 153, 158 and 15d are on the device only (connect has
+their qlogs, not their rlogs), and they are what would prove or refute the core-4 path for 153 and 15d (section 1).
+Asked for from connect within about a week, they are queued and then held until sent.
 
 ## 4. Diagnostics in the routes
 
@@ -91,11 +109,13 @@ mid-segment). Parked, these go to the device's own log only; nothing logged offr
 
 **`deleter parked summary`**, once per parking, 30-60 s into the next drive (`ParkedSummary`): `parked_s`,
 `free_pct_parked` / `free_pct_now`, `deleted` (routine and critical counts), `deleted_mb`, `deleting_s`,
-`waiting_for_upload` (the routine work stopped at segments not uploaded yet), `disk_written_mb` / `disk_writes` /
+`waiting_for_upload` (the last parked pass's routine work stopped short of 20 % at segments an upload is waiting for;
+false if it reached 20 %, or stopped at bookmarks or boot / crash only), `disk_written_mb` / `disk_writes` /
 `disk_write_ms` (/data's partition over the parked time, from `/proc/diskstats`), `ext4_written_mb` (ext4's lifetime
 counter, which on this 4.9 kernel also counts discards), `writers` (the five processes that wrote the most to storage
 over the parked time, from `/proc/<pid>/io` sampled every 5 minutes; `WriteSampler` in `storage_diag.py`),
-`writers_mb`, `procs_unreadable` (processes whose counters this user may not read: root's), and the policy's numbers.
+`writers_mb`, `procs_unreadable` (processes whose counters this user may not read: root's), and the policy's numbers
+(`routine_pct`, `floor_pct`, `emergency_pct`, `pace_s`, `routine_pace_s`, `grace_s`).
 It is there for the 57-61 GB written in each of two parked windows (26 and 27 Oct) by a writer the logs do not name.
 
 **`storage report`** (push12's, at hardwared's start and 30 s into each drive) gains:
@@ -121,12 +141,18 @@ It is there for the 57-61 GB written in each of two parked windows (26 and 27 Oc
 
 ## 6. Tests
 
-`openpilot/system/loggerd/tests/test_deleter_policy.py` (31): the thresholds and the pacing table; the routine row
-takes only uploaded segments (comma's or sunnylink's xattr, qlog and qcamera both, past the cache) in upstream's order
-and never a locked one; the floor takes the oldest uploaded or not, parked or driving; `remove_dir` largest first with
-the pacing between files, stopped by the exit event with the qlog left to the last; the real `deleter_thread` driven
-through a parking, a drive above and below the floor, an emergency, the drive starting mid-way, waiting for the
-uploader, and every segment locked; `ParkedSummary` once per parking, 30 s in, with the counts. `test_storage_diag.py`
+`openpilot/system/loggerd/tests/test_deleter_policy.py` (45): the thresholds, the grace and the pacing table; the
+routine row takes only uploaded segments (comma's or sunnylink's xattr, qlog and qcamera both, past the cache) in
+upstream's order, never a locked one, never one with a file in athenad's queue (a malformed queue holds nothing), and
+never a bookmarked segment or `boot` / `crash`, which the floor then takes last, in upstream's order; the floor takes
+the oldest uploaded or not, parked or driving; `remove_dir` largest first with the pacing between files, stopped by the
+exit event with the qlog left to the last, and a file that appears meanwhile removed too; the real `deleter_thread` on
+a fake clock (every wait advances it) driven through a parking, a drive above and below the floor, an emergency, the
+drive starting mid-way, waiting for the uploader, every segment locked, a boot straight into a drive (nothing
+deleted), a stop, a drive and a second stop (each waits out the grace), the exit event in the middle of a paced
+segment (`complete` false), and a whole parking into the next drive's `deleter parked summary` (the routine count, the
+size, `waiting_for_upload` still true 30 s into the drive, and false when the parking reached 20 % or stopped at a
+bookmark); `ParkedSummary` once per parking, 30 s in, with the counts. `test_storage_diag.py`
 (+7): the UFS descriptor read from a sysfs tree with and without one, `cpu_state`, `/proc/<pid>/io` sampling (a
 process from before the window, one started inside it, a reused pid, unreadable ones, a bounded table).
 
@@ -134,17 +160,31 @@ process from before the window, one started inside it, a reused pid, unreadable 
 Upstream assigned `deleter.os.statvfs` - `os.statvfs` itself - and never restored it, so any later test in the same
 worker got the fake (`test_storage_diag`'s report then raised). Offer upstream.
 
-20 mutations of the policy, the thread and the sampler (routine while driving, uploads ignored, no pacing, the cached
+41 mutations of the policy, the thread and the sampler (routine while driving, uploads ignored, no pacing, the cached
 xattr, smallest first, the summary at once or counting driving deletes, the emergency paced, a locked segment
 deleted, the drive ignored by the thread or the step, unknown as parked, lifetime write counts, qcamera or sunnylink
-ignored, the delete line not at error level, the floor's bytes ignored, no wait after a paced segment, a 15 % target):
-all fail at least one test.
+ignored, the delete line not at error level, the floor's bytes ignored, no wait after a paced segment, a 15 % target;
+the thread no longer feeding the summary its passes, deletes or upload state, `complete` always true, no fallback for
+a file that appears, the exit event ignored in `remove_dir` or by the thread; routine taking bookmarks or boot /
+crash, the floor skipping them; no grace, a grace a drive does not restart, a segment a second, the thread passing
+no parked time; athenad's queue ignored, read per file, trusted when it is not a list or points outside /data's log
+root, or raising): all fail at least one test.
+
+**The review** (second commit on `storage16`) changed four things, each with tests that failed first on the first
+commit: (1) the routine row took bookmarked segments and then `boot` / `crash` while newer ordinary segments still
+waited to upload - upstream does that only below its floor; (2) it deleted a segment a second from the first second
+parked, so up to five segments' discards per commit, and on the first pass after a boot, just before the drive; now 2
+minutes parked first and 6 s between segments; (3) the tests never ran the thread into a parked summary, and the one
+that does found a bug: `waiting_for_upload` was set by every pass, so by the time the summary was logged, 30 s into
+the drive, the drive's passes had always made it false; now only parked passes set it, and only when an upload is what
+held the work; (4) the routine row did not know athenad's upload queue, so a file asked for in connect could be deleted
+before it was sent.
 
 ## 7. Files
 
 | file | |
 |---|---|
-| `openpilot/sunnypilot/system/deleter_policy.py` | the policy, `remove_dir`, `ParkedSummary`, the `deleter deleted` line |
+| `openpilot/sunnypilot/system/deleter_policy.py` | the policy, `ParkedTimer`, `athena_queued`, `remove_dir`, `ParkedSummary`, the `deleter deleted` line |
 | `openpilot/system/loggerd/deleter.py` | upstream's file: `deleter_step(onroad=None)` and `deleter_thread` call the policy; the external-drive path, `get_preserved_segments` and the constants are upstream's. On a merge, keep upstream's lines and re-apply the marked ones |
 | `openpilot/sunnypilot/system/storage_diag.py` | `ufs_health`, `cpu_state`, `proc_write_bytes`, `WriteSampler` |
 | `openpilot/system/loggerd/tests/test_deleter_policy.py`, `test_deleter.py`, `openpilot/sunnypilot/system/tests/test_storage_diag.py` | section 6 |

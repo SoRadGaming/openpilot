@@ -281,8 +281,9 @@ ours.
 
 Area **ST** is push16 (2026-10-28, [STORAGE.md](STORAGE.md)): the deleter no longer makes room while driving above
 upstream's floor (10 % / 5 GiB, unchanged, and still the floor at all times); parked, it makes room up to
-`ROUTINE_PERCENT` (20 %) from segments whose qlog and qcamera an uploader has sent; below the floor while driving it
-removes one file every 6 s. Each delete and each parking's summary go into the routes, and the storage report carries
+`ROUTINE_PERCENT` (20 %), after 2 minutes parked and a segment every 6 s, from ordinary segments whose qlog and qcamera
+an uploader has sent and that nothing in athenad's upload queue needs (bookmarks and boot / crash are left to the
+floor, as upstream); below the floor while driving it removes one file every 6 s. Each delete and each parking's summary go into the routes, and the storage report carries
 the UFS's wear estimate and the CPU's caps. Not car-specific and not gated, markers `FORK(STORAGE)`. On each merge,
 check upstream's `deleter.py`: its loop now asks `deleter_policy.py` what to delete and how fast, with the
 external-drive branch, `get_preserved_segments` and the constants as upstream's; re-apply the marked lines onto

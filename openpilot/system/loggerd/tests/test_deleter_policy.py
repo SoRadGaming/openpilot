@@ -1,8 +1,11 @@
 """FORK(STORAGE): push16's deleter - parked it makes room up to ROUTINE_PERCENT from uploaded segments, driving only
 below upstream's floor and then one file at a time (openpilot/sunnypilot/system/deleter_policy.py)."""
+import contextlib
+import math
 import os
 import threading
 from collections import namedtuple
+from dataclasses import asdict
 from pathlib import Path
 from unittest import mock
 
@@ -12,6 +15,7 @@ import openpilot.sunnypilot.system.deleter_policy as policy
 from openpilot.common.hardware.hw import Paths
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.system.storage_diag import DISKSTATS_FIELDS
+from openpilot.system.athena.athenad import UploadItem
 from openpilot.system.loggerd import xattr_cache
 from openpilot.system.loggerd.tests.loggerd_tests_common import UploaderTestCase
 
@@ -19,6 +23,26 @@ Stats = namedtuple("Stats", ['f_bavail', 'f_blocks', 'f_frsize'])
 BLOCKS = 1000
 FRSIZE = 64 * 2**20  # 1000 blocks of 64 MiB: 62.5 GiB, so 1 % is 640 MiB and 9 % is 5.6 GiB (above MIN_BYTES)
 MB = 2**20
+
+
+def queue_item(path: Path) -> dict:
+  """An entry of AthenadUploadQueue as athenad writes it (UploadQueueCache.cache)."""
+  return asdict(UploadItem(path=str(path), url="https://example.invalid/upload", headers={}, created_at=0, id="1"))
+
+
+class FakeSampler:
+  def __init__(self):
+    self.samples = 1
+    self.unreadable = 3
+
+  def sample(self):
+    self.samples += 1
+
+  def top(self):
+    return [{"comm": "updated", "pid": 42, "mb": 4096.}]
+
+  def total_bytes(self):
+    return 5 * 2**30
 
 
 class StopAfter(threading.Event):
@@ -56,9 +80,26 @@ class TestPolicyRules(OpenpilotTestCase):
     assert need(10., plenty, True, 10, floor_bytes) is None
     assert need(9.99, plenty, True, 10, floor_bytes) == policy.CRITICAL
     assert need(50., floor_bytes - 1, True, 10, floor_bytes) == policy.CRITICAL
+    # parked: the routine work waits for PARKED_GRACE_S of it, the floor does not
+    grace = policy.PARKED_GRACE_S
+    assert need(15., plenty, False, 10, floor_bytes, parked_s=0.) is None
+    assert need(15., plenty, False, 10, floor_bytes, parked_s=grace - 0.1) is None
+    assert need(15., plenty, False, 10, floor_bytes, parked_s=grace) == policy.ROUTINE
+    assert need(9.99, plenty, False, 10, floor_bytes, parked_s=0.) == policy.CRITICAL
+    assert need(15., plenty, True, 10, floor_bytes, parked_s=math.inf) is None
     # the routine target sits well above the floor, the emergency below it and above the Out of Storage alert (7 %)
     assert policy.ROUTINE_PERCENT >= 2 * deleter.MIN_PERCENT
     assert 7. < policy.EMERGENCY_PERCENT < deleter.MIN_PERCENT
+    # a boot straight into a drive (IsOffroad until `started`) and a short stop both stay under the grace
+    assert 60. <= policy.PARKED_GRACE_S <= 300.
+
+  def test_parked_timer(self):
+    t = policy.ParkedTimer()
+    assert t.parked_s(False, 100.) == 0.  # from the first pass that saw it parked: the deleter's start
+    assert t.parked_s(False, 160.) == 60.
+    assert t.parked_s(True, 170.) == 0.
+    assert t.parked_s(False, 200.) == 0.  # a drive starts it again
+    assert t.parked_s(False, 230.) == 30.
 
   def test_only_a_critical_delete_while_driving_is_paced(self):
     assert policy.file_pace_s(policy.CRITICAL, True, 9.5) == policy.ONROAD_FILE_PACE_S
@@ -74,6 +115,32 @@ class TestPolicyRules(OpenpilotTestCase):
     assert policy.next_wait_s(policy.CRITICAL, policy.ONROAD_FILE_PACE_S, True) == policy.ONROAD_FILE_PACE_S
     assert policy.next_wait_s(policy.CRITICAL, 0., True) == policy.CRITICAL_RECHECK_S
     assert policy.next_wait_s(policy.CRITICAL, 0., False) == policy.NOTHING_DELETABLE_S
+    # parked, one segment's discards per journal commit (/data's commit=5), not five
+    assert policy.ROUTINE_SEGMENT_PACE_S > 5.
+
+  def test_athena_queued(self):
+    root = "/data/media/0/realdata"
+    p = mock.Mock()
+    p.get.return_value = [
+      {"path": f"{root}/00000157--5f63262cc1--3/rlog.zst"},
+      {"path": f"{root}/00000157--5f63262cc1--4/fcamera.hevc", "url": "u"},
+      {"path": f"{root}/00000157--5f63262cc1--4/rlog.zst"},
+      {"path": "/mnt/external_realdata/00000150--6eb87d4e2b--0/rlog.zst"},  # not under root
+      {"path": f"{root}/../realdata2/x--0/rlog.zst"},
+      {"path": root},
+      {"path": "00000158--846ba139e9--1/rlog.zst"},  # not absolute: athenad never writes one
+      {"path": 3}, {"url": "u"}, 7, None,
+    ]
+    assert policy.athena_queued(p, root) == {"00000157--5f63262cc1--3", "00000157--5f63262cc1--4"}
+    assert policy.athena_queued(p, root + "/") == {"00000157--5f63262cc1--3", "00000157--5f63262cc1--4"}
+    p.get.assert_called_with("AthenadUploadQueue")
+    for value in (None, [], "[", {"path": f"{root}/x--0/rlog"}, 5):
+      p.get.return_value = value
+      assert policy.athena_queued(p, root) == set()
+    p.get.side_effect = OSError("stalled")
+    with mock.patch.object(policy, "cloudlog") as log:
+      assert policy.athena_queued(p, root) == set()
+    log.exception.assert_called_once()
 
   def test_upload_attrs_are_the_uploaders(self):
     from openpilot.sunnypilot.sunnylink import uploader as sunnylink_uploader
@@ -105,6 +172,7 @@ class DeleterCase(UploaderTestCase):
     self.free_pct = 15.
     self.free_step = 0.  # percent freed per segment() directory that is gone
     self.made: list[str] = []
+    self.clock = 0.  # deleter's time.monotonic() in run_thread; every wait of the exit event advances it
     patcher = mock.patch.object(os, "statvfs", side_effect=self.fake_statvfs)
     patcher.start()
     self.addCleanup(patcher.stop)
@@ -166,17 +234,53 @@ class TestDeleterStep(DeleterCase):
     self.params.put_bool("IsOffroad", True, block=True)
     assert deleter.deleter_step()[1] is not None
 
-  def test_routine_keeps_upstream_order(self):
-    # upstream's test_delete_last, every segment uploaded, parked at 15 %
+  def test_routine_stops_where_upstream_order_reaches_its_last_resort(self):
+    # upstream's test_delete_last, every segment uploaded: parked at 15 % only the two ordinary segments go; the
+    # bookmarked one and boot / crash wait for the floor, and then go in upstream's order
     order = [
       self.segment(self.seg_format.format(1)),
       self.segment(self.seg_format2.format(0)),
       self.segment(self.seg_format.format(0), preserve_xattr=deleter.PRESERVE_ATTR_VALUE),
-      self.segment("boot"),
-      self.segment("crash"),
+      self.segment("boot", sizes={"0000004a--a1b2c3d4e5.zst": .01}),
+      self.segment("crash", sizes={"crash_1": .01}),
     ]
-    got = [deleter.deleter_step(onroad=False)[1] for _ in order]
-    assert got == [str(p) for p in order]
+    assert [deleter.deleter_step(onroad=False)[1] for _ in range(2)] == [str(p) for p in order[:2]]
+    assert deleter.deleter_step(onroad=False) == (True, None)
+    assert all(p.exists() for p in order[2:])
+    self.free_pct = 9.
+    assert [deleter.deleter_step(onroad=False)[1] for _ in range(3)] == [str(p) for p in order[2:]]
+
+  def test_routine_never_takes_a_bookmark_before_segments_waiting_to_upload(self):
+    # the review's case: a trip on cellular, the qcameras not sent; the bookmark's qlog and qcamera were
+    bookmark = self.segment(self.seg_format.format(0), preserve_xattr=deleter.PRESERVE_ATTR_VALUE)
+    waiting = [self.segment(self.seg_format2.format(i), uploaded=False) for i in range(3)]
+    for _ in range(2):
+      assert deleter.deleter_step(onroad=False) == (True, None)
+    assert bookmark.exists() and all(p.exists() for p in waiting)
+
+  def test_routine_never_takes_boot_or_crash_logs(self):
+    # their names are not the uploaders' qlog / qcamera, so they would look done even when nothing was sent
+    boot = self.segment("boot", sizes={"0000004a--a1b2c3d4e5.zst": .01})
+    crash = self.segment("crash", sizes={"crash_1": .01})
+    self.segment(self.seg_format2.format(0), uploaded=False)
+    assert deleter.deleter_step(onroad=False) == (True, None)
+    assert boot.exists() and crash.exists()
+
+  def test_routine_skips_what_athena_will_send(self):
+    asked = self.segment(self.seg_format.format(0))  # its qlog and qcamera are up; its rlog was asked for in connect
+    other = self.segment(self.seg_format.format(1))
+    self.params.put("AthenadUploadQueue", [queue_item(asked / "rlog.zst")], block=True)
+    assert deleter.deleter_step(onroad=False) == (True, str(other))
+    assert deleter.deleter_step(onroad=False) == (True, None)
+    self.free_pct = 9.  # the floor takes it, as upstream would
+    assert deleter.deleter_step(onroad=False) == (True, str(asked))
+
+  def test_a_malformed_upload_queue_holds_nothing(self):
+    seg = self.segment(self.seg_format.format(0))
+    with open(self.params.get_param_path("AthenadUploadQueue"), "w") as f:
+      f.write("[{\"path\": ")
+    assert self.params.get("AthenadUploadQueue") is None
+    assert deleter.deleter_step(onroad=False) == (True, str(seg))
 
   def test_a_locked_segment_is_never_deleted(self):
     locked = Path(Paths.log_root()) / self.seg_dir
@@ -252,16 +356,57 @@ class TestRemoveDir(DeleterCase):
     assert policy.remove_dir(str(seg), 0., lambda t: False)[1:] == (2, True)
     assert not seg.exists()
 
+  def test_a_file_that_appears_meanwhile_goes_too(self):
+    seg = self.segment(self.seg_dir, sizes=self.SIZES)
+
+    def wait(t: float) -> bool:
+      if not (seg / "late.bin").exists():
+        (seg / "late.bin").write_bytes(b"x" * 4096)  # after the listing: rmdir finds the directory not empty
+      return False
+
+    nbytes, files, complete = policy.remove_dir(str(seg), policy.ONROAD_FILE_PACE_S, wait)
+    assert (files, complete) == (4, True)
+    assert not seg.exists()
+
+
+class FakeTime:
+  """deleter's `time` in run_thread: monotonic() is the test's clock."""
+
+  def __init__(self, case: "DeleterCase"):
+    self.case = case
+
+  def monotonic(self) -> float:
+    return self.case.clock
+
 
 class TestDeleterThread(DeleterCase):
-  def run_thread(self, waits: int, hook=None) -> tuple[StopAfter, list]:
-    ev = StopAfter(waits, hook)
-    with mock.patch.object(policy, "cloudlog") as log, mock.patch.object(policy, "WriteSampler"):
+  def run_thread(self, waits: int, hook=None, grace: float | None = 0.) -> tuple[StopAfter, list]:
+    """Runs the real deleter_thread for `waits` waits of its exit event, each advancing self.clock by its timeout.
+    grace patches PARKED_GRACE_S (0: the routine work starts on the first parked pass); None keeps the real one."""
+    def tick(n: int, t: float) -> None:
+      self.clock += t
+      if hook is not None:
+        hook(n, t)
+
+    ev = StopAfter(waits, tick)
+    with contextlib.ExitStack() as stack:
+      log = stack.enter_context(mock.patch.object(policy, "cloudlog"))
+      stack.enter_context(mock.patch.object(policy, "WriteSampler", FakeSampler))
+      stack.enter_context(mock.patch.object(deleter, "time", FakeTime(self)))
+      if grace is not None:
+        stack.enter_context(mock.patch.object(policy, "PARKED_GRACE_S", grace))
       deleter.deleter_thread(ev)
+    self.log = log
     events = [c for c in log.event.call_args_list if c.args[0] == "deleter deleted"]
     for c in events:
       assert c.kwargs["error"] is True
     return ev, events
+
+  def summaries(self) -> list:
+    return [c for c in self.log.event.call_args_list if c.args[0] == "deleter parked summary"]
+
+  def set_onroad(self, onroad: bool) -> None:
+    self.params.put_bool("IsOffroad", not onroad, block=True)
 
   def test_driving_above_the_floor_only_waits(self):
     self.params.put_bool("IsOffroad", False, block=True)
@@ -294,7 +439,7 @@ class TestDeleterThread(DeleterCase):
     assert ev.waits == [policy.CRITICAL_RECHECK_S] + [policy.ONROAD_FILE_PACE_S] * 3 + [policy.IDLE_S]
     assert [e.kwargs["pace_s"] for e in events] == [0., policy.ONROAD_FILE_PACE_S]
 
-  def test_parked_a_segment_a_second_until_the_drive_starts(self):
+  def test_parked_a_segment_at_a_time_until_the_drive_starts(self):
     self.free_pct, self.free_step = 12., 1.
     for i in range(6):
       self.segment(self.seg_format.format(i))
@@ -344,20 +489,106 @@ class TestDeleterThread(DeleterCase):
     ev, events = self.run_thread(2)
     assert ev.waits == [policy.NOTHING_DELETABLE_S] * 2 and events == []
 
+  def test_the_thread_skips_what_athena_will_send(self):
+    asked, other = (self.segment(self.seg_format.format(i)) for i in range(2))
+    self.params.put("AthenadUploadQueue", [queue_item(asked / "fcamera.hevc")], block=True)
+    ev, events = self.run_thread(3)
+    assert [e.kwargs["segment"] for e in events] == [other.name] and asked.exists()
+    assert ev.waits == [policy.ROUTINE_SEGMENT_PACE_S, policy.IDLE_S, policy.IDLE_S]
 
-class FakeSampler:
-  def __init__(self):
-    self.samples = 1
-    self.unreadable = 3
+  def test_a_drive_straight_after_boot_deletes_nothing(self):
+    # manager writes IsOffroad=True at its start and clears it once `started`: the first seconds look parked
+    for i in range(3):
+      self.segment(self.seg_format.format(i))
 
-  def sample(self):
-    self.samples += 1
+    def hook(n: int, t: float) -> None:
+      if self.clock >= 60.:
+        self.set_onroad(True)
 
-  def top(self):
-    return [{"comm": "updated", "pid": 42, "mb": 4096.}]
+    ev, events = self.run_thread(6, hook, grace=None)
+    assert events == [] and len(self.remaining()) == 3
+    assert ev.waits == [policy.IDLE_S] * 6
 
-  def total_bytes(self):
-    return 5 * 2**30
+  def test_each_parking_waits_out_the_grace(self):
+    for i in range(4):
+      self.segment(self.seg_format.format(i))
+    grace, pace, idle = policy.PARKED_GRACE_S, policy.ROUTINE_SEGMENT_PACE_S, policy.IDLE_S
+    first = math.ceil(grace / idle) * idle  # the first pass at or after the grace
+    seen: list[tuple[float, int]] = []
+
+    first_parking = [idle] * int(first / idle) + [pace]  # the grace's waits, then the one after the first delete
+
+    def hook(n: int, t: float) -> None:
+      seen.append((self.clock, len(self.remaining())))
+      if n == len(first_parking):
+        self.set_onroad(True)   # a drive, right after the first delete
+      elif n == len(first_parking) + 1:
+        self.set_onroad(False)  # and parked again, one pass later: the grace again
+
+    ev, events = self.run_thread(2 * len(first_parking) + 1, hook, grace=None)
+    assert ev.waits == first_parking + [idle] + first_parking
+    assert [n for c, n in seen if c <= first] == [4] * int(first / idle)  # nothing before the grace
+    deletes_at = [c for (c, n), (_, prev) in zip(seen[1:], seen, strict=False) if n < prev]
+    drive_end = first + pace + idle
+    assert deletes_at == [first + pace, drive_end + first + pace]  # one each parking, a full grace after it began
+    assert len(events) == 2 and len(self.remaining()) == 2
+
+  def test_the_parking_reaches_the_next_drives_summary(self):
+    # parked: the grace, two routine deletes, then held by a segment the uploader has not sent; then a drive
+    done = [self.segment(self.seg_format.format(i)) for i in range(2)]
+    waiting = self.segment(self.seg_format2.format(0), uploaded=False)
+    drive_at = 300.
+
+    def hook(n: int, t: float) -> None:
+      if self.clock >= drive_at:
+        self.set_onroad(True)
+
+    ev, events = self.run_thread(20, hook, grace=None)
+    assert [e.kwargs["segment"] for e in events] == [p.name for p in done] and waiting.exists()
+    self.log.exception.assert_not_called()
+    (c,) = self.summaries()
+    kw = c.kwargs
+    assert kw["error"] is True and kw["deleted"] == {policy.ROUTINE: 2, policy.CRITICAL: 0}
+    assert kw["deleted_mb"] > 0 and kw["deleting_s"] == 0.
+    assert kw["waiting_for_upload"] is True  # still so 30 s into the drive
+    assert kw["parked_s"] is not None and drive_at <= kw["parked_s"] < drive_at + policy.IDLE_S
+    assert kw["policy"]["grace_s"] == policy.PARKED_GRACE_S and kw["policy"]["routine_pace_s"] == policy.ROUTINE_SEGMENT_PACE_S
+
+  def test_a_parking_that_reached_the_target_is_not_waiting(self):
+    self.free_pct, self.free_step = 18., 1.
+    for i in range(2):
+      self.segment(self.seg_format.format(i))
+    self.segment(self.seg_format2.format(0), uploaded=False)
+
+    def hook(n: int, t: float) -> None:
+      if n == 3:
+        self.set_onroad(True)
+
+    self.run_thread(6, hook)
+    (c,) = self.summaries()
+    assert c.kwargs["deleted"][policy.ROUTINE] == 2 and c.kwargs["waiting_for_upload"] is False
+
+  def test_a_parking_held_only_by_a_bookmark_is_not_waiting(self):
+    self.segment(self.seg_format.format(1))
+    bookmark = self.segment(self.seg_format.format(0), preserve_xattr=deleter.PRESERVE_ATTR_VALUE)
+
+    def hook(n: int, t: float) -> None:
+      if n == 3:
+        self.set_onroad(True)
+
+    ev, events = self.run_thread(6, hook)
+    assert ev.waits[:3] == [policy.ROUTINE_SEGMENT_PACE_S, policy.IDLE_S, policy.IDLE_S] and bookmark.exists()
+    (c,) = self.summaries()
+    assert c.kwargs["deleted"][policy.ROUTINE] == 1 and c.kwargs["waiting_for_upload"] is False
+
+  def test_stopped_mid_segment_says_so(self):
+    self.set_onroad(True)
+    self.free_pct = 9.2
+    seg = self.segment(self.seg_format.format(0), uploaded=False)
+    ev, events = self.run_thread(1)  # the exit event, set at the first wait: inside the paced segment
+    (e,) = events
+    assert (e.kwargs["files"], e.kwargs["complete"], e.kwargs["why"]) == (1, False, policy.CRITICAL)
+    assert sorted(os.listdir(seg)) == ["qcamera.ts", "qlog.zst"]
 
 
 class TestParkedSummary(OpenpilotTestCase):
@@ -392,11 +623,14 @@ class TestParkedSummary(OpenpilotTestCase):
       s.deleted(policy.ROUTINE, False, 120 * MB, 0.5)
     s.deleted(policy.CRITICAL, False, 118 * MB, 0.3)
     s.deleted(policy.CRITICAL, True, 999 * MB, 9.)  # while driving: its own line, not the parked summary's
+    s.pass_done(False, False)
+    s.pass_done(False, True)  # the last parked pass: held by an upload
     self.disk["sda12"] = self.counters(writes=2100, sectors_written=2 * 2**21, write_ms=4010)  # 2 GiB
     self.kb[0] = 1000 + 3 * 2**20
     s.update(False, 20.1, 400.)  # parked: sampled after WRITERS_SAMPLE_S
     assert s.sampler is not None and s.sampler.samples == 2
     s.update(True, 20.1, 1000.)  # ignition on: the last sample, nothing logged yet
+    s.pass_done(True, False)  # the drive's passes say nothing about the parking
     s.update(True, 20.0, 1000. + policy.SUMMARY_DELAY_S - 1)
     assert self.summaries() == []
     s.update(True, 20.0, 1000. + policy.SUMMARY_DELAY_S)
@@ -411,7 +645,7 @@ class TestParkedSummary(OpenpilotTestCase):
     assert kw["ext4_written_mb"] == 3072.
     assert kw["writers"] == [{"comm": "updated", "pid": 42, "mb": 4096.}] and kw["writers_mb"] == 5120.
     assert kw["procs_unreadable"] == 3 and kw["policy"]["routine_pct"] == policy.ROUTINE_PERCENT
-    assert kw["policy"]["floor_pct"] == 10
+    assert kw["policy"]["floor_pct"] == 10 and kw["waiting_for_upload"] is True
 
     s.update(False, 18., 2000.)  # the next parking, nothing deleted
     s.update(True, 18., 2600.)
@@ -419,6 +653,7 @@ class TestParkedSummary(OpenpilotTestCase):
     assert len(self.summaries()) == 2
     kw = self.summaries()[1].kwargs
     assert kw["deleted"] == {policy.ROUTINE: 0, policy.CRITICAL: 0} and kw["parked_s"] == 600.
+    assert kw["waiting_for_upload"] is False  # a new parking starts without it
 
   def test_started_while_driving_has_nothing_to_say(self):
     s = policy.ParkedSummary("/data/media/0/realdata", 10)
