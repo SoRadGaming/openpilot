@@ -153,11 +153,63 @@ class TestGuard(OpenpilotTestCase):
     g = DeviceStateGuard([w])
     w.current = ("a", 0., 1)
     g.update(2., {"thermal": snap(0, -0.5)})
-    w.current = ("a", 3., 2)
-    g.update(5., {"thermal": snap(1, 2.9)})
+    w.current = ("a", 13., 2)  # past the worker's 10 s between reports
+    g.update(15., {"thermal": snap(1, 12.9)})
     for t in g.report_threads:
       t.join(5.)
     assert len(self.ev.named("hardwared sensor stall report")) == 2
+
+  def test_the_report_asks_for_the_stacks_of_cores_4_5_and_6(self):
+    """The report hands the sampler's view to _sudo_stacks with its default cores (review of e76c253c6: a report that
+    asked for 4-5 only passed every test, since sudo is on only on the device)."""
+    w = FakeWorker("thermal")
+    view = {"t": 1., "threads": [{"pid": 10 + c, "comm": f"kworker/{c}:1", "cpu_bound": c, "state": "R"} for c in (4, 5, 6)]}
+    g = DeviceStateGuard([w], kthread_view=lambda: view, sudo_stacks=True)
+    w.current = ("gpu[0]:gpu0-usr", 100., 11)
+    with mock.patch.object(ss.subprocess, "run", return_value=mock.Mock(stdout="[<0>] worker_thread", stderr="")):
+      g.update(102., {"thermal": snap(10, 99.5)})
+      for t in g.report_threads:
+        t.join(5.)
+    (r,) = self.ev.named("hardwared sensor stall report")
+    assert set(r["kthread_stacks"]) == {"kworker/4:1:14", "kworker/5:1:15", "kworker/6:1:16"}, r["kthread_stacks"]
+
+  def test_stall_reports_are_rate_limited_per_worker(self):
+    """Each report is a few KB from a thread of its own. Reads stuck 2 s in every sweep, back to back for 30 s: one
+    report per worker per 10 s, the reads in between counted in the next (review of e76c253c6: before, every one of
+    them had its own, up to 1-2 thousand an hour). Another worker's stuck read is reported on its own."""
+    th, pw = FakeWorker("thermal"), FakeWorker("power")
+    g = DeviceStateGuard([th, pw], min_log_interval=10.)
+    for k in range(60):  # loops every 0.5 s; thermal sweep s runs from 2 s to 2 s + 2, stuck in its first read
+      now = 0.5 * k
+      s = k // 4
+      th.current = ("cpu[0]:cpu0", 2. * s, s)
+      pw.current = ("som_power_draw", 4., 1) if 4. <= now < 7. else None
+      g.update(now, {"thermal": snap(s - 1, 2. * s - 2.), "power": snap(k, now - 0.1)})
+    for t in g.report_threads:
+      t.join(5.)
+    rep = self.ev.named("hardwared sensor stall report")
+    # sorted: on this fake clock the report threads all start within a moment, and log in whatever order they run
+    thermal = sorted((r["read"], round(r["stuck_s"], 2), r["suppressed"]) for r in rep if r["worker"] == "thermal")
+    assert thermal == [("cpu[0]:cpu0", 1.5, 0), ("cpu[0]:cpu0", 1.5, 4), ("cpu[0]:cpu0", 1.5, 4)], thermal
+    power = [(r["read"], r["suppressed"]) for r in rep if r["worker"] == "power"]
+    assert power == [("som_power_draw", 0)], power  # 5.5 s: 4 s after thermal's report, its own
+    assert all(r["error"] is True for r in rep)
+
+  def test_a_read_held_back_by_the_limit_is_reported_once_it_allows(self):
+    """The limit delays a report, it does not lose the read that matters: one that is still stuck once the 10 s are up
+    is reported then, with how long it has been stuck (a stall long enough to stop deviceState is the one to explain)."""
+    w = FakeWorker("thermal")
+    g = DeviceStateGuard([w], min_log_interval=10.)
+    w.current = ("a", 0., 1)
+    g.update(1.5, {"thermal": snap(0, -0.5)})  # reported
+    w.current = ("b", 3., 2)  # the next sweep sticks and stays stuck
+    for k in range(9, 30):
+      g.update(0.5 * k, {"thermal": snap(1, 0.)})
+    for t in g.report_threads:
+      t.join(5.)
+    lines = self.ev.named("hardwared sensor stall report")
+    rep = sorted((r["read"], round(r["stuck_s"], 2), r["suppressed"]) for r in lines)  # threads log in any order
+    assert rep == [("a", 1.5, 0), ("b", 8.5, 0)], rep  # b at 11.5 s: the same read, not one held back
 
 
 class TestSensorWorker(OpenpilotTestCase):
@@ -236,7 +288,8 @@ class TestSensorWorker(OpenpilotTestCase):
     self.addCleanup(gate.set)
     self.addCleanup(w.stop)
     w.request()
-    time.sleep(0.05)
+    # in the stuck read: waited for, not slept for (the class's 30 ms comes first, and a slow thread wake-up after it)
+    self.wait_until(lambda: w.current is not None)
     t = time.monotonic()
     for _ in range(100):
       w.request()
@@ -296,16 +349,21 @@ class TestSensorWorker(OpenpilotTestCase):
     w.start()
     self.addCleanup(gate.set)
     self.addCleanup(w.stop)
-    t_req = time.monotonic()
     w.request()
+    # the stuck read has begun (waited for: the class's 30 ms and the thread's wake-up come before it), then 0.6 s more
+    self.wait_until(lambda: w.current is not None and w.current[0] == "stuck")
+    cur = w.current
+    assert cur is not None
+    stuck_at = cur[1]
     time.sleep(0.6)
     gate.set()
     self.wait_seq(w, 1)
     now = time.monotonic()
     s = w.latest
     assert s.values == {"first": 1., "stuck": 2.}
-    assert s.t_start - t_req < 0.3 and s.t_end - s.t_start >= 0.55 and w.age(now) >= 0.55, (s, now - t_req)
-    assert DeviceStateGuard([w], fresh_s=0.5).update(now, {"t": s}).stale
+    assert s.t_start <= stuck_at and s.t_end - s.t_start >= 0.6 and w.age(now) >= 0.6, (s, stuck_at, now)
+    d = DeviceStateGuard([w], fresh_s=0.5).update(now, {"t": s})
+    assert d.stale and d.stale_names == frozenset({"t"}), d  # by name too: the thermal rule asks for it so
 
   def test_a_read_that_raises_is_raised_on_the_loop(self):
     def bad():

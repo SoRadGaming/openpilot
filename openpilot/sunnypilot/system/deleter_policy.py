@@ -14,10 +14,10 @@ CPU core 4 near full load. But a delete frees a whole segment's blocks at once, 
 `discard`, so the next journal commits send all of them to the UFS; on route 157 four of six stalls began 6-13 s
 after a delete. So the routine part of the work moves to when the car is parked:
 
-* Parked (IsOffroad): make room up to ROUTINE_PERCENT (20 %), and only from ordinary segments the uploaders are done
-  with (the qlog and qcamera carry an uploader's xattr) and athenad has not been asked to send, so what goes is already
-  in connect. Never a preserved (bookmarked) segment or the boot / crash folders: upstream takes those only below its
-  floor, after every ordinary segment, and so does this. Only once the car has been parked PARKED_GRACE_S, and a
+* Parked (IsOffroad): make room up to ROUTINE_PERCENT (20 %), and only from ordinary segments comma's uploader is done
+  with (the qlog and qcamera carry its xattr) and of no route athenad was asked to send in the last UPLOAD_HOLD_S
+  (UploadHold), so what goes is already in connect. Never a preserved (bookmarked) segment or the boot / crash
+  folders: upstream takes those only below its floor, after every ordinary segment, and so does this. Only once the car has been parked PARKED_GRACE_S, and a
   segment every ROUTINE_SEGMENT_PACE_S: no burst of discards just before a drive starts (a boot, a short stop). A drive
   then starts with about 9 GB (about 75 minutes of recording) above the floor.
 * Driving: nothing, unless free space is below upstream's floor (deleter.MIN_PERCENT / MIN_BYTES), which stays the
@@ -56,10 +56,12 @@ CRITICAL_RECHECK_S = 0.1      # upstream's re-check after a delete
 NOTHING_DELETABLE_S = 5.      # critical, but every segment is locked
 IDLE_S = 30.                  # upstream's sleep when there is room (also: parked, nothing uploaded yet)
 
-# What the uploaders send by themselves, and the xattr each sets once it has (or was told to skip it).
-# system/loggerd/uploader.py (comma connect) and sunnypilot/sunnylink/uploader.py; test_deleter_policy checks both.
+# What comma's uploader (system/loggerd/uploader.py) sends by itself, and the xattr it sets once it has (or was told to
+# skip it). Only comma's counts: the owner pulls his routes from connect, so a routine delete waits until connect has
+# the segment's qlog and qcamera; sunnylink's uploader (user.sunny.upload, off on this device) alone is not enough.
 AUTO_UPLOADED = ("qlog", "qlog.zst", "qcamera.ts")
-UPLOAD_ATTRS = (("user.upload", b"1"), ("user.sunny.upload", b"1"))
+UPLOAD_ATTRS = (("user.upload", b"1"),)
+UPLOAD_HOLD_S = 1800.         # a route athenad was asked to send stays held this long after its queue last listed it
 
 SUMMARY_DELAY_S = 30.     # the parked summary goes out this long into the drive, once loggerd is recording
 WRITERS_SAMPLE_S = 300.   # parked: /proc/<pid>/io every 5 minutes
@@ -120,8 +122,8 @@ def next_wait_s(need: str, pace_s: float, removed: bool) -> float:
 
 
 def uploaded(fn: str) -> bool:
-  """An uploader has sent fn (or skipped it on purpose). Read past xattr_cache's cache: the uploader sets the attribute
-  in its own process, so a cached "not yet" would never change here."""
+  """comma's uploader has sent fn (or skipped it on purpose). Read past xattr_cache's cache: the uploader sets the
+  attribute in its own process, so a cached "not yet" would never change here."""
   for attr, value in UPLOAD_ATTRS:
     try:
       if xattr_cache._getxattr(fn, attr) == value:
@@ -132,7 +134,7 @@ def uploaded(fn: str) -> bool:
 
 
 def pending_upload(path: str, names: list[str] | None = None) -> bool:
-  """The segment holds a file the uploaders send by themselves that neither has sent yet."""
+  """The segment holds a file comma's uploader sends by itself that it has not sent yet."""
   if names is None:
     try:
       names = os.listdir(path)
@@ -164,14 +166,45 @@ def athena_queued(params, root: str) -> set[str]:
   return queued
 
 
+def route_of(d: str) -> str:
+  """A segment directory's route ("<route>--<n>"); any other directory (boot, crash) is its own."""
+  route, sep, seg = d.rpartition("--")
+  return route if sep and route and seg.isdigit() else d
+
+
+class UploadHold:
+  """The routes athenad has been asked to send, held from routine deletes until hold_s after its queue last listed any
+  file of them. AthenadUploadQueue lists only the files still waiting: athenad's four upload threads take theirs out,
+  and the queue it writes after each upload (UploadQueueCache.cache) leaves out the ones still being sent. A routine
+  delete of such a file is harmless while that upload goes on (it holds the file open), but if the upload then fails,
+  the retry finds the file gone and athenad drops the request. So the whole route is held - the files taken before the
+  deleter read the queue are usually of the route still listed - and kept held after it leaves the queue.
+  update() on every pass of the deleter's loop, driving too, so a route asked for while driving is seen."""
+
+  def __init__(self, hold_s: float | None = None):
+    self.hold_s = UPLOAD_HOLD_S if hold_s is None else hold_s
+    self.seen: dict[str, float] = {}  # route -> when the queue last listed a file of it
+
+  def update(self, params, root: str, now: float) -> None:
+    for d in athena_queued(params, root):
+      self.seen[route_of(d)] = now
+    self.seen = {r: t for r, t in self.seen.items() if now - t <= self.hold_s}
+
+  def holds(self, d: str) -> bool:
+    return route_of(d) in self.seen
+
+
 def candidates(root: str, dirs: list[str], preserved: set[str], delete_last: list[str], need: str, params,
-               held: Counter | None = None) -> Iterator[str]:
+               held: Counter | None = None, hold: UploadHold | None = None) -> Iterator[str]:
   """The directories to try, in upstream's order (the oldest first; the preserved segments and boot / crash last),
-  never one with a .lock file. A routine delete takes only ordinary segments that no upload is waiting for (the
-  uploaders' qlog and qcamera, athenad's queue): the preserved segments and boot / crash are left to the floor, as
-  upstream leaves them. held["upload"] counts the segments passed over for an upload."""
+  never one with a .lock file. A routine delete takes only ordinary segments that no upload is waiting for (comma's
+  uploader's qlog and qcamera, a route athenad was asked to send: `hold`, which the caller keeps up to date, or the
+  queue as it is now): the preserved segments and boot / crash are left to the floor, as upstream leaves them.
+  held["upload"] counts the segments passed over for an upload."""
   held = Counter() if held is None else held
-  queued = athena_queued(params, root) if need == ROUTINE else set()
+  if need == ROUTINE and hold is None:
+    hold = UploadHold()
+    hold.update(params, root, 0.)
   for d in sorted(dirs, key=lambda d: (d in delete_last, d in preserved)):
     if need == ROUTINE and (d in delete_last or d in preserved):
       continue
@@ -182,7 +215,7 @@ def candidates(root: str, dirs: list[str], preserved: set[str], delete_last: lis
       continue  # gone since it was listed
     if any(name.endswith(".lock") for name in names):
       continue
-    if need == ROUTINE and (d in queued or pending_upload(path, names)):
+    if need == ROUTINE and ((hold is not None and hold.holds(d)) or pending_upload(path, names)):
       held["upload"] += 1
       continue
     yield d

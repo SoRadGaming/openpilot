@@ -90,11 +90,13 @@ def deleter_thread(exit_event: threading.Event):
   params = Params()
   parked = policy.ParkedSummary(Paths.log_root(), MIN_PERCENT)
   timer = policy.ParkedTimer()
+  upload_hold = policy.UploadHold()
   while not exit_event.is_set():
     onroad = policy.is_onroad(params)
     now = time.monotonic()
     free_percent, free_bytes = free_space()
     parked.update(onroad, free_percent, now)
+    upload_hold.update(params, Paths.log_root(), now)  # every pass: what athenad sends is held after it leaves its queue
     need = policy.deletion_need(free_percent, free_bytes, onroad, MIN_PERCENT, MIN_BYTES, timer.parked_s(onroad, now))
 
     if need is not None:
@@ -105,7 +107,8 @@ def deleter_thread(exit_event: threading.Event):
       preserved_dirs = get_preserved_segments(dirs)
 
       # remove the earliest directory we can
-      for delete_dir in policy.candidates(Paths.log_root(), dirs, preserved_dirs, DELETE_LAST, need, params, held):
+      for delete_dir in policy.candidates(Paths.log_root(), dirs, preserved_dirs, DELETE_LAST, need, params, held,
+                                          upload_hold):
         delete_path = os.path.join(Paths.log_root(), delete_dir)
 
         if Path(Paths.log_root_external()).is_mount():

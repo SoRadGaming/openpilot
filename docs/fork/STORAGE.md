@@ -34,7 +34,7 @@ spare space if you think [that's] worth?"
   (p about 0.03); 15d and 158 show none.
 
 So the alert needs core 4 to have room (moving card to core 6, where camerad uses about 7 %, 8.5 % with its IRQ work;
-/proc/stat's 2-19 % there is tick aliasing), or reading hardwared's sensors on a thread of their own). **Both are in
+/proc/stat's 2-19 % there is tick aliasing), or hardwared's sensors read on threads of their own. **Both are in
 push16's third and fourth commits, documented in
 [COMM-ISSUE.md](COMM-ISSUE.md) section 9** (measured against inferred, the bench, the new lines). This document is the
 storage half, which the evidence supports as harmless and possibly a trigger removed: no routine deletes while
@@ -57,7 +57,7 @@ UFS as discards from the next journal commits.
 | | parked (IsOffroad) | driving |
 |---|---|---|
 | free >= 20 % (`ROUTINE_PERCENT`) | nothing | nothing |
-| 10-20 % | **routine**, after 2 minutes parked (`PARKED_GRACE_S`): the oldest ordinary segment no upload is waiting for (its qlog and qcamera sent, nothing of it in athenad's queue); 6 s between segments (`ROUTINE_SEGMENT_PACE_S`). Never a preserved segment or `boot` / `crash` | nothing |
+| 10-20 % | **routine**, after 2 minutes parked (`PARKED_GRACE_S`): the oldest ordinary segment no upload is waiting for (comma's uploader has sent its qlog and qcamera; no file of its route in athenad's queue in the last 30 minutes, `UPLOAD_HOLD_S`); 6 s between segments (`ROUTINE_SEGMENT_PACE_S`). Never a preserved segment or `boot` / `crash` | nothing |
 | below 10 % or 5 GiB (upstream's floor) | **critical**: the oldest segment, uploaded or not, at upstream's 0.1 s | **critical**: the same, one file at a time, the largest first, 6 s apart (`ONROAD_FILE_PACE_S`) |
 | below 8 % (`EMERGENCY_PERCENT`) | critical, unpaced | critical, unpaced |
 
@@ -65,12 +65,19 @@ UFS as discards from the next journal commits.
   `boot` / `crash` are upstream's last resort, taken only below its floor and after every ordinary segment; the routine
   row never takes them. (Boot and crash logs are not named like the uploaders' files, so an upload check would pass
   them even when nothing in them was sent.)
-* **The routine row skips segments an upload is waiting for**: a file an uploader would send by itself (`qlog`,
-  `qlog.zst`, `qcamera.ts`) that it has not marked sent (`user.upload`, comma's uploader; `user.sunny.upload`,
-  sunnylink's), or any file of the segment in athenad's `AthenadUploadQueue` (an rlog or a full video asked for in
-  connect). The uploader goes oldest first, so in practice those are the newest. The xattrs are read past
-  `xattr_cache`'s cache: the uploader sets them in its own process, and a cached "not yet" would never change. A queue
-  that is missing or not valid JSON counts as empty, as athenad itself starts with an empty one then.
+* **The routine row skips segments an upload is waiting for**: a file comma's uploader sends by itself (`qlog`,
+  `qlog.zst`, `qcamera.ts`) that it has not marked sent (`user.upload`), or any segment of a route athenad's
+  `AthenadUploadQueue` has listed (an rlog or a full video asked for in connect) in the last 30 minutes
+  (`UploadHold`). Only comma's mark counts: the owner pulls his routes from connect, and sunnylink's
+  (`user.sunny.upload`; its uploader is off on this device) would let a qlog go that connect never got. The uploader
+  goes oldest first, so in practice those are the newest. The xattrs are read past `xattr_cache`'s cache: the
+  uploader sets them in its own process, and a cached "not yet" would never change. Why a route, and why 30 minutes
+  after it leaves the queue: athenad's queue lists only the files still waiting - its four upload threads take theirs
+  out, and the queue it writes after each upload leaves out the ones still being sent. Deleting one of those is
+  harmless while its upload goes on (athenad holds it open), but if that upload fails, the retry finds the file gone
+  and athenad drops the request. The files taken before the deleter read the queue are usually of a route still
+  listed; the deleter reads the queue on every pass, driving too (every 30 s at most). A queue that is missing or not
+  valid JSON counts as empty, as athenad itself starts with an empty one then.
 * **2 minutes parked first**, counted from the deleter's own start. manager writes `IsOffroad=True` when it starts and
   clears it only once the drive has `started`, so a boot straight into a drive (the update, then away) looks parked for
   its first seconds; a short stop (fuel, a drop-off) is the same. Either would otherwise begin the drive with the
@@ -86,7 +93,8 @@ UFS as discards from the next journal commits.
 
 With every drive since July under 69 minutes, and about 9 GB (75 minutes of recording) between 20 % and the floor, none
 of those 115 drives would have needed a delete while driving, provided the device was parked and on long enough before
-each to catch up: 2 minutes, then 6 s per minute driven before (3 minutes after a 30-minute drive). A drive that starts
+each to catch up: 2 minutes, then 6 s per minute driven before (5 minutes in all after a 30-minute drive: the
+2-minute wait and 30 segments at 6 s). A drive that starts
 below 20 % - the first after the update if it follows straight on, or several drives with no time parked between
 them - deletes at the floor as before, paced.
 
@@ -95,12 +103,16 @@ minutes' wait, then 75 segments at 6 s): roughly 75 one-minute segments of the o
 owner's driving. After that the device keeps that much less history; every drive's qlogs and qcameras are uploaded
 (connect lists both for every segment of 158-15d) and stay in connect. What goes with them for good is what only the
 device had: the oldest drives' full-resolution video and rlogs. Bookmarked segments and the boot / crash logs are not
-touched above the floor, and nothing queued in connect is deleted before athenad has sent it.
+touched above the floor, and nothing queued in connect is deleted before athenad has sent it while there is room
+(above the floor; below it upstream's oldest-first rule applies, queued or not). The queue lives on the device, so a
+request reaches it only while the comma is on and online.
 
 How far back the device reaches: on route 157 (27 Oct) the floor was deleting route 131 (12-13 Oct), so about two
 weeks; push16 shortens that by about two days. The rlogs of 152, 153, 158 and 15d are on the device only (connect has
-their qlogs, not their rlogs), and they are what would prove or refute the core-4 path for 153 and 15d (section 1).
-Asked for from connect within about a week, they are queued and then held until sent.
+their qlogs, not their rlogs). They carry the kernel log, which names any CPU-4 kernel worker stuck 30 s or more
+around the alerts and the work queued behind it (the kernel's workqueue watchdog reports nothing shorter), so they can
+support or weaken the core-4 path for 153 and 15d (section 1), not prove it. Asked for from connect within about a
+week, with the comma on and online, they are queued and then held until sent.
 
 ## 4. Diagnostics in the routes
 
@@ -145,9 +157,11 @@ It is there for the 57-61 GB written in each of two parked windows (26 and 27 Oc
 
 ## 6. Tests
 
-`openpilot/system/loggerd/tests/test_deleter_policy.py` (45): the thresholds, the grace and the pacing table; the
-routine row takes only uploaded segments (comma's or sunnylink's xattr, qlog and qcamera both, past the cache) in
-upstream's order, never a locked one, never one with a file in athenad's queue (a malformed queue holds nothing), and
+`openpilot/system/loggerd/tests/test_deleter_policy.py` (49): the thresholds, the grace and the pacing table; the
+routine row takes only uploaded segments (comma's xattr, qlog and qcamera both, past the cache; sunnylink's alone is
+not enough) in upstream's order, never a locked one, never one of a route with a file in athenad's queue (a
+malformed queue holds nothing; the whole route, held 30 minutes after the queue last listed it, `route_of` and
+`UploadHold` on their own and in the thread, a route listed while driving held once parked), and
 never a bookmarked segment or `boot` / `crash`, which the floor then takes last, in upstream's order; the floor takes
 the oldest uploaded or not, parked or driving; `remove_dir` largest first with the pacing between files, stopped by the
 exit event with the qlog left to the last, and a file that appears meanwhile removed too; the real `deleter_thread` on
@@ -184,11 +198,21 @@ the drive, the drive's passes had always made it false; now only parked passes s
 held the work; (4) the routine row did not know athenad's upload queue, so a file asked for in connect could be deleted
 before it was sent.
 
+**The second review** (eighth commit; COMM-ISSUE.md 9.12) changed two more, each with tests that failed first on
+`e76c253c6`: (5) athenad's queue lists only the files still waiting, so a file being uploaded dropped out of it as
+soon as another upload ended, and a routine delete could take it - lost for good if that upload then failed; now the
+whole route is held until 30 minutes after the queue last listed it, and the queue is read on every pass, driving too
+(`UploadHold`); (6) sunnylink's upload mark counted as uploaded, so with its uploader on, a qlog connect never got
+could go; now only comma's counts (one of the 41 mutations above, "sunnylink ignored", is now the rule). Mutations of
+the new code - a hold per segment instead of per route, the hold dropped once out of the queue or never
+dropped, the thread not passing or not updating its hold, updating it only parked, sunnylink's mark counted again,
+the routine row ignoring the hold - all 8 fail a test.
+
 ## 7. Files
 
 | file | |
 |---|---|
-| `openpilot/sunnypilot/system/deleter_policy.py` | the policy, `ParkedTimer`, `athena_queued`, `remove_dir`, `ParkedSummary`, the `deleter deleted` line |
-| `openpilot/system/loggerd/deleter.py` | upstream's file: `deleter_step(onroad=None)` and `deleter_thread` call the policy; the external-drive path, `get_preserved_segments` and the constants are upstream's. On a merge, keep upstream's lines and re-apply the marked ones |
+| `openpilot/sunnypilot/system/deleter_policy.py` | the policy, `ParkedTimer`, `athena_queued`, `route_of`, `UploadHold`, `remove_dir`, `ParkedSummary`, the `deleter deleted` line |
+| `openpilot/system/loggerd/deleter.py` | upstream's file: `deleter_step(onroad=None)` and `deleter_thread` call the policy (the thread keeps an `UploadHold`, updated every pass); the external-drive path, `get_preserved_segments` and the constants are upstream's. On a merge, keep upstream's lines and re-apply the marked ones |
 | `openpilot/sunnypilot/system/storage_diag.py` | `ufs_health`, `cpu_state`, `proc_write_bytes`, `WriteSampler` |
 | `openpilot/system/loggerd/tests/test_deleter_policy.py`, `test_deleter.py`, `openpilot/sunnypilot/system/tests/test_storage_diag.py` | section 6 |

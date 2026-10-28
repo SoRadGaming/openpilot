@@ -334,9 +334,15 @@ class TestWindows(SamplerCase):
                                                  0: 0})
       s.poll(t)
     s.started = False
-    s.poll(90.)
+    with mock.patch.object(sd, "BASELINE_EVERY", 2):  # the drive's last window, 60-90 s, logged too
+      s.poll(90.)
     d = self.ev.named("sched drive summary")[0]["cpu"]
     assert d["4"]["run_pct"] == round(100. * (0.51 * 60. + 0.25 * 30.) / 90., 1) and d["6"]["run_pct"] == 57.0, d
+    # a later window is its own 30 s, not the drive's 90 (review of e76c253c6: only the first window, which starts with
+    # the drive, was checked)
+    second = self.ev.named("sched baseline")[1]
+    assert (second["window"], second["partial"], second["window_s"]) == (2, True, 30.), second
+    assert (second["cpu"]["4"]["run_pct"], second["cpu"]["6"]["run_pct"]) == (25.0, 57.0), second["cpu"]
 
   def test_without_proc_schedstat_run_share_is_none(self):
     s = self.sampler()

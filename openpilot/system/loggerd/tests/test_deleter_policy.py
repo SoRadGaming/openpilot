@@ -1,6 +1,7 @@
 """FORK(STORAGE): push16's deleter - parked it makes room up to ROUTINE_PERCENT from uploaded segments, driving only
 below upstream's floor and then one file at a time (openpilot/sunnypilot/system/deleter_policy.py)."""
 import contextlib
+import itertools
 import math
 import os
 import threading
@@ -142,10 +143,43 @@ class TestPolicyRules(OpenpilotTestCase):
       assert policy.athena_queued(p, root) == set()
     log.exception.assert_called_once()
 
+  def test_route_of(self):
+    assert policy.route_of("00000157--5f63262cc1--12") == "00000157--5f63262cc1"
+    assert policy.route_of("2024-03-01--12-00-00--3") == "2024-03-01--12-00-00"
+    for d in ("boot", "crash", "00000157--5f63262cc1--x", "--3", "x"):
+      assert policy.route_of(d) == d, d
+
+  def test_upload_hold(self):
+    """A route stays held UPLOAD_HOLD_S after athenad's queue last listed any file of it: the files being uploaded are
+    not in that queue (athenad lists only those waiting)."""
+    root = "/data/media/0/realdata"
+    p = mock.Mock()
+    hold = policy.UploadHold(hold_s=100.)
+    p.get.return_value = [queue_item(Path(root) / "00000157--5f63262cc1--3" / "rlog.zst")]
+    hold.update(p, root, 0.)
+    assert hold.holds("00000157--5f63262cc1--3") and hold.holds("00000157--5f63262cc1--0")  # the whole route
+    assert not hold.holds("00000158--846ba139e9--3") and not hold.holds("boot")
+    p.get.return_value = []
+    hold.update(p, root, 60.)
+    assert hold.holds("00000157--5f63262cc1--7")  # out of the queue, maybe still being sent
+    hold.update(p, root, 100.)
+    assert hold.holds("00000157--5f63262cc1--7")
+    hold.update(p, root, 100.5)
+    assert not hold.holds("00000157--5f63262cc1--7") and hold.seen == {}
+    p.get.side_effect = OSError("stalled")
+    with mock.patch.object(policy, "cloudlog"):
+      hold.update(p, root, 200.)  # unreadable: nothing new, nothing raised
+    assert hold.seen == {}
+    with mock.patch.object(policy, "UPLOAD_HOLD_S", 7.):
+      assert policy.UploadHold().hold_s == 7.
+    assert policy.UPLOAD_HOLD_S >= 600.  # a 60 MB video on a slow uplink
+
   def test_upload_attrs_are_the_uploaders(self):
+    """Only comma's uploader counts: the owner's routes come from connect. sunnylink's mark alone would let a routine
+    delete take a qlog connect never got (review of push16; sunnylink's uploader is off on this device)."""
     from openpilot.sunnypilot.sunnylink import uploader as sunnylink_uploader
-    assert (uploader.UPLOAD_ATTR_NAME, uploader.UPLOAD_ATTR_VALUE) in policy.UPLOAD_ATTRS
-    assert (sunnylink_uploader.UPLOAD_ATTR_NAME, sunnylink_uploader.UPLOAD_ATTR_VALUE) in policy.UPLOAD_ATTRS
+    assert policy.UPLOAD_ATTRS == ((uploader.UPLOAD_ATTR_NAME, uploader.UPLOAD_ATTR_VALUE),)
+    assert sunnylink_uploader.UPLOAD_ATTR_NAME != uploader.UPLOAD_ATTR_NAME
     # what the uploaders send without being asked is their immediate priority
     with mock.patch.object(uploader, "Api"):
       assert set(policy.AUTO_UPLOADED) == set(uploader.Uploader("0000000000000000", "/tmp").immediate_priority)
@@ -268,12 +302,13 @@ class TestDeleterStep(DeleterCase):
 
   def test_routine_skips_what_athena_will_send(self):
     asked = self.segment(self.seg_format.format(0))  # its qlog and qcamera are up; its rlog was asked for in connect
-    other = self.segment(self.seg_format.format(1))
+    sibling = self.segment(self.seg_format.format(1))  # the same route: its files may be the ones being uploaded
+    other = self.segment(self.seg_format2.format(0))
     self.params.put("AthenadUploadQueue", [queue_item(asked / "rlog.zst")], block=True)
     assert deleter.deleter_step(onroad=False) == (True, str(other))
     assert deleter.deleter_step(onroad=False) == (True, None)
-    self.free_pct = 9.  # the floor takes it, as upstream would
-    assert deleter.deleter_step(onroad=False) == (True, str(asked))
+    self.free_pct = 9.  # the floor takes them, as upstream would
+    assert [deleter.deleter_step(onroad=False)[1] for _ in range(2)] == [str(asked), str(sibling)]
 
   def test_a_malformed_upload_queue_holds_nothing(self):
     seg = self.segment(self.seg_format.format(0))
@@ -302,10 +337,13 @@ class TestUploaded(DeleterCase):
     assert xattr_cache.getxattr(qlog, uploader.UPLOAD_ATTR_NAME) is None  # this process's cache never learns it
     assert not policy.pending_upload(str(seg))
 
-  def test_sunnylinks_upload_counts(self):
+  def test_sunnylinks_upload_alone_does_not_count(self):
     seg = self.segment(self.seg_dir, uploaded=False)
     for fn in ("qlog.zst", "qcamera.ts"):
       os.setxattr(str(seg / fn), "user.sunny.upload", b"1")
+    assert policy.pending_upload(str(seg))  # not in connect yet
+    for fn in ("qlog.zst", "qcamera.ts"):
+      os.setxattr(str(seg / fn), uploader.UPLOAD_ATTR_NAME, uploader.UPLOAD_ATTR_VALUE)
     assert not policy.pending_upload(str(seg))
 
   def test_a_qcamera_still_to_go_holds_the_segment(self):
@@ -490,11 +528,55 @@ class TestDeleterThread(DeleterCase):
     assert ev.waits == [policy.NOTHING_DELETABLE_S] * 2 and events == []
 
   def test_the_thread_skips_what_athena_will_send(self):
-    asked, other = (self.segment(self.seg_format.format(i)) for i in range(2))
+    asked, sibling = (self.segment(self.seg_format.format(i)) for i in range(2))
+    other = self.segment(self.seg_format2.format(0))
     self.params.put("AthenadUploadQueue", [queue_item(asked / "fcamera.hevc")], block=True)
     ev, events = self.run_thread(3)
-    assert [e.kwargs["segment"] for e in events] == [other.name] and asked.exists()
+    assert [e.kwargs["segment"] for e in events] == [other.name] and asked.exists() and sibling.exists()
     assert ev.waits == [policy.ROUTINE_SEGMENT_PACE_S, policy.IDLE_S, policy.IDLE_S]
+
+  def test_a_route_being_uploaded_stays_held_after_it_leaves_the_queue(self):
+    """athenad's four upload threads take files out of its queue, and the queue it writes after each upload lists only
+    the files still waiting. Here the rlogs of segments 0-2 were asked for: 0 and 1 are being sent, 2 waits; then 2's
+    upload ends and the queue is empty while 0 and 1 are still going. A routine delete must not take them - had their
+    upload then failed, the retry would find the file gone and athenad would drop the request (review of push16). The
+    route stays held UPLOAD_HOLD_S after the queue last listed it, then goes as any other."""
+    asked = [self.segment(self.seg_format.format(i)) for i in range(3)]
+    other = self.segment(self.seg_format2.format(0))
+    self.params.put("AthenadUploadQueue", [queue_item(asked[2] / "rlog.zst")], block=True)
+
+    def hook(n: int, t: float) -> None:
+      if n == 1:
+        self.params.put("AthenadUploadQueue", [], block=True)
+
+    hold, idle = 100., policy.IDLE_S
+    with mock.patch.object(policy, "UPLOAD_HOLD_S", hold):
+      ev, events = self.run_thread(8, hook)
+    pass_at = [0.] + list(itertools.accumulate(ev.waits))  # the clock at each pass
+    got = [e.kwargs["segment"] for e in events]
+    assert got[0] == other.name and set(got[1:]) <= {p.name for p in asked}, got
+    # the queue last listed the route on the first pass (clock 0): nothing of it goes until the hold is over
+    first_asked = ev.waits.index(policy.ROUTINE_SEGMENT_PACE_S, 1)
+    assert pass_at[first_asked] > hold and pass_at[first_asked] - hold <= idle, (pass_at, ev.waits)
+    assert len(got) == 4 and not any(p.exists() for p in asked)
+
+  def test_a_route_asked_for_while_driving_is_held_once_parked(self):
+    """athenad uploads while driving too, so the hold reads its queue on every pass, not only parked ones: a route the
+    queue listed during the drive, and that left it before the car was parked, may still be on its way."""
+    asked = self.segment(self.seg_format.format(0))
+    other = self.segment(self.seg_format2.format(0))
+    self.set_onroad(True)
+    self.params.put("AthenadUploadQueue", [queue_item(asked / "rlog.zst")], block=True)
+
+    def hook(n: int, t: float) -> None:
+      if n == 1:
+        self.params.put("AthenadUploadQueue", [], block=True)  # out of the queue, maybe still being sent
+      elif n == 2:
+        self.set_onroad(False)  # parked
+
+    ev, events = self.run_thread(4, hook)
+    assert ev.waits == [policy.IDLE_S, policy.IDLE_S, policy.ROUTINE_SEGMENT_PACE_S, policy.IDLE_S], ev.waits
+    assert [e.kwargs["segment"] for e in events] == [other.name] and asked.exists()
 
   def test_a_drive_straight_after_boot_deletes_nothing(self):
     # manager writes IsOffroad=True at its start and clears it once `started`: the first seconds look parked

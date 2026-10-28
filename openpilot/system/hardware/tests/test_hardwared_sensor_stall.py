@@ -373,6 +373,54 @@ class TestHardwaredSensorStall(OpenpilotTestCase):
     after = [m["status"] for t, m in r.recv if t > s.released_at + 0.3]
     assert after and min(after) < ThermalStatus.critical, after  # new readings: it falls
 
+  def test_past_the_mask_old_readings_still_never_lower_the_status(self):
+    """Past MASK_MAX_S nothing is sent, but the loop runs on, and the thermal status still decides the started
+    transitions and the temperature alert (review of e76c253c6: the rule applied only while deviceState was sent passed
+    every test). Ignition on at 101 C: critical, offroad, Offroad_TemperatureTooHigh up. One real reading of 40 C, then
+    the next read sticks 10 s: the alert stays up, and the device offroad, until the readings are new again."""
+    drop = threading.Event()
+    state = {"v": 101.}
+
+    class DropZone(Zone):
+      def read(self) -> float:
+        if drop.is_set() and state["v"] == 101.:
+          state["v"] = 40.
+          assert self.stall is not None
+          self.stall.arm.set()  # the next read of this zone sticks
+          self.last = 40.
+          return 40.
+        return super().read()
+
+    cfg = ThermalConfig(cpu=[DropZone("cpu0", lambda: state["v"], self.stall)], gpu=[Zone("gpu0", lambda: state["v"])],
+                        memory=Zone("ddr", lambda: state["v"]), pmic=[Zone("pm", lambda: state["v"])])
+    alerts: list[tuple[float, bool]] = []
+    real_set = hardwared.set_offroad_alert_if_changed
+
+    def set_alert(name, show, extra_text=None, writer=None):
+      if name == "Offroad_TemperatureTooHigh":
+        alerts.append((time.monotonic(), show))
+      return real_set(name, show, extra_text, writer)
+
+    def script(r: Run):
+      time.sleep(3.)
+      drop.set()
+      assert self.stall.entered.wait(5.)
+      time.sleep(10. - (time.monotonic() - self.stall.entered_at))
+      self.stall.release()
+
+    r = run_hardware_thread(cfg, 16., script, ignition=True,
+                            patches=[mock.patch.object(hardwared, "set_offroad_alert_if_changed", side_effect=set_alert)])
+    s = self.stall
+    start, gap = max(r.gaps(), key=lambda g: g[1])
+    assert gap >= 3.5 and start < s.released_at, gap  # deviceState stopped: past the mask
+    before = [show for t, show in alerts if t < s.entered_at]
+    assert before and before[-1] is True, before
+    unsent = [show for t, show in alerts if s.entered_at + sensor_snapshot.MASK_MAX_S < t < s.released_at]
+    assert len(unsent) >= 5 and set(unsent) == {True}, unsent  # the loop ran on, and held it
+    assert not any(m["started"] for t, m in r.recv if t < s.released_at)
+    after = [show for t, show in alerts if t > s.released_at + 0.3]
+    assert after and after[-1] is False, after  # new readings: it falls, the alert goes
+
   def test_a_power_stall_does_not_hold_the_thermal_status(self):
     """Only old temperatures hold the thermal status (review of push16). Parked at 101 C: critical. The temperatures
     fall to 40 C and stay new, and a second later the battery-power read sticks 5.3 s (route 153's stall was in the

@@ -19,7 +19,8 @@ full load. A sysfs read runs the driver's code, under the driver's locks, so a r
   snapshot alone does not hold it, since the status is computed from the temperatures only); any snapshot past
   MASK_MAX_S: deviceState is not sent at all, which is what a stuck read did before - the comm checks see it as they
   always did. A read stuck STALL_REPORT_S gets one report, from a thread of its own: where the reading thread is in the
-  kernel, and what the bound kernel threads of the busy cores (sched_diag.VIEW_CPUS) are doing. Episodes are logged
+  kernel, and what the bound kernel threads of the busy cores (sched_diag.VIEW_CPUS) are doing - at most one per worker
+  per MIN_LOG_INTERVAL_S, a read held back then reported if it is still stuck once that allows. Episodes are logged
   when publishing stops and when the snapshots are fresh again.
 
 Normal age is one loop (0.5 s): each loop publishes the sweep the loop before asked for. A read stuck for D seconds:
@@ -267,6 +268,8 @@ class DeviceStateGuard:
     self.suppressed = 0
     self._last_log = -1e9
     self._reported: set[tuple[str, int]] = set()
+    self._last_report: dict[str, float] = {}     # worker -> when its last report went out
+    self._held_back: dict[str, set[int]] = {}    # worker -> its stuck sweeps the rate limit kept from a report
     self._last_sudo = -1e9
     self.report_threads: list[threading.Thread] = []
 
@@ -320,24 +323,36 @@ class DeviceStateGuard:
     self.suppressed = 0
 
   def _check_stuck(self, now: float) -> None:
+    """One report per stuck read, and at most one per worker per min_log_interval: reads stuck 1.5-3 s back to back
+    would otherwise make one every sweep, each a few KB and a thread. A read the limit holds back is counted once and
+    reported later if it is still stuck when the limit allows, with how long it has been stuck by then."""
     for w in self.workers:
       cur = w.current
       if cur is None:
         continue
       name, started, sweep = cur
-      if now - started >= self.stall_report_s and (w.name, sweep) not in self._reported:
-        self._reported.add((w.name, sweep))
-        sudo = self.sudo_stacks and now - self._last_sudo >= STACK_SUDO_INTERVAL_S
-        if sudo:
-          self._last_sudo = now
-        t = threading.Thread(target=self._report, args=(w, name, now - started, sudo), name="hw_stall_report",
-                             daemon=True)
-        self.report_threads = [x for x in self.report_threads if x.is_alive()][-7:] + [t]
-        t.start()
+      if now - started < self.stall_report_s or (w.name, sweep) in self._reported:
+        continue
+      held = self._held_back.setdefault(w.name, set())
+      if now - self._last_report.get(w.name, -1e9) < self.min_log_interval:
+        held.add(sweep)
+        continue
+      held.discard(sweep)
+      suppressed = len(held)
+      held.clear()
+      self._reported.add((w.name, sweep))
+      self._last_report[w.name] = now
+      sudo = self.sudo_stacks and now - self._last_sudo >= STACK_SUDO_INTERVAL_S
+      if sudo:
+        self._last_sudo = now
+      t = threading.Thread(target=self._report, args=(w, name, now - started, sudo, suppressed), name="hw_stall_report",
+                           daemon=True)
+      self.report_threads = [x for x in self.report_threads if x.is_alive()][-7:] + [t]
+      t.start()
     if len(self._reported) > 64:
       self._reported = set(sorted(self._reported, key=lambda k: k[1])[-16:])
 
-  def _report(self, w: WorkerState, read: str, stuck_s: float, sudo: bool) -> None:
+  def _report(self, w: WorkerState, read: str, stuck_s: float, sudo: bool, suppressed: int = 0) -> None:
     try:
       tid = w.tid
       worker = None
@@ -355,7 +370,7 @@ class DeviceStateGuard:
       kthreads = self.kthread_view() if self.kthread_view is not None else None
       stacks = _sudo_stacks(kthreads) if sudo else None
       cloudlog.event("hardwared sensor stall report", error=True, worker=w.name, read=read, stuck_s=round(stuck_s, 3),
-                     thread=worker, threads=threads, kthreads=kthreads, kthread_stacks=stacks)
+                     thread=worker, threads=threads, kthreads=kthreads, kthread_stacks=stacks, suppressed=suppressed)
     except Exception:
       cloudlog.exception("sensor stall report failed")
 

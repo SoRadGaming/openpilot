@@ -18,17 +18,17 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 ## 2026-10-28 — push16: room to breathe (board `883a3cd1` unchanged)
 
 Your question after push15: "i got low speed storage problem again, is comma dying?? allocate more spare space if you
-think [that's] worth?", and the alert on Wednesday's drive. **Branch `storage16`, seven commits on push15
-(`2984df599`): the deleter and its review; then the alert's own fix - card on a core of its own, then hardwared's
-sensor reads on threads of their own with new diagnostics - and its tests; then these documents; then the alert
-fix's review. opendbc
-(`469d12c7`), panda and both boards unchanged. Not driven yet; not pushed.** The details are in
+think [that's] worth?", and the alert on Wednesday's drive. **Branch `storage16`, eight commits on push15
+(`2984df599`): the deleter and its review; then the alert's own fix - card moved to core 6, which it shares with the
+camera program, then hardwared's sensor reads on threads of their own with new diagnostics - and its tests; then these
+documents; then the alert fix's review; then a second review of the whole branch (three checks; COMM-ISSUE.md 9.12).
+opendbc (`469d12c7`), panda and both boards unchanged. Not driven yet; not pushed.** The details are in
 `docs/fork/STORAGE.md` (storage) and `docs/fork/COMM-ISSUE.md` section 9 (the alert).
 
 ### The short answer
 
 * **The comma is not dying.** Nothing on it reports a storage fault: ext4's error count is 0 in every storage report,
-  and the kernel logs of all 130 routes on the device (9 July to 27 October) have no flash or I/O errors.
+  and the kernel logs of all 130 routes downloaded so far (9 July to 27 October) have no flash or I/O errors.
 * **Wednesday's alert was not a storage alert.** On the 01:12 drive (route 15d) it was "TAKE CONTROL IMMEDIATELY / Low
   Communication Rate Between Processes" at 01:18:08, at 59 km/h, for 0.9 s, with no disengagement. The part of
   openpilot that reports the device's temperatures (hardwared) stopped for 4.8 s inside its temperature-sensor reads.
@@ -52,12 +52,16 @@ fix's review. opendbc
   they stay in comma connect. What goes for good is what only the device had: the oldest drives' full-resolution video
   and full logs, which you can then no longer request.
 * **Your bookmarked drives and the boot and crash logs are not touched** while there is room, and nothing you request
-  in connect is deleted before it has been sent.
+  in connect is deleted before it has been sent while there is room (above the 10 % floor; below it upstream's
+  oldest-first rule applies, as before). Make the request while the comma is on and online, so it reaches the device;
+  the whole drive it belongs to is then kept until 30 minutes after the comma's upload queue last listed any of it.
 * **One thing worth doing in the next week:** in connect, request the full logs (rlogs) of routes 152, 153 (Sunday's
-  alert), 158 and 15d (Wednesday's alert). Connect has only their qlogs, and the full logs would show whether core 4
-  is what held up hardwared on those two alerts. Once requested, the comma keeps them until they are sent.
+  alert), 158 and 15d (Wednesday's alert). Connect has only their qlogs. The full logs carry the kernel log, which
+  names any CPU-4 kernel worker stuck 30 s or more around the alerts and the work queued behind it: thermal or power
+  work there would point at core 4. A shorter wait leaves no line, so they can support or weaken the core-4
+  explanation, not prove it. Once the request has reached the comma, it keeps them until they are sent.
 * **While you drive it normally deletes nothing.** Before, at the 10 % floor, it deleted one minute of old recording
-  (about 120 MB) for about every minute you drove: 1,453 times over the 115 drives on the device since July. Now it
+  (about 120 MB) for about every minute you drove: 1,453 times over the 115 drives downloaded since July. Now it
   deletes while driving only below that same floor, which takes a drive of more than about 75 minutes with no parking
   before it, and then slowly, one file every 6 seconds.
 * **Nothing else in the storage part changes**: driving, alerts, settings, uploads.
@@ -86,12 +90,14 @@ they should have been, because each of the three waited for the others to finish
 * **card does a little less work each frame**: a conversion it makes 100 times a second skips a slow step, worth
   about 2 % of a core. Its result is exactly the same, checked on every message of Tuesday's drive.
 * **hardwared reads the temperature and power sensors on helper threads** and, if a read is slow, keeps reporting the
-  last real readings. While the temperatures are more than 1.5 s old it may report the device hotter, never cooler;
-  once any reading is more than 6 s old it stops reporting, as before, so a real fault still raises the alert, a few
+  last real readings. While the temperatures are more than 1.5 s old its overheat level can rise but not fall; once
+  any reading is more than 6 s old it stops reporting, as before, so a real fault still raises the alert, a few
   seconds later than it used to.
-* **hardwared stays off the two busiest cores** (4 and 5).
-* **New lines in the routes** say every minute of a drive how long each core's kernel housekeeping waited, and, if a
-  sensor read is ever slow again, which one, for how long, and what held it.
+* **hardwared now runs only on cores 0-3**, off the real-time cores 4 and 5 (core 6 is isolated, so nothing ordinary
+  runs there).
+* **New lines in the routes**: one for any minute in which a core's kernel housekeeping waited a second or more, one
+  for the first minute and every tenth, and a whole-drive summary (repeated in the next drive's first line). If a
+  sensor read is ever slow again, they say which one, for how long, and what held it.
 
 **What you should see.**
 
@@ -101,9 +107,10 @@ they should have been, because each of the three waited for the others to finish
 * Nothing else: no setting, nothing different in how it steers, brakes or accelerates; the ACC stand-down and AEB are
   untouched.
 * **The one risk: the camera now shares core 6 with card**, and card has the higher priority there. The numbers say it
-  fits easily (card holds the camera program up for a few milliseconds of each 50 ms frame), but it has not been tried
-  in the car. If the camera program fell behind by about three frames in a few seconds, openpilot would show "TAKE
-  CONTROL IMMEDIATELY / Driving Model Lagging". I will check the first drives' logs for exactly that; if you see that
+  fits: card takes about half of core 6, in bursts of about 5 ms every 10 ms, so a camera frame can wait one burst
+  (about 5 ms, 11-15 ms at worst) of the 50 ms it has. But it has not been tried in the car. If the camera program
+  dropped about three frames within a few seconds, openpilot would show "TAKE CONTROL IMMEDIATELY / Driving Model
+  Lagging". I will check the first drives' logs for exactly that; if you see that
   alert, or the camera stutters, tell me. The fallback (selfdrived on core 6 instead of card) is ready to go.
 
 **What is still unknown.**
@@ -115,7 +122,7 @@ they should have been, because each of the three waited for the others to finish
 * **Core 5 is the next one.** It runs the screen, the planner and the radar processing, at about 90 % on the recent
   drives (about 70 % in July: the screen's program has grown). push16 does not change it, and it is now the busiest
   core. The new lines watch it; if they show it starving, the next step is to move the planner and radar processing
-  to core 4, which push16 has emptied.
+  to core 4, which push16 leaves about half free (controlsd and selfdrived, about 51 %).
 * None of this has been driven yet.
 
 ### What it was (the storage)
@@ -135,9 +142,9 @@ being the cause:
 
 `openpilot/sunnypilot/system/deleter_policy.py`, called from upstream's `deleter.py` (`FORK(STORAGE)`):
 
-* **Parked**: once the car has been parked 2 minutes, below 20 % free, the oldest segment whose qlog and small video an
-  uploader has already sent and that nothing in connect's upload queue needs, one every 6 seconds, until 20 %. The
-  newest drives, not uploaded yet, wait for the uploader. The 2 minutes cover a boot straight into a drive and a short
+* **Parked**: once the car has been parked 2 minutes, below 20 % free, the oldest segment whose qlog and small video
+  comma's uploader has already sent (so connect has them) and whose drive connect's upload queue has not listed in the
+  last 30 minutes, one every 6 seconds, until 20 %. The newest drives, not uploaded yet, wait for the uploader. The 2 minutes cover a boot straight into a drive and a short
   stop, so a drive does not begin just after a burst of deletes.
 * **Driving**: nothing, unless free space is below upstream's floor (10 % or 5 GiB), which stays the floor at all times.
   Then the oldest segment, uploaded or not, as before, but one file at a time, the largest first, 6 s apart, so the
@@ -150,25 +157,29 @@ being the cause:
 
 ### What the routes will show
 
-Three new things, all in the qlogs:
+Four new things, all in the qlogs:
 
 * `deleter deleted`, each delete: which segment, why (`routine` parked or `critical` below the floor), its size and
   files, how long it took.
 * `deleter parked summary`, half a minute into each drive: how long the car was parked, what was deleted, how much the
   device wrote to /data meanwhile and **which processes wrote it**. On Monday and on Tuesday, 57-61 GB was written
-  while the car was parked from the early morning to the afternoon, by something the logs do not name; this names it.
+  while the car was parked from the early morning to the afternoon, by something the logs do not name; this names it
+  if it is one of openpilot's own processes. A root process shows only as `procs_unreadable`, with its writes in
+  `disk_written_mb`, and one that comes and goes between the 5-minute samples is missed.
 * In the `storage report`: the flash's own wear estimate if the kernel exposes it (`ufs`), and the CPU clusters' speed
   caps (`cpu`).
-* For the alert (COMM-ISSUE.md 9.7): `sched baseline` in the first minute of each drive and every 10 minutes after,
-  `sched starvation` in any minute a core's kernel housekeeping waited a second or more, `kthread runnable, not run`,
+* For the alert (COMM-ISSUE.md 9.7): `sched baseline` in the first minute of each drive and every 10 minutes after
+  (unless that minute is a starvation one), `sched starvation` in any minute a core's kernel housekeeping waited a
+  second or more, `kthread runnable, not run`,
   `sched drive summary`; and only when a sensor read is slow, `hardwared slow sensor read`, `hardwared sensor stall
-  report`, `deviceState masked a sensor stall`, or `deviceState held: sensors stale` then `deviceState resumed`.
+  report` (at most one per sensor group every 10 s), `deviceState masked a sensor stall`, or `deviceState held:
+  sensors stale` then `deviceState resumed`.
 
 ### The proof
 
-* 45 new tests for the deleter (`test_deleter_policy.py`): the thresholds, the 2-minute wait and the pacing,
-  uploaded-only parked deletes, upstream's order and locks, bookmarks and boot / crash left to the floor, connect's
-  upload queue, file-by-file removal, the real deleter loop on a fake clock through a parking, a boot straight into a
+* 49 new tests for the deleter (`test_deleter_policy.py`; 4 of them from the second review): the thresholds, the
+  2-minute wait and the pacing, uploaded-only parked deletes, upstream's order and locks, bookmarks and boot / crash
+  left to the floor, connect's upload queue, file-by-file removal, the real deleter loop on a fake clock through a parking, a boot straight into a
   drive, a short stop, drives above and below the floor, an emergency, ignition on half-way, waiting for the uploader,
   and a whole parking into the next drive's parked summary. 7 more in `test_storage_diag.py` for the UFS, CPU and
   per-process readings.
@@ -181,8 +192,9 @@ Three new things, all in the qlogs:
   requested in connect could be deleted before it was sent.
 * Upstream's `test_deleter.py` replaced `os.statvfs` for every later test in its worker and never put it back; it now
   patches it per test (`FORK(UPSTREAM-FIX)`).
-* For the alert, 75 new tests (COMM-ISSUE.md 9.8), among them the real hardwared with a sensor read stuck in the
-  kernel: on the bench a 3.7 s stuck read (Sunday's) and a 4.8 s one (Wednesday's) now give no alert, where push15
+* For the alert, 79 new tests (COMM-ISSUE.md 9.8; 4 of them from the second review), among them the real hardwared
+  with a sensor read stuck in the kernel: on the bench a 3.7 s stuck read (Sunday's) and a 4.8 s one (Wednesday's)
+  now give no alert, where push15
   gave the alert both times; a 10 s one still stops deviceState and raises it, as before. Its 37 deliberate
   breakages (card back on core 4, a sensor read back on hardwared's loop, no age limit, the cooler-never rule
   removed, no CPU mask, the stuck-thread detector off, and so on): 37 of 37 fail a test.
@@ -200,6 +212,29 @@ Three new things, all in the qlogs:
     review's own changes.
   * Numbers corrected: card's conversion was about 2.7 % of a core, not 4 % (the saving is 1.6-1.8 points); the
     camera's core 6 ran about 8.5 %, not "2-18 %". Core 5 and the camera risk are above.
+* **The second review** (three checks of the whole branch: the code and its tests, a replay against push15, and a
+  first-drive check script; COMM-ISSUE.md 9.12) found nothing that makes push16 worse than push15 for steering,
+  braking, the ACC stand-down or AEB: a replay of all 72 segments of routes 14d and 155 through radard, plannerd,
+  selfdrived, controlsd and card matched push15 message for message (1,043,592 CAN frames sent; the 96 messages that
+  differ are carParamsSP, whose steering model file's path names the replay's own folder). Fixed, each with a test
+  that failed first:
+  * The stall report had no rate limit: reads stuck about 2 s back to back made one every sweep, 1,800 an hour on the
+    bench. Now at most one per sensor group every 10 s (360 an hour in the same run), and a read held back is reported
+    later if it is still stuck, so the stall that stops deviceState still gets its report.
+  * A parked delete could take a file connect had asked for while it was being sent: athenad's queue lists only the
+    files still waiting, so the ones being uploaded drop out of it whenever another upload ends, and a failed upload
+    is then dropped because its file is gone. Now the whole drive of anything in that queue is kept until 30 minutes
+    after the queue last listed it, read on every pass, driving too.
+  * Parked deletes counted a qlog as sent if sunnylink's uploader had sent it; connect is where you get your routes,
+    so now only comma's uploader counts (sunnylink's uploader is off on your comma, so nothing changes today).
+  * Four more tests close the gaps the deliberate breakages found (the thermal rule past the 6 s limit, the stall
+    report's core 6, a later window's CPU share, a landed sweep named stale), and two timing tests now wait for what
+    they check instead of sleeping (they failed with 20 ms of extra scheduling delay; now not at 100 ms).
+  * The wording above was corrected in 18 places (what "on the device" meant, the camera risk, the overheat level,
+    which logs can prove what), and the first-drive checks in COMM-ISSUE 9.9 were fixed: `carState.cumLagMs` cannot
+    go back to July's, because since 1 October the CAN packets arrive at 99.52-99.57 a second instead of 100, so it
+    grows 257-293 ms a minute whatever card does; card is judged by its short-term wobble instead.
+  * Not changed: card on the camera's core 6 is still the one risk, checked on the first drives (fallback ready).
 * card's new conversion is identical to the old on all 76,779 messages of Tuesday's drive, and a replay of the
   whole drive through radard, plannerd, controlsd and card gives every one of its 655,859 output messages identical
   (191,895 CAN frames sent).
@@ -209,16 +244,20 @@ Three new things, all in the qlogs:
 On `~/sp-long`, branch `storage16`:
 
 * `scons -j6`: done (push16 changes no C++).
-* The full suite (`tools/test_runner.py -j 6`): **3490 passed, 45 skipped, 1 xfailed**. That is push15's 3363, plus
+* The full suite (`tools/test_runner.py -j 6`): **3498 passed, 46 skipped, 1 xfailed**. That is push15's 3363, plus
   the 45 deleter tests and the 7 new diagnostics tests (3415 at the second commit), plus the alert's 67 (3482), plus
-  its review's 8.
+  its review's 8 (3490), plus the second review's 8 (4 for the deleter, 4 for the alert). The one skip more than at
+  3490 is in no file push16 touches: every skip in the suite waits on something this PC lacks (comma hardware, the
+  network, routes on disk, an environment variable).
+* The sensor tests again and again: the guard and worker tests 20 of 20 alone and 10 of 10 beside 8 CPU-burning
+  processes; the changed test files together at -j 6, 191 tests, 3 of 3.
 * Process replay, route 157, all 14 segments, radard + plannerd + controlsd + card: **all 655,859 output messages of
   17 services identical** (191,895 sendcan frames), 48c366fae's `card.py` and `helpers.py` against push16's in the
-  same tree and build; run again on the review commit, identical again. card's conversion: all 76,779 messages of
-  route 157 identical to the old path.
+  same tree and build; run again on the review commit and on the second review's, identical again. card's
+  conversion: all 76,779 messages of route 157 identical to the old path.
 * The 41 deliberate breakages: every one fails a test. The alert's: 37 of 37; the review's 6 survivors and 9 new
-  ones: 15 of 15. (On the first commit, a first full run failed 7 of the new tests
-  because the mutation run's last breakage, the target as 15 %, had the same length as the original and was undone
+  ones: 15 of 15; the second review's 4 survivors and 13 breakages of its own changes: 17 of 17. (On the first
+  commit, a first full run failed 7 of the new tests because the mutation run's last breakage, the target as 15 %, had the same length as the original and was undone
   within the same second, so Python kept its compiled copy. The mutation script deletes it since.)
 * ruff: clean. ty: 5 diagnostics, push12's 4 and the one in push15's CI test fix (`test_car_stock_alert.py:543`,
   unchanged here); none in push16's files.
@@ -236,15 +275,20 @@ On `~/sp-long`, branch `storage16`:
   unattributed `disk_written_mb`).
 * The `storage report`'s `ufs`: a `health_descriptor` with `life_time_estimation_a` / `_b` (0x01 = under 10 % of its
   life used) answers "is it dying" from the flash itself; `entries` instead means this kernel does not expose it.
-* The first `sched baseline`: `caps.affinity` `[0, 1, 2, 3]`. Core loads from procLog's per-process CPU (controlsd +
+* The drive's first sched line (a `sched baseline`, or a `sched starvation` if a CPU - most likely 5 - was flagged in
+  the first minute): `caps.affinity` `[0, 1, 2, 3]`. Core loads from procLog's per-process CPU (controlsd +
   selfdrived about 51 % on core 4, card about 46-48 % and camerad 7 % on core 6) or the lines' `rt` and `run_pct`, not
   from `cpu.N.busy`, which aliases on a core that is not full (COMM-ISSUE 9.6, 9.9). No `sched starvation` for CPU 4
   or 6; one for CPU 5 is possible (it runs about 90 %) and is information, not a fault.
 * The camera, which now shares core 6 with card, strictly (COMM-ISSUE 9.9): no `modeldLagging`, `cameraFrameRate` or
   `cameraMalfunction`; the maximum of `drivingModelData.frameDropPerc` 0.5 or less (0 on 157, 14d, 155); no camerad
-  `frame ID skipped` / `requests skipped` lines; `processingTime` against 157's; the first 10 s of each drive too.
-  Any of them off: the fallback branch `storage16-fallback6`.
-* No `commIssue` / `commIssueAvgFreq` naming deviceState unless a `deviceState held: sensors stale` line came first.
+  `frame ID skipped` / `requests skipped` lines (three `clearing and requeuing` lines as the cameras start are normal,
+  one later is not); the first 10 s of each drive too. Any of them off: the fallback branch `storage16-fallback6`.
+  `processingTime` more than about 1 ms over the baseline maximum (narrow 24.3, wide 24.8, cabin 30.2 ms) is a watch:
+  if a second drive repeats it, the fallback.
+* After the start-up phase (selfdriveInitializing plus about 20 s: every drive shows `commIssue` / `commIssueAvgFreq`
+  before that, and 14d's even named deviceState, after a 2.1 s gap at 8.6 s): no `commIssue` / `commIssueAvgFreq`
+  naming deviceState unless a `deviceState held: sensors stale` line came first.
 
 ## 2026-10-27 — push15: the distance button fix (board `883a3cd1` unchanged)
 
