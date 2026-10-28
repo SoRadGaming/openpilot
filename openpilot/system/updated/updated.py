@@ -21,6 +21,8 @@ from openpilot.common.version import get_build_metadata, SP_BRANCH_MIGRATIONS
 # FORK(UPDATER): the download progress shown on the comma 4's software page
 from openpilot.sunnypilot.system.updated.download_progress import (DownloadProgress, git_fetch_with_progress,
                                                                    PHASE_CODE, PHASE_CHECKOUT, PHASE_OS)
+# FORK(UPDATER): no fresh 2.5 GB copy when FINALIZED already holds the commit and branch just fetched
+from openpilot.sunnypilot.system.updated.finalize_reuse import finalized_id, reuse_finalized
 
 LOCK_FILE = os.getenv("UPDATER_LOCK_FILE", "/tmp/safe_staging_overlay.lock")
 STAGING_ROOT = os.getenv("UPDATER_STAGING_ROOT", "/data/safe_staging")
@@ -365,6 +367,9 @@ class Updater:
     self.progress.set(PHASE_CODE)  # FORK(UPDATER)
     self.params.put("UpdaterState", "downloading...", block=True)
 
+    # FORK(UPDATER): FINALIZED's commit and branch, read before its flag is cleared; None unless it was consistent
+    finalized_before = finalized_id(FINALIZED, run)
+
     # TODO: cleanly interrupt this and invalidate old update
     set_consistent_flag(False)
     self.params.put_bool("UpdateAvailable", False, block=True)
@@ -400,7 +405,9 @@ class Updater:
     # Create the finalized, ready-to-swap update
     self.progress.clear()  # FORK(UPDATER)
     self.params.put("UpdaterState", "finalizing update...", block=True)
-    finalize_update()
+    # FORK(UPDATER): kept, and flagged again, if it was consistent at this commit and branch; else copied as before
+    if not reuse_finalized(finalized_before, OVERLAY_MERGED, FINALIZED, run, set_consistent_flag):
+      finalize_update()
     cloudlog.info("finalize success!")
 
 

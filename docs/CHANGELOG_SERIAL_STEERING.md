@@ -15,6 +15,93 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-10-29 — push17: the updater stops copying itself all night (board `883a3cd1` unchanged)
+
+You asked for the overnight writer to be fixed and pushed straight away. **Branch `updater17`, one commit on push16
+(`c5aec4728`). opendbc (`469d12c7`), panda and both boards unchanged. Not driven yet.** The details are in
+`docs/fork/STORAGE.md` section 7.
+
+### The short answer
+
+* **What wrote about 58 GB a night while the car was parked at home was the comma's own updater.** On unmetered Wi-Fi
+  it checks for an update every 1.5 hours, and every time - even with nothing new - it deleted its ready-to-install
+  copy of the software (about 2.5 GB with its git history) and made a fresh one: about ten copies a night, 57-61 GB of
+  writes counted. Of the 69 checks October's logs let us count, 2 or 3 found anything new.
+* **It was not filling the storage** (retention was normal); it was wearing the flash and using power while parked.
+  This is comma's own code: sunnypilot and comma's current updater do the same.
+* **push17 keeps the ready copy when it already holds exactly what was just downloaded**, and makes a new one only
+  when something changed. A night parked at home should come down to about 8 GB (13-14 GB on a night a push lands).
+
+### What you will notice
+
+* Nothing, in the car or on the screen. Updates arrive and install exactly as before: "update available", the
+  software page, the version line and release notes, the install when the comma next starts.
+* The first check after each drive still makes one copy, and so does the first check after the comma was offline (a
+  parking with no Wi-Fi, or a Wi-Fi drop). So a night at home is about one copy, not none.
+* **The updater is how every fix reaches the comma, so this was built to fail safe.** If anything about the ready copy
+  is in doubt - not marked complete, another commit or branch, an extra file, a moved submodule, other git settings,
+  a git error - it deletes and copies exactly as before. A copy a drive interrupted half way (Tuesday 16:53, route 158) is
+  never taken for a complete one: only the "complete" mark says that, and the updater clears it at every start.
+
+### How it works
+
+`openpilot/sunnypilot/system/updated/finalize_reuse.py`, called from two marked places in upstream's `updated.py`
+(`FORK(UPDATER)`):
+
+* Before the download, it notes whether the ready copy is marked complete and at which commit and branch. The mark is
+  then cleared during the download, as before, so a power cut mid-update still installs nothing.
+* After the download, if that copy was complete at the commit and branch just downloaded, it runs on it the two
+  clean-up steps a fresh copy gets, checks the submodules, the git settings and that nothing is changed or extra, and
+  puts the mark back. Otherwise: the old delete and copy.
+* What the comma does at its next start is unchanged: it installs a ready copy marked complete, as before.
+
+### What the routes will show
+
+* Nothing new: the updater only runs parked, and nothing logged parked reaches a route. Its line ("finalized update
+  already at ..., kept it") stays in the comma's own log.
+* **The check is push16's `deleter parked summary`**, half a minute into the first drive after a night at home:
+  `disk_written_mb` about 8 GB (13-14 if a push landed overnight) instead of about 55-60 GB.
+
+### The proof
+
+* 33 new tests (`test_finalize_reuse.py`), most of them the real updater code against real git repositories with a
+  submodule: kept when nothing is new, with everything the software page reads the same as after a copy; a fresh
+  copy on a new commit, a branch switch, a rollback, a half-made copy (route 158), a broken or hand-changed copy, and
+  after a failed download; an OS (AGNOS) update; and seven checks in a row that end exactly as the old code's, file for file,
+  with 4 copies instead of 7. Against push16's updater the 6 tests of what is new fail and the other 27 pass.
+* The same code on the real overlay filesystem the comma uses, through 15 checks with a restart, a failed check, a
+  failed download and a rollback: 6 copies instead of push16's 11, and every result the same check for check.
+
+### Also in this push (documents only)
+
+* **The full logs of 15d and 158** (COMM-ISSUE.md 9.13). Wednesday's alert (15d): hardwared sat 4.4 s inside the
+  kernel reading the 18 temperature sensors, using almost no CPU, while its other thread kept working - so not Python's
+  internal lock, and not the storage. Whether a starved kernel helper on core 4 held the sensor's lock, or the sensor
+  read itself was slow, is still open; push16's stall report will say on the first drive that has one. Tuesday's 8.4 s
+  storage stall (158) was core 4 at 100 % for 24 s while engaged: its disk helper threads got no CPU and the disk
+  writes waited. push16 covers both. Drive several minutes engaged: a short or unengaged drive cannot show core 4.
+* COMM-ISSUE.md 9.2 corrected: its two path letters (now as in 9.13), 15d no longer "qlogs only", a CPU statistic that
+  described an idle thread, and the sensor count (18 on the comma 4).
+
+### Gates
+
+On `~/sp-long`, branch `updater17`:
+
+* The new tests: 33 of 33, three runs out of three with the other updater tests (86 at -j 6), and in one process.
+* The full suite (`tools/test_runner.py -j 6`): **3531 passed, 45 skipped, 1 xfailed** - push16's 3498 and the 33
+  new. The one skip fewer is how the runner counts, not a test: a class skipped as a whole (`test_sensord.py`'s
+  `TestSensord`, comma hardware only) gets one record per batch its tests land in, and with 33 more tests its six now
+  share one batch (3581 tests collected before, 3614 now).
+* ruff: clean. ty: 5 diagnostics, unchanged, none in push17's files. codespell (the repo's settings): no hits in the
+  lines push17 adds. No CRLF, no mode change (`updated.py` stays 755, the new files 644). No C++, no new Params key.
+* `git status` on this tree shows no tracked file modified but this change's own: the repo's `* text=auto` leaves no
+  file that would make the clean-tree check decline every pass.
+
+### What to check
+
+* The first `deleter parked summary` after a night at home on push17: `disk_written_mb` about 8 GB, not 55-60.
+* The next push after this one appears as available and installs as before.
+
 ## 2026-10-28 — push16: room to breathe (board `883a3cd1` unchanged)
 
 Your question after push15: "i got low speed storage problem again, is comma dying?? allocate more spare space if you

@@ -367,7 +367,8 @@ driving; until then 6.1 is the proof.
 Branch `storage16`, the third to sixth commits (`FORK(CPU)`, `FORK(COMM)`, their tests and these documents), the
 seventh, the review's (9.11), and the eighth, the second review's (9.12); STORAGE.md is the first two and part of the
 eighth. Not car-specific, not gated. Nothing here changes a control law, a limit or the ACC stand-down; the move of
-card changes when its frame runs, not what it computes (9.3, 9.4, 9.8).
+card changes when its frame runs, not what it computes (9.3, 9.4, 9.8). 9.13 is the reading of 15d's and 158's rlogs
+(2026-10-29, with push17's documents; no code change for it).
 
 ### 9.1 What happened
 
@@ -394,20 +395,23 @@ Measured (STORAGE.md section 1 and the d1028 diagnosis; scripts and data in the 
 | the stalls follow it | every one of the **21** stall events since 22 Oct (11 /data episodes, 10 deviceState gaps; routes 14d, 152, 153, 156, 157, 158, 15d) came after 30 s of core 4 averaging **>= 96.8 %**. Not enough on its own: stretches of 75-178 s at full load passed with no stall (155, 15a, 15b, 15d) |
 | the kernel said so on 157 | "BUG: workqueue lockup - pool cpus=4 ... stuck for 30s" up to **150 s** (225.8-346.1 s, again 406-556 s); `rcu_preempt` stalls; `kworker/4:1` runnable and not run for at least 6 minutes, inside `delayed_fput`; CPU 4's `cfq_kick_queue` and `blk_timeout_work` waiting behind it again and again; `thermal_zone_device_check` pending |
 | the control loop paid too | at equal FIFO priority nothing preempts, so each of the three waited for the others: CAN -> carControl median **5.8 ms** in July, 8.8 on 1 Oct, 11.5 on 14d, **19.3 ms** on 157, where **58.6 %** of the commands sent were built from the frame before last and **5.9 %** from older ones |
-| hardwared on the busy cores | not pinned (default mask 0-5); its main thread last ran on core 4 in **0.91 %** and core 5 in **3.07 %** of 55,501 procLog samples |
+| hardwared on the busy cores | not pinned (default mask 0-5). procLog's `processor` (the CPU a process last ran on) is its thread-group leader's, and hardwared's leader only sleeps (`main()`'s `time.sleep(1)` loop): on core 4 in 0.91 % and core 5 in 3.07 % of 55,501 samples. That says nothing about where `hardware_thread` and its sensor reads ran (corrected 2026-10-29: this row read it as the loop's thread) |
 | not the flash | ext4 errors 0, no UFS / SCSI / I/O error in 130 kernel logs; STORAGE.md section 1 |
 
 Inferred, not proven:
 
 * That 157's starved CPU-4 worker is what delayed /data's I/O (a strong inference: the stalled work was CPU 4's
   block-I/O dispatch).
-* **For 153 and 15d** (qlogs only, no kernel log): how a full core 4 held hardwared's sensor read. Two paths fit and
-  the logs cannot tell them apart: (B) a kernel lock (a thermal zone's, the battery driver's) held by a starved
-  core-4 kernel thread; or (A) a hardwared thread itself preempted on core 4 or 5 by FIFO 53 while it held the GIL,
-  which stops every other hardwared thread, the publishing one too - the thermal section gives the GIL up and takes
-  it back about 55 times per loop. Against (B): on 157 CPU 4's own thermal polling was stuck for 6 minutes and
-  hardwared never stalled. push16 covers both without knowing which (9.5 for B, 9.6's affinity for A), and its
-  diagnostics (9.6, 9.7) are built to tell them apart next time.
+* **For 153** (qlogs only, no kernel log) **and 15d** (its rlogs, with the kernel log, read since: 9.13): how a full
+  core 4 held hardwared's sensor read. Two paths fit and the qlogs cannot tell them apart: (A) a kernel lock (a
+  thermal zone's, the battery driver's) held by a starved core-4 kernel thread; or (B) a hardwared thread itself
+  preempted on core 4 or 5 by FIFO 53 while it held the GIL, which stops every other hardwared thread, the publishing
+  one too - the thermal section reads the comma 4's 18 thermal-zone files (14 on a comma 3X) and gives the GIL up and
+  takes it back about 55 times per loop. Against (A): on 157 CPU 4's own thermal polling was stuck for 6 minutes and
+  hardwared never stalled. push16 covers both without knowing which (9.5 for A, 9.6's affinity for B), and its
+  diagnostics (9.6, 9.7) are built to tell them apart next time. 15d's rlogs refute B as one continuous hold and
+  leave A against a slow driver wait open (9.13). **The letters were the other way round until 2026-10-29** (A the
+  GIL, B the lock, here and in 9.6); they now follow 9.13 and the 28 Oct analysis.
 * Why the stalls start on 22 Oct, when mid-September builds already had core 4 saturated 33-71 % of the time with
   no gap (before push12 only a stall that overlapped a /data write could show as one).
 
@@ -527,7 +531,7 @@ to 3.0 s, so in the car stalls up to about 7.5-8 s should pass with no alert. Lo
 ### 9.6 hardwared off cores 4 and 5, and the starvation sampler
 
 * **`HARDWARED_CORES = [0, 1, 2, 3]`**, set at the very top of `hardwared.main()` before any thread starts, so every
-  thread inherits it (path A of 9.2). Cores 0-3 never go offline (`set_power_save` takes 4-7); athenad, the uploader
+  thread inherits it (path B of 9.2). Cores 0-3 never go offline (`set_power_save` takes 4-7); athenad, the uploader
   and sunnylinkd already use the same mask. Core 6 was not used: isolated, the scheduler never balances onto it.
 * **`sunnypilot/system/sched_diag.py`, `StarvationSampler`**: passive, procfs only, on its own thread every 2 s while
   driving (nothing logged parked reaches a route).
@@ -554,7 +558,7 @@ to 3.0 s, so in the car stalls up to about 7.5-8 s should pass with no alert. Lo
   state, CPU, `wchan`, schedstat and kernel stack (its own process), every hardwared thread, the sampler's view of the
   kernel threads bound to cores 4, 5 and 6 (`VIEW_CPUS`; 6 added in review, since card runs there now), and on the
   device the kernel stacks of the runnable ones by `sudo -n`, at most once per 10 minutes. A stack in a lock with a
-  core-4 (or 5, or 6) kworker runnable is path B; a hardwared thread in R on core 4 or 5 is path A.
+  core-4 (or 5, or 6) kworker runnable is path A; a hardwared thread in R on core 4 or 5 is path B.
 
 ### 9.7 Lines in the routes
 
@@ -655,7 +659,8 @@ message compared byte for byte with logMonoTime and the wall-clock fields zeroed
 
 ### 9.10 Still open
 
-* Which of 9.2's two paths held 153 and 15d. Requested rlogs of 153 and 15d (STORAGE.md) would show the kernel log.
+* Which of 9.2's two paths held 153 and 15d. 15d's rlogs (9.13): not B; a lock (A) or a slow driver wait, which only
+  push16's stall report can tell. 153 has qlogs only.
 * Why the stalls began on 22 Oct.
 * **Core 5 is now the most loaded core, and push16 does not touch it.** The UI (FIFO 53) with plannerd and radard
   (FIFO 51): 89-91 % median on 157, 15d and 14d (83 % on 155), 90.8-96.8 % in the worst 30 s, 100 % at the 95th
@@ -720,3 +725,90 @@ tests fail, 5 failed and 5 errors).
 On this commit: the full suite 3498 passed (the 8 new tests among them); the guard and worker tests 20 of 20 alone and
 10 of 10 beside 8 CPU burners; route 157's process replay (9.8) identical again, all 655,859 messages; mutations of
 this commit's code 13 of 13 killed (5 of the stall-report limit, 8 of the deleter's hold and upload mark).
+
+### 9.13 The 28 Oct rlogs: 15d's sensor stall and 158's /data stall (2026-10-29)
+
+15d's and 158's rlogs (the kernel log, procLog every 2 s, every hardwared line), read on 29 Oct; four analyses, the
+deciding facts re-checked. Seconds are from each route's first selfdriveState (15d starts Wed 28 Oct 01:13:01.6, 158
+Tue 27 Oct 16:53:27.4). Letters as in 9.2: **A** a lock held by a starved CPU-4 kernel thread, **B** a hardwared thread
+preempted while it held the GIL. No code change: push16 covers both stalls as they happened.
+
+**15d: what held hardwared.** Not B, not /data, not a driver burning CPU: the reading thread was blocked in the kernel
+with the GIL released. A lock (A) or a slow driver wait: undetermined, at most weakly A.
+
+| measured | |
+|---|---|
+| where | the stalled loop's deviceState was made at 302.356 s; the loop's next kmsg heartbeat came at 306.79 s, its `slow loop section` line at 306.819 s (`thermal` 4.429 s of 4.457), selfdrived's commIssue at 306.815 s, the next deviceState at 307.168 s (4.813 s, the drive's only gap over 0.81 s). The message is made after the /proc/diskstats read and before `get_msg()`, so the 4.43 s is in `get_msg()`'s 18 thermal-zone reads; the two steps after them are a cached call and a queue check (strong inference) |
+| no CPU | hardwared used 0.02 + 0.02 s of CPU in the two 2 s procLog intervals inside the stall (302.71-306.71 s), the lowest two of 426 (median 0.10 s) |
+| another thread ran Python | `hw_state_thread`'s 10 s `sudo cat` of the nmconnection ran at 303.582 s, on its cadence (10.191 s after the one before, 10.299 s to the next; median 10.160 s), and hardwared reaped it (its child CPU rose 0.02 s in 302.71-304.71 s); the same thread listed /sys/bus/usb/devices every 0.5 s and read a power_supply file during the stall |
+| /data idle | the slow-loop line's own counters: 2 reads and 43 writes on sda12 in 4.455 s, nothing in flight; jbd2 asleep, loggerd never paused; ksoftirqd/4 and kworker/4:1H asleep at 302.71 and 304.71 s |
+| the kernel log | only the heartbeat after 24 s. This kernel reports a stuck CPU after 21 s (RCU) or 30 s (workqueue), so the silence rules out a logged UFS, ext4, driver, thermal or OOM fault, not a few seconds of starvation |
+
+Ruled out: B as one continuous GIL hold (strong inference; two separate holds of about 1.2 and 3.1 s cannot be
+excluded by 2 s samples, but are improbable); a global sysfs (kernfs) lock, strongly disfavoured (other sysfs walks
+and backlight uevents went through); a CPU-burning driver, slow /data and a page fault (measured). Open, for push16's
+stall report (9.6, 9.7) to decide:
+
+* **A**: a zone's lock (`tz->lock`) or the PMIC ADC's, held by a CPU-4 kernel worker preempted and not run. For it:
+  kworker/4:0 was runnable with under 10 ms of CPU at all three samples in the stall, and 157's RCU dump (258.4 s) shows
+  a CPU-4 kworker preempted mid-work and left unrun for minutes, so the mechanism exists on this kernel. Against its
+  being specific: kworker/4:0 was runnable in about 44-47 % of all 15d's samples, with one stall; on 157 CPU 4's thermal
+  polling sat pending for minutes with no hardwared stall. A likelihood ratio of about 2-3.5 at most.
+* a slow driver or bus wait (an ADC conversion, SPMI) unrelated to load: no positive evidence (temperatures normal,
+  no driver lines);
+* `hardware_thread` runnable and not run on core 4: improbable (in 185 cases no ordinary task stayed queued on core 4
+  or 5 past one sample; cores 0-3 had room), and push16's 0-3 mask removes it;
+* a memory-reclaim wait inside the read: weak (kswapd busier during the stall, free memory 15-37 MB all drive), not
+  excluded.
+
+**158: the 8.4 s /data stall** was a starved CPU-4 kernel path holding up the block layer for about 18 s, of which
+mapd's 8.4 s gap is the visible part: the family of 157's (9.2), shorter, under the kernel's 30 s report.
+
+* Engaged 182.3-208.9 s; CPU 4 100 % busy 182.8-206.8 s, the drive's only stretch of 6 s or more with no idle time on
+  CPU 4. kworker/4:2 runnable from 182.78 s, ksoftirqd/4 and kworker/4:1H from 184.78 s, each with under 10 ms of CPU.
+* Then iowait on CPUs 0-3 from about 185-187 s; jbd2/sda12-8 in D at every sample 188.78-205.24 s; loggerd stopped
+  reading 187.87-190.17 and 195.20-198.15 s; mapd silent 189.706-198.111 s (43-48 km/h), then 3.95 and 2.06 s more, to
+  205.68 s. jbd2 asleep by 206.78 s, ksoftirqd/4 by 208.78 s.
+* Not the deleter (its first delete at 615.2 s), not the uploader (only reading); hardwared unaffected (largest
+  deviceState gap 0.58 s); the kernel printed nothing.
+* Which piece starved is not resolved: disk-request dispatch on kworker/4:1H (157's dump has `cfq_kick_queue` queued
+  there) or I/O completions left to ksoftirqd/4. jbd2 in D tracks kworker/4:xH runnable: 84 against 25 % of samples on
+  157, 50 against 1 % on 158, 23 against 0.5 % on 15d.
+* 15d had one too, which check16 did not flag: mapd gaps of 3.18 + 6.20 + 7.10 s over 787.98-805.28 s, jbd2 in D
+  790.7-804.8 s, ksoftirqd/4 and kworker/4:1H runnable, hardwared unaffected (push12 took it off /data). 15d's sensor
+  stall had none of this signature: another mechanism.
+* Every /data stall on 157, 158 and 15d came while engaged (measured); "only while engaged" as a rule is an inference
+  from about six episodes.
+
+**push16 covers what was seen.** A read stuck like 15d's peaks at about 4.5 s of age (153's 3.70 s at about 4.0)
+against `MASK_MAX_S` 6.0 s: no gap, no commIssue, and the lines `hardwared slow sensor read`, one `hardwared sensor stall
+report` at 1.5 s and `deviceState masked a sensor stall` with `max_age_s` about 4.5 - for A, a slow driver and a starved
+`hardware_thread` alike, as long as only the reading thread waits; past 6 s no worse than push15. card on core 6 takes
+core 4's real-time load from about 97 to about 51 % (selfdrived 27.6 + controlsd 23.4 on 157's figures, a design
+estimate), which should remove the starved CPU-4 kernel threads A and the /data stalls both need. hardwared's 0-3 mask
+(9.6) is aimed at B, which the data argue against: harmless, not to be credited if the drives come back clean. Its
+limits, from the code:
+
+1. A read stuck past about 5.9 s still holds deviceState, by design; 157's starvation lasted minutes.
+2. The send rule takes the oldest of the thermal and the power snapshots, so a stuck bms or hwmon read (non-critical
+   data) over 6 s also stops deviceState.
+3. The loop still does its own sysfs reads (gpubusy, backlight), the /dev/kmsg write, procfs reads and the
+   `CarBatteryCapacity` put.
+4. `wait_first()` has no timeout on the first message after hardwared starts.
+5. card at FIFO 53 shares isolated core 6 with camerad, so card's I/O completions and kernel workers move to CPU 6.
+6. selfdrived's FIFO-53 params thread stays on core 4; on 15d its slow writes (191.5 s, 0.905 s; 324.9 s, 2.29 s) came
+   with ksoftirqd/4 and kworker/4:1H runnable.
+
+**After the first push16 drive** (several minutes engaged: 158's stall needed engagement, and 158 had 45 s of it): in
+the stall report's kernel stack, `mutex_lock` under `thermal_zone_get_temp`, iio or adc means A; `wait_for_completion`
+in an ADC or SPMI driver a slow bus; `kernfs_*` a global sysfs lock; and `kthread runnable, not run` for CPUs 4-6. An
+engaged drive with none of them most likely means the card move removed the precondition. Small next changes the
+analysis lists, none made yet: the power snapshot out of the send rule or on a longer limit of its own (limit 2); once
+per start, `sched_rt_runtime_us`, `sched_features` (RT_RUNTIME_SHARE) and the zones' type and policy (on 157
+kworker/4:1 sat unrun at least 21 s, so RT throttling does not protect core 4, and there is no SSH); per-CPU
+`/proc/softirqs` deltas for CPUs 4-6 in `sched_diag.py`, to tell dispatch from completion; optionally the gpubusy and
+brightness reads on a worker and a timeout on `wait_first()`.
+
+**What this changed in 9.2:** its letters (swapped to these); 15d is no longer qlog-only; the procLog `processor`
+statistic is hardwared's sleeping leader thread's, not `hardware_thread`'s; and the zone count is stated, 18 on the
+comma 4 (the analysis's first pass had counted 14, a comma 3X's ThermalConfig).
