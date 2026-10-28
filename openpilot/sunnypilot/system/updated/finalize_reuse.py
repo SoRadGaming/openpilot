@@ -20,7 +20,11 @@ finalize_update() exactly as before:
 * its commit (40 hex digits) and branch (a name, not a detached "HEAD") are those the overlay holds after this
   pass's checkout - FETCH_HEAD, exactly what the copy would take;
 * after finalize_update()'s own two resets, run on it as after a copy: the same commit and branch again, every
-  submodule at the overlay's HEAD, the same .git/config byte for byte, and `git status` clean outside the submodules.
+  submodule at the overlay's HEAD, the same .git/config byte for byte, and `git status` clean outside the submodules,
+  untracked and ignored files included.
+
+What git cannot see from the stat data is trusted, as nothing but updated writes FINALIZED: a same-size edit with its
+mtime put back, an object deleted inside .git. The copy never checked those in its source either.
 
 Then the flag is set again, as finalize_update() would. Not refreshed is what nothing reads: .git's reflogs and
 FETCH_HEAD, and the ignored files inside submodule folders (build products), as copied from BASEDIR by the first copy
@@ -87,7 +91,10 @@ def difference(merged: str, finalized: str, fetched: TreeId, run: Run) -> str:
     return "submodules"
   if Path(finalized, ".git", "config").read_bytes() != Path(merged, ".git", "config").read_bytes():
     return ".git/config"
-  if run(["git", "status", "--porcelain", "--ignore-submodules=all"], finalized).strip():
+  # ignored files too: the overlay's git clean -xdff removed every one at the top, so a copy holds none there;
+  # untracked ones whatever status.showUntrackedFiles says
+  status = ["git", "status", "--porcelain", "--untracked-files=normal", "--ignored", "--ignore-submodules=all"]
+  if run(status, finalized).strip():
     return "git status"
   return ""
 

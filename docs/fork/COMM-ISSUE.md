@@ -728,7 +728,7 @@ this commit's code 13 of 13 killed (5 of the stall-report limit, 8 of the delete
 
 ### 9.13 The 28 Oct rlogs: 15d's sensor stall and 158's /data stall (2026-10-29)
 
-15d's and 158's rlogs (the kernel log, procLog every 2 s, every hardwared line), read on 29 Oct; four analyses, the
+15d's and 158's rlogs (the kernel log, procLog every 2 s, every hardwared line), read on 28 Oct; four analyses, the
 deciding facts re-checked. Seconds are from each route's first selfdriveState (15d starts Wed 28 Oct 01:13:01.6, 158
 Tue 27 Oct 16:53:27.4). Letters as in 9.2: **A** a lock held by a starved CPU-4 kernel thread, **B** a hardwared thread
 preempted while it held the GIL. No code change: push16 covers both stalls as they happened.

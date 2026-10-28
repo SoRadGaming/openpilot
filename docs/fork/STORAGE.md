@@ -248,7 +248,7 @@ as before, with the reason logged (`finalizing in full: ...`):
 |---|---|
 | FINALIZED's consistent flag was set when this pass began | read before `fetch_update()` clears it (`finalized_id()`). `main()` clears the flag every time updated starts and a recreated overlay deletes FINALIZED, so a set flag means a finalize by this same process, from this same overlay |
 | its commit and branch are the overlay's after this pass's checkout (FETCH_HEAD: what the copy would take) | a full 40-digit commit, a branch name (not a detached `HEAD`), FINALIZED the top of its own repo |
-| after `finalize_update()`'s own two resets, run on it as after a copy | the same commit and branch again, every submodule at the overlay's HEAD, `.git/config` byte for byte the overlay's, and `git status` clean outside the submodules |
+| after `finalize_update()`'s own two resets, run on it as after a copy | the same commit and branch again, every submodule at the overlay's HEAD, `.git/config` byte for byte the overlay's, and `git status --untracked-files=normal --ignored` clean outside the submodules (the overlay's `git clean -xdff` leaves a copy no ignored file at the top) |
 
 Then the flag is set again, as `finalize_update()` would, and updated logs `finalized update already at <sha7> on
 <branch>, kept it` (offroad, so in the device's own log only). The flag stays cleared through the fetch as before, so a
@@ -256,7 +256,9 @@ power loss or reboot mid-pass installs nothing, and a drive starting during the 
 cleared. The same either way: `UpdateAvailable`, `UpdaterFetchAvailable`, `UpdaterNewDescription`, the release notes,
 FINALIZED's files, refs and `.git/config`, and the boot swap. Not refreshed on a kept pass, and read by nothing:
 `.git`'s reflogs and FETCH_HEAD, and the ignored build products inside submodule folders, as copied from BASEDIR by the
-pass that made FINALIZED (BASEDIR's change only at a boot, and a boot deletes FINALIZED).
+pass that made FINALIZED (BASEDIR's change only at a boot, and a boot deletes FINALIZED). Trusted rather than checked,
+since nothing but updated writes FINALIZED: what git cannot see from sizes and times (a same-size edit with its mtime
+put back) and an object missing inside `.git`. The copy never checked those in the tree it copied from either.
 
 **What still copies**, as before: the first pass after updated starts (after every drive and every boot: `main()`
 clears the flag); the pass after a failed one (offline, or a Wi-Fi drop: the overlay is recreated and FINALIZED with
@@ -268,33 +270,45 @@ copied 12-15 (17-22 %), nearly all the first pass of a parking.
 
 **The boot swap is unchanged.** `launch_chffrplus.sh` swaps in any flagged FINALIZED, at the running commit too, and
 that boot then rebuilds (a swapped tree has no build products). It needs the comma to power down with a finished copy
-flagged (after `MaxTimeOffroad`'s 30 h, or by hand), which is rare, and push17 makes it neither more nor less likely.
+flagged (after `MaxTimeOffroad`'s 30 h, on a low car battery, or by hand), which is rare. push17 makes it marginally
+more likely: on a kept pass the flag is down for the seconds of the fetch and the checks, not the minutes of a copy.
+What gets swapped in is the same tree either way.
 Skipping the copy whenever the fetched commit is the *running* one would also save each parking's first copy, but it
 changes what a boot does and leaves stale FINALIZED trees and descriptions behind: not done.
 
 **On the car.** push16's `deleter parked summary` after an online night (section 4): `disk_written_mb` /
 `ext4_written_mb` about 8 GB (13-14 GB if a push landed) instead of about 55-60 GB. updated is killed at the drive's
-start, so it is not in the drive's procLog; its writes go under the process name `openpilot.system...` cut to the
-kernel's 15 characters, which 12 or more daemons share, and the rmtree's discards under no process at all. A check without code: home Wi-Fi marked metered for one night
-(updated logs "skipping fetch, connection metered", for up to 3 days) should show about 2-4 GB.
+start, so it is not in the drive's procLog. In the summary's `writers` it is the kernel's 15-character process name,
+which 12 or more daemons share:
+`openpilot.syste`, about half of the total on push16 and one copy's 2.5 GB on push17. <!-- codespell:ignore syste -->
+The rmtree's discards are counted under no process at all. Still 55-60 GB with that name near the top means every
+pass declined to keep FINALIZED: safe, no saving, and the reason (`finalizing in full: ...`) is in the device's own log
+only. A check without code: home Wi-Fi marked metered for one night (updated logs "skipping fetch, connection
+metered", for up to 3 days) should show about 2-4 GB.
 
-**Tests** (`openpilot/sunnypilot/system/updated/tests/test_finalize_reuse.py`, 33): the real `check_for_update()`,
+**Tests** (`openpilot/sunnypilot/system/updated/tests/test_finalize_reuse.py`, 36): the real `check_for_update()`,
 `fetch_update()` and `set_params()` against real git repos - a bare remote with a submodule, the overlay and BASEDIR as
 plain clones, FINALIZED in a temp folder (no overlay: that needs root). The first pass copies; nothing new keeps it,
 with the same params, flag, commit and branch (no copytree, a marker in its `.git` survives, the kept line logged); a
-new commit, a branch switch at the same commit and a force-push rollback copy; a partial copy without its flag (route
-158), a broken `.git`, a FINALIZED without `.git` inside another repo, a stale `index.lock`, a moved submodule, an
-untracked file and a changed `.git/config` all copy; an edited or deleted tracked file is restored by the resets; a
-failed fetch leaves no flag and the next pass copies; AGNOS clearing the flag still ends flagged, an AGNOS failure
-finalizes nothing; and a seven-pass scenario run kept and always copied is identical in params, flag, files, refs and
-config (4 copies against 7). The decision on its own with a fake git: each condition, an error at every step, a flag
+new commit, a branch switch at the same commit and a force-push rollback copy, and so does every pass of a switch
+back and forth at one commit (once `.git/config` holds both branches, only the branch tells the trees apart: a
+`TreeId` equal on the commit alone fails it); a partial copy without its flag (route 158), a broken `.git`, a
+FINALIZED without `.git` inside another repo, a stale `index.lock`, a moved submodule, an untracked file (also with
+`status.showUntrackedFiles=no` in the global config), an ignored build product at the top and a changed
+`.git/config` all copy; an edited or deleted tracked file is restored by the resets; a failed fetch leaves no flag
+and the next pass copies; AGNOS clearing the flag still ends flagged, an AGNOS failure finalizes nothing; and a
+seven-pass scenario run kept and always copied is identical in params, flag, files, refs and config (4 copies
+against 7). The decision on its own with a fake git: each condition, an error at every step, a flag
 that cannot be set, a KeyboardInterrupt let through, and the `""` that `test_download_progress.py`'s fetch test answers
 to every command. The wiring: the record before the flag is cleared, `main()` still clearing it at every start,
 `finalize_update()` unchanged, the flag the boot swap reads. Against push16's `updated.py` the 6 tests of what is new
-fail (4 failures, 2 errors) and the other 27, the cases that copy in both, pass. Outside the suite, the real
+fail (4 failures, 2 errors) and the other 30, the cases that copy in both, pass. Outside the suite, the real
 `init_overlay()` (overlayfs under `unshare -rm`, a sudo shim) through 15 passes - an updated restart, a failed check, a
 failed fetch, a rollback: push17 copied 6 times and push16 11, with the flag, `UpdateAvailable` and the descriptions
-identical pass for pass.
+identical pass for pass. The review's own run of the real `updated.main()` loop of both, on overlayfs over a BASEDIR
+holding ignored build products, through 36 passes, three boot swaps and a SIGINT while finalizing (repeated on the
+review commit): every param and its write order, the flag, FINALIZED's files and `.git`, and every swapped-in tree
+identical, 13 copies against 29.
 
 ## 8. Files
 

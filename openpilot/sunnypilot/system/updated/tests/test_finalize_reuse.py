@@ -276,6 +276,22 @@ class TestReuseThroughFetchUpdate(OpenpilotTestCase):
     assert s["UpdateAvailable"] is True, "BASEDIR is on another branch"
     assert r.finalized_matches_the_remote("other")
 
+  def test_switching_branches_back_and_forth_at_the_same_commit_copies_each_time(self):
+    """Once the overlay's .git/config holds both branches a switch no longer changes it: only the branch tells the
+    trees apart, and the boot swap does not check it."""
+    r = self.rig
+    r.push_ref(r.rev(), "other")
+    with r.updater() as u:
+      for n, target in enumerate(("sunnypilot", "other", "sunnypilot", "other"), start=1):
+        u.params.put("UpdaterTargetBranch", target, block=True)
+        s = r.one_pass(u)
+        assert r.copies == n, f"pass {n} to {target}: {r.copies} copies"
+        assert s["branch"] == target and s["head"] == r.rev() and s["consistent"], (n, s)
+        assert s["UpdateAvailable"] is (target != "sunnypilot"), (n, s)
+        assert r.finalized_matches_the_remote(target), n
+    config = (r.merged / ".git/config").read_text()
+    assert '[branch "sunnypilot"]' in config and '[branch "other"]' in config
+
   def test_a_rollback_is_copied(self):
     r = self.rig
     c1 = r.rev()
@@ -358,6 +374,30 @@ class TestReuseThroughFetchUpdate(OpenpilotTestCase):
       (r.finalized / "stray.txt").write_text("not in the tree\n")
       r.one_pass(u)
     assert r.copies == 2 and not (r.finalized / "stray.txt").exists()
+
+  def test_an_ignored_file_at_the_top_is_copied_away(self):
+    """A build product at the top of FINALIZED (what /msgq, .sconsign.dblite or a .so would be): the overlay's git
+    clean took them all, so a copy has none, and git status shows one only with --ignored."""
+    r = self.rig
+    with r.updater() as u:
+      r.one_pass(u)
+      (r.finalized / "build").mkdir()
+      (r.finalized / "build" / "stale.o").write_text("obj\n")
+      s = r.one_pass(u)
+    assert r.copies == 2 and s["consistent"] and not (r.finalized / "build").exists()
+    assert r.finalized_matches_the_remote()
+
+  def test_an_untracked_file_is_seen_whatever_the_git_config_says(self):
+    """status.showUntrackedFiles=no in a global config must not hide a stray file from the check."""
+    r = self.rig
+    with open(os.environ["GIT_CONFIG_GLOBAL"], "a") as f:
+      f.write("[status]\n\tshowUntrackedFiles = no\n")
+    with r.updater() as u:
+      r.one_pass(u)
+      (r.finalized / "stray.txt").write_text("not in the tree\n")
+      s = r.one_pass(u)
+    assert r.copies == 2 and s["consistent"] and not (r.finalized / "stray.txt").exists()
+    assert r.finalized_matches_the_remote()
 
   def test_a_changed_git_config_is_copied(self):
     r = self.rig
@@ -497,7 +537,8 @@ class TestDecision(OpenpilotTestCase):
     base = {**fake_repo(where=self.merged, **(merged or {})), **fake_repo(where=self.finalized, **(finalized or {})),
             (("git", "reset", "--hard"), self.finalized): "",
             (("git", "submodule", "foreach", "--recursive", "git", "reset", "--hard"), self.finalized): "",
-            (("git", "status", "--porcelain", "--ignore-submodules=all"), self.finalized): ""}
+            (("git", "status", "--porcelain", "--untracked-files=normal", "--ignored", "--ignore-submodules=all"),
+             self.finalized): ""}
     for k, v in base.items():
       table.setdefault(k, v)
     return FakeGit(table)
@@ -534,6 +575,7 @@ class TestDecision(OpenpilotTestCase):
       "its branch after the resets": self.run_ok(finalized={"branch": "other"}),
       "its submodules": self.run_ok(finalized={"subs": "sub x z\n"}),
       "git status": self.run_ok(extra={(("git", "status"), self.finalized): "?? stray\n"}),
+      "an ignored file": self.run_ok(extra={(("git", "status"), self.finalized): "!! build/\n"}),
       "a reset fails": self.run_ok(extra={(("git", "reset", "--hard"), self.finalized): subprocess.CalledProcessError(128, "reset")}),
       "git missing": self.run_ok(extra={(("git", "status"), self.finalized): FileNotFoundError("git")}),
     }
