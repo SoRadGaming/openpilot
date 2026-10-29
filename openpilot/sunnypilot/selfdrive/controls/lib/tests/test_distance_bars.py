@@ -907,6 +907,7 @@ class _FakeCS:
     self.acc_hud = {"FCM_OFF": 0, "FCM_OFF_2": 0, "FCM_PROBLEM": 0, "ICONS": 0}
     self.lkas_hud = {}
     self.scm_buttons = {"CRUISE_BUTTONS": 0, "CRUISE_SETTING": 0, "MAIN_ON": 1}
+    self.powertrain_data = {}  # FORK(BRAKE-SWITCH-MIRROR): the car's 0x17C, for the mirror to the radar
     self.is_metric = True
     self.econ_on = False
     self.out_sp = structs.CarStateSP()
