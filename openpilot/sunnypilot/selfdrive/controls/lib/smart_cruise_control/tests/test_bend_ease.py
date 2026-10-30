@@ -527,8 +527,11 @@ class TestBendEasePlanner(OpenpilotTestCase):
     ref = drive(planner(without=True), ROUTE)
     self.assertEqual(out[:20], ref[:20], "straight: untouched")
     accels = [o[0] for o in out[20:100]]
-    self.assertGreaterEqual(min(accels), -0.6 - 1e-6)
-    self.assertLess(min(accels), -0.55, "it gets to its 0.6")
+    # it asks for its 0.6; the planner's cruise floor (A_CRUISE_MIN, -0.5 since commaai/openpilot#39060) gives it 0.5
+    from openpilot.selfdrive.controls.lib.longitudinal_planner import A_CRUISE_MIN
+    floor = max(-be.ELESYS_TUNE.decel, A_CRUISE_MIN)
+    self.assertGreaterEqual(min(accels), floor - 1e-6)
+    self.assertLess(min(accels), floor + 0.05, "it gets to the planner's floor")
     self.assertGreater(min(o[0] for o in ref[20:100]), -0.05, "without it the plan does not slow")
     self.assertTrue(int(LongitudinalPlanSource.sccVision) in {o[2] for o in out[20:100]}, "the planner's source")
     self.assertTrue(all(o[0] <= r[0] + 1e-9 for o, r in zip(out, ref, strict=True)), "it only ever lowers the plan")

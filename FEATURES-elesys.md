@@ -408,6 +408,41 @@ over the steering, steering stays manual until key-off; ACC, CMBS and AEB still 
 
 ---
 
+## The planner: three changes from comma (October 2026)
+
+Three of comma's planner changes, taken ahead of the next upstream sync. They are on for every car, with no toggle.
+
+**Lowering the set speed while openpilot is already braking now acts at once.** openpilot weighs three accelerations:
+one for the car ahead, one for the set speed and, in experimental mode, the model's. It drives on the lowest. The
+set-speed one may only change slowly, and while something else was in charge it crept up as high as +2.0 m/s². So when
+you lowered the set speed, it had to come all the way back down before anything happened. On your drives that wait was
+1.2 s typically, and over 2 s on one frame in seven. Route 15d at t=189 (80 → 60 at 67 km/h) would have started braking
+about 28 m sooner, and the curve slow-down on 161 at t=604 would have come 1.3 s earlier. Now it starts from what the
+car is already doing (comma #39127; sunnypilot doesn't have this one yet).
+
+**A slowdown only the set speed asks for is gentler: at most -0.5 m/s², down from -1.2.** That covers lifting off the gas
+above the set speed, the curve and bend slow-downs, the slow-down when openpilot is about to disengage, and speed-limit
+and set-speed drops: about 1.3% of your engaged time. Braking for a car ahead, the model's own braking for stops and
+turns, collision warnings, CMBS and AEB are all unchanged. The cost: an 80 → 60 speed-limit drop now takes about 11 s and
+215 m instead of 5.7 s and 112 m, so for speed cameras and school zones, lower the set speed a little earlier yourself.
+If bend ease is live, it now gets 0.5 m/s² instead of its 0.6. Map-based curve slowing (off on your car) still plans for
+the old -1.2 and would now reach mapped curves too fast, so leave it off. (Comma #39060; upstream sunnypilot already has
+it.)
+
+**The gas boost (experimental mode only).** When the model is what holds the car back (it asks for noticeably less than
+both the car ahead and the set speed allow) and you press the gas, openpilot learns you wanted more. Each press adds up to
+0.05 m/s² to the model's acceleration, built over about 2 s of pressing, up to 0.2 in all. It lasts until openpilot
+disengages, then starts again from nothing. It does nothing below 16 km/h and is at full strength from 32 km/h. It fades
+out as the model brakes from -0.5 to -1.0, and it can never take the car past what the car ahead or the set speed allow.
+Replaying 13 of your drives: 44% of your presses counted, the boost was there 51% of the engaged time, and where it was
+it added about 0.075 m/s² on average. Chill mode is unchanged. The logs show it as `longitudinalPlan.accelBoost`.
+(Comma #39015; upstream sunnypilot has it.)
+
+These were tested by computer only (the planner run frame by frame, and every way of getting the port wrong checked
+to fail a test), not yet on the car.
+
+---
+
 ## The honest summary
 
 **Nothing here has been tested on a car.** Every number in this document comes from one of:

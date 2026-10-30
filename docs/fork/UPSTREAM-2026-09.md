@@ -96,6 +96,8 @@ vision curve slowdown (item 3). Both are listed under [Still open](#still-open-a
      the final output.
    - `forceDecel` (DM no-response or a soft disable) now reaches the car as `v_cruise = 0` through this path: at most
      -1.2 m/s², jerk-limited.
+   - **Since 2026-10-30 `A_CRUISE_MIN` is -0.5** (commaai/openpilot#39060, area UP in [README.md](README.md)): every
+     slowdown on this path, `forceDecel`, curve entries and speed-limit drops included, is at most -0.5 m/s².
    - **With vision curve slowdown on (`SmartCruiseControlVision`), which this car has,** a curve entry now brakes at up to
      1.2 m/s² at the plan instead of about 0.35–0.6. A closed-loop replay of route `00000103` gave a different brake
      command (`0x1FA`) on 6.6 % of frames and gas (`0x200`) on 13.9 %, mainly from this. This is upstream's intended

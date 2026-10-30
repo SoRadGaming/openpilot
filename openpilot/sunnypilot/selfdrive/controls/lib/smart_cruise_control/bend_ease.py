@@ -27,6 +27,8 @@ largest of those curvatures.
     under the speed the episode began at, and never more than DECEL (0.6 m/s^2) under today's speed: the planner turns
     a target into accel as clip(target - vEgo, -1.2, ...), so the ease asks for at most 0.6 m/s^2 - the comfort of the
     planner's normal cruise, under its own -1.2 - and get_cruise_accel's jerk limit (0.6-0.8 m/s^3 here) shapes it.
+    (Since commaai/openpilot#39060, 2026-10-30, the planner's floor is A_CRUISE_MIN = -0.5: live, the ease now gets
+    0.5 m/s^2 at most, not its 0.6. Its replay below was made with -1.2.)
     And never more than ACCEL_CAP (0.5 m/s^2) over today's speed: inside a bend the car accelerates at 0.5 at most
     (SCC-V's 'leaving' rate), and the planner's cruise accel - a jerk-limited state that otherwise winds up to +2.0 in
     experimental mode whenever a target is far above the speed (c8 t=2071: 3.3 s from +2.0 to -0.6, the bend 1.5 s
