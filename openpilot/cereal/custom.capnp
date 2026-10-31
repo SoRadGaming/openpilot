@@ -396,6 +396,14 @@ struct OnroadEventSP @0xda96579883444c35 {
     carBusOffStock @34;
     carBusOffAnnounce @35;
     carBusOffDisengage @36;
+    # FORK(BRAKE-LAMP-RELAY): the BLR-v1 brake-lamp board offline, latched until key-off, not lighting the lamps for
+    # openpilot's braking, or the lamps stuck on (brake_lamp_alert.py; warnings only), and their one silent reminder.
+    # Same rule as above if upstream takes these ordinals.
+    brakeLampBoardOffline @37;
+    brakeLampBoardLatched @38;
+    brakeLampsNotLighting @39;
+    brakeLampsStuckOn @40;
+    brakeLampBoardReminder @41;
   }
 }
 

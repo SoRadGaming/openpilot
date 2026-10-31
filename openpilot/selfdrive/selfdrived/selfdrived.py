@@ -34,6 +34,7 @@ from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.con
 from openpilot.sunnypilot.selfdrive.selfdrived.button_state_tracker import ButtonStateTracker
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.selfdrive.selfdrived.eps_latch_alert import EpsLatchAlert  # FORK(LKAS-GATEWAY)
+from openpilot.sunnypilot.selfdrive.selfdrived.brake_lamp_alert import BrakeLampAlert  # FORK(BRAKE-LAMP-RELAY)
 from openpilot.sunnypilot.selfdrive.selfdrived.vsa_fault_alert import VsaFaultAlert  # FORK(HONDA_ACCORD_9G_AU)
 from openpilot.sunnypilot.selfdrive.controls.lib.steer_saturated import SteerSaturatedAlert  # FORK(LKAS-GATEWAY)
 from openpilot.sunnypilot.selfdrive.selfdrived.lane_block_alert import LaneBlockAlert  # FORK(HUD)
@@ -196,6 +197,8 @@ class SelfdriveD(CruiseHelper):
 
     self.car_events_sp = CarSpecificEventsSP(self.CP, self.CP_SP)
     self.eps_latch_alert = EpsLatchAlert()  # FORK(LKAS-GATEWAY): "restart the car" when the EPS latches until key-off
+    # FORK(BRAKE-LAMP-RELAY): the brake-lamp board offline, latched, not lighting or stuck on (warnings only)
+    self.brake_lamp_alert = BrakeLampAlert(self.CP, self.params)
     self.vsa_fault_alert = VsaFaultAlert()  # FORK(HONDA_ACCORD_9G_AU): name the VSA's own fault; no engagement while it holds one
     self.lane_block_alert = LaneBlockAlert()  # FORK(HUD): the comma 4's lane-block tile: no block alerts, a refused nudge chimes
     self.car_stock_alert = CarStockAlert(self.CP)  # FORK(HONDA_ACCORD_9G_AU): KTuner - stock on purpose is not a fault
@@ -330,6 +333,11 @@ class SelfdriveD(CruiseHelper):
     # FORK(LKAS-GATEWAY): warnings only, so a latched EPS never costs longitudinal or engagement.
     # can_show is last frame's "a WARNING would be shown"; the helper holds the announcement until it is.
     for e in self.eps_latch_alert.update(self.sm['carStateSP'].linbusGateway, self.active or self.mads.active):
+      self.events_sp.add(e)
+
+    # FORK(BRAKE-LAMP-RELAY): warnings only too, so a failing brake-lamp board never costs engagement or longitudinal
+    # (DESIGN E.7: nothing it sends feeds a brake or controls decision). The helper reads carStateSP's board fields.
+    for e in self.brake_lamp_alert.update(self.sm['carStateSP'], CS, self.active or self.mads.active):
       self.events_sp.add(e)
 
     # Create events for temperature, disk space, and memory

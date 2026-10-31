@@ -330,6 +330,49 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.LOWEST, VisualAlert.none, AudibleAlert.none, 4.),
   },
 
+  # FORK(BRAKE-LAMP-RELAY): the BLR-v1 brake-lamp board (brake_lamp_alert.py). Warnings only, like the EPS latch: a
+  # failing board costs the lamps of openpilot's own braking, never engagement or longitudinal. Priority.LOWER: never
+  # over steerSaturated's "Take Control" (LOW), LDW or driver monitoring; the reminder stays LOWEST.
+  EventNameSP.brakeLampBoardOffline: {
+    ET.WARNING: Alert(
+      "Brake Light Board Offline",
+      "Brake lights may not show when openpilot brakes",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.LOWER, VisualAlert.none, AudibleAlert.prompt, 6.),
+  },
+
+  EventNameSP.brakeLampBoardLatched: {
+    ET.WARNING: Alert(
+      "Brake Light Board Fault",
+      "Turn the car off and on to clear it",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.LOWER, VisualAlert.none, AudibleAlert.prompt, 6.),
+  },
+
+  EventNameSP.brakeLampsNotLighting: {
+    ET.WARNING: Alert(
+      "Brake Lights Not Lighting",
+      "Cars behind may not see openpilot brake",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.LOWER, VisualAlert.none, AudibleAlert.prompt, 6.),
+  },
+
+  EventNameSP.brakeLampsStuckOn: {
+    ET.WARNING: Alert(
+      "Brake Lights Stuck On",
+      "Check the brake light board",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.LOWER, VisualAlert.none, AudibleAlert.prompt, 6.),
+  },
+
+  EventNameSP.brakeLampBoardReminder: {
+    ET.WARNING: Alert(
+      "Brake Light Fault",
+      "",
+      AlertStatus.normal, AlertSize.small,
+      Priority.LOWEST, VisualAlert.none, AudibleAlert.none, 4.),
+  },
+
   # FORK(HONDA_ACCORD_9G_AU): the VSA's own fault, raised by vsa_fault_alert.py, which also drops the upstream
   # alerts these replace ("Cruise Fault: Restart the Car" - a restart does not clear it). vsaFault is raised only
   # beside upstream's accFaulted, which keeps doing the disengaging, so its IMMEDIATE_DISABLE/NO_ENTRY add nothing

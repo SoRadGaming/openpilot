@@ -14,7 +14,9 @@ Settings > gateway page reads. These are the twins of that file's tests, for the
   * BlrBoardParams (blr_board.py) against real Params: what is written, when, and in which shape - the shapes are
     the contract with the page;
   * NOTHING ON A CONTROLS PATH READS THE BOARD (DESIGN E.7). brakeLampRelay is named in the schema and in
-    blr_board.py and nowhere else in openpilot, and no Blr* param is read by selfdrived, controls, MADS or pandad.
+    blr_board.py and nowhere else in openpilot, and no Blr* param is read by selfdrived, controls, MADS or pandad -
+    with one exception since 2026-10-31: selfdrived's brake_lamp_alert.py, which reads both to raise WARNINGS and
+    nothing else (TestTheOneSelfdrivedReader below holds it to that);
     opendbc's own test_blr.py holds the other half: CarState is byte-identical with and without the board's frames.
 
 The board's bytes are the firmware's golden vector (opendbc_repo/opendbc/sunnypilot/car/honda/fixtures/
@@ -50,6 +52,7 @@ CUSTOM_CAPNP = ROOT / "cereal/custom.capnp"
 PARAMS_KEYS = ROOT / "common/params_keys.h"
 CARD = ROOT / "selfdrive/car/card.py"
 BLR_BOARD = ROOT / "sunnypilot/selfdrive/car/blr_board.py"
+BRAKE_LAMP_ALERT = ROOT / "sunnypilot/selfdrive/selfdrived/brake_lamp_alert.py"   # the one onroad reader: warnings only
 
 TELEMETRY = ("BLR_STATUS", "BLR_ANALOG", "BLR_HEALTH", "BLR_COUNTERS", "BLR_COUNTERS2", "BLR_VERSION", "BLR_BUILD")
 
@@ -208,7 +211,9 @@ class TestNothingOnAControlsPathReadsTheBoard(unittest.TestCase):
 
   def test_only_blr_board_reads_the_struct(self):
     allowed = {"cereal/custom.capnp", "sunnypilot/selfdrive/car/blr_board.py",
-               "sunnypilot/selfdrive/car/tests/test_blr_board.py"}
+               "sunnypilot/selfdrive/car/tests/test_blr_board.py",
+               "sunnypilot/selfdrive/selfdrived/brake_lamp_alert.py",
+               "sunnypilot/selfdrive/selfdrived/tests/test_brake_lamp_alert.py"}
     # the source tree as git sees it (tracked, plus new files not ignored): the build products generated from
     # custom.capnp (cereal/gen, jotpluggler's extractors) name every field and read none of them
     out = subprocess.run(["git", "ls-files", "-co", "--exclude-standard", "--", "openpilot"], cwd=REPO,
@@ -235,13 +240,74 @@ class TestNothingOnAControlsPathReadsTheBoard(unittest.TestCase):
     checked = 0
     for top, suffixes in controls:
       for path in ([top] if top.is_file() else top.rglob("*")):
-        if path.suffix not in suffixes or not path.is_file() or "tests" in path.parts or path == STRUCTS:
-          continue   # STRUCTS: the dataclass itself
+        if path.suffix not in suffixes or not path.is_file() or "tests" in path.parts or path in (STRUCTS, BRAKE_LAMP_ALERT):
+          continue   # STRUCTS: the dataclass itself; BRAKE_LAMP_ALERT: TestTheOneSelfdrivedReader
         text = code_of(path) if path.suffix == ".py" else path.read_text(encoding="utf-8", errors="replace")
         m = pattern.search(text)
         assert m is None, f"{path.relative_to(REPO)}: {m.group(0)!r} on a controls path"
         checked += 1
     assert checked > 100, checked
+
+
+class TestTheOneSelfdrivedReader(unittest.TestCase):
+  """brake_lamp_alert.py (2026-10-31) reads carStateSP.brakeLampRelay and BlrBoardVersion in selfdrived, and may only
+  ever raise WARNINGS: no event that can refuse or end an engagement, and no write to anything it reads."""
+
+  def test_it_raises_warnings_only(self):
+    from openpilot.sunnypilot.selfdrive.selfdrived import brake_lamp_alert as bla
+    from openpilot.sunnypilot.selfdrive.selfdrived.events import EVENTS_SP, ET
+    events = set(bla.ANNOUNCE.values()) | {bla.REMIND}
+    assert len(events) == 5
+    for e in events:
+      assert set(EVENTS_SP[e].keys()) == {ET.WARNING}, (e, EVENTS_SP[e].keys())
+
+  def test_it_only_reads(self):
+    tree = ast.parse(BRAKE_LAMP_ALERT.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+      if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for t in targets:
+          for n in ast.walk(t):
+            if isinstance(n, ast.Attribute):
+              assert ast.unparse(n).startswith("self."), f"line {node.lineno}: writes {ast.unparse(n)}"
+      if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        call = ast.unparse(node.func)
+        assert node.func.attr not in ("put", "put_bool", "put_nonblocking", "send"), f"line {node.lineno}: {call}"
+        # the params handle: get() only
+        assert "param" not in ast.unparse(node.func.value).lower() or node.func.attr == "get", f"line {node.lineno}: {call}"
+    src = code_of(BRAKE_LAMP_ALERT)
+    assert "brakePressed" in src and not re.search(r"brakePressed\s*=[^=]", src)
+
+  def test_it_names_only_its_own_events(self):
+    """What update() can return, read off the code: only EventNameSP members that are its five warnings, and nothing
+    from upstream's log.OnroadEvent (where every disable lives)."""
+    from openpilot.sunnypilot.selfdrive.selfdrived import brake_lamp_alert as bla
+    names = {custom.OnroadEventSP.EventName.schema.node.enum.enumerants[e].name
+             for e in set(bla.ANNOUNCE.values()) | {bla.REMIND}}
+    tree = ast.parse(BRAKE_LAMP_ALERT.read_text(encoding="utf-8"))
+    used = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute) and ast.unparse(n.value) == "EventNameSP"}
+    assert used == names, used ^ names
+    for n in ast.walk(tree):
+      if isinstance(n, (ast.Import, ast.ImportFrom)):
+        assert all(a.name not in ("log", "car") for a in n.names), ast.unparse(n)
+      assert not (isinstance(n, ast.Name) and n.id in ("EventName", "log")), f"line {n.lineno}: {n.id}"
+
+  def test_its_events_feed_nothing(self):
+    """The five events are defined in events.py and raised here; nothing on a controls path reads them, and selfdrived
+    touches the helper exactly twice - building it and the one call that adds its events to events_sp."""
+    pattern = re.compile(r"\bbrakeLamp(?:Board|s)[A-Z]\w*")
+    allowed = {ROOT / "sunnypilot/selfdrive/selfdrived/events.py", BRAKE_LAMP_ALERT}
+    for top in (ROOT / "selfdrive/controls", ROOT / "selfdrive/selfdrived", ROOT / "selfdrive/car",
+                ROOT / "sunnypilot/selfdrive/controls", ROOT / "sunnypilot/selfdrive/selfdrived", ROOT / "sunnypilot/mads",
+                OPENDBC / "car", OPENDBC / "safety"):
+      for path in top.rglob("*.py"):
+        if "tests" in path.parts or path in allowed:
+          continue
+        m = pattern.search(code_of(path))
+        assert m is None, f"{path.relative_to(REPO)}: {m.group(0)!r}"
+    code = code_of(ROOT / "selfdrive/selfdrived/selfdrived.py")
+    assert code.count("self.brake_lamp_alert") == 2, code.count("self.brake_lamp_alert")
+    assert code.count("BrakeLampAlert") == 2   # the import and the construction
 
 
 class FakeClock:

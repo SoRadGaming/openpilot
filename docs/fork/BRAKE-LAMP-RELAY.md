@@ -15,17 +15,26 @@ In push11 (2026-10-21), with the board's live image `42524898` bundled (`blr_app
 
 **Nothing the board sends feeds `brakePressed`, `brakeLights`, any controls decision or panda safety** (board design
 E.7). Masking or inventing a pedal press from the lamp circuit would hide a real press, or make one up, at the worst
-moment. `0x17C BRAKE_PRESSED` / `BRAKE_SWITCH` stay openpilot's only brake-pedal input. The tests hold this three ways:
+moment. `0x17C BRAKE_PRESSED` / `BRAKE_SWITCH` stay openpilot's only brake-pedal input. The tests hold this two ways:
 
 * `opendbc/sunnypilot/car/honda/test_blr.py`: with the board's frames on the bus, a status that claims
   `DRIVER_BRAKING`, `PEDAL_CAN` and `EXT_SINK` among them, `CarState` is byte-identical frame for frame to a run without
   them, while `0x17C` alone moves `brakePressed`. The decoder `_update_blr(ret_sp, cp)` is never handed `ret`, and no
-  BLR name appears in opendbc outside the decoder, the parser registration and the struct; none of the board's IDs
-  appears in panda safety.
+  BLR name appears in opendbc outside the decoder, the parser registration, the struct and `brake_switch_mirror.py`
+  (the one deliberate exception, below); none of the board's IDs appears in panda safety.
 * `openpilot/sunnypilot/selfdrive/car/tests/test_blr_board.py`: `carStateSP.brakeLampRelay` is named in
-  `custom.capnp` and `blr_board.py` and nowhere else in openpilot; no `Blr*` param and no `brakeLampRelay` appears in
-  selfdrived, controls, MADS, the C++ pandad, opendbc's car code or panda safety.
-* There are no onroad alerts for the board in this phase.
+  `custom.capnp`, `blr_board.py` and `brake_lamp_alert.py` and nowhere else in openpilot; no `Blr*` param and no
+  `brakeLampRelay` appears in selfdrived, controls, MADS, the C++ pandad, opendbc's car code or panda safety, except in
+  `brake_lamp_alert.py`. `TestTheOneSelfdrivedReader` holds that module to naming only its five warnings, writing
+  nothing it reads, and having its events read by nothing on a controls path; selfdrived touches it exactly twice.
+
+Two readers act on the board onroad:
+
+* **The 0x17C mirror to the radar** (2026-10-29, the owner's call; opendbc `brake_switch_mirror.py`, opendbc
+  `FORK.md` section E): the one deliberate exception to E.7. Bus 2 only: `BRAKE_SWITCH` is forced to 1 in the copy the
+  radar gets while the board reports its output on and no dark-lamp fault, so the radar never sees lit lamps with no
+  brake switch. openpilot's own `brakePressed`, and panda safety's view of the car's 0x17C on bus 0, are untouched.
+* **The onroad warnings** (2026-10-31, below): report only.
 
 ## From the wire to the page
 
@@ -85,11 +94,59 @@ moment. `0x17C BRAKE_PRESSED` / `BRAKE_SWITCH` stay openpilot's only brake-pedal
 
 The names are the firmware's, so a value read on the device greps against `blr/docs/BLR-CAN.md`.
 
+## Onroad alerts
+
+`openpilot/sunnypilot/selfdrive/selfdrived/brake_lamp_alert.py` (2026-10-31, the owner's call), called by selfdrived
+next to the EPS latch alert. **Warnings only**: no NO_ENTRY or disable event and no carState flag, so a failing board
+costs the lamps of openpilot's own braking and nothing else. Only on HONDA_ELESYS with openpilot longitudinal (not in
+stock ACC mode).
+
+| alert | when | why it matters |
+|---|---|---|
+| "Brake Light Board Offline" | no 0x620 for 2 s once the board was heard this drive; or 10 s from the start when this car has had a board lately (`BlrBoardVersion` set and `BlrBoardSeenAt` under 14 days old) and it has not been heard | unpowered, unplugged, crashed, stuck in its bootloader, its transmitter off after the 3rd bus-off |
+| "Brake Light Board Fault" / "Turn the car off and on to clear it" | LATCHED or a latch reason for 1 s | its output is off until key-off |
+| "Brake Lights Not Lighting" | for 1 s: openpilot asks for the lamps and the board is not driving them; or it drives them with `D_LAMP_DARK`; or it reports `D_COIL_OPEN` at idle (its own row: output off, relay line low, lamps low); or no valid 0x1FA for 150 ms (openpilot's comes at 50 Hz; in the stock pass-through modes the radar's own keeps the board fresh) | a trip, degraded CAN, a shadow image, a fuse, the relay or its coil, a board that cannot hear openpilot |
+| "Brake Lights Stuck On" | 5 s of the lamps lit (`lampSnsMv` over 6 V) with the output off, the pedal up, no parking brake, no CMBS, over 5 m/s | a shorted output (U4 drain to source), a coil wire to ground, the lamp feed stuck on |
+| "Brake Light Fault" (small, silent) | every 5 minutes while any of the above holds | |
+
+Each condition counts evidence for and against itself and clears after 3 s of evidence the other way:
+
+* A stale 0x620 counts towards offline and towards nothing else.
+* A frame that cannot tell counts towards neither: the pedal down, a stop (the car's brake hold lights the lamps
+  there), the analog frame stale (`vbatSnsMv` 0; a true 0 mV lamp reading is dark), and for not lighting every frame
+  where openpilot is not braking. So a fault that shows only while openpilot brakes is one episode for the drive -
+  one chime, then the reminder - and only 3 s in all of braking with the lamps driven and lit clears it.
+
+Each confirm announces once with one short sound (6 s on screen), held until openpilot or MADS is active. Several queue:
+the most important first (latched, stuck on, not lighting, offline), each after the last has had its 6 s. A latch
+explains a board that does not light the lamps, so not lighting is not announced on top of it. The announcements are
+`Priority.LOWER`, under steerSaturated's "Take Control", LDW and driver monitoring. Each confirm is a `cloudlog.warning`
+line `brake lamp alert: <condition> (<the board's fields>)`, each clear `brake lamp alert: <condition> cleared`.
+
+On the four drives with the board (15e-161, 2026-10-29) each condition held for 0 s, and the lamps read lit with no
+output and no pedal for at most 0.20 s. Replayed through the module those drives raise nothing; with a fault injected
+into the second half of each (silence, a latch, dark lamps, no command, lamps stuck on) each raises exactly its own
+alert, once, and on the 11.6-minute route 161 one silent reminder.
+
+Not covered:
+
+* A blank or erased chip runs the ST ROM bootloader, which can light the lamps through PB10's pull-up but sends no
+  0x620. It reads only as "Offline", whose words name the opposite failure.
+* A board in a reset loop (watchdog, brown-out) comes back in under the decoder's 1 s, so it raises nothing.
+  `BLR_HEALTH` (0x622: reset cause, warm resets) and the counters (0x623/0x624) are still not decoded.
+* Shown only while openpilot or MADS is active: lamps stuck on while driving with neither are not announced until one
+  engages.
+* `D_LAMP_WITHOUT_US` fires on every pedal press on this car (the pedal does not pull the coil line low as the design
+  assumed), so it is not used, and `BlrLastDrive` never reads "ok" for that reason.
+* A U4 that trips three times during one long brake announces "Not Lighting" while it retries, then "Board Fault" once
+  it latches: two chimes for one failure, the second with the instruction that matters.
+
 ## Tests
 
 ```bash
 cd opendbc_repo && python -m unittest opendbc.sunnypilot.car.honda.test_blr       # 15: DBC, decoder, E.7
-RAYLIB_BACKEND=headless python tools/test_runner.py openpilot/sunnypilot/selfdrive/car/tests/test_blr_board.py   # 19
+RAYLIB_BACKEND=headless python tools/test_runner.py openpilot/sunnypilot/selfdrive/car/tests/test_blr_board.py   # 23
+python -m unittest openpilot/sunnypilot/selfdrive/selfdrived/tests/test_brake_lamp_alert.py                      # 32
 ```
 
 The board's bytes in both are the firmware's golden vector:

@@ -443,6 +443,27 @@ to fail a test), not yet on the car.
 
 ---
 
+## Warnings when the brake light board stops working (October 2026)
+
+Your car doesn't light its brake lamps when openpilot brakes; the brake light board does that. If the board fails, the
+pedal still lights the lamps as stock, but openpilot's own braking would be dark to the cars behind - and until now
+nothing told you. Now a warning (one short chime, then a small silent reminder every 5 minutes) says so:
+
+- **"Brake Light Board Offline"** - the board has gone quiet for 2 s (or hasn't been heard 10 s into a drive).
+- **"Brake Light Board Fault" - turn the car off and on to clear it** - the board has shut itself off until restart.
+- **"Brake Lights Not Lighting"** - openpilot is braking and the board isn't lighting the lamps, or the lamps or their
+  relay read dead (a fuse, the relay or its coil), or the board can't hear openpilot. A fault like that is one warning
+  for the drive, not one per brake.
+- **"Brake Lights Stuck On"** - the lamps have been lit for 5 s while moving with nobody braking (not counting the
+  handbrake or the car's own emergency braking).
+
+They are warnings only: they never stop openpilot engaging, never drop the cruise and never touch the brakes, and
+they never cover "Take Control" or the driver-attention warnings. Your four drives with the board would have raised
+none of them; with a fault faked into the same drives, each raised the right one, once. Not yet tested on the car.
+If you take the board out for good, the "Offline" warning stops two weeks after it was last heard.
+
+---
+
 ## The honest summary
 
 **Nothing here has been tested on a car.** Every number in this document comes from one of:
