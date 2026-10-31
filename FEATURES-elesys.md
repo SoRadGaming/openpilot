@@ -464,6 +464,19 @@ If you take the board out for good, the "Offline" warning stops two weeks after 
 
 ---
 
+## Steering takes over straight away (November 2026)
+
+You no longer have to let go of the wheel for openpilot to take the steering. The steering board used to treat an
+ordinary turn below 51 km/h as you taking the wheel back, and then waited for your hands to come off before it would
+start - up to 16 s on your drives, and sometimes not at all. Now it starts as soon as openpilot asks, hands on or off,
+and gives full assist in about half a second instead of two. Once it is steering, pushing the wheel hands it back to
+you exactly as before. Needs the steering board updated (Settings > gateway).
+
+The brake light board also sends about half as much on the car's bus now - the leftover test data is gone, the lamps
+work the same. It needs its own update from Settings > gateway, its first over the car's wiring.
+
+---
+
 ## The honest summary
 
 **Nothing here has been tested on a car.** Every number in this document comes from one of:

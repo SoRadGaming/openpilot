@@ -666,11 +666,11 @@ struct CarStateSP @0xb86e6369214c01c8 {
     latchReason @8 :UInt8;     # 0 none, 1 U4, 2 feedback, 3 clock, 4 pin stuck high; latched until power-off
     driverBraking @9 :Bool;    # the board's view: output off, relay line low, lamps high
     extSink @10 :Bool;         # something other than the pedal sinks the relay coil (e.g. the ACC unit)
-    # --- BLR_ANALOG (0x621), 5 Hz, mV at the board's connector; 0 unless one arrived less than 1 s ago ---
+    # --- BLR_ANALOG (0x621), 2.5 Hz (5 Hz before frame layout 2), mV at the board's connector; 0 unless one arrived less than 1 s ago ---
     relaySnsMv @11 :UInt16;
     lampSnsMv @12 :UInt16;
     vbatSnsMv @13 :UInt16;     # after the board's reverse-polarity diode, uncorrected
-    # --- BLR_VERSION (0x627) + BLR_BUILD (0x62F), 1 Hz identity, LATCHED on first sight like linbusGateway.fw* ---
+    # --- BLR_VERSION (0x627) + BLR_BUILD (0x62F), identity (1 Hz for 30 s, then every 10 s), LATCHED on first sight like linbusGateway.fw* ---
     fwValid @14 :Bool;         # 0x627 heard since card started
     fwGitHash @15 :UInt32;     # the BLR's path-scoped commit, as %08x
     fwDirty @16 :Bool;         # built from an edited tree: fwGitHash names a commit it is NOT

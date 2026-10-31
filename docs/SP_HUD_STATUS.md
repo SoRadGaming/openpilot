@@ -388,6 +388,12 @@ applied  motorTorque  retryIn  latchedUntilKeyOff
   at `gw_active.c:234`; the reason ladder at `gw_active.c:1356-1375` has no brake branch and
   the inhibit mask has no brake bit, so a brake-time withdrawal arrives as `1` "no request".
   Do not build a UI that waits for 6, and do not read a `1` during braking as a missing `0x0E4`.
+* **`REASON = 4` "driver override" appears only while the board steers or engages** since board `7fd409a3`
+  (engage-at-once, 2026-11-01; board `HANDOFF.md` 0q). The hand-back is armed only while there is a wheel to give
+  back, so a turn below the EPS floor, at a standstill or with nothing requested no longer latches it: the reason is
+  then the one that applies (`3`, `7`, `1`), and MADS' gateway pause on `4` no longer fires there. `15` "soft start in
+  progress" lasts about 0.6 s after a fresh engagement (the 20-frame intro and the 0.4 s ramp), and 2.2 s after the
+  engagement that ends a hand-back.
 * A change of `(valid, STATE, REASON)` is logged once through `carlog`, so the reason is in the
   route log even where nothing renders it.
 

@@ -20,7 +20,7 @@ Settings > gateway page reads. These are the twins of that file's tests, for the
     opendbc's own test_blr.py holds the other half: CarState is byte-identical with and without the board's frames.
 
 The board's bytes are the firmware's golden vector (opendbc_repo/opendbc/sunnypilot/car/honda/fixtures/
-blr_golden_frames.json, a byte-for-byte copy of the board repo's blr/tools/golden_frames.json, blr-v1 31c138f).
+blr_golden_frames.json, a byte-for-byte copy of the board repo's blr/tools/golden_frames.json, blr-v1 e8854f9, frame layout 2).
 """
 import ast
 import json
@@ -102,7 +102,7 @@ class TestBlrBoundaries(unittest.TestCase):
     vl = decode(version)
     self.assertEqual(f"{int(vl['BLR_VERSION']['GIT_HASH']):08x}", "883a3cd1", "GIT_HASH byte order is wrong")
     self.assertEqual(int(vl["BLR_VERSION"]["VARIANT"]), 3)
-    self.assertEqual(int(vl["BLR_VERSION"]["BOARD_CLASS"]), 2)
+    self.assertEqual(int(vl["BLR_VERSION"]["FRAME_LAYOUT"]), 2)   # BOARD_CLASS left 0x627 in frame layout 2
     self.assertEqual(int(vl["BLR_BUILD"]["BOARD_UID24"]), g["build"]["signals"]["BOARD_UID24"], "the UID is 24-bit LE")
     self.assertEqual(int(vl["BLR_BUILD"]["BOOT_GIT_LO24"]), g["build"]["signals"]["BOOT_GIT_LO24"])
     for name, want in g["status_active"]["signals"].items():

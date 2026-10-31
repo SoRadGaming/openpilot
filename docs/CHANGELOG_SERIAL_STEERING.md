@@ -15,6 +15,45 @@ is `docs/SP_GATEWAY_FIRMWARE.md`.
 
 ---
 
+## 2026-11-01 — push18: the board engages at once (`7fd409a3`), the lamp board's lean telemetry (`e8854f9e`), lamp-board warnings
+
+You asked for the engage to stop waiting for your hands ("i hate having to let go of the wheel for engage ... i would
+rather it activates immediately"), approved the board change, and left the lamp-board side to my judgment. **Branch
+`brake-lamp-alert`; opendbc `14ec02f8` (layout-2 copy `00c79383`); EPS-LKAS `engage-at-once` `7fd409a` and `blr-v1`
+`e8854f9`/`e50f6c8`. Both images are bundled; neither board is flashed. Not driven yet.**
+
+### What you will notice
+
+* **Steering takes over as soon as openpilot asks, hands on the wheel or not**, at any speed above the EPS floor
+  (51 km/h), and full assist comes in about 0.6 s instead of 2.2 s. The board's driver hand-back used to run even when
+  it was not steering, so an ordinary turn below the floor latched "driver override" and the engage waited until your
+  hands came off: on routes 129-161, 53 of 208 floor crossings waited (p90 3.8 s, max 16.8 s) and 8 never got the
+  wheel. Replayed with the new board, none wait. The override itself, once steering, is exactly as tuned. MADS no
+  longer pauses when you turn the wheel below the floor or parked; at speed a hard push still hands the wheel back.
+* **The brake lamp board sends about half the data** (0.48% -> 0.23% of the car bus): the debug signals are gone, the
+  same lamps. Every field openpilot reads kept its place, so nothing on this side changes but the copies.
+* **Warnings when the lamp board fails** - offline, latched, not lighting, stuck on - from `0355956e`, warnings only
+  (`docs/fork/BRAKE-LAMP-RELAY.md`, "Onroad alerts").
+
+### On the car
+
+Update both boards from Settings > gateway, parked: the steering board to `7fd409a3`, the lamp board to `e8854f9e`.
+The lamp board's is its **first CAN update from the comma**, and the first run of its CAN bootloader on hardware; if
+it fails part-way the board waits in its bootloader with its output off (the pedal still lights the lamps) and the
+button tries again. On the first drive: engage a few times at the floor with your hands on the wheel, and check the
+lamps light when openpilot brakes.
+
+### Where the details are
+
+The board's `HANDOFF.md` 0q (the engage measurements and the change) and `blr/docs/BLR-HANDOFF.md` (layout 2);
+`docs/fork/GATEWAY-UPDATE.md` (both images' rows), `docs/SP_HUD_STATUS.md` (REASON 4 and 15),
+`docs/fork/LKAS-GATEWAY-PROTOCOL.md` (the 0.4 s ramp), `docs/fork/BRAKE-LAMP-RELAY.md` (layout 2). Reviewed
+independently before shipping: no defect in the engage change; three low findings on layout 2, all fixed in the
+firmware (a forced-OFF timeout the route report could miss, an untracked layout-1 DBC, layout notes for cabana) or in
+the copies (opendbc's `test_blr.py` sizes, sunnypilot's `BOARD_CLASS` test line).
+
+---
+
 ## 2026-10-29 — push17: the updater stops copying itself all night (board `883a3cd1` unchanged)
 
 You asked for the overnight writer to be fixed and pushed straight away. **Branch `updater17`, two commits on push16

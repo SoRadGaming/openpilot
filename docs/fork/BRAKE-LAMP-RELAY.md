@@ -9,7 +9,11 @@ cereal, card and the `Blr*` params. Updating the board from the comma (flasher, 
 EPS-LKAS board's update in [GATEWAY-UPDATE.md](GATEWAY-UPDATE.md). Markers `FORK(BRAKE-LAMP-RELAY)`.
 
 In push11 (2026-10-21), with the board's live image `42524898` bundled (`blr_appslot.bin`, GATEWAY-UPDATE.md §13);
-`brakeLampRelay` is `CarStateSP @6`.
+`brakeLampRelay` is `CarStateSP @6`. Since push18 (2026-11-01) the bundled image is live `e8854f9e`, **frame layout 2**:
+the debug telemetry dropped (0.48% -> 0.23% of bus 0) - 0x620 is 4 bytes at 10 Hz plus on change, 0x621 2.5 Hz, 0x622
+slim and slow, 0x623/0x624 sent by the bench image only, the identity 1 Hz for 30 s and then every 10 s. Every field
+the decoder reads kept its bit, so either layout decodes right; routes from before it are read with the firmware's
+`blr/tools/blr_layout1.dbc`.
 
 ## The one rule
 

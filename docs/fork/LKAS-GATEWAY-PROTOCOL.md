@@ -150,7 +150,9 @@ openpilot does not work in serial counts. It stays in Honda's 2560 CAN domain:
 
 The board converts. With byte 2 bit 2 clear it computes
 `t = op_torque * GW_LIN_AUTHORITY / GW_OP_FULL_SCALE` (2560), then multiplies by the soft-start
-ramp (`t * soft / GW_SOFTSTART_FRAMES`, 0 to 1 over 2 s after each engagement), clamps to
+ramp (`t * soft / N`, 0 to 1 after each engagement: since board `7fd409a3`, engage-at-once 2026-11-01, over 0.4 s
+after a fresh engagement, `GW_SOFTSTART_FIRST_FRAMES` 40, and over 2 s after the one that ends a driver hand-back,
+`GW_SOFTSTART_FRAMES` 200; over 2 s after every engagement before), clamps to
 `±GW_LIN_AUTHORITY`, and finally clips by the lower of two ceilings: `ceil_pct` (the
 driver-torque fade, section 9) and `GW_BLINK_CEIL_PCT` while an indicator is on
 (`gw_active.c` lines 1981–1995 at `d995bc9`). The blinker ceiling is 50 % up to board `686e4603`
@@ -273,7 +275,7 @@ freeze duplicates the gateway hold (section 7) harmlessly; the torque bar shows 
   `0x0E4` are untouched, so the wire is bit-identical and, when the board takes over, the report
   picks up the ramp where it is. MVL's version also resets the rate limiter; that is
   deliberately not taken, because it would stack a second ramp on the board's 20-frame intro and
-  2 s soft start and change what the board's guards see.
+  soft start (0.4 s fresh, 2 s after a hand-back since board `7fd409a3`) and change what the board's guards see.
 * **Keyed on `actuating`** (`0x704`: engaged, not a dry run, and fresh), which already includes
   the EPS's ack: the board drops ENGAGED 500 ms after a missing ack and at once on an EPS
   error. Not `grantValid`/`epsAck`: `0x70B` is valid only 86.5-87.6% of the time, which would
